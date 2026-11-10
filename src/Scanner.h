@@ -40,7 +40,7 @@ namespace Scanner {
         float xyzToRgb[9]{0.0f};
         float illuminantXYZ[3]{0.0f, 0.0f, 0.0f};
         OutputEncoding::Params encoding{};
-        // FJ_TEMP_BRIDGE: immutable prepared encoding carrier; remove S4.E.
+        // Pointer-free encoding coefficients resolved in Rust.
         FjOutputEncoding preparedEncoding{};
         std::uint64_t outputGamutRecipeHash = 0;
         std::uint64_t hash = 0;
@@ -128,10 +128,5 @@ namespace Scanner {
         }
     };
 
-    ColorRuntime build_color_runtime(
-        ScannerMedium medium,
-        const ScannerIlluminant& illuminant,
-        const OutputEncoding::Params& outputEncoding,
-        std::uint64_t activeOutputGamutRecipeHash);
 
 } // namespace Scanner

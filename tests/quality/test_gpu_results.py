@@ -343,6 +343,75 @@ class GpuResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required cohort"):
             self.check()
 
+    def test_lifetime_membership_requires_each_listed_and_emitted_witness(self):
+        name = self.routes[0]
+        key = self.key_for(name)
+        contract = json.loads(self.payloads["gpu-contracts.json"])
+        ids = ("negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm")
+        required = [["production-state-contract", case] for case in ids]
+        contract["native_cohorts"][name] = 53
+        contract["native_membership"] = {name: {"listed": 31, "terminal": 333, "required": required}}
+        self.payloads["gpu-contracts.json"] = encoded(contract)
+        listed = [{"caller": "prior-0", "id": f"case-{index}"} for index in range(27)]
+        listed.extend({"caller": "production-state-contract", "id": case} for case in ids)
+        events = []
+        for cohort in range(52):
+            caller = f"prior-{cohort}"
+            cohort_ids = ([f"case-{index}" for index in range(27)] if cohort == 0
+                          else [f"case-{index}" for index in range(6 if cohort < 48 else 4)])
+            events.append({"caller": caller, "event": "membership", "ids": cohort_ids})
+            for case_id in cohort_ids:
+                events.extend(({"caller": caller, "id": case_id, "event": "start"},
+                               {"caller": caller, "id": case_id, "event": "terminal", "outcome": "passed"}))
+        events.append({"caller": "production-state-contract", "event": "membership", "ids": list(ids)})
+        for case_id in ids:
+            events.extend(({"caller": "production-state-contract", "id": case_id, "event": "start"},
+                           {"caller": "production-state-contract", "id": case_id, "event": "terminal", "outcome": "passed"}))
+        # 27 + 47*6 + 4*5 gives the retained 329 terminal rows.
+        for cohort in range(48, 52):
+            caller = f"prior-{cohort}"
+            membership = next(row for row in events if row.get("caller") == caller and row["event"] == "membership")
+            membership["ids"].append("case-4")
+            events.extend(({"caller": caller, "id": "case-4", "event": "start"},
+                           {"caller": caller, "id": "case-4", "event": "terminal", "outcome": "passed"}))
+        def install(list_rows, event_rows):
+            self.payloads[key + ".list.jsonl"] = b"".join(encoded(row) + b"\n" for row in list_rows)
+            self.payloads[key + ".jsonl"] = b"".join(encoded(row) + b"\n" for row in event_rows)
+        install(listed, events)
+        self.assertEqual(self.check()["status"], "passed")
+        cases = tuple(f"{operation}/{case}" for operation in ("omit-list", "duplicate-list", "omit-terminal", "duplicate-terminal") for case in ids)
+        self.subtest_cases = cases
+        for operation in ("omit-list", "duplicate-list", "omit-terminal", "duplicate-terminal"):
+            for case_id in ids:
+                with self.subTest(case=f"{operation}/{case_id}"):
+                    list_rows = copy.deepcopy(listed)
+                    event_rows = copy.deepcopy(events)
+                    if operation.endswith("list"):
+                        index = next(i for i, row in enumerate(list_rows) if row["caller"] == "production-state-contract" and row["id"] == case_id)
+                        if operation == "omit-list":
+                            list_rows.pop(index)
+                        else:
+                            list_rows.append(list_rows[index])
+                    else:
+                        index = next(i for i, row in enumerate(event_rows) if row.get("caller") == "production-state-contract" and row.get("id") == case_id and row["event"] == "terminal")
+                        if operation == "omit-terminal":
+                            event_rows.pop(index)
+                        else:
+                            event_rows.append(event_rows[index])
+                    install(list_rows, event_rows)
+                    with self.assertRaises(ValueError):
+                        self.check()
+        install(listed, events)
+        altered = copy.deepcopy(events)
+        # Removing an entire prior case changes terminal count while retaining cohort count.
+        altered = [row for row in altered if not (row.get("caller") == "prior-51" and row.get("id") == "case-4")]
+        next(row for row in altered if row.get("caller") == "prior-51" and row["event"] == "membership")["ids"].remove("case-4")
+        install(listed, altered)
+        with self.assertRaisesRegex(ValueError, "native membership"):
+            self.check()
+
+    test_lifetime_membership_requires_each_listed_and_emitted_witness.required_subtests = True
+
     def test_failed_or_truncated_case_events_are_rejected(self):
         key = self.key_for(self.routes[0])
         name = key + ".jsonl"

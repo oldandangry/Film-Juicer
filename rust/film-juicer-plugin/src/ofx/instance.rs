@@ -20,6 +20,8 @@ pub(crate) struct Owner {
     setup_failed: AtomicBool,
     grain_label: Vec<u8>,
     chroma_hint: Vec<u8>,
+    #[cfg(feature = "test-support")]
+    pub(super) fixture_lifetime: Arc<()>,
 }
 
 // Host-call provenance is local to the synchronous callback chain. An unrelated
@@ -294,6 +296,8 @@ impl Owner {
             setup_failed: AtomicBool::new(false),
             grain_label,
             chroma_hint,
+            #[cfg(feature = "test-support")]
+            fixture_lifetime: Arc::new(()),
         })
     }
     pub(super) fn bind_address(&self, address: usize) -> Result<(), Status> {
@@ -330,6 +334,21 @@ impl Owner {
         let _call = HostCall::new(self);
         operation()
     }
+    #[cfg(feature = "test-support")]
+    pub(super) fn host_call_active(&self) -> bool {
+        HOST_CALL.get() == Some(std::ptr::from_ref(self) as usize)
+    }
+    #[cfg(feature = "test-support")]
+    pub(super) fn capture_host_input(
+        &self,
+        callback: &Callback<'_>,
+    ) -> Result<film_juicer_core::capture::Captured, CaptureError> {
+        controls::capture(&Controls {
+            callback,
+            owner: self,
+            capture: None,
+        })
+    }
     pub(super) fn initialize(&self, callback: &Callback<'_>) -> Result<(), Status> {
         controls::initialize(&Controls {
             callback,
@@ -339,11 +358,23 @@ impl Owner {
     }
     pub(super) fn retire(&self) -> Result<(), Status> {
         if let Some(identity) = self.state.identity() {
-            self.loaded
+            let result = self
+                .loaded
                 .runtime()
                 .native()
-                .retire_instance(identity.instance_token)
-                .map_err(|_| Status::FATAL)?;
+                .retire_instance(identity.instance_token);
+            #[cfg(feature = "test-support")]
+            super::host::test_support::record_retirement(
+                identity.instance_token,
+                self.state
+                    .identity()
+                    .is_some_and(|current| current == identity),
+                match &result {
+                    Ok(status) => *status,
+                    Err(failure) => failure.status,
+                },
+            );
+            result.map_err(|_| Status::FATAL)?;
         }
         Ok(())
     }

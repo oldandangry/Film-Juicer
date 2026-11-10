@@ -209,7 +209,7 @@ namespace EffectsFrameTest {
                 {"strength_max", std::bit_cast<std::uint32_t>(v.strength_max)}};
     }
     Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -217,18 +217,18 @@ namespace EffectsFrameTest {
             for (const auto& spec : inputs.at("products")) {
                 const auto caseId = std::to_string(route) + "/" + spec.at("id").get<std::string>();
                 JuicerTests::CaseEvent caseEvent("cpp", caseId);
-                ParamSnapshot params;
-                params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                params.cameraFilmFormatLongEdgeMm = 36.0f;
-                params.dirCouplers.active = false;
-                params.grainControls.active = spec.at("grain_active");
-                params.grainControls.debugView = spec.at("debug");
-                params.filmDustAmount = scalar(spec.at("amounts")[0]);
-                params.filmScratchAmount = scalar(spec.at("amounts")[1]);
-                params.gateDustAmount = scalar(spec.at("amounts")[2]);
-                params.gateScratchAmount = scalar(spec.at("amounts")[3]);
-                params.gateWeaveAmount = wide(spec.at("weave"));
+                JuicerTestSupport::PreparationInput params;
+                params.values.scan_route = static_cast<std::uint32_t>(route);
+                params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                params.values.camera_film_format_long_edge_mm = 36.0f;
+                params.values.dir_couplers.active = false;
+                params.values.grain.active = spec.at("grain_active");
+                params.values.grain.debug_view = spec.at("debug");
+                params.values.film_dust_amount = scalar(spec.at("amounts")[0]);
+                params.values.film_scratch_amount = scalar(spec.at("amounts")[1]);
+                params.values.gate_dust_amount = scalar(spec.at("amounts")[2]);
+                params.values.gate_scratch_amount = scalar(spec.at("amounts")[3]);
+                params.values.gate_weave_amount = wide(spec.at("weave"));
                 auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};

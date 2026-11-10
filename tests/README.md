@@ -4,6 +4,8 @@ The public suite is organized by product domain and has one normal scheduler:
 CTest. C++ tests use ordinary executables and selective GoogleTest discovery;
 Python tests use `unittest`. Reference generation and benchmarks are explicit
 maintenance operations, never hidden parts of a correctness run.
+See the public [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map)
+for the Rust model/host, native execution and ABI entry points.
 
 ## Testing workflow milestone: 16 October 2026
 
@@ -184,8 +186,9 @@ The Rust host candidate has twelve focused host/boundary registrations:
 `Ofx.Host.Context`, `Ofx.Host.ContextControls`, `Ofx.Host.Instance`,
 `Ofx.Host.Capture` and `Ofx.Host.InstanceControls`. The three instance/capture
 registrations have 8/11/5 named cases and reuse the existing 234 grain witnesses.
-The module target declares 303 Describe, 24 Load and 7 lifecycle rows; the control target uses the existing real
-Runtime/native owner and a separate test-support archive. See the
+The module target declares 303 Describe, 24 Load and 7 lifecycle rows; Rust owns
+the OFX descriptor and callbacks, while native CUDA Root retains CUDA resources
+and frame admission. The control target uses the Rust test-support archive. See the
 [OFX fixture guide](ofx/README.md) for scope and the independent C++ consumers.
 The focused compiler method is
 `test_rust_boundaries.RustBoundaryTests.test_ofx_callback_borrows`: seven fixtures,
@@ -193,7 +196,8 @@ both feature forms, fourteen logical cases in four batched Cargo checks per nati
 profile. The CUDA owner-borrow method has twelve fixtures, twenty-four logical
 cases in six batched checks. `Ofx.Gpu.Render` and `.RenderTrace` exercise actual
 candidate callbacks with device images and the existing independent expectation
-readers. Shipping exports and discovery remain on the existing adapter.
+readers. `native/ofx_exports.cpp` provides the standard OFX discovery exports
+and delegates descriptor lookup to Rust; Rust owns OFX callbacks and lifecycle.
 
 Choose checks from the changed contract and the checkpoint being completed.
 Before execution, name the supported target, test and quality commands, their
@@ -259,7 +263,7 @@ python -B scripts/verify.py qualification --preset linux-debug \
 On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
 inside the qualified VS 18 environment. `Python3_EXECUTABLE` and
 `JUICER_TOOLING_CARGO` can select qualified executables explicitly. Both entries
-use `tests/ToolingTests.cmake` and register the same 13 Debug tooling members as
+use `tests/ToolingTests.cmake` and register the same 14 Debug tooling members as
 the product test suite. The verifier writes results under the native Debug preset's
 `out/validation/<preset>/results/<run-id>/` directory. Linux also needs LLD for
 the compiler-selected-linker freshness control.
@@ -268,7 +272,7 @@ Hosted Windows tooling uses three independent runners labelled `tooling-core`,
 `tooling-BuildEvidence` and `tooling-Checkpoint`. The shard labels are selected
 with an explicit CTest label regex; each shard result is focused and cannot be
 combined into complete qualification. Every shard must succeed, and a failed
-shard does not cancel the others. Local unfiltered tooling runs all 13 groups.
+shard does not cancel the others. Local unfiltered tooling runs all 14 groups.
 
 For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
 fixtures under an absolute native Linux `out/validation/linux-debug` root. Both
@@ -361,8 +365,9 @@ transition evidence.
 ## Prerequisites
 
 - CMake 4.3 or newer and Ninja.
-- CUDA Toolkit 13.2, including its host runtime libraries. The project still
-  configures CUDA even for host-only test selection.
+- CUDA Toolkit 13.2, including its host runtime libraries, for the product entry,
+  including product-linked host-only selections. The focused `--cuda-free`
+  entry below does not discover CUDA.
 - Linux: GCC/G++ 13 at `/usr/bin/g++-13`.
 - Windows: Visual Studio 18, ClangCL from its LLVM tools, and NVCC with the VS
   18 MSVC host compiler.
@@ -469,11 +474,21 @@ python -B scripts/verify.py qualification --preset linux-debug \
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
-The Release testing-OFF contract builds its two existing C11 value probes as
-`JuicerProductionFilmProbe` and `JuicerProductionOutputColorProbe`. CMake supplies
-the real native engine and production Rust final link; their tracked C sources,
-C11 assertions and value checks remain the same. These validation targets are
-excluded from default product builds.
+With testing ON, `Ffi.Host.PreparedValues` and
+`Ffi.Host.OutputColorValues` register two complete strict-C11 value cases.
+`Ffi.Gpu.PreparedStateLifetime` preserves the original 52 cohorts, 329 terminal
+cases and 27 listed IDs, and adds four `production-state-contract` rows in one
+cohort: the D contract is 53 cohorts, 333 terminal cases and 31 listed IDs. Their
+C11 sources call the direct checked test facade and preserve value, clearing,
+failure and diagnostic assertions. The prepared-values case consumes the existing
+generated expected header and synthetic duplicate-film arguments.
+
+With testing OFF, each Release contract runs ten logical commands: four scan
+commands; build/run for each of the strict-C11 discovery and native CUDA ABI
+probes; and one standard module probe plus one prepared-render/native-CUDA
+contract command. `production-contract-v2`
+records this command set; the offline reader continues to accept historical v1
+reports. These probes are excluded from default product builds.
 
 Test targets are excluded from the default product build. The verifier builds
 the selected target closure before CTest; `ctest` alone expects its selected
@@ -740,12 +755,12 @@ regardless of the invocation directory. Windows compiler fixtures resolve
 `clang-cl` from the active qualified VS 18 environment, including Community and
 Enterprise installations.
 
-The shared standalone and product tooling registration has 13 Debug tests:
+The shared standalone and product tooling registration has 14 Debug tests:
 `Quality.NativeResults`, `Quality.HostResults`, `Quality.GpuResults`,
 `Quality.Dispatcher`, `Quality.ToolingLint`, `Quality.Execution`,
 `Quality.BuildEvidence`, `Quality.BuildRegistration`, `Quality.Verify`,
 `Quality.Checkpoint`, `Ctest.Host.Report`, `Ctest.Host.Repetition` and
-`Ffi.Host.RustBuild`. All ordinary tooling registrations have explicit zero
+`Ffi.Host.RustBuild` and `Ofx.Host.MeasurementReport`. All ordinary tooling registrations have explicit zero
 timeouts. Windows CI runs three independent
 shards: `tooling-core`, `tooling-BuildEvidence` and `tooling-Checkpoint`. A shard
 uses its exact label regex and does not claim complete tooling qualification.
@@ -960,7 +975,7 @@ operation failures on a live GPU, not actual driver-loss tests; production
 objects contain none of their injection hooks.
 
 `Ofx.Gpu.WorkspaceTransitions` uses the same isolated executable with
-`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, 300 seconds).
+`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, no elapsed deadline).
 It checks the actual direct/print schedules and completed native workspace layouts,
 logical grain work versus physical allocation, scanner/grain plane associations,
 source/staged cache channels and the strict-YVV candidate order. The bounded seam
@@ -1111,8 +1126,9 @@ first to `out/validation/`.
 
 ## Boundaries and limitations
 
-- The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
-  mode is outside this consolidation.
+- Product-linked tests require CUDA 13.2 to build even for `-L host`. The focused
+  [`tests/host` entry](#build-and-run) supports only the listed CUDA-independent
+  Rust/tooling and native targets; it supplies no plug-in or GPU qualification.
 - Standard public CI runs Linux and Windows Debug and Release host selections,
   with one tracked native/CUDA/Rust quality pass per platform. The required job
   names retain `Debug host and Python checks` for branch-protection continuity.
@@ -1141,6 +1157,25 @@ See [MIGRATION.md](MIGRATION.md) for the bounded family inventory and exact
 retained/deferred/archive decisions, [benchmarks/README.md](benchmarks/README.md)
 for measurement commands, and [manual/resolve.md](manual/resolve.md) for
 owner-run host acceptance.
+
+### OFX callback, construction and memory measurements
+
+`tests/benchmarks/ofx.py` owns explicit OFX performance experiments. Its
+`prepare-reference`, `check`, `measure` and offline `report` operations use supplied
+module identities and the maintained execution owner. They use all four
+workloads by default and support an explicit ordered subset.
+See [the benchmark guide](benchmarks/README.md) for inputs and native commands.
+Shipping modules supply external callback/stream intervals and process memory;
+nonshipping companions separately observe complete-state construction and native
+owned memory. Pinned observations cover upload-pool staging only, excluding the
+separate scan-error staging family. Stream intervals include host gaps.
+
+Focused correctness registrations are `Ofx.Host.Measurement` (six native/C11 rows),
+`Ofx.Gpu.Measurement` (four 7x5 workloads, both current module forms), and
+`Ofx.Host.MeasurementReport` (six offline unittest methods). The report registration
+is also available from the shared tooling entry, bringing current Debug tooling
+membership to fourteen. These registrations execute no performance campaign.
+Upload-pool state arrays use available, reserved, in-flight, quarantined order.
 
 ### Grain scratch maintenance benchmark
 
@@ -1240,8 +1275,8 @@ for byte, including its line endings. Rust, raw ABI/C11 and prepared-upload
 readers expand the same logical capture before their existing checks.
 
 `Ffi.Host.ScannerLutDescriptor` and `Scanner.Host.LutDescriptorProducts` check
-complete scanner spectral-LUT metadata through the safe Rust family, synchronous
-legacy transport and gated facade. The independent
+complete scanner spectral-LUT metadata through the safe Rust family and checked
+test facade. Its strict-C11 scalar binder calls the direct checked operation. The independent
 [descriptor fixtures](scanner/descriptor-fixtures/README.md) preserve 520 literal
 cases and four products in four native contexts. Exact byte labels, NaN masks,
 signed-zero equivalence, raw admission/zero clearing, closed failure envelopes,
@@ -1258,7 +1293,7 @@ visual acceptance, S4.D/E and parent closure remain separate.
 ### Scanner color construction
 
 `Ffi.Host.ScannerColor` checks complete scanner output construction through the
-Rust boundary and retained native adapter, with fixed-value C11/C++/Rust ABI,
+Rust boundary and checked test facade, with fixed-value C11/C++/Rust ABI,
 full encoding even when CCTF is off, original-byte fallback identity, independent
 failure clearing, staged faults, immutable copies and transport integrity. Its
 [fixture guide](scanner/color-fixtures/README.md) identifies the unchanged native
@@ -1543,8 +1578,8 @@ removed. Ordinary tests never regenerate expectations. `reference-primitives`
 compares the actual native/Rust
 log10 words before qualification. These are host construction checks.
 
-`Ffi.Host.FilmDevelopment` compares the safe completed development family, raw
-legacy transport and gated fixture facade against
+`Ffi.Host.FilmDevelopment` compares the safe completed development family and
+checked test facade against
 [the native characterization](film/fixtures/manifest.json). It checks coordinated
 C11/C++20/Rust ABI facts, invalid controls/tags, bounded reservation and raw view
 failure, contained panics, consuming release and source-cache replacement while
@@ -1602,7 +1637,7 @@ per-case roots or the actual named resource lock. Implicit writer paths still
 require review of their owning test; labels alone do not prove isolation.
 
 `Ffi.Host.FilmInput` checks completed film-input construction through the direct
-safe-core facade, synchronous legacy wrapper and a compiled C11 caller. Its
+safe-core facade and a compiled C11 test caller. Its
 C11/C++20/Rust facts cover every field type, offset, extent, alignment and the
 signature. `Film.Host.InputProducts` checks actual direct/print construction,
 source/hull holds across cache detachment, selector priority, publication-slot
@@ -1611,8 +1646,9 @@ and 44 control cases against independent native compound captures in
 [the film-input fixtures](film/input-fixtures/README.md). The family owns complete
 input color and sensitivity; later focused normalization and whole-state
 publication retain their existing owners. Ordinary tests never regenerate these
-expectations. Both native testing-OFF Release gates also exercise the new C
-export's values and failures and exclude fixture/fault code from final artifacts.
+expectations. The ON strict-C11 value registrations exercise their direct test-facade values
+and failures. OFF Release commands verify standard discovery, native ABI and
+prepared rendering, excluding fixture/fault code from product artifacts.
 
 `Ffi.Host.FilmRecipes` checks the completed DIR/minimum/film-bounds boundary,
 C11/C++20/Rust field/layout/signature facts, independent development holds,
@@ -1636,7 +1672,7 @@ ordering, recovery and retained holds. Their immutable
 [effects fixtures](film/effects-fixtures/README.md) retain all four native
 configuration identities. Windows Release scratch expected length preserves its
 native FMA contraction; other configurations preserve separate f32 rounding.
-The existing adapter and cutover GPU groups also check actual physical-control
+The Rust OFX callback and GPU groups also check actual physical-control
 capture and each CUDA family, all-off behavior, completed-grain debug suppression
 and alpha preservation. Both Release testing-OFF production gates compile, link
 and run all nine effects cases against their final native archive. These scoped
@@ -1648,18 +1684,18 @@ products and 57 independently captured primitives. `Film.Host.EffectsFrameProduc
 compares complete policy, geometry and identity fields for the genuine products.
 The [frame fixtures](film/effects-frame-fixtures/README.md) retain four native
 contexts and exact raw words, including the existing Windows Release static
-scratch rounding. Each host group has a 180-second limit. Rust owns immutable
+scratch rounding. Each host group has no elapsed deadline. Rust owns immutable
 frame mathematics and identity; native code copies static policy and binds CUDA.
 
 `Ofx.Gpu.EffectsFrame` checks both actual caller sites across all four routes,
-with a GPU lock and 180-second limit. Pixel executions and successful construction
+with a GPU lock and no elapsed deadline. Pixel executions and successful construction
 checks canceled before preparation are counted separately. Literal policy
 substitutions stop before resource admission. Existing physical-family pixel,
 prepared-resource and lifecycle groups retain insertion-point, alpha, all-off,
-grain-debug and deterministic-coordinate assertions. Both Release testing-OFF
-probes call the real `fj_legacy_effects_frame_prepare` with the shared strict C11
+grain-debug and deterministic-coordinate assertions. The ON strict-C11 fixture uses the direct checked facade and preserves the shared
 assertions and all 453 common-ABI full-result/failure/diagnostic cases. Native-only
-missing-recipe and ON-only fault cohorts remain separate.
+missing-recipe and test-support fault cohorts remain separate. OFF Release
+commands cover standard discovery, native ABI and prepared rendering.
 
 `Ffi.Host.SpatialOptics` checks all 553 frozen native literal recipes through
 an actual C11 forwarder and the direct test facade, C11/C++20/Rust layouts and
@@ -1737,7 +1773,7 @@ metadata. Ordinary tests never regenerate expectations. The constructor preserve
 ascending f64 exp accumulation and both f32 rounding points; family radius and
 FIR/YVV selection remain with their existing owners.
 
-`Resource.Gpu.GaussianKernel` is one 180-second process with `juicer_gpu` exclusion
+`Resource.Gpu.GaussianKernel` is one process with no elapsed deadline, `juicer_gpu` exclusion
 and a real supported driver/device prerequisite. Its isolated resource object
 exercises real candidate allocation, a one-shot synchronous-copy result, the real
 map-node allocation rejection, deterministic two-upload insertion loser, explicit
@@ -1784,10 +1820,9 @@ metadata even with effects off; conditional effects consumption is proved by
 three bounded completed-phase observations. Failed effects-domain conversion
 retains the preceding canonical query and has no completed effects phase.
 
-Both final native Release testing-OFF gates link the existing C11 film probe
-against the exact Rust archive and check all 69 frame rows, plus all older probes.
-The temporary callback bridge retires with its actual last native OFX consumer,
-no later than S6.D; prepared-state integration remains separate.
+The ON strict-C11 film fixture calls the direct checked facade and preserves all
+69 frame rows. OFF Release commands cover standard discovery, native ABI and
+prepared rendering; they do not substitute for host/GPU membership.
 
 ### Scatter/halation frame construction
 
@@ -1796,19 +1831,20 @@ Rust-backed twenty-one-record schedule boundary and completed route products.
 Both need no driver/device and have no elapsed deadline. See the owning
 [scatter/halation guide](scatter_halation/README.md) and
 [fixture authority](scatter_halation/frame-fixtures/README.md). The existing
-strict C11 Release testing-OFF film probe also executes the complete frozen
-eighty-six-result membership alongside retained production probe results.
+ON strict-C11 film fixture also executes the complete frozen eighty-six-result
+membership through the direct checked facade. OFF Release commands cover standard
+discovery, native ABI and the prepared-render contract.
 
 ### Spatial DIR mathematical frame construction
 
 `Ffi.Host.DirFrame` and `Film.Host.DirFrameProducts` check the fixed Rust boundary,
 private complete results, ordinary failed progress and common native composition
 against [four native captures](dir/frame-fixtures/README.md). Both are host groups
-with 180-second limits. Every mathematical/default word and final native hash is
+with no elapsed deadlines. Every mathematical/default word and final native hash is
 compared exactly; fixtures are never regenerated during tests.
 
-`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with a
-180-second limit. Its 100 bounded invocations cover the two actual prepared route
+`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with
+no elapsed deadline. Its 100 bounded invocations cover the two actual prepared route
 sites, all four routes/polarities, current pixel/domain/origin facts, full-frame
 fallback, inactive/Identity/FIR/YVV/mixed plans, zero-weight construction and
 pre-builder/mathematical failure stops. Four genuine route products execute
@@ -1817,17 +1853,17 @@ abort check before resource preparation. Existing DIR/cache, grain, prepared,
 operator, route and lifecycle groups retain their complete downstream assertions.
 
 Prepared projection retains the native decoder's distinct unconsumed zero-weight
-target tiers and carries the original final hash. Both native Release OFF C11
-probes execute 121 complete value/failure rows alongside the retained probes.
-Reflected-YVV boundary construction has its own contract below. Wider workspace
-construction, defect/weave mappings and S4.E integration remain later work.
+target tiers and carries the original final hash. The ON strict-C11 fixture executes 121 complete value/failure rows through the
+direct checked facade. OFF Release commands verify standard discovery, native
+ABI and prepared rendering. Reflected-YVV boundary construction has its own
+contract below.
 
 ### Spatial DIR reflected boundaries
 
 `Ffi.Host.DirBoundary` and `Film.Host.DirBoundaryProducts` compare complete Rust
 owners, key bytes, typed failures and native adapters against
 [independent native captures](dir/boundary-fixtures/README.md). Each host group has
-a 180-second limit. Comparisons cover 114 whole products and 56 bounded primitives
+no elapsed deadline. Comparisons cover 114 whole products and 56 bounded primitives
 in each native profile, including the original explicit fused product residual.
 
 The existing `Dir.Gpu.ExposureCache` group has no elapsed deadline and retains its GPU
@@ -1836,8 +1872,9 @@ packing, warm reuse without acquisition, native staging after host-owner release
 failure rollback, same-key candidate disposal and context retirement. The native
 owner still controls allocation, upload, cache publication and retirement.
 
-Both Release testing-OFF C11 probes execute 171 full boundary value/failure/raw/
-lifetime rows alongside retained probes. Diagnostic length counts
+The ON strict-C11 boundary fixture checks 171 full value/failure/raw/lifetime
+rows through the direct test facade. The native `JuicerDirBoundary` API remains
+in use for boundary caching and staging. Diagnostic length counts
 written bytes without NUL at capacities zero, one, short, M and M+1. Ordinary tests
 never regenerate expectations.
 
@@ -1846,7 +1883,7 @@ never regenerate expectations.
 `Ffi.Host.GrainFrame` and `Film.Host.GrainFrameProducts` compare complete raw
 values, typed failures, native defaults and final native hashes against
 [four independent native contexts](grain/frame-fixtures/README.md). Each host
-group has a 180-second limit. The frozen cohort has 153 literals, 44 genuine
+group has no elapsed deadline. The frozen cohort has 153 literals, 44 genuine
 recipe/development products and 50 independently captured bounded primitives.
 The core keeps original f64 Gaussian energy samples; uploaded f32 coefficient
 arrays remain a separate owner. Published fields and hashes compare exactly.
@@ -1857,8 +1894,8 @@ three layers after checking its total. C layer0 particle-count failure precedes
 M total0: category3/API0/code0, reason2/field12/layer0/channel0. Legacy and facade
 readers require cleared raw mathematics and native-default failed output.
 
-`Ofx.Gpu.GrainFrame` uses the existing executor probe, GPU lock and 180-second
-limit. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
+`Ofx.Gpu.GrainFrame` uses the existing executor probe and GPU lock with no elapsed
+deadline. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
 constructions canceled before preparation and 14 failures. It checks both real
 caller sites, four routes/polarities, current time/seeds/geometry, full-frame
 fallback, inactive delegation and failure short-circuiting. Literal recipe
@@ -1867,9 +1904,9 @@ kernel, Gaussian-resource, prepared, route and lifecycle assertions stay intact.
 The three native setup consumers use the maintained facade and shared composer.
 
 Prepared transport preserves static recipe/chroma/amplitude/preset and layer-axis
-metadata. Both native Release testing-OFF probes call the real
-`fj_legacy_grain_frame_prepare` through strict C11 signatures and all 188 frozen
-full-value/metadata/failure/diagnostic rows alongside retained probes.
+metadata. The ON strict-C11 grain fixture calls the direct checked facade and retains all
+188 frozen full-value/metadata/failure/diagnostic rows. OFF Release commands cover
+standard discovery, native ABI and prepared rendering.
 Written-byte capacities 0/1/short/M/M+1 include R1. Ordinary tests never regenerate
 fixtures; conversion safety expectations do not execute undefined native casts.
 

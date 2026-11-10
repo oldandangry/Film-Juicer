@@ -17,7 +17,6 @@ pub(crate) struct FjRuntime {
     _opaque: [u8; 0],
 }
 
-// SF_TEMP_BRIDGE_RUNTIME_CALL_VIEW: immediate adapter borrow; remove at S6.
 #[repr(C)]
 pub(crate) struct FjRuntimeView {
     assets: *const FjAssets,
@@ -125,8 +124,9 @@ unsafe fn runtime<'a>(pointer: *const FjRuntime) -> Result<&'a Runtime, Failure>
 /// # Safety
 /// Path/output/diagnostics meet the private C contract. Output is a disjoint live
 /// initialized owning slot; native path backing is immutable through return.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-unsafe extern "C" fn fj_legacy_runtime_create(
+/// Path bytes are borrowed only through return; calls are synchronous on the caller
+/// thread and perform no host reentry.
+pub(crate) unsafe fn create(
     path: sys::FjPathView,
     out: *mut *mut FjRuntime,
     error: *mut sys::FjErrorBuffer,
@@ -162,8 +162,9 @@ unsafe extern "C" fn fj_legacy_runtime_create(
 /// # Safety
 /// The Runtime is live and immutable. The exclusive initialized output/error
 /// storage is disjoint; both projected borrows expire before terminal close.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-unsafe extern "C" fn fj_legacy_runtime_borrow(
+/// Calls are synchronous on the caller thread, retain no raw inputs, and perform
+/// no host reentry.
+pub(crate) unsafe fn borrow(
     owner: *const FjRuntime,
     out: *mut FjRuntimeView,
     error: *mut sys::FjErrorBuffer,
@@ -203,8 +204,9 @@ unsafe extern "C" fn fj_legacy_runtime_borrow(
 /// # Safety
 /// Owner is live shared input and diagnostics are exclusive/disjoint. This
 /// precheck establishes neither terminal exclusion nor an admission reservation.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-unsafe extern "C" fn fj_legacy_runtime_check_close(
+/// Calls are synchronous on the caller thread, retain no raw pointers, and perform
+/// no host reentry.
+pub(crate) unsafe fn check_close(
     owner: *const FjRuntime,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
@@ -221,9 +223,10 @@ unsafe extern "C" fn fj_legacy_runtime_check_close(
 
 /// # Safety
 /// Same shared owner/error contract as check_close. Shutdown retains ownership
-/// and all projected borrow lifetimes on both success and failure.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-unsafe extern "C" fn fj_legacy_runtime_shutdown(
+/// and all projected borrow lifetimes on both success and failure. Calls are
+/// synchronous on the caller thread, retain no raw pointers, and perform no host
+/// reentry.
+pub(crate) unsafe fn shutdown(
     owner: *const FjRuntime,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
@@ -242,8 +245,8 @@ unsafe extern "C" fn fj_legacy_runtime_shutdown(
 /// Owner is a matching live owning allocation taken once after successful
 /// precheck under host exclusion of ALL callbacks/readers/views/native calls.
 /// Diagnostics meet the private storage contract; malformed shape still consumes.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-unsafe extern "C" fn fj_legacy_runtime_destroy(
+/// Calls are synchronous on the caller thread and perform no host reentry.
+pub(crate) unsafe fn destroy(
     owner: *mut FjRuntime,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
@@ -264,23 +267,6 @@ unsafe extern "C" fn fj_legacy_runtime_destroy(
 // Signature consumers keep the real edge checked in Rust test builds, whose
 // executables have no native CUDA engine. Production/test-support staticlibs
 // retain the C export names; no substitute native implementation is linked.
-const _: unsafe extern "C" fn(
-    sys::FjPathView,
-    *mut *mut FjRuntime,
-    *mut sys::FjErrorBuffer,
-) -> sys::FjStatus = fj_legacy_runtime_create;
-const _: unsafe extern "C" fn(
-    *const FjRuntime,
-    *mut FjRuntimeView,
-    *mut sys::FjErrorBuffer,
-) -> sys::FjStatus = fj_legacy_runtime_borrow;
-const _: unsafe extern "C" fn(*const FjRuntime, *mut sys::FjErrorBuffer) -> sys::FjStatus =
-    fj_legacy_runtime_check_close;
-const _: unsafe extern "C" fn(*const FjRuntime, *mut sys::FjErrorBuffer) -> sys::FjStatus =
-    fj_legacy_runtime_shutdown;
-const _: unsafe extern "C" fn(*mut FjRuntime, *mut sys::FjErrorBuffer) -> sys::FjStatus =
-    fj_legacy_runtime_destroy;
-
 #[cfg(test)]
 mod tests {
     use super::*;

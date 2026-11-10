@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -7,7 +8,6 @@
 #include <type_traits>
 
 #include "juicer_cuda_api.h"
-#include "juicer_legacy_api.h"
 #include "cuda_abi_test.h"
 #include "case_results.h"
 
@@ -31,11 +31,11 @@ static_assert(std::is_same_v<decltype(&fj_cuda_shutdown), FjStatus (*)(FjCuda*, 
 static_assert(std::is_same_v<decltype(&fj_cuda_destroy), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_check_terminal), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 
-static_assert(std::is_same_v<decltype(&fj_legacy_runtime_create), FjStatus (*)(FjPathView, FjRuntime**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_runtime_borrow), FjStatus (*)(const FjRuntime*, FjRuntimeView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_runtime_check_close), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_runtime_shutdown), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_runtime_destroy), FjStatus (*)(FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_runtime_create), FjStatus (*)(FjPathView, FjRuntime**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_runtime_borrow), FjStatus (*)(const FjRuntime*, FjRuntimeView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_runtime_check_close), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_runtime_shutdown), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_runtime_destroy), FjStatus (*)(FjRuntime*, FjErrorBuffer*)>);
 static_assert(std::is_standard_layout_v<FjRuntimeView>);
 static_assert(sizeof(FjRuntimeView) == sizeof(const FjAssets*) + sizeof(FjCuda*));
 static_assert(alignof(FjRuntimeView) == alignof(const FjAssets*));

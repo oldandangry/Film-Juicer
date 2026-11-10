@@ -109,7 +109,7 @@ namespace {
                 FjSensitivity result{};
                 FjSensitivityFailure failure{};
                 Diagnostic error;
-                const auto call = facade ? fj_test_exposure_sensitivity : fj_legacy_exposure_sensitivity;
+                const auto call = facade ? fj_test_exposure_sensitivity : fj_test_boundary_exposure_sensitivity;
                 const bool built = expected.at("built").get<bool>();
                 status(call(&input.view, &result, &failure, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                 if (built) {
@@ -168,7 +168,7 @@ namespace {
                 JuicerTests::CaseEvent event("exposure.reference", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjReferenceWhite result{};
                 Diagnostic error;
-                status((facade ? fj_test_reconstruction_reference_white : fj_legacy_reconstruction_reference_white)(&input, &result, &error.error), row.at("built").get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+                status((facade ? fj_test_reconstruction_reference_white : fj_test_boundary_reconstruction_reference_white)(&input, &result, &error.error), row.at("built").get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                 if (row.at("built").get<bool>()) {
                     for (std::size_t i = 0; i < 81; ++i)
                         exact(result.samples[i], row.at("expected")[i].get<std::uint32_t>());
@@ -195,10 +195,10 @@ namespace {
             auto row_event = sensitivity_faults.case_event(std::to_string(fault - 1));
             status(fj_test_exposure_arm_fault(2, 1, fault), FJ_STATUS_SUCCESS);
             const auto expected = std::array{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
-            status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, &error.error), expected[fault - 1]);
+            status(fj_test_boundary_exposure_sensitivity(&input.view, &result, &failure, &error.error), expected[fault - 1]);
             require(fj_test_exposure_fault_consumed(2, fault) == 1, "same-thread raw fault consumption witness");
             cleared(result, failure);
-            status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
+            status(fj_test_boundary_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
             row_event.passed();
         }
         JuicerTests::Cohort malformed_sensitivity("exposure.boundary.sensitivity_malformed", 11);
@@ -245,7 +245,7 @@ namespace {
             }
             result.hash = 1;
             failure.hash_failure = 1;
-            status(fj_legacy_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             cleared(result, failure);
             require(!failure.hash_failure && !failure.hash_sample_index, "malformed metadata clears");
             row_event.passed();
@@ -253,18 +253,18 @@ namespace {
         invalid = input.view;
         invalid.window_params = {reinterpret_cast<const float*>(1), std::numeric_limits<std::size_t>::max()};
         invalid.reconstructed_reference_white = invalid.window_params;
-        status(fj_legacy_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
         invalid.method = 1;
         invalid.apply_window = 1;
-        status(fj_legacy_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
-        status(fj_legacy_exposure_sensitivity(nullptr, &result, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_sensitivity(&input.view, nullptr, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_sensitivity(&input.view, &result, nullptr, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_exposure_sensitivity(nullptr, &result, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_sensitivity(&input.view, nullptr, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_sensitivity(&input.view, &result, nullptr, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_sensitivity(&input.view, &result, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         fj_test_exposure_arm_facade_fault();
         status(fj_test_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_INTERNAL_FAILURE);
         require(fj_test_exposure_facade_fault_consumed() == 1, "independent facade fault witness");
-        status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
         std::vector<float> spectra(std::size_t{192} * 192u * 81u, 1.0f);
         FjReferenceWhiteInput referenceInput{{spectra.data(), spectra.size()}, {1.0f, 1.0f, 1.0f}, 0.0f};
         FjReferenceWhite white{};
@@ -276,7 +276,7 @@ namespace {
             auto row_event = reference_faults.case_event(std::to_string(fault - 1));
             status(fj_test_exposure_arm_fault(1, 1, fault), FJ_STATUS_SUCCESS);
             const auto categories = std::array{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
-            status(fj_legacy_reconstruction_reference_white(&referenceInput, &white, &error.error), categories[fault - 1]);
+            status(fj_test_boundary_reconstruction_reference_white(&referenceInput, &white, &error.error), categories[fault - 1]);
             require(fj_test_exposure_fault_consumed(1, fault) == 1, "raw reference fault consumed");
             for (float value : white.samples)
                 require(value == 0.0f, "failed reference clears output");
@@ -296,13 +296,13 @@ namespace {
                 malformed.spectra.count = std::numeric_limits<std::size_t>::max();
             if (bad == 4)
                 malformed.spectra.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
-            status(fj_legacy_reconstruction_reference_white(&malformed, &white, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_reconstruction_reference_white(&malformed, &white, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             row_event.passed();
         }
         fj_test_exposure_arm_facade_fault();
         status(fj_test_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_INTERNAL_FAILURE);
         require(fj_test_exposure_facade_fault_consumed() == 1, "independent reference facade witness");
-        status(fj_legacy_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_SUCCESS);
         std::array<std::exception_ptr, 2> threadErrors{};
         std::array<std::thread, 2> threads;
         for (std::size_t t = 0; t < threads.size(); ++t)
@@ -312,7 +312,7 @@ namespace {
                     FjSensitivity local{};
                     FjSensitivityFailure localFailure{};
                     for (int repeat = 0; repeat < 8; ++repeat) {
-                        status(fj_legacy_exposure_sensitivity(&input.view, &local, &localFailure, &localError.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_boundary_exposure_sensitivity(&input.view, &local, &localFailure, &localError.error), FJ_STATUS_SUCCESS);
                         require(local.hash == result.hash, "concurrent independent output exact");
                     }
                 } catch (...) {
@@ -327,13 +327,13 @@ namespace {
         FjSensitivity retained{};
         {
             SensitivityInput temporary(fixture.at("sensitivity").at(0).at("input"));
-            status(fj_legacy_exposure_sensitivity(&temporary.view, &retained, &failure, &error.error), FJ_STATUS_SUCCESS);
+            status(fj_test_boundary_exposure_sensitivity(&temporary.view, &retained, &failure, &error.error), FJ_STATUS_SUCCESS);
         }
         require(retained.hash == result.hash, "completed output survives source lifetime");
         referenceInput.spectral_blur = std::bit_cast<float>(0x5c000000u);
-        status(fj_legacy_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_ALLOCATION_FAILURE);
+        status(fj_test_boundary_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_ALLOCATION_FAILURE);
         referenceInput.spectral_blur = std::bit_cast<float>(0x5e000000u);
-        status(fj_legacy_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_PREPARATION_FAILURE);
+        status(fj_test_boundary_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_PREPARATION_FAILURE);
         for (float value : white.samples)
             require(value == 0.0f, "size failure result clears");
         fj_test_exposure_clear_fault();

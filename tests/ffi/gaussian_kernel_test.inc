@@ -43,19 +43,20 @@ namespace GaussianTest {
         Json rows = Json::array();
         for (const auto& input : cohort.at("cases"))
             rows.push_back(kernel_case(input.at("name"), input.at("radius"), std::bit_cast<float>(input.at("sigma_bits").get<std::uint32_t>())));
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         for (unsigned route = 0; route < 4; ++route) {
-            ParamSnapshot p;
-            p.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            p.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            p.grainControls.active = true;
-            p.grainControls.sublayersActive = true;
-            p.scannerLensBlurSigmaPx = 0.75;
-            p.scannerUnsharpMask = {1.25, 0.5};
-            p.dirCouplers.diffusionSizeUm = 20.0f;
-            p.dirCouplers.diffusionTailUm = 200.0f;
-            p.dirCouplers.diffusionTailWeight = 0.03f;
+            JuicerTestSupport::PreparationInput p;
+            p.values.scan_route = static_cast<std::uint32_t>(route);
+            p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            p.values.grain.active = true;
+            p.values.grain.sublayers_active = true;
+            p.values.scanner_lens_blur_sigma_px = 0.75;
+            p.values.scanner_unsharp_mask[0] = 1.25;
+            p.values.scanner_unsharp_mask[1] = 0.5;
+            p.values.dir_couplers.diffusion_size_um = 20.0f;
+            p.values.dir_couplers.diffusion_tail_um = 200.0f;
+            p.values.dir_couplers.diffusion_tail_weight = 0.03f;
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, p);
             FjPreparedStateView view{};
             FjErrorBuffer viewError{};

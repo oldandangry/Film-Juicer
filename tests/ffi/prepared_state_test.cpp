@@ -25,13 +25,13 @@
 
 #include <gtest/gtest.h>
 
-#include "ProcessRuntime.h"
-#include "JuicerState.h"
+#include "owner_fixture.h"
+#include "preparation_fixture.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "ProcessRoot.h"
 #include "test_asset_library.h"
-#include "NativePath.h"
+#include "native_path.h"
 #include "juicer_cuda_owner.h"
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
@@ -59,9 +59,9 @@ extern "C" FjStatus fj_test_prepared_boundary_acquire_c(const FjAssets*, const F
 extern "C" FjStatus fj_test_prepared_boundary_view_c(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
 extern "C" FjStatus fj_test_prepared_boundary_release_c(FjOutputBoundaryOwner*, FjErrorBuffer*);
 
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_create), decltype(&fj_test_prepared_state_create_c)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_view), decltype(&fj_test_prepared_state_view_c)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_release), decltype(&fj_test_prepared_state_release_c)>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_state_create), decltype(&fj_test_prepared_state_create_c)>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_state_view), decltype(&fj_test_prepared_state_view_c)>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_state_release), decltype(&fj_test_prepared_state_release_c)>);
 
 using FjInstanceCreateFn = FjStatus (*)(FjInstance**, FjErrorBuffer*);
 using FjBeginCaptureFn = FjStatus (*)(FjInstance*, std::uint32_t, FjCaptureStart*, FjErrorBuffer*);
@@ -76,19 +76,19 @@ using FjInstanceDestroyFn = FjStatus (*)(FjInstance*, FjErrorBuffer*);
 using FjInstanceBindIdentityFn = FjStatus (*)(const FjInstance*, std::uint64_t, std::uint64_t, FjErrorBuffer*);
 using FjInstanceIdentityFn = FjStatus (*)(const FjInstance*, std::uint32_t*, std::uint64_t*, std::uint64_t*, FjErrorBuffer*);
 using FjInstanceInvalidateSubmissionFn = FjStatus (*)(const FjInstance*, std::int32_t, std::uintptr_t, std::uint32_t*, FjErrorBuffer*);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_create), FjInstanceCreateFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_capture), FjBeginCaptureFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_capture_is_current), FjCaptureCurrentFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_host_write), FjBeginHostWriteFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_host_write_finish), FjHostWriteFinishFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_snapshot), FjBeginSnapshotFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_install), FjInstallFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_invalidate), FjInvalidateFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_admit), FjInstanceAdmitFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_destroy), FjInstanceDestroyFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_bind_identity), FjInstanceBindIdentityFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_identity), FjInstanceIdentityFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_instance_invalidate_submission), FjInstanceInvalidateSubmissionFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_create), FjInstanceCreateFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_begin_capture), FjBeginCaptureFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_capture_is_current), FjCaptureCurrentFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_begin_host_write), FjBeginHostWriteFn>);
+static_assert(std::is_same_v<decltype(&fj_test_host_write_finish), FjHostWriteFinishFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_begin_snapshot), FjBeginSnapshotFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_install), FjInstallFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_invalidate), FjInvalidateFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_admit), FjInstanceAdmitFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_destroy), FjInstanceDestroyFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_bind_identity), FjInstanceBindIdentityFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_identity), FjInstanceIdentityFn>);
+static_assert(std::is_same_v<decltype(&fj_test_instance_invalidate_submission), FjInstanceInvalidateSubmissionFn>);
 
 using FjCallPrecheckFn = FjStatus (*)(void*, FjErrorBuffer*);
 using FjCallAdmitFn = FjStatus (*)(void*, FjErrorBuffer*);
@@ -116,9 +116,9 @@ static_assert(std::is_same_v<decltype(FjCudaCallAccess::complete), FjCallComplet
 static_assert(std::is_same_v<decltype(FjHostPreparation::scanner_lut), FjHostScannerLutFn>);
 static_assert(std::is_same_v<decltype(FjHostPreparation::gaussian), FjHostGaussianFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::trace_submission), FjTraceSubmissionFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_frame_policy), FjPolicyEntryFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_render), FjRenderEntryFn>);
-static_assert(std::is_same_v<decltype(&fj_legacy_prepared_unavailable), FjUnavailableEntryFn>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_state_frame_policy), FjPolicyEntryFn>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_state_render), FjRenderEntryFn>);
+static_assert(std::is_same_v<decltype(&fj_test_prepared_unavailable), FjUnavailableEntryFn>);
 
 namespace {
     std::filesystem::path artifactRoot;
@@ -201,16 +201,16 @@ namespace {
         return parsed;
     }
 
-    std::string projection_case(const ParamSnapshot& params) {
+    std::string projection_case(const JuicerTestSupport::PreparationInput& params) {
         std::string name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
         if (name == "PreflashAndNormalizationModes")
-            name += "[norm=" + std::to_string(params.normalizePrintExposure) + ",compensate=" + std::to_string(params.printExposureCompensation) + "]";
+            name += "[norm=" + std::to_string(params.values.normalize_print_exposure) + ",compensate=" + std::to_string(params.values.print_exposure_compensation) + "]";
         else if (name == "SignedZeroGlare")
-            name += std::signbit(params.glarePercent) ? "[-0]" : "[+0]";
+            name += std::signbit(params.values.glare_percent) ? "[-0]" : "[+0]";
         else if (name == "CorrectionsAndScannerControls" || name == "SnapshotIntegerBooleansPreserveNonzeroCasts")
-            name += Spektrafilm::scan_route_is_print(params.scanRoute) ? "[print]" : "[direct]";
+            name += (params.values.scan_route == 1u || params.values.scan_route == 3u) ? "[print]" : "[direct]";
         else if (name == "EncodingOnlyReusesMediumIdentities")
-            name += params.outputCctfEncoding != 0 ? "[encoded]" : "[linear]";
+            name += params.values.output_cctf_encoding != 0 ? "[encoded]" : "[linear]";
         return name;
     }
 
@@ -234,14 +234,15 @@ namespace {
             throw std::runtime_error("prepared-state oracle live backing relationship mismatch");
     }
 
-    void record_projection(const ParamSnapshot& params, const FjAssets* resourceOwner, const FjPreparedStateView& actual) {
+    void record_projection(const JuicerTestSupport::PreparationInput& params, const FjAssets* resourceOwner, const FjPreparedStateView& actual) {
         const auto name = projection_case(params);
         if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
             std::find(observedProjectionCases.begin(), observedProjectionCases.end(), name) != observedProjectionCases.end())
             throw std::runtime_error("unknown or duplicate prepared-state projection case " + name);
         observedProjectionCases.push_back(name);
         const auto& row = oracle_row(name);
-        PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(preparation_params(params)));
+        const auto wire = params.record();
+        PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(wire));
         PreparedStateOracle::compare(row.at("expected"), PreparedStateOracle::view(actual));
         Json relations = Json::array();
         // Frozen native.* labels now identify raw consumers of the same Rust cache entry.
@@ -400,13 +401,13 @@ namespace {
             return runtime.borrow().assets;
         }
 
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
     };
 
     class PreparedStateProducts : public PreparedStateRuntimeFixture {};
     class PreparedStateAbi : public PreparedStateRuntimeFixture {};
 
-    FjStatus state_view(const std::optional<PreparedState>& owner, FjPreparedStateView& out) {
+    FjStatus state_view(const std::optional<JuicerTestSupport::PreparedStateHold>& owner, FjPreparedStateView& out) {
         if (!owner)
             return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
         FjErrorBuffer error{nullptr, 0, 0};
@@ -429,7 +430,7 @@ namespace {
         }
     }
 
-    void compare_product(const FjAssets* assets, const ParamSnapshot& params) {
+    void compare_product(const FjAssets* assets, const JuicerTestSupport::PreparationInput& params) {
         JuicerTests::CaseEvent case_event("prepared_projection", projection_case(params));
         FjStatus status{};
         std::string diagnostic;
@@ -443,15 +444,25 @@ namespace {
             case_event.passed();
     }
 
+    void compare_typed_defaults() {
+        const JuicerTestSupport::PreparationInput defaults;
+        const auto record = defaults.record();
+        auto expected = oracle_row("NegativeDirectHanatos").at("input");
+        // Baseline only changed the original default route from print to direct.
+        expected.at("scan_route").at("value") = std::uint32_t{1};
+        PreparedStateOracle::compare(expected, PreparedStateOracle::params(record));
+    }
+
     void baseline(const FjAssets* assets, bool positive, bool print, int method) {
+        compare_typed_defaults();
         JuicerTests::GtestCohort cohort("baseline-product", std::vector<std::string>{"selected-profile-route-method"});
         auto caseEvent = cohort.case_event("selected-profile-route-method");
-        ParamSnapshot params;
-        params.filmProfileKey = positive ? "fujifilm_provia_100f" : "kodak_portra_400";
-        params.printProfileKey = "kodak_portra_endura";
-        params.scanRoute = positive ? (print ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::PositiveDirectScan) : (print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan);
-        params.spectralUpsamplingMode = method;
-        params.grainControls.active = false;
+        JuicerTestSupport::PreparationInput params;
+        params.film_key = positive ? "fujifilm_provia_100f" : "kodak_portra_400";
+        params.print_key = "kodak_portra_endura";
+        params.values.scan_route = positive ? (print ? 3u : 2u) : (print ? 1u : 0u);
+        params.values.spectral_upsampling_mode = method;
+        params.values.grain.active = false;
         compare_product(assets, params);
         caseEvent.passed();
     }
@@ -474,13 +485,13 @@ namespace {
     FJ_STATE_BASELINE(PositivePrintArctic, true, true, 2)
 #undef FJ_STATE_BASELINE
 
-    ParamSnapshot print_params() {
-        ParamSnapshot params;
-        params.filmProfileKey = "kodak_portra_400";
-        params.printProfileKey = "kodak_portra_endura";
-        params.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-        params.spectralUpsamplingMode = 1;
-        params.grainControls.active = false;
+    JuicerTestSupport::PreparationInput print_params() {
+        JuicerTestSupport::PreparationInput params;
+        params.film_key = "kodak_portra_400";
+        params.print_key = "kodak_portra_endura";
+        params.values.scan_route = 1u;
+        params.values.spectral_upsampling_mode = 1;
+        params.values.grain.active = false;
         return params;
     }
 
@@ -551,11 +562,11 @@ namespace {
         JuicerTests::GtestCohort cohort("direct-ignores-print-controls", std::vector<std::string>{"direct-route"});
         auto caseEvent = cohort.case_event("direct-route");
         auto params = print_params();
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        params.printProfileKey = "__absent_print";
-        params.printGammaFactor = std::numeric_limits<double>::quiet_NaN();
-        params.printExposure = std::numeric_limits<double>::infinity();
-        params.glarePercent = std::numeric_limits<double>::quiet_NaN();
+        params.values.scan_route = 0u;
+        params.print_key = "__absent_print";
+        params.values.print_gamma_factor = std::numeric_limits<double>::quiet_NaN();
+        params.values.print_exposure = std::numeric_limits<double>::infinity();
+        params.values.glare_percent = std::numeric_limits<double>::quiet_NaN();
         compare_product(assets(), params);
         caseEvent.passed();
     }
@@ -569,15 +580,15 @@ namespace {
                 auto caseEvent = cohort.case_event(id);
                 SCOPED_TRACE(::testing::Message() << normalize << '/' << compensate);
                 auto params = print_params();
-                params.normalizePrintExposure = normalize;
-                params.printExposureCompensation = compensate;
-                params.printPreflashExposure = 0.1;
-                params.printExposure = 1.2;
-                params.cameraExposureCompensationEv = 0.75;
-                params.preflashMFilterCc = 2.5;
-                params.preflashYFilterCc = -4.0;
-                params.printUiYmcCc = {3.0, -2.0, 1.0};
-                params.enlIll = 7;
+                params.values.normalize_print_exposure = normalize;
+                params.values.print_exposure_compensation = compensate;
+                params.values.print_preflash_exposure = 0.1;
+                params.values.print_exposure = 1.2;
+                params.values.camera_exposure_compensation_ev = 0.75;
+                params.values.preflash_m_filter_cc = 2.5;
+                params.values.preflash_y_filter_cc = -4.0;
+                std::copy_n(std::array{3.0, -2.0, 1.0}.begin(), 3, params.values.print_ui_ymc_cc);
+                params.values.enl_ill = 7;
                 compare_product(assets(), params);
                 caseEvent.passed();
             }
@@ -587,10 +598,10 @@ namespace {
         JuicerTests::GtestCohort cohort("gamma-and-grain-layers", std::vector<std::string>{"active-sublayers"});
         auto caseEvent = cohort.case_event("active-sublayers");
         auto params = print_params();
-        params.grainControls.active = true;
-        params.grainControls.sublayersActive = true;
-        params.filmGammaFactor = 1.125f;
-        params.printGammaFactor = 0.875;
+        params.values.grain.active = true;
+        params.values.grain.sublayers_active = true;
+        params.values.film_gamma_factor = 1.125f;
+        params.values.print_gamma_factor = 0.875;
         compare_product(assets(), params);
         caseEvent.passed();
     }
@@ -599,11 +610,11 @@ namespace {
         JuicerTests::GtestCohort cohort("physical-defects-and-weave", std::vector<std::string>{"configured-amounts"});
         auto caseEvent = cohort.case_event("configured-amounts");
         auto params = print_params();
-        params.filmDustAmount = 0.3f;
-        params.filmScratchAmount = 0.2f;
-        params.gateDustAmount = 0.1f;
-        params.gateScratchAmount = 0.4f;
-        params.gateWeaveAmount = 0.5;
+        params.values.film_dust_amount = 0.3f;
+        params.values.film_scratch_amount = 0.2f;
+        params.values.gate_dust_amount = 0.1f;
+        params.values.gate_scratch_amount = 0.4f;
+        params.values.gate_weave_amount = 0.5;
         compare_product(assets(), params);
         caseEvent.passed();
     }
@@ -612,9 +623,9 @@ namespace {
         JuicerTests::GtestCohort cohort("camera-enlarger-optics", std::vector<std::string>{"enabled-optics"});
         auto caseEvent = cohort.case_event("enabled-optics");
         auto params = print_params();
-        params.cameraDiffusion.active = true;
-        params.enlargerDiffusion.active = true;
-        params.scatterHalationControls.active = true;
+        params.values.camera_diffusion.active = true;
+        params.values.enlarger_diffusion.active = true;
+        params.values.scatter_halation.active = true;
         compare_product(assets(), params);
         caseEvent.passed();
     }
@@ -623,9 +634,9 @@ namespace {
         JuicerTests::GtestCohort cohort("dir-compression-off", std::vector<std::string>{"disabled-compression"});
         auto caseEvent = cohort.case_event("disabled-compression");
         auto params = print_params();
-        params.dirCouplers.active = false;
-        params.inputCompressionEnabled = 0;
-        params.outputGamutCompressionEnabled = 0;
+        params.values.dir_couplers.active = false;
+        params.values.input_compression_enabled = 0;
+        params.values.output_gamut_compression_enabled = 0;
         compare_product(assets(), params);
         caseEvent.passed();
     }
@@ -633,11 +644,11 @@ namespace {
     TEST_F(PreparedStateProducts, SignedZeroGlare) {
         JuicerTests::GtestCohort cohort("signed-zero-glare", std::vector<std::string>{"positive-zero", "negative-zero"});
         auto params = print_params();
-        params.glarePercent = 0.0;
+        params.values.glare_percent = 0.0;
         auto positiveCase = cohort.case_event("positive-zero");
         compare_product(assets(), params);
         positiveCase.passed();
-        params.glarePercent = -0.0;
+        params.values.glare_percent = -0.0;
         auto negativeCase = cohort.case_event("negative-zero");
         compare_product(assets(), params);
         negativeCase.passed();
@@ -646,16 +657,16 @@ namespace {
     TEST_F(PreparedStateProducts, CorrectionsAndScannerControls) {
         JuicerTests::GtestCohort cohort("correction-scanner-route", std::vector<std::string>{"print", "direct"});
         auto params = print_params();
-        params.scannerBlackCorrection = 1;
-        params.scannerWhiteCorrection = 1;
-        params.scannerLensBlurSigmaPx = 0.4;
-        params.scannerUnsharpMask = {0.8, 0.6};
-        params.outputColorSpace = 5;
-        params.outputCctfEncoding = 0;
+        params.values.scanner_black_correction = 1;
+        params.values.scanner_white_correction = 1;
+        params.values.scanner_lens_blur_sigma_px = 0.4;
+        std::copy_n(std::array{0.8, 0.6}.begin(), 2, params.values.scanner_unsharp_mask);
+        params.values.output_color_space = 5;
+        params.values.output_cctf_encoding = 0;
         auto printCase = cohort.case_event("print");
         compare_product(assets(), params);
         printCase.passed();
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        params.values.scan_route = 0u;
         auto directCase = cohort.case_event("direct");
         compare_product(assets(), params);
         directCase.passed();
@@ -678,20 +689,20 @@ namespace {
         }
     }
 
-    void competing_precheck(const FjAssets* assets, const ParamSnapshot& params, const char* expectedDiagnostic, std::initializer_list<std::uint32_t> expectedTrace) {
+    void competing_precheck(const FjAssets* assets, const JuicerTestSupport::PreparationInput& params, const char* expectedDiagnostic, std::initializer_list<std::uint32_t> expectedTrace) {
         struct ClearExposureFault {
             ~ClearExposureFault() {
                 fj_test_exposure_clear_fault();
             }
         } clearExposureFault;
         auto repaired = print_params();
-        repaired.scanRoute = params.scanRoute;
+        repaired.values.scan_route = params.values.scan_route;
         JuicerTests::GtestCohort cohort("competing-precheck-temperature", std::vector<std::string>{"cold", "warm"});
         for (bool cold : {true, false}) {
             auto caseEvent = cohort.case_event(cold ? "cold" : "warm");
             SCOPED_TRACE(cold ? "cold" : "warm");
             if (cold)
-                equal_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+                equal_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             equal_status(fj_test_exposure_arm_fault(5, 1, 1), FJ_STATUS_SUCCESS);
             FjStatus status{};
             std::string diagnostic;
@@ -712,23 +723,23 @@ namespace {
 
     TEST_F(PreparedStateProducts, DirectScannerBeforeInputPolicy) {
         auto params = print_params();
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        params.inputColorSpace = -1;
-        params.scannerBlackLevel = std::numeric_limits<double>::quiet_NaN();
+        params.values.scan_route = 0u;
+        params.values.input_color_space = -1;
+        params.values.scanner_black_level = std::numeric_limits<double>::quiet_NaN();
         competing_precheck(assets(), params, "ResourceDescriptorMismatch phase=8 field=scanner_output", {FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_ROUTE_PRECHECKS});
     }
 
     TEST_F(PreparedStateProducts, PrintGammaBeforeInputPolicy) {
         auto params = print_params();
-        params.inputColorSpace = -1;
-        params.printGammaFactor = 0.1;
+        params.values.input_color_space = -1;
+        params.values.print_gamma_factor = 0.1;
         competing_precheck(assets(), params, "InvalidAuthoredControl component=print_development field=print_gamma_factor", {FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION, FJ_PREPARE_ROUTE_PRECHECKS});
     }
 
     TEST_F(PreparedStateProducts, PrintInputBeforeInputPolicy) {
         auto params = print_params();
-        params.inputColorSpace = -1;
-        params.printExposure = std::numeric_limits<double>::infinity();
+        params.values.input_color_space = -1;
+        params.values.print_exposure = std::numeric_limits<double>::infinity();
         competing_precheck(assets(), params, "ResourceDescriptorMismatch phase=4A field=print_recipe_input", {FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION, FJ_PREPARE_ROUTE_PRECHECKS});
     }
 
@@ -739,26 +750,26 @@ namespace {
             }
         } clearCalibrationFault;
         auto params = print_params();
-        params.filmGammaFactor = std::numeric_limits<float>::quiet_NaN();
+        params.values.film_gamma_factor = std::numeric_limits<float>::quiet_NaN();
         auto repaired = params;
-        repaired.filmGammaFactor = 1.0f;
+        repaired.values.film_gamma_factor = 1.0f;
         constexpr const char* kGammaDiagnostic = "InvalidAuthoredControl component=film_development field=film_gamma_factor";
         JuicerTests::GtestCohort cohort("development-before-calibration-temperature", std::vector<std::string>{"cold", "warm"});
         for (bool cold : {true, false}) {
             auto caseEvent = cohort.case_event(cold ? "cold" : "warm");
             SCOPED_TRACE(cold ? "cold" : "warm");
-            equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+            equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
             fj_test_calibration_read_fault(1);
             constexpr char kKey[] = "pending";
             const FjStringView selection{kKey, sizeof(kKey) - 1};
             std::array<char, 1024> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 0};
             FjNeutralCalibrationResult raw{};
-            equal_status(fj_legacy_neutral_calibration_lookup(assets(), selection, selection, selection, &raw, &error), FJ_STATUS_ALLOCATION_FAILURE);
+            equal_status(fj_test_neutral_calibration_lookup(assets(), selection, selection, selection, &raw, &error), FJ_STATUS_ALLOCATION_FAILURE);
             const std::string dependencyDiagnostic(bytes.data(), error.length);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             fj_test_calibration_read_fault(0);
-            equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+            equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
             FjStatus status{};
             std::string diagnostic;
             if (!cold) {
@@ -792,10 +803,10 @@ namespace {
             }
         } clearCurveFault{assets()};
         auto params = print_params();
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        params.scannerBlackLevel = std::numeric_limits<double>::quiet_NaN();
+        params.values.scan_route = 0u;
+        params.values.scanner_black_level = std::numeric_limits<double>::quiet_NaN();
         JuicerTests::GtestCohort cohort("input-allocation-scanner-control-faults", std::vector<std::string>{"cold-allocation-failure", "cold-scanner-rejection", "warm-scanner-rejection", "released-cold-allocation-failure"});
-        equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+        equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
         equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D65, 1, nullptr), FJ_STATUS_SUCCESS);
         constexpr const char* kDependencyDiagnostic = "Illuminant preparation (D65): illuminant scratch capacity";
         constexpr const char* kScannerDiagnostic = "ResourceDescriptorMismatch phase=8 field=scanner_output";
@@ -826,7 +837,7 @@ namespace {
         EXPECT_EQ(pending, 1u) << "warm entry must skip the derived acquisition";
         warmScannerCase.passed();
         auto releasedColdCase = cohort.case_event("released-cold-allocation-failure");
-        equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+        equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_ALLOCATION_FAILURE);
         EXPECT_EQ(diagnostic, kDependencyDiagnostic);
@@ -850,26 +861,26 @@ namespace {
         }
         const JuicerAssets::NativePathArgument path(sourceRoot);
         FjAssets* rawSource = nullptr;
-        equal_status(fj_legacy_assets_create(path.view(), &rawSource, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(fj_test_assets_create(path.view(), &rawSource, nullptr), FJ_STATUS_SUCCESS);
         ASSERT_NE(rawSource, nullptr);
         const auto destroy = [](FjAssets* owner) {
-            (void)fj_legacy_assets_destroy(owner, nullptr);
+            (void)fj_test_assets_destroy(owner, nullptr);
         };
         std::unique_ptr<FjAssets, decltype(destroy)> source(rawSource, destroy);
         auto params = print_params();
-        params.printGammaFactor = 0.1;
-        params.inputColorSpace = -1;
+        params.values.print_gamma_factor = 0.1;
+        params.values.input_color_space = -1;
         constexpr const char* kExpectedDiagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
         JuicerTests::GtestCohort cohort("calibration-before-gamma-temperature", std::vector<std::string>{"cold", "warm"});
         for (bool cold : {true, false}) {
             auto caseEvent = cohort.case_event(cold ? "cold" : "warm");
             SCOPED_TRACE(cold ? "cold" : "warm");
-            equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+            equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
             std::string diagnostic;
             FjStatus status{};
             if (!cold) {
                 auto warm = print_params();
-                warm.filmGammaFactor = std::numeric_limits<float>::quiet_NaN();
+                warm.values.film_gamma_factor = std::numeric_limits<float>::quiet_NaN();
                 auto ignored = JuicerCudaTest::prepare_state(assets(), warm, status, diagnostic);
                 EXPECT_FALSE(ignored.has_value());
                 equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
@@ -882,7 +893,7 @@ namespace {
             equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION});
             EXPECT_EQ(diagnostic, kExpectedDiagnostic);
             EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
-            equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+            equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
             owner = JuicerCudaTest::prepare_state(assets(), print_params(), status, diagnostic);
             EXPECT_FALSE(owner.has_value());
             equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
@@ -903,7 +914,7 @@ namespace {
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView first{}, second{};
         equal_status(state_view(encoded, first), FJ_STATUS_SUCCESS);
-        params.outputCctfEncoding = 0;
+        params.values.output_cctf_encoding = 0;
         auto linearCase = cohort.case_event("linear");
         compare_product(assets(), params);
         auto linear = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
@@ -925,20 +936,20 @@ namespace {
         JuicerTests::GtestCohort cohort("snapshot-integer-bool-casts", std::vector<std::string>{"direct", "print"});
         for (bool print : {false, true}) {
             auto caseEvent = cohort.case_event(print ? "print" : "direct");
-            auto params = print ? print_params() : ParamSnapshot{};
+            auto params = print ? print_params() : JuicerTestSupport::PreparationInput{};
             if (!print)
-                params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-            params.normalizePrintExposure = -3;
-            params.printExposureCompensation = 2;
-            params.inputCctfDecoding = -3;
-            params.inputCompressionEnabled = 2;
-            params.hanatos2025AdaptationWindow = -3;
-            params.hanatos2025AdaptationSurface = 2;
-            params.cameraAutoExposureEnabled = -3;
-            params.scannerBlackCorrection = 2;
-            params.scannerWhiteCorrection = -3;
-            params.outputCctfEncoding = 2;
-            params.outputGamutCompressionEnabled = -3;
+                params.values.scan_route = 0u;
+            params.values.normalize_print_exposure = -3;
+            params.values.print_exposure_compensation = 2;
+            params.values.input_cctf_decoding = -3;
+            params.values.input_compression_enabled = 2;
+            params.values.hanatos2025_adaptation_window = -3;
+            params.values.hanatos2025_adaptation_surface = 2;
+            params.values.camera_auto_exposure_enabled = -3;
+            params.values.scanner_black_correction = 2;
+            params.values.scanner_white_correction = -3;
+            params.values.output_cctf_encoding = 2;
+            params.values.output_gamut_compression_enabled = -3;
             compare_product(assets(), params);
             caseEvent.passed();
         }
@@ -948,18 +959,18 @@ namespace {
         JuicerTests::GtestCohort cohort("disabled-families-unused-controls", std::vector<std::string>{"disabled-controls"});
         auto caseEvent = cohort.case_event("disabled-controls");
         auto params = print_params();
-        params.dirCouplers.active = false;
+        params.values.dir_couplers.active = false;
         FjStatus status{};
         std::string diagnostic;
         auto baseline = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView first{}, second{};
         equal_status(state_view(baseline, first), FJ_STATUS_SUCCESS);
-        params.cameraDiffusion.strength = 0.25;
-        params.enlargerDiffusion.spatialScale = 2.0;
-        params.scatterHalationControls.scatterAmount = std::numeric_limits<float>::quiet_NaN();
-        params.dirCouplers.amount = std::numeric_limits<float>::quiet_NaN();
-        params.grainControls.amplitude = std::numeric_limits<float>::quiet_NaN();
+        params.values.camera_diffusion.strength = 0.25;
+        params.values.enlarger_diffusion.spatial_scale = 2.0;
+        params.values.scatter_halation.scatter_amount = std::numeric_limits<float>::quiet_NaN();
+        params.values.dir_couplers.amount = std::numeric_limits<float>::quiet_NaN();
+        params.values.grain.amplitude = std::numeric_limits<float>::quiet_NaN();
         compare_product(assets(), params);
         auto changed = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
@@ -976,10 +987,10 @@ namespace {
         JuicerTests::GtestCohort cohort("grain-debug-physical-effects", std::vector<std::string>{"grain-debug-view"});
         auto caseEvent = cohort.case_event("grain-debug-view");
         auto params = print_params();
-        params.grainControls.active = true;
-        params.grainControls.debugView = 1;
-        params.filmDustAmount = 0.5f;
-        params.gateScratchAmount = 0.5f;
+        params.values.grain.active = true;
+        params.values.grain.debug_view = 1;
+        params.values.film_dust_amount = 0.5f;
+        params.values.gate_scratch_amount = 0.5f;
         compare_product(assets(), params);
         FjStatus status{};
         std::string diagnostic;
@@ -1005,7 +1016,7 @@ namespace {
         const auto baseline = fj_test_prepared_live_states();
         const auto params = print_params();
         auto earlyCase = cohort.case_event("early-panic");
-        equal_status(fj_legacy_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
+        equal_status(fj_test_assets_release_cached_payloads(assets(), nullptr), FJ_STATUS_SUCCESS);
         equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D55, 2, nullptr), FJ_STATUS_SUCCESS);
         FjStatus status{};
         std::string diagnostic;
@@ -1050,7 +1061,7 @@ namespace {
                 SCOPED_TRACE(::testing::Message() << print << '/' << target);
                 auto params = print_params();
                 if (!print)
-                    params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+                    params.values.scan_route = 0u;
                 equal_status(fj_test_prepared_identity_fault(target), FJ_STATUS_SUCCESS);
                 FjStatus status{};
                 std::string diagnostic;
@@ -1259,11 +1270,11 @@ namespace {
     TEST_F(PreparedStateAbi, FailureClearsEveryDefinedFieldAndReleaseConsumes) {
         const auto baseline = fj_test_prepared_live_states();
         auto params = print_params();
-        params.printPreflashExposure = 0.1;
-        params.grainControls.active = true;
-        params.scatterHalationControls.active = true;
-        params.filmDustAmount = 0.2f;
-        params.gateScratchAmount = 0.3f;
+        params.values.print_preflash_exposure = 0.1;
+        params.values.grain.active = true;
+        params.values.scatter_halation.active = true;
+        params.values.film_dust_amount = 0.2f;
+        params.values.gate_scratch_amount = 0.3f;
         FjStatus status{};
         std::string diagnostic;
         auto owner = JuicerCudaTest::prepare_raw_state(assets(), params, status, diagnostic);
@@ -1297,7 +1308,7 @@ namespace {
         expect_cleared(cleared);
         rejected(fj_test_prepared_state_view(owner.get(), nullptr, nullptr));
         EXPECT_EQ(fj_test_prepared_live_states(), baseline + 1);
-        const auto wire = preparation_params(params);
+        const auto wire = params.record();
         FjPreparedState* candidate = owner.get(); // A borrowed sentinel, never another hold.
         rejected(fj_test_prepared_state_create(nullptr, &wire, &candidate, nullptr));
         EXPECT_EQ(candidate, nullptr);
@@ -1314,14 +1325,14 @@ namespace {
 
     TEST_F(PreparedStateAbi, DiagnosticTruncationPreservesStatusAndOwner) {
         auto params = print_params();
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        params.values.scan_route = 0u;
         FjStatus status{};
         std::string diagnostic;
         auto owner = JuicerCudaTest::prepare_raw_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         const auto before = fj_test_prepared_live_states();
-        params.scannerBlackLevel = std::numeric_limits<double>::quiet_NaN();
-        const auto wire = preparation_params(params);
+        params.values.scanner_black_level = std::numeric_limits<double>::quiet_NaN();
+        const auto wire = params.record();
         const std::string expected = "ResourceDescriptorMismatch phase=8 field=scanner_output";
         const std::vector<std::string> ids{"capacity/0", "capacity/1", "capacity/4", "capacity/128"};
         JuicerTests::GtestCohort cohort("diagnostic-capacity", ids);
@@ -1366,9 +1377,9 @@ namespace {
             EXPECT_EQ(cFacts[i], cppFacts[i]);
             EXPECT_EQ(rustFacts[i], cppFacts[i]);
         }
-        ParamSnapshot params;
-        params.grainControls.active = false;
-        const auto wire = preparation_params(params);
+        JuicerTestSupport::PreparationInput params;
+        params.values.grain.active = false;
+        const auto wire = params.record();
         FjPreparedState* owner = nullptr;
         ASSERT_EQ(fj_test_prepared_state_create_c(assets(), &wire, &owner, nullptr).category, FJ_STATUS_SUCCESS);
         ASSERT_NE(owner, nullptr);
@@ -1435,10 +1446,10 @@ namespace {
         for (auto id : ids)
             cohortIds.emplace_back(id);
         JuicerTests::GtestCohort cohort("instance-c11-protocol", cohortIds);
-        ParamSnapshot params;
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        params.grainControls.active = false;
-        const FjPreparationParams wire = preparation_params(params);
+        JuicerTestSupport::PreparationInput params;
+        params.values.scan_route = 0u;
+        params.values.grain.active = false;
+        const FjPreparationParams wire = params.record();
         constexpr std::array<std::uint32_t, 10> scenarios{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
         for (std::size_t i = 0; i < scenarios.size(); ++i) {
             auto caseEvent = cohort.case_event(ids[i]);
@@ -1458,22 +1469,22 @@ namespace {
         ids.push_back("destroy/malformed-diagnostic");
         JuicerTests::GtestCohort cohort("instance-diagnostic-capacity", ids);
 
-        ParamSnapshot snapshot;
-        snapshot.grainControls.active = false;
-        const FjPreparationParams wire = preparation_params(snapshot);
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.grain.active = false;
+        const FjPreparationParams wire = snapshot.record();
         for (const auto capacity : capacities) {
             auto caseEvent = cohort.case_event("panic/capacity/" + std::to_string(capacity));
             FjInstance* instance = nullptr;
-            ASSERT_EQ(fj_legacy_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(fj_test_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
             ASSERT_NE(instance, nullptr);
             FjCaptureStart capture{};
-            ASSERT_EQ(fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, nullptr).category, FJ_STATUS_SUCCESS);
             ASSERT_EQ(capture.kind, FJ_CAPTURE_STARTED);
             FjSnapshotStart read{};
-            ASSERT_EQ(fj_legacy_instance_begin_snapshot(instance, capture.capture, &read, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(fj_test_instance_begin_snapshot(instance, capture.capture, &read, nullptr).category, FJ_STATUS_SUCCESS);
             ASSERT_EQ(read.kind, FJ_SNAPSHOT_READY);
             std::uint32_t update = FJ_UPDATE_NONE;
-            ASSERT_EQ(fj_legacy_instance_install(instance, capture.capture, read.write_revision, &wire, 11, &update, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(fj_test_instance_install(instance, capture.capture, read.write_revision, &wire, 11, &update, nullptr).category, FJ_STATUS_SUCCESS);
             ASSERT_EQ(update, FJ_UPDATE_APPLIED);
 
             std::array<char, 32> bytes{};
@@ -1481,7 +1492,7 @@ namespace {
             FjErrorBuffer error{capacity == 0 ? reinterpret_cast<char*>(std::uintptr_t{1}) : bytes.data(), capacity, 99};
             FjAdmission admission{};
             ASSERT_EQ(fj_test_spectral_arm_fault(3, 1, 2).category, FJ_STATUS_SUCCESS);
-            const auto status = fj_legacy_instance_admit(instance, assets(), &admission, &error);
+            const auto status = fj_test_instance_admit(instance, assets(), &admission, &error);
             EXPECT_EQ(status.category, FJ_STATUS_INTERNAL_FAILURE);
             EXPECT_EQ(admission.kind, FJ_ADMISSION_POISONED);
             EXPECT_EQ(admission.state, nullptr);
@@ -1494,16 +1505,16 @@ namespace {
 
             // Destroy consumes the instance even if its diagnostic record is malformed.
             FjErrorBuffer malformed{nullptr, 1, 99};
-            EXPECT_EQ(fj_legacy_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
+            EXPECT_EQ(fj_test_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(malformed.length, 0u);
             caseEvent.passed();
         }
 
         auto destroyEvent = cohort.case_event("destroy/malformed-diagnostic");
         FjInstance* instance = nullptr;
-        ASSERT_EQ(fj_legacy_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
         FjErrorBuffer malformed{nullptr, 1, 99};
-        EXPECT_EQ(fj_legacy_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_test_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(malformed.length, 0u);
         destroyEvent.passed();
     }
@@ -1619,13 +1630,13 @@ namespace {
         constexpr auto kEncoding = FJ_PATH_UNIX_BYTES;
 #endif
         FjAssets* resourceOwner = nullptr;
-        ASSERT_EQ(fj_legacy_assets_create({native.data(), native.size(), kEncoding}, &resourceOwner, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_assets_create({native.data(), native.size(), kEncoding}, &resourceOwner, nullptr).category, FJ_STATUS_SUCCESS);
         const auto destroyAssets = [](FjAssets* owner) {
-            (void)fj_legacy_assets_destroy(owner, nullptr);
+            (void)fj_test_assets_destroy(owner, nullptr);
         };
         std::unique_ptr<FjAssets, decltype(destroyAssets)> retainedAssets(resourceOwner, destroyAssets);
         auto params = print_params();
-        params.spectralUpsamplingMode = 0;
+        params.values.spectral_upsampling_mode = 0;
         FjStatus status{};
         std::string diagnostic;
         auto state = JuicerCudaTest::prepare_state(resourceOwner, params, status, diagnostic);
@@ -1679,7 +1690,7 @@ namespace {
         const std::vector<float> d65(light.d65.data, light.d65.data + light.d65.count);
         const std::vector<float> xy(input.xy.data, input.xy.data + input.xy.count);
         const std::vector<float> cmax(output.cmax.data, output.cmax.data + output.cmax.count);
-        ASSERT_EQ(fj_legacy_assets_release_cached_payloads(resourceOwner, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_assets_release_cached_payloads(resourceOwner, nullptr).category, FJ_STATUS_SUCCESS);
         FjIlluminantsOwner* nextLights = nullptr;
         ASSERT_EQ(fj_test_assets_illuminants_acquire(resourceOwner, &nextLights, nullptr).category, FJ_STATUS_SUCCESS);
         std::unique_ptr<FjIlluminantsOwner, decltype(releaseLight)> nextLightHold(nextLights, releaseLight);

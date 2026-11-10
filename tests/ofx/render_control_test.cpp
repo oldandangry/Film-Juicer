@@ -11,7 +11,6 @@
 #include "juicer_ofx_api.h"
 #include "../ffi/juicer_test_api.h"
 #include "module_test.h"
-#include "ofxsImageEffect.h"
 #include "../ffi/case_results.h"
 
 extern "C" FjStatus fj_test_ofx_instance_admit(OfxImageEffectHandle effect, FjPreparedState** out, FjErrorBuffer* error);
@@ -233,7 +232,7 @@ int main(int argc, char** argv) try {
     }
     require(argc == 1, "render control fixture takes no arguments");
     JuicerTests::CaseLog log;
-    auto* plugin = fj_ofx_plugin(0);
+    auto* plugin = OfxGetPlugin(0);
     require(plugin != nullptr, "Rust OFX callback available");
     {
         JuicerTests::CaseEvent event(kCaller, "non_cuda");

@@ -12,7 +12,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "juicer_legacy_api.h"
+#include "juicer_test_api.h"
 
 namespace PreparedStateOracle {
     namespace {

@@ -1,8 +1,12 @@
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -16,13 +20,10 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "JuicerState.h"
-#include "ColorTransforms.h"
-#include "ProcessRoot.h"
-#include "ProcessRuntime.h"
-#include "NativePath.h"
-#include "test_asset_bridge.h"
-#include "juicer_cuda_owner.h"
+#include "native_path.h"
+#include "owner_fixture.h"
+#include "../ofx/context_host.h"
+#include "juicer_ofx_api.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 
@@ -31,16 +32,14 @@ static_assert(offsetof(FjCatalogEntryView, key) == 0 && offsetof(FjCatalogEntryV
               offsetof(FjCatalogEntryView, polarity) == 32);
 static_assert(sizeof(FjCatalogCounts) == 16 && alignof(FjCatalogCounts) == 8);
 static_assert(offsetof(FjCatalogCounts, film_count) == 0 && offsetof(FjCatalogCounts, print_count) == 8);
-static_assert(std::is_same_v<decltype(&fj_legacy_assets_create), FjStatus (*)(FjPathView, FjAssets**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_assets_destroy), FjStatus (*)(FjAssets*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_catalog_acquire), FjStatus (*)(const FjAssets*, FjCatalog**, FjCatalogCounts*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_catalog_entry), FjStatus (*)(const FjCatalog*, std::uint32_t, std::size_t, FjCatalogEntryView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_catalog_release), FjStatus (*)(FjCatalog*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_create), FjStatus (*)(FjPathView, FjAssets**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_destroy), FjStatus (*)(FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_catalog_acquire), FjStatus (*)(const FjAssets*, FjCatalog**, FjCatalogCounts*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_catalog_entry), FjStatus (*)(const FjCatalog*, std::uint32_t, std::size_t, FjCatalogEntryView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_catalog_release), FjStatus (*)(FjCatalog*, FjErrorBuffer*)>);
 
 namespace {
     namespace fs = std::filesystem;
-    unsigned conversionFault = 0;
-    bool diagnosticFault = false;
 
     void require(bool condition, const char* message) {
         if (!condition) {
@@ -54,10 +53,10 @@ namespace {
         FjAssets* handle = nullptr;
         explicit Assets(const fs::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            require_status(fj_legacy_assets_create(path.view(), &handle, nullptr), FJ_STATUS_SUCCESS);
+            require_status(fj_test_assets_create(path.view(), &handle, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Assets() {
-            (void)fj_legacy_assets_destroy(handle, nullptr);
+            (void)fj_test_assets_destroy(handle, nullptr);
         }
         Assets(const Assets&) = delete;
         Assets& operator=(const Assets&) = delete;
@@ -65,17 +64,17 @@ namespace {
     struct Catalog {
         FjCatalog* handle = nullptr;
         FjCatalogCounts counts{};
-        explicit Catalog(FjAssets* assets) {
-            require_status(fj_legacy_catalog_acquire(assets, &handle, &counts, nullptr), FJ_STATUS_SUCCESS);
+        explicit Catalog(const FjAssets* assets) {
+            require_status(fj_test_catalog_acquire(assets, &handle, &counts, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Catalog() {
-            (void)fj_legacy_catalog_release(handle, nullptr);
+            (void)fj_test_catalog_release(handle, nullptr);
         }
         Catalog(const Catalog&) = delete;
         Catalog& operator=(const Catalog&) = delete;
         FjCatalogEntryView entry(std::uint32_t role, std::size_t index) const {
             FjCatalogEntryView view{};
-            require_status(fj_legacy_catalog_entry(handle, role, index, &view, nullptr), FJ_STATUS_SUCCESS);
+            require_status(fj_test_catalog_entry(handle, role, index, &view, nullptr), FJ_STATUS_SUCCESS);
             return view;
         }
     };
@@ -114,11 +113,11 @@ namespace {
         }
         FjCatalog* cleared = first.handle;
         FjCatalogCounts counts{999, 999};
-        require_status(fj_legacy_catalog_acquire(assets.handle, &cleared, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_acquire(assets.handle, &cleared, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(!cleared, "other valid acquire slot not cleared");
-        require_status(fj_legacy_catalog_acquire(assets.handle, nullptr, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_acquire(assets.handle, nullptr, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(counts.film_count == 0 && counts.print_count == 0, "other valid counts not cleared");
-        require_status(fj_legacy_catalog_acquire(nullptr, &cleared, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_acquire(nullptr, &cleared, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         const std::array invalid_entry_ids{"unknown-role/index-zero", "film/count-index"};
         JuicerTests::Cohort invalid_entries("catalog_owner.invalid_entry", {invalid_entry_ids[0], invalid_entry_ids[1]});
         const std::array invalid_entry_requests{std::pair{99u, std::size_t{0}}, std::pair{FJ_PROFILE_ROLE_FILM, first.counts.film_count}};
@@ -126,11 +125,11 @@ namespace {
             auto event = invalid_entries.case_event(invalid_entry_ids[i]);
             const auto [role, index] = invalid_entry_requests[i];
             auto out = film;
-            require_status(fj_legacy_catalog_entry(first.handle, role, index, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            require_status(fj_test_catalog_entry(first.handle, role, index, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out.key.data && !out.label.data && !out.key.count && out.polarity == 0, "entry failure not cleared");
             event.passed();
         }
-        require_status(fj_legacy_catalog_entry(nullptr, 0, 0, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_entry(nullptr, 0, 0, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         film = first.entry(0, 0);
         std::array<std::thread, 8> readers;
         std::array<bool, 8> passed{};
@@ -151,19 +150,19 @@ namespace {
 
         Catalog independent(assets.handle);
         FjErrorBuffer malformed{nullptr, 1, 99};
-        require_status(fj_legacy_assets_destroy(std::exchange(assets.handle, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_assets_destroy(std::exchange(assets.handle, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 2, "destroy revoked retained catalog");
         require(text(first.entry(0, 0).key) == "kodak_portra_400" && text(independent.entry(1, 0).label) == std::string("A\0B", 3), "views expired with Assets");
-        require_status(fj_legacy_catalog_release(std::exchange(independent.handle, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_release(std::exchange(independent.handle, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         require(text(first.entry(0, 0).key) == "kodak_portra_400", "independent release revoked first handle");
-        require_status(fj_legacy_catalog_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
-        require_status(fj_legacy_assets_destroy(nullptr, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
+        require_status(fj_test_assets_destroy(nullptr, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         FjErrorBuffer zero{nullptr, 0, 99};
-        require_status(fj_legacy_assets_destroy(nullptr, &zero), FJ_STATUS_SUCCESS);
+        require_status(fj_test_assets_destroy(nullptr, &zero), FJ_STATUS_SUCCESS);
         require(zero.length == 0, "zero-capacity diagnostic length not cleared");
         std::array<char, 4> bytes{};
         FjErrorBuffer tiny{bytes.data(), bytes.size(), 99};
-        require_status(fj_legacy_catalog_entry(nullptr, 0, 0, &print, &tiny), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_catalog_entry(nullptr, 0, 0, &print, &tiny), FJ_STATUS_UNSUPPORTED_INPUT);
         require(tiny.length == 3 && bytes.back() == '\0', "truncated diagnostic changed status or termination");
     }
 
@@ -177,7 +176,7 @@ namespace {
         for (std::size_t i = 0; i < invalid_path_views.size(); ++i) {
             auto event = invalid_paths.case_event(invalid_path_ids[i]);
             const auto invalid = invalid_path_views[i];
-            require_status(fj_legacy_assets_create(invalid, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            require_status(fj_test_assets_create(invalid, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out, "invalid root published Assets");
             event.passed();
         }
@@ -186,13 +185,13 @@ namespace {
         JuicerTests::Cohort path_edges("catalog_owner.root_path_edge", {"embedded-nul", "malformed-diagnostic"});
         {
             auto event = path_edges.case_event("embedded-nul");
-            require_status(fj_legacy_assets_create(nul.view(), &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            require_status(fj_test_assets_create(nul.view(), &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             event.passed();
         }
         {
             auto event = path_edges.case_event("malformed-diagnostic");
             FjErrorBuffer oversized{nullptr, std::numeric_limits<std::size_t>::max(), 99};
-            require_status(fj_legacy_assets_create(valid, &out, &oversized), FJ_STATUS_UNSUPPORTED_INPUT);
+            require_status(fj_test_assets_create(valid, &out, &oversized), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out && oversized.length == 0, "malformed diagnostics did not precede operation");
             event.passed();
         }
@@ -200,7 +199,7 @@ namespace {
         const std::array<std::uint16_t, 2> units{65, 66};
         JuicerTests::Cohort alignment("catalog_owner.root_path_alignment", {"unaligned-wide"});
         auto event = alignment.case_event("unaligned-wide");
-        require_status(fj_legacy_assets_create({reinterpret_cast<const char*>(units.data()) + 1, 1, FJ_PATH_WINDOWS_WIDE}, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        require_status(fj_test_assets_create({reinterpret_cast<const char*>(units.data()) + 1, 1, FJ_PATH_WINDOWS_WIDE}, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         event.passed();
 #endif
     }
@@ -209,70 +208,66 @@ namespace {
         const auto root = scratch / "retry";
         minimal_catalog(root);
         {
-            JuicerProcess::ProcessRuntime runtime;
+            JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(root);
+            const auto* const assets = runtime.borrow().assets;
             JuicerTests::Cohort source_faults("catalog_owner.source_fault", {"allocation", "panic"});
-            for (unsigned fault : {1u, 2u}) {
-                auto event = source_faults.case_event(fault == 1 ? "allocation" : "panic");
-                conversionFault = fault;
-                bool rejected = false;
-                try {
-                    (void)runtime.spektrafilm_profile_catalog();
-                } catch (const std::bad_alloc&) {
-                    rejected = fault == 1;
-                } catch (const JuicerCuda::ExecutionFailure& error) {
-                    rejected = fault == 2 && error.failure.status.category == FJ_STATUS_PREPARATION_FAILURE;
-                }
-                require(rejected && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
-                        "incomplete Runtime catalog candidate published or leaked");
+            for (unsigned fault : {2u, 1u}) {
+                auto event = source_faults.case_event(fault == 2 ? "allocation" : "panic");
+                fj_test_catalog_fault(fault);
+                FjCatalog* out = nullptr;
+                FjCatalogCounts counts{999, 999};
+                require_status(fj_test_catalog_acquire(assets, &out, &counts, nullptr),
+                               fault == 2 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
+                require(!out && counts.film_count == 0 && counts.print_count == 0 &&
+                            fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                        "incomplete catalog acquisition published or leaked");
                 event.passed();
             }
             fs::remove_all(root / "profiles");
-            const auto& catalog = runtime.spektrafilm_profile_catalog();
-            require(catalog.valid && catalog.filmProfiles.size() == 1 && catalog.printProfiles.size() == 1,
-                    "Runtime retry rediscovered source");
-            std::size_t nativeSize = 0;
-            std::size_t nativeCapacity = 0;
-            for (const auto* entries : {&catalog.filmProfiles, &catalog.printProfiles}) {
-                nativeSize += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
-                nativeCapacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
-                for (const auto& entry : *entries) {
-                    nativeSize += entry.key.size() + entry.label.size();
-                    nativeCapacity += entry.key.capacity() + entry.label.capacity();
-                }
+            {
+                Catalog catalog(assets);
+                require(catalog.counts.film_count == 1 && catalog.counts.print_count == 1,
+                        "catalog retry rediscovered source");
+                const auto film = catalog.entry(FJ_PROFILE_ROLE_FILM, 0);
+                const auto print = catalog.entry(FJ_PROFILE_ROLE_PRINT, 0);
+                std::uintptr_t backing = 0;
+                require_status(fj_test_catalog_backing_identity(catalog.handle, &backing, nullptr), FJ_STATUS_SUCCESS);
+                require(backing != 0, "missing catalog backing identity");
+                Catalog warm(assets);
+                std::uintptr_t repeated = 0;
+                require_status(fj_test_catalog_backing_identity(warm.handle, &repeated, nullptr), FJ_STATUS_SUCCESS);
+                require(repeated == backing && warm.entry(FJ_PROFILE_ROLE_FILM, 0).key.data == film.key.data &&
+                            warm.entry(FJ_PROFILE_ROLE_PRINT, 0).label.data == print.label.data &&
+                            fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 2,
+                        "warm catalog did not reuse actual source backing");
             }
-            std::printf("Catalog cold native copy logical=%zu bytes capacity=%zu bytes; zero retained Rust catalog handles, two discarded cold candidates, warm publication reused\n",
-                        nativeSize,
-                        nativeCapacity);
-            const auto* label = catalog.printProfiles.front().label.data();
-            require(&runtime.spektrafilm_profile_catalog() == &catalog &&
-                        runtime.spektrafilm_profile_catalog().printProfiles.front().label.data() == label &&
-                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
-                    "warm Runtime catalog copied or retained a Rust catalog handle");
-            require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
-                        fj_test_catalog_live_owners() == 0,
-                    "Runtime retry owner did not close cleanly");
+            require(fj_test_catalog_live_owners() == 0 && runtime.close().category == FJ_STATUS_SUCCESS &&
+                        fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0,
+                    "catalog retry owner did not close cleanly");
         }
 
         const auto missing = scratch / "sticky-error";
         {
-            JuicerProcess::ProcessRuntime failed;
-            failed.create(missing);
-            diagnosticFault = true;
-            bool rejected = false;
-            try {
-                (void)failed.spektrafilm_profile_catalog();
-            } catch (const std::bad_alloc&) {
-                rejected = true;
-            }
-            require(rejected && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
-                    "source diagnostic allocation published an incomplete Runtime catalog");
+            JuicerTestSupport::RuntimeFixture runtime;
+            runtime.create(missing);
+            const auto* const assets = runtime.borrow().assets;
+            fj_test_catalog_fault(3);
+            FjCatalog* out = nullptr;
+            FjCatalogCounts counts{999, 999};
+            require_status(fj_test_catalog_acquire(assets, &out, &counts, nullptr), FJ_STATUS_ALLOCATION_FAILURE);
+            require(!out && counts.film_count == 0 && counts.print_count == 0 &&
+                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "source diagnostic allocation published an incomplete catalog");
             minimal_catalog(missing);
-            const auto& sticky = failed.spektrafilm_profile_catalog();
-            require(!sticky.valid && !sticky.failure.empty() && fj_test_assets_live_owners() == 1 &&
-                        fj_test_catalog_live_owners() == 0,
-                    "Runtime source error lost stickiness or retained a Rust catalog handle");
-            require(failed.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
+            std::array<char, 1024> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            const FjStatus status = fj_test_catalog_acquire(assets, &out, &counts, &error);
+            require(status.category == FJ_STATUS_PREPARATION_FAILURE && status.api == FJ_API_NONE &&
+                        status.native_code == 0 && !out && counts.film_count == 0 && counts.print_count == 0 &&
+                        error.length != 0 && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "source error lost stickiness or retained a catalog handle");
+            require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
                         fj_test_catalog_live_owners() == 0,
                     "sticky-error Runtime did not close cleanly");
         }
@@ -281,33 +276,31 @@ namespace {
         const auto duplicate = scratch / "duplicate";
         minimal_catalog(duplicate);
         fs::copy_file(duplicate / "profiles/film.json", duplicate / "profiles/duplicate.json");
-        {
-            JuicerProcess::ProcessRuntime duplicates;
-            duplicates.create(duplicate);
-            auto duplicate_event = catalog_rejections.case_event("duplicate-film-key");
-            require(!duplicates.spektrafilm_profile_catalog().valid && fj_test_assets_live_owners() == 1 &&
-                        fj_test_catalog_live_owners() == 0,
-                    "duplicate key accepted or retained a Rust catalog handle");
-            duplicate_event.passed();
-            require(duplicates.close().category == FJ_STATUS_SUCCESS, "duplicate-key Runtime did not close cleanly");
-        }
         const auto absentDefault = scratch / "missing-default";
         minimal_catalog(absentDefault);
         fs::remove(absentDefault / "profiles/print.json");
-        {
-            JuicerProcess::ProcessRuntime noDefault;
-            noDefault.create(absentDefault);
-            auto default_event = catalog_rejections.case_event("missing-print-default");
-            require(!noDefault.spektrafilm_profile_catalog().valid && fj_test_assets_live_owners() == 1 &&
-                        fj_test_catalog_live_owners() == 0,
-                    "missing default accepted or retained a Rust catalog handle");
-            default_event.passed();
-            require(noDefault.close().category == FJ_STATUS_SUCCESS, "missing-default Runtime did not close cleanly");
+        for (const auto& [id, path] : {std::pair{"duplicate-film-key", duplicate}, std::pair{"missing-print-default", absentDefault}}) {
+            JuicerTestSupport::RuntimeFixture runtime;
+            runtime.create(path);
+            auto event = catalog_rejections.case_event(id);
+            FjCatalog* out = nullptr;
+            FjCatalogCounts counts{};
+            require_status(fj_test_catalog_acquire(runtime.borrow().assets, &out, &counts, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+            require(!out && counts.film_count == 0 && counts.print_count == 0 &&
+                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "invalid catalog accepted or retained a handle");
+            event.passed();
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "invalid catalog Runtime did not close cleanly");
         }
     }
 
-    void exact_paths_and_consumers(const fs::path& scratch) {
-        const auto bundled = JuicerProcess::data_directory();
+    struct CatalogPaths {
+        fs::path scratch;
+        fs::path bundled;
+    };
+
+    void exact_paths_and_consumers(const CatalogPaths& paths) {
+        const auto& [scratch, bundled] = paths;
         fs::path::string_type unusual;
 #if defined(_WIN32)
         unusual = L"native-\u00e5-\U0001f600-";
@@ -353,73 +346,152 @@ namespace {
         }
         fs::copy_file(bundled / "profiles/kodak_portra_400.json", filmPath);
         fs::copy_file(bundled / "profiles/kodak_portra_endura.json", printPath);
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create(root);
+        std::string filmKey, filmLabel, printKey;
         {
-            const auto& catalog = runtime.spektrafilm_profile_catalog();
-            require(catalog.valid && catalog.filmProfiles.front().key == "kodak_portra_400" && catalog.printProfiles.front().key == "kodak_portra_endura", "catalog changed native file units");
-            require(film_profile_option_count(catalog) == 1 && print_profile_option_count(catalog) == 1 &&
-                        std::string(film_profile_option_key(catalog, 0)) == "kodak_portra_400" && std::string(print_profile_option_key(catalog, 0)) == "kodak_portra_endura" &&
-                        std::string(film_profile_option_label(catalog, 0)) == catalog.filmProfiles.front().label,
-                    "production OFX option accessors did not consume Rust publication");
-            std::printf("PASS native root and Rust film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
-            require(runtime.shutdown().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "borrowed shutdown consumed Runtime Assets or retained an owning catalog handle");
-            require(catalog.filmProfiles.front().key == "kodak_portra_400", "borrowed shutdown expired options");
+            Catalog catalog(runtime.borrow().assets);
+            const auto film = catalog.entry(FJ_PROFILE_ROLE_FILM, 0);
+            const auto print = catalog.entry(FJ_PROFILE_ROLE_PRINT, 0);
+            filmKey = text(film.key);
+            filmLabel = text(film.label);
+            printKey = text(print.key);
+            require(catalog.counts.film_count == 1 && catalog.counts.print_count == 1 &&
+                        filmKey == "kodak_portra_400" && printKey == "kodak_portra_endura",
+                    "catalog changed native file units");
+            FjFilmDigest defaults{};
+            const FjStringView key{filmKey.data(), filmKey.size()};
+            require_status(fj_test_assets_film_defaults(runtime.borrow().assets, key, &defaults, nullptr), FJ_STATUS_SUCCESS);
+            FjFilmProfile* rawFilm = nullptr;
+            require_status(fj_test_assets_film_acquire(runtime.borrow().assets, key, &rawFilm, nullptr), FJ_STATUS_SUCCESS);
+            const auto releaseFilm = [](FjFilmProfile* value) noexcept {
+                if (value)
+                    (void)fj_test_assets_film_release(value, nullptr);
+            };
+            std::unique_ptr<FjFilmProfile, decltype(releaseFilm)> filmOwner(rawFilm, releaseFilm);
+            require(filmOwner != nullptr, "film profile owner missing");
+            FjFilmProfileView filmView{};
+            require_status(fj_test_assets_film_view(filmOwner.get(), &filmView, nullptr), FJ_STATUS_SUCCESS);
+            const auto same = [](const auto& left, const auto& right) {
+                return std::equal(std::begin(left), std::end(left), std::begin(right));
+            };
+            require(text(filmView.stock) == filmKey &&
+                        same(defaults.gamma_samelayer_rgb, filmView.digest.gamma_samelayer_rgb) &&
+                        same(defaults.gamma_interlayer_r_to_gb, filmView.digest.gamma_interlayer_r_to_gb) &&
+                        same(defaults.gamma_interlayer_g_to_rb, filmView.digest.gamma_interlayer_g_to_rb) &&
+                        same(defaults.gamma_interlayer_b_to_rg, filmView.digest.gamma_interlayer_b_to_rg) &&
+                        same(defaults.halation_first_sigma_um, filmView.digest.halation_first_sigma_um) &&
+                        same(defaults.halation_primary_amount, filmView.digest.halation_primary_amount) &&
+                        defaults.hanatos_spectral_gaussian_blur_default == filmView.digest.hanatos_spectral_gaussian_blur_default,
+                    "film defaults differ from the acquired profile");
+            filmOwner.reset();
+            require(runtime.shutdown().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 &&
+                        fj_test_catalog_live_owners() == 1,
+                    "borrowed shutdown consumed Runtime Assets or catalog hold");
+            require(text(catalog.entry(FJ_PROFILE_ROLE_FILM, 0).key) == filmKey, "borrowed shutdown expired catalog options");
         }
-        require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "terminal cleanup did not consume Runtime owners");
+        require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
+                    fj_test_catalog_live_owners() == 0,
+                "terminal cleanup did not consume Runtime owners");
+        ofx_test::ContextHost host;
+        auto* plugin = OfxGetPlugin(0);
+        require(plugin && plugin->setHost && plugin->mainEntry, "standard OFX descriptor missing");
+        plugin->setHost(host.binding());
+        require(plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) == kOfxStatOK, "OFX catalog module load");
+        struct ModuleGuard {
+            OfxPlugin* plugin;
+            ~ModuleGuard() {
+                if (plugin)
+                    (void)plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            }
+            OfxStatus close() {
+                auto* owner = std::exchange(plugin, nullptr);
+                return owner->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            }
+        } module{plugin};
+        require(plugin->mainEntry(kOfxImageEffectActionDescribeInContext, host.effect_handle(), host.context_handle(), nullptr) == kOfxStatOK,
+                "OFX catalog descriptor");
+        const auto verify_option = [&](const char* name, const std::string& key, const std::string* label) {
+            const auto definition = std::find_if(host.definitions.begin(), host.definitions.end(), [&](const auto& item) {
+                return item.name == name;
+            });
+            require(definition != host.definitions.end(), "catalog option descriptor missing");
+            const auto& keys = definition->properties.at(kOfxParamPropChoiceEnum);
+            const auto& labels = definition->properties.at(kOfxParamPropChoiceOption);
+            require(keys.size() == labels.size(), "catalog option labels differ in count");
+            const auto found = std::find(keys.begin(), keys.end(), ofx_test::Value{key});
+            require(found != keys.end(), "OFX catalog option key missing");
+            const auto index = static_cast<std::size_t>(std::distance(keys.begin(), found));
+            if (label)
+                require(labels[index] == ofx_test::Value{*label}, "OFX catalog film label differs");
+        };
+        verify_option("FilmProfileKey", filmKey, &filmLabel);
+        verify_option("PrintProfileKey", printKey, nullptr);
+        require(module.close() == kOfxStatOK && !host.callback_error, "OFX catalog module unload");
+        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "OFX descriptor retained catalog owners");
     }
 
-    void bundled_cold_and_warm_publication() {
-        const auto root = JuicerProcess::data_directory();
-        JuicerProcess::ProcessRuntime runtime;
+    void bundled_cold_and_warm_publication(const fs::path& root) {
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create(root);
-        const auto& catalog = runtime.spektrafilm_profile_catalog();
-        require(catalog.valid, "bundled production catalog unavailable");
-        std::size_t logical = 0;
-        std::size_t capacity = 0;
-        for (const auto* entries : {&catalog.filmProfiles, &catalog.printProfiles}) {
-            logical += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
-            capacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
-            for (const auto& entry : *entries) {
-                logical += entry.key.size() + entry.label.size();
-                capacity += entry.key.capacity() + entry.label.capacity();
+        {
+            Catalog catalog(runtime.borrow().assets);
+            require(catalog.counts.film_count != 0 && catalog.counts.print_count != 0, "bundled production catalog unavailable");
+            std::uintptr_t backing = 0;
+            require_status(fj_test_catalog_backing_identity(catalog.handle, &backing, nullptr), FJ_STATUS_SUCCESS);
+            const auto* const label = catalog.entry(FJ_PROFILE_ROLE_FILM, 0).label.data;
+            require(backing != 0, "bundled catalog backing missing");
+            struct Reentry {
+                const FjAssets* assets = nullptr;
+                FjCatalog* nested = nullptr;
+                FjCatalogCounts counts{};
+                FjStatus status{};
+                ~Reentry() {
+                    if (nested)
+                        (void)fj_test_catalog_release(nested, nullptr);
+                }
+            } reentry{runtime.borrow().assets};
+            struct HookGuard {
+                ~HookGuard() {
+                    fj_test_catalog_publication_hook(nullptr, nullptr);
+                }
+            } hookGuard;
+            fj_test_catalog_publication_hook([](void* user) noexcept {
+                auto& item = *static_cast<Reentry*>(user);
+                item.status = fj_test_catalog_acquire(item.assets, &item.nested, &item.counts, nullptr);
+            },
+                                             &reentry);
+            {
+                Catalog outer(runtime.borrow().assets);
+                const auto release = [](FjCatalog* value) noexcept {
+                    if (value)
+                        (void)fj_test_catalog_release(value, nullptr);
+                };
+                std::unique_ptr<FjCatalog, decltype(release)> nested(std::exchange(reentry.nested, nullptr), release);
+                require_status(reentry.status, FJ_STATUS_SUCCESS);
+                require(nested && reentry.counts.film_count == catalog.counts.film_count &&
+                            reentry.counts.print_count == catalog.counts.print_count,
+                        "reentrant catalog acquisition did not complete");
+                std::uintptr_t inner = 0, outerIdentity = 0;
+                require_status(fj_test_catalog_backing_identity(nested.get(), &inner, nullptr), FJ_STATUS_SUCCESS);
+                require_status(fj_test_catalog_backing_identity(outer.handle, &outerIdentity, nullptr), FJ_STATUS_SUCCESS);
+                require(inner == backing && outerIdentity == backing, "reentrant acquisition did not share real catalog backing");
             }
+            for (unsigned i = 0; i < 32; ++i) {
+                Catalog warm(runtime.borrow().assets);
+                std::uintptr_t repeated = 0;
+                require_status(fj_test_catalog_backing_identity(warm.handle, &repeated, nullptr), FJ_STATUS_SUCCESS);
+                require(repeated == backing && warm.entry(FJ_PROFILE_ROLE_FILM, 0).label.data == label &&
+                            fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 2,
+                        "warm catalog did not retain the same backing and key bytes");
+            }
+            require(fj_test_catalog_live_owners() == 1, "warm catalog handles leaked");
         }
-        const auto* publication = &catalog;
-        const auto* label = catalog.filmProfiles.front().label.data();
-        for (unsigned i = 0; i < 32; ++i) {
-            const auto& warm = runtime.spektrafilm_profile_catalog();
-            require(&warm == publication && warm.filmProfiles.front().label.data() == label &&
-                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
-                    "warm Runtime publication converted or retained Rust catalog handles");
-        }
-        std::printf("Catalog bundled cold native record-plus-field logical=%zu bytes capacity=%zu bytes; transient native candidate peak=one complete copy; cold conversions=1 warm calls=32 Runtime owners=1/0\n",
-                    logical,
-                    capacity);
         require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
                     fj_test_catalog_live_owners() == 0,
                 "bundled Runtime publication did not close cleanly");
     }
 } // namespace
-
-namespace JuicerAssets::CatalogTest {
-    void before_conversion(FjCatalogCounts& counts) {
-        switch (std::exchange(conversionFault, 0)) {
-            case 1:
-                throw std::bad_alloc();
-            case 2:
-                counts.film_count = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1;
-                break;
-            default:
-                break;
-        }
-    }
-    void before_source_diagnostic() {
-        if (std::exchange(diagnosticFault, false)) {
-            throw std::bad_alloc();
-        }
-    }
-} // namespace JuicerAssets::CatalogTest
 
 int main(int argc, char** argv) {
     try {
@@ -429,7 +501,7 @@ int main(int argc, char** argv) {
                 JuicerTests::list_case("catalog_owner", id);
             return 0;
         }
-        require(argc == 2, "catalog fixture needs scratch path");
+        require(argc == 3, "catalog fixture needs scratch and bundled Resources paths");
         const fs::path scratch(argv[1]);
         fs::remove_all(scratch);
         minimal_catalog(scratch / "minimal");
@@ -452,12 +524,12 @@ int main(int argc, char** argv) {
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "native publication leaked");
         {
             JuicerTests::CaseEvent event("catalog_owner", "exact_paths_and_consumers");
-            exact_paths_and_consumers(scratch);
+            exact_paths_and_consumers({.scratch = scratch, .bundled = argv[2]});
             event.passed();
         }
         {
             JuicerTests::CaseEvent event("catalog_owner", "bundled_publication");
-            bundled_cold_and_warm_publication();
+            bundled_cold_and_warm_publication(argv[2]);
             event.passed();
         }
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "bundled publication owners accumulated after drop");

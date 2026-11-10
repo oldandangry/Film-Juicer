@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace ScannerPostTest {
     FjScannerPostEffectsInput wire(const Json& in) {
         float values[6];
@@ -18,7 +19,7 @@ namespace ScannerPostTest {
     void values(const Json& rows) {
         for (const auto& row : rows) {
             auto input = wire(row.at("input"));
-            const std::array<std::pair<std::string_view, decltype(&fj_legacy_scanner_post_describe)>, 2> callers{{{"cpp", fj_legacy_scanner_post_describe}, {"c11", fj_test_scanner_post_describe}}};
+            const std::array<std::pair<std::string_view, decltype(&fj_test_scanner_post_describe)>, 2> callers{{{"cpp", fj_test_scanner_post_describe}, {"c11", fj_test_scanner_post_describe}}};
             for (const auto& [caller, describe] : callers) {
                 JuicerTests::CaseEvent case_event(caller, row.at("id").get_ref<const std::string&>());
                 FjScannerPostEffectsDescriptor d;
@@ -183,50 +184,51 @@ namespace ScannerPostTest {
         lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources, const Json& rows) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent route_event("cpp", "scanner-post/route/" + std::to_string(route));
             const auto rowIndex = static_cast<Json::size_type>(route) * 100;
             const auto selected = static_cast<Spektrafilm::ScanRoute>(route);
             auto controls = FilmReferenceTest::controls(1, selected, 0);
-            controls.dirCouplers.active = false;
-            controls.grainControls.active = false;
+            controls.values.dir_couplers.active = false;
+            controls.values.grain.active = false;
             const auto source = wire(rows.at(rowIndex).at("input"));
-            controls.glarePercent = source.glare_percent;
-            controls.glareRoughness = source.glare_roughness;
-            controls.glareBlurSigmaPx = source.glare_blur_sigma_px;
-            controls.scannerLensBlurSigmaPx = source.lens_blur_sigma_px;
-            controls.scannerUnsharpMask = {source.unsharp_sigma_px, source.unsharp_amount};
-            controls.glareActive = source.glare_active != 0;
+            controls.values.glare_percent = source.glare_percent;
+            controls.values.glare_roughness = source.glare_roughness;
+            controls.values.glare_blur_sigma_px = source.glare_blur_sigma_px;
+            controls.values.scanner_lens_blur_sigma_px = source.lens_blur_sigma_px;
+            controls.values.scanner_unsharp_mask[0] = source.unsharp_sigma_px;
+            controls.values.scanner_unsharp_mask[1] = source.unsharp_amount;
+            controls.values.glare_active = source.glare_active != 0;
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
             const auto initial = view.scanner_post_effects;
             require(project(initial) == rows.at(rowIndex).at("native").at("descriptor"), "actual route schedule complete post product");
-            controls.scannerLensBlurSigmaPx = 2.0;
+            controls.values.scanner_lens_blur_sigma_px = 2.0;
             auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView changed{};
             status(changedProduct.view(changed, error));
             require(changed.scanner_post_effects.hash != initial.hash && changed.scanner_lut.hash == view.scanner_lut.hash, "post-only change preserves actual LUT descriptor dependency");
-            controls.scannerLensBlurSigmaPx = source.lens_blur_sigma_px;
+            controls.values.scanner_lens_blur_sigma_px = source.lens_blur_sigma_px;
             auto warmProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView warm{};
             status(warmProduct.view(warm, error));
             require(project(warm.scanner_post_effects) == project(initial), "warm route constructor preserves complete post identity");
             status(fj_test_scanner_post_fault(2));
             status(fj_test_scanner_lut_descriptor_fault(1));
-            const auto prepare = [&](std::optional<PreparedState>& out, std::array<char, 2048>& text) {
+            const auto prepare = [&](std::optional<JuicerTestSupport::PreparedStateHold>& out, std::array<char, 2048>& text) {
                 FjErrorBuffer prepareError{text.data(), text.size(), 0};
-                return prepare_state(
+                return JuicerTestSupport::prepare_state(
                     owner.borrow().assets,
                     controls,
                     out,
                     prepareError);
             };
             bool early = false;
-            std::optional<PreparedState> failedProduct;
+            std::optional<JuicerTestSupport::PreparedStateHold> failedProduct;
             std::array<char, 2048> failureText{};
             const FjStatus lutFailure = prepare(failedProduct, failureText);
             early = lutFailure.category != FJ_STATUS_SUCCESS && !failedProduct;

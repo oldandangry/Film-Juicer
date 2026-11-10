@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace PrintBalanceTest {
     void metadata(const FjPrintBalanceFailure& failure, std::uint32_t reason, std::uint32_t channel = UINT32_MAX);
     void zero(const FjPrintBalance& out);
@@ -48,8 +49,8 @@ namespace PrintBalanceTest {
         return true;
     }
     void prepare_cache(const FjAssets* assets,
-                       PreparedState& state,
-                       const ParamSnapshot& controls,
+                       JuicerTestSupport::PreparedStateHold& state,
+                       const JuicerTestSupport::PreparationInput& controls,
                        JuicerCuda::Resources& resources,
                        JuicerCuda::Failure& failure,
                        std::uint64_t& contentHash,
@@ -118,7 +119,7 @@ namespace PrintBalanceTest {
 
     Json product_observations(const std::filesystem::path& resources, const Json& expectedProducts) {
         Json products = Json::array();
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         std::vector<std::string> product_ids;
         for (unsigned route = 0; route < 4; ++route)
@@ -131,31 +132,34 @@ namespace PrintBalanceTest {
                 for (unsigned variant = 0; variant < 10; ++variant) {
                     auto case_event = product_rows.case_event("print-balance/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
                     auto p = PrintPreflashTest::controls();
-                    p.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                    p.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                    p.spectralUpsamplingMode = mode;
-                    if (variant == 1)
-                        p.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
+                    p.values.scan_route = static_cast<std::uint32_t>(route);
+                    p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                    p.values.spectral_upsampling_mode = mode;
+                    if (variant == 1) {
+                        p.values.print_ui_ymc_cc[0] = 2.1234567890123;
+                        p.values.print_ui_ymc_cc[1] = 3.2345678901234;
+                        p.values.print_ui_ymc_cc[2] = 4.3456789012345;
+                    }
                     if (variant == 2)
-                        p.outputCctfEncoding = 0;
+                        p.values.output_cctf_encoding = 0;
                     if (variant == 3)
-                        p.printPreflashExposure = .25;
+                        p.values.print_preflash_exposure = .25;
                     if (variant == 4)
-                        p.cameraExposureCompensationEv = 1.25;
+                        p.values.camera_exposure_compensation_ev = 1.25;
                     if (variant == 5)
-                        p.cameraExposureCompensationEv = -0.5;
+                        p.values.camera_exposure_compensation_ev = -0.5;
                     if (variant == 6)
-                        p.cameraAutoExposureEnabled = 1;
+                        p.values.camera_auto_exposure_enabled = 1;
                     if (variant == 7)
-                        p.filmGammaFactor = 1.13f;
+                        p.values.film_gamma_factor = 1.13f;
                     if (variant == 8)
-                        p.printExposureCompensation = 0;
+                        p.values.print_exposure_compensation = 0;
                     if (variant == 9)
-                        p.enlIll = 1;
+                        p.values.enl_ill = 1;
                     std::array<char, 2048> diagnostic{};
                     FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-                    std::optional<PreparedState> product;
-                    const auto resultStatus = prepare_state(owner.borrow().assets, p, product, error);
+                    std::optional<JuicerTestSupport::PreparedStateHold> product;
+                    const auto resultStatus = JuicerTestSupport::prepare_state(owner.borrow().assets, p, product, error);
                     require(resultStatus.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
                     FjPreparedStateView view{};
                     status(product->view(view, error));
@@ -163,7 +167,7 @@ namespace PrintBalanceTest {
                     auto balance = project(view.print_balance);
                     const auto factors = JuicerTestSupport::captured_print_factors(view);
                     balance["scalars"] = words(factors.data(), factors.size());
-                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", hash_params(p)}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"final_hash", view.recipe_hash}, {"upload_hash", view.upload_core_hash}};
+                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"final_hash", view.recipe_hash}, {"upload_hash", view.upload_core_hash}};
                     if (route % 2) {
                         result["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
                         result["film_channel_density_cmy"] = words(print.film_density_cmy.data, print.film_density_cmy.count);
@@ -233,7 +237,7 @@ namespace PrintBalanceTest {
             Inputs source(row);
             const auto input = source.wire();
             const auto expected = manifest.at("outcomes").at(row.at("id").get<std::string>());
-            const std::array<std::pair<std::string_view, Prepare>, 2> callers{{{"cpp", fj_legacy_print_balance_prepare}, {"c11", fj_test_print_balance_prepare}}};
+            const std::array<std::pair<std::string_view, Prepare>, 2> callers{{{"cpp", fj_test_print_balance_prepare}, {"c11", fj_test_print_balance_prepare}}};
             for (const auto& [caller, prepare] : callers) {
                 JuicerTests::CaseEvent case_event(caller, id);
                 FjPrintBalance out{};
@@ -272,7 +276,7 @@ namespace PrintBalanceTest {
         JuicerTests::Cohort preparation_faults("print_balance.panic", fault_ids);
         JuicerTests::Cohort malformed_errors("print_balance.malformed_error", malformed_error_ids);
         unsigned caller_index = 0;
-        for (Prepare prepare : {fj_legacy_print_balance_prepare, fj_test_print_balance_prepare}) {
+        for (Prepare prepare : {fj_test_print_balance_prepare, fj_test_print_balance_prepare}) {
             auto input = source.wire();
             FjPrintBalance out{};
             FjPrintBalanceFailure failure{};
@@ -419,15 +423,15 @@ namespace PrintBalanceTest {
         transport_event.passed();
     }
     void caller(const std::filesystem::path& resources) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         auto p = PrintPreflashTest::controls();
         JuicerTests::Cohort normalization_rows("print_balance.normalize_compensate", {"normalize-0/compensate-0", "normalize-0/compensate-1", "normalize-1/compensate-0", "normalize-1/compensate-1"});
         for (int normalize : {0, 1})
             for (int compensate : {0, 1}) {
                 auto row_event = normalization_rows.case_event("normalize-" + std::to_string(normalize) + "/compensate-" + std::to_string(compensate));
-                p.normalizePrintExposure = normalize;
-                p.printExposureCompensation = compensate;
+                p.values.normalize_print_exposure = normalize;
+                p.values.print_exposure_compensation = compensate;
                 const auto product = PrintPreflashTest::build(owner.borrow().assets, p);
                 std::array<char, 2048> text{};
                 FjErrorBuffer error{text.data(), text.size(), 0};
@@ -437,7 +441,7 @@ namespace PrintBalanceTest {
                 row_event.passed();
             }
         p = PrintPreflashTest::controls();
-        RenderInstance state;
+        JuicerTestSupport::InstanceFixture state;
         JuicerTestSupport::capture(state, p);
         const auto original = JuicerTestSupport::admit(owner.borrow().assets, state);
         require(original.kind == FJ_ADMISSION_READY && original.state, "balance actual publication baseline");
@@ -451,13 +455,13 @@ namespace PrintBalanceTest {
                     JuicerTestSupport::PublicationObserver::backing(*reused.state) == originalMetrics.backingIdentity &&
                     JuicerTestSupport::PublicationObserver::metrics(state).build == counter,
                 "identical current snapshot reuses complete publication without balance construction");
-        p.cameraExposureCompensationEv = .25;
+        p.values.camera_exposure_compensation_ev = .25;
         JuicerTestSupport::capture(state, p);
         const auto published = JuicerTestSupport::admit(owner.borrow().assets, state);
         const auto publishedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
         require(published.kind == FJ_ADMISSION_READY && published.state &&
                     JuicerTestSupport::PublicationObserver::backing(*published.state) != originalMetrics.backingIdentity &&
-                    publishedMetrics.publishedIdentity == hash_params(p) && publishedMetrics.build == counter + 1 &&
+                    publishedMetrics.publishedIdentity == JuicerTestSupport::hash_input_identity(p) && publishedMetrics.build == counter + 1 &&
                     published.state->build() == counter + 1,
                 "complete Rust balance construction publishes without visiting the raw facade fault");
         require(project(JuicerTestSupport::published_view(original).print_balance) == originalBalance,
@@ -475,7 +479,7 @@ namespace PrintBalanceTest {
         auto activeControls = PrintPreflashTest::controls();
         auto active = PrintPreflashTest::build(owner.borrow().assets, activeControls);
         status(fj_test_film_recipe_fault(12, 1));
-        p.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        p.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan);
         auto direct = PrintPreflashTest::build(owner.borrow().assets, p);
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
@@ -531,7 +535,7 @@ namespace PrintBalanceTest {
 namespace PrintBalanceTest {
     void cache(const std::filesystem::path& resources) {
         JuicerTests::CaseEvent cache_event("cpp", "print-balance/cache");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         PrintPreflashTest::cuda_ok(cudaSetDevice(0));
         PrintPreflashTest::cuda_ok(cudaFree(nullptr));
@@ -547,7 +551,7 @@ namespace PrintBalanceTest {
         JuicerCuda::Failure failure;
         {
             JuicerCuda::Resources cached(key, 1, ledger);
-            const auto prepare = [&](PreparedState& product, const ParamSnapshot& snapshot, bool consume = true) {
+            const auto prepare = [&](JuicerTestSupport::PreparedStateHold& product, const JuicerTestSupport::PreparationInput& snapshot, bool consume = true) {
                 std::uint64_t contentHash = 0;
                 status(fj_test_film_recipe_fault(12, 1));
                 prepare_cache(owner.borrow().assets, product, snapshot, cached, failure, contentHash, consume);
@@ -565,19 +569,22 @@ namespace PrintBalanceTest {
                 auto variant_event = variants.case_event(std::to_string(variant));
                 auto p = controls;
                 if (variant == 0)
-                    p.printPreflashExposure = .25;
+                    p.values.print_preflash_exposure = .25;
                 if (variant == 1)
-                    p.outputCctfEncoding = 0;
+                    p.values.output_cctf_encoding = 0;
                 if (variant == 2)
-                    p.cameraExposureCompensationEv = 1.25;
+                    p.values.camera_exposure_compensation_ev = 1.25;
                 if (variant == 3)
-                    p.filmGammaFactor = 1.13f;
-                if (variant == 4)
-                    p.printUiYmcCc = {2.0, 3.0, 4.0};
+                    p.values.film_gamma_factor = 1.13f;
+                if (variant == 4) {
+                    p.values.print_ui_ymc_cc[0] = 2.0;
+                    p.values.print_ui_ymc_cc[1] = 3.0;
+                    p.values.print_ui_ymc_cc[2] = 4.0;
+                }
                 if (variant == 5)
-                    p.filmProfileKey = "kodak_ektar_100";
+                    p.film_key = "kodak_ektar_100";
                 if (variant == 6)
-                    p.printProfileKey = "fujifilm_crystal_archive_typeii";
+                    p.print_key = "fujifilm_crystal_archive_typeii";
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, p);
                 prepare(changed, p);
                 require((cached.printBalanceDescriptorHash == balanceHash) == (variant < 2), "balance descriptor preserves unrelated/preflash reuse and invalidates reference/gamma/main inputs");
@@ -595,8 +602,8 @@ namespace PrintBalanceTest {
             for (unsigned mode = 0; mode < 4; ++mode) {
                 mode_events.push_back(std::make_unique<JuicerTests::CaseEvent>("print_balance.cache_modes", std::to_string(mode)));
                 auto p = controls;
-                p.normalizePrintExposure = (mode & 2u) != 0;
-                p.printExposureCompensation = (mode & 1u) != 0;
+                p.values.normalize_print_exposure = (mode & 2u) != 0;
+                p.values.print_exposure_compensation = (mode & 1u) != 0;
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, p);
                 contentHashes[mode] = prepare(changed, p);
                 descriptorHashes[mode] = cached.printBalanceDescriptorHash;
@@ -610,8 +617,8 @@ namespace PrintBalanceTest {
             for (bool film : {false, true}) {
                 auto source_event = sources.case_event(film ? "1" : "0");
                 auto changedControls = controls;
-                changedControls.filmProfileKey = film ? "kodak_ektar_100" : controls.filmProfileKey;
-                changedControls.printProfileKey = film ? controls.printProfileKey : "fujifilm_crystal_archive_typeii";
+                changedControls.film_key = film ? "kodak_ektar_100" : controls.film_key;
+                changedControls.print_key = film ? controls.print_key : "fujifilm_crystal_archive_typeii";
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, changedControls);
                 prepare(changed, changedControls);
                 require(cached.printBalanceDescriptorHash != balanceHash, "both source tokens contribute to balance descriptor identity");

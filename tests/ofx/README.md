@@ -1,7 +1,9 @@
 # OFX host fixtures
 
-`Ofx.Host.Module` calls the real default-feature Rust candidate descriptor through
-`native/juicer_ofx_api.h`, linked with the existing native Runtime owner. It checks
+`Ofx.Host.Module` calls the real default-feature Rust descriptor through the
+small native discovery shim in `native/ofx_exports.cpp` and
+`native/juicer_ofx_api.h`. Rust owns OFX callbacks and lifecycle; native CUDA Root
+retains CUDA resources and frame admission. It checks
 discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
 Unload. Describe compares thirteen authored properties plus host-seeded
 `OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
@@ -18,14 +20,13 @@ late panic cleanup, admitted panic exclusion and invalidated-load rollback. The
 feature-only pause controls report bounded-wait expiry as failed evidence. Native
 path cases compare two literal parent extractions before normalization against
 the C++ filesystem expression, including an immediate dot component.
-`Ofx.Host.Context` compares the candidate DescribeInContext action with the live
-C++ descriptor and an independent 128-name/type census. `Ofx.Host.ContextControls`
+`Ofx.Host.Context` compares the candidate DescribeInContext action with an independent 128-name/type census. `Ofx.Host.ContextControls`
 uses the real Runtime with test-support fault controls for catalog readiness,
 recoverable allocation and panic containment. These checks exercise descriptor
 declarations, not instance parameter values or rendering.
 
 `Ofx.Host.Instance` compares actual default-feature create/change/destroy
-callbacks with the unchanged C++ adapter, using an independent ordered census of
+callbacks with an independent ordered census of
 113 typed parameters and Source/Output. Its eight named cases cover acquisition,
 actions, typed current getters/setters, UI edits, reentry and terminal cleanup.
 `Ofx.Host.Capture` has eleven named cases and observes the existing safe
@@ -34,28 +35,29 @@ capture and 36 edit witnesses with their original four-preset manifest and
 approved overlay reader. `Ofx.Host.InstanceControls` has five named cases for
 recoverable allocation, panic, failed-create retention, terminal cleanup and
 capture interleavings. The latter two executables use only test-support Rust;
-the default-feature instance executable retains the independent live C++ oracle.
+the default-feature instance executable retains its independent test oracle.
 
 The additional `Ofx.Host.Actions`, `.Render` and `.RenderControls` groups exercise
 real default-feature callbacks, remaining default-action argument/status traces,
 ordered non-CUDA profile reads, callback-local image release and early-return
 precedence. Controls link only test-support Rust. Images acquired before metadata
-failure are released once, including the explicit correction of the C++ image
-constructor's failure-path leak. Finite frame positions outside `[-2^63,2^63)`
+failure are released once, including the corrected image-construction failure path. Finite frame positions outside `[-2^63,2^63)`
 are rejected with Fatal after the frame-rate getter, before native entry; earlier
 no-op and failure results retain precedence. Nonfinite frame positions normalize
 to zero only at frame assembly.
 
 `Ofx.Gpu.Render` uses actual device images, the default-feature descriptor and the
-retained C++ comparator. `Ofx.Gpu.RenderTrace` uses test-support controls for fixed
+independent test comparator. `Ofx.Gpu.RenderTrace` uses test-support controls for fixed
 identities, temporal/publication/submission and completion/recovery observations.
 It shares the existing instrumented processor failure hooks; original numerical
 expectations and readers stay independent. Both own the real callback image/native
 scope. No host-only fixture presents CPU storage as valid CUDA memory.
 
-The twelve host adapter groups compile with CUDA but run without a device. They
-and the two focused GPU groups preserve C++ shipping discovery; they do not
-install the candidate or establish installed-host or saved-project acceptance.
+The twelve OFX host-fixture groups compile with CUDA but run without a device. They
+and the two focused GPU groups exercise the Rust-owned descriptor and callbacks;
+they do not install the candidate or establish installed-host or saved-project acceptance.
+See the [ownership and maintenance map](../../CONTRIBUTING.md#ownership-and-maintenance-map)
+for the production discovery shim and Rust/native responsibilities.
 
 `RustBoundaryTests.test_ofx_callback_borrows` compiles seven real scoped/private/
 image/thread/escape consumers, including actual instance access, typed parameter borrows
@@ -148,12 +150,12 @@ Ordinary tests only read checked-in fixtures. `--emit-reference` is an explicit
 maintenance output aid, not an acceptance oracle: never adopt output from the
 implementation under test alone. Generate candidates under `out/validation/`,
 retain independent provenance, review them separately, and adopt an update only
-when its behavior is approved. Routine changes require automated renders, not a
-new user-supplied render or automatic baseline regeneration.
+when its behavior is approved. Changes affecting rendering use the owning
+automated fixtures; documentation-only work follows the public validation cadence.
 
 `Ofx.Gpu.FrameGeometry` uses `JuicerAdapterTraceProbe --frame-geometry
-<frame-manifest> <preset> <trace-output> <halation-manifest>` with the existing GPU lock and a finite
-180-second deadline. Its three isolated observations are completed full-domain,
+<frame-manifest> <preset> <trace-output> <halation-manifest>` with the existing GPU
+lock and no elapsed deadline. Its three isolated observations are completed full-domain,
 scalar-pixel and conditional effects-domain phases. The host independently records
 image acquisition property reads and the live clip canonical query/time. Effects
 off preserves acquisition reads and skips the conditional phase/query. Distinct

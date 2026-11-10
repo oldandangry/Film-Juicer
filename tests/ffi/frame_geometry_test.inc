@@ -1,3 +1,5 @@
+#include "juicer_test_api.h"
+#include "frame_fixture.h"
 namespace FrameGeometryTest {
     Json fields(FjExtent d) {
         return Json::array({d.x, d.y, d.width, d.height});
@@ -17,7 +19,7 @@ namespace FrameGeometryTest {
             const FjRect input{b.at(0), b.at(1), b.at(2), b.at(3)};
             if (!products) {
                 std::size_t call_index = 0;
-                for (auto prepare : {fj_legacy_frame_domain_prepare, fj_test_frame_domain_prepare, fj_test_frame_domain_c_prepare}) {
+                for (auto prepare : {fj_test_frame_domain_prepare, fj_test_frame_domain_prepare, fj_test_frame_domain_c_prepare}) {
                     JuicerTests::CaseEvent case_event(call_index == 2 ? "c11" : "cpp", id + "/api-" + std::to_string(call_index));
                     ++call_index;
                     FjExtent out{7, 8, 9, 10};
@@ -34,14 +36,14 @@ namespace FrameGeometryTest {
             }
             if (products) {
                 JuicerTests::CaseEvent case_event("cpp", id);
-                JuicerFrame::Domain out{};
-                JuicerFrame::Failure failure;
-                const bool ready = JuicerFrame::domain_from_bounds({input.x1, input.y1, input.x2, input.y2}, out, failure);
+                JuicerTestFixture::Frame::Domain out{};
+                JuicerTestFixture::Frame::Failure failure;
+                const bool ready = JuicerTestFixture::Frame::domain_from_bounds({input.x1, input.y1, input.x2, input.y2}, out, failure);
                 require(ready != row.at("range").get<bool>(), "native domain wrapper result");
                 if (ready)
                     require(Json::array({out.x, out.y, out.width, out.height}) == row.at("domain"), "native wrapper complete signed domain");
                 else
-                    require(failure.reason == JuicerFrame::FailureReason::DomainRange, "native typed range failure");
+                    require(failure.reason == JuicerTestFixture::Frame::FailureReason::DomainRange, "native typed range failure");
                 case_event.passed();
             }
         }
@@ -53,7 +55,7 @@ namespace FrameGeometryTest {
             const FjFrameGeometryInput input{d, std::bit_cast<float>(row.at("film_bits").get<std::uint32_t>())};
             if (!products) {
                 std::size_t call_index = 0;
-                for (auto prepare : {fj_legacy_frame_geometry_prepare, fj_test_frame_geometry_prepare, fj_test_frame_geometry_c_prepare}) {
+                for (auto prepare : {fj_test_frame_geometry_prepare, fj_test_frame_geometry_prepare, fj_test_frame_geometry_c_prepare}) {
                     JuicerTests::CaseEvent case_event(call_index == 2 ? "c11" : "cpp", id + "/api-" + std::to_string(call_index));
                     ++call_index;
                     FjFrameGeometry out{{7, 8, 9, 10}, -9};
@@ -67,9 +69,9 @@ namespace FrameGeometryTest {
             }
             if (products) {
                 JuicerTests::CaseEvent case_event("cpp", id);
-                JuicerFrame::Geometry out{};
-                JuicerFrame::Failure failure;
-                require(JuicerFrame::prepare_geometry({d.x, d.y, d.width, d.height}, input.film_format_long_edge_mm, out, failure), "native scalar wrapper accepts every contract result");
+                JuicerTestFixture::Frame::Geometry out{};
+                JuicerTestFixture::Frame::Failure failure;
+                require(JuicerTestFixture::Frame::prepare_geometry({d.x, d.y, d.width, d.height}, input.film_format_long_edge_mm, out, failure), "native scalar wrapper accepts every contract result");
                 require(Json::array({out.fullFrame.x, out.fullFrame.y, out.fullFrame.width, out.fullFrame.height}) == row.at("domain") &&
                             std::bit_cast<std::uint32_t>(out.pixelSizeUm) == row.at("pixel_bits") &&
                             std::bit_cast<std::uint64_t>(static_cast<double>(out.pixelSizeUm)) == row.at("diffusion_bits"),
@@ -198,9 +200,9 @@ namespace FrameGeometryTest {
         JuicerTests::Cohort raw_rows("frame_geometry.raw_input", raw_ids);
         JuicerTests::Cohort capacities("frame_geometry.diagnostic_capacity", capacity_ids);
         JuicerTests::Cohort panic_operations("frame_geometry.panic_operation", panic_ids);
-        raw<FjRect, FjExtent>(bounds, fj_legacy_frame_domain_prepare, 0, "domain", "legacy", raw_rows, capacities, panic_operations);
+        raw<FjRect, FjExtent>(bounds, fj_test_frame_domain_prepare, 0, "domain", "legacy", raw_rows, capacities, panic_operations);
         raw<FjRect, FjExtent>(bounds, fj_test_frame_domain_prepare, 0, "domain", "facade", raw_rows, capacities, panic_operations);
-        raw<FjFrameGeometryInput, FjFrameGeometry>(input, fj_legacy_frame_geometry_prepare, 1, "geometry", "legacy", raw_rows, capacities, panic_operations);
+        raw<FjFrameGeometryInput, FjFrameGeometry>(input, fj_test_frame_geometry_prepare, 1, "geometry", "legacy", raw_rows, capacities, panic_operations);
         raw<FjFrameGeometryInput, FjFrameGeometry>(input, fj_test_frame_geometry_prepare, 1, "geometry", "facade", raw_rows, capacities, panic_operations);
         status(fj_test_frame_geometry_fault(2, 1), 2);
         status(fj_test_frame_geometry_fault(0, 2), 2);
@@ -208,12 +210,12 @@ namespace FrameGeometryTest {
         std::thread other([&] {
             FjExtent out{};
             FjFrameGeometryFailure failure{};
-            status(fj_legacy_frame_domain_prepare(&bounds, &out, &failure, nullptr));
+            status(fj_test_frame_domain_prepare(&bounds, &out, &failure, nullptr));
         });
         other.join();
         FjExtent out{};
         FjFrameGeometryFailure failure{};
-        status(fj_legacy_frame_domain_prepare(&bounds, &out, &failure, nullptr), 8);
+        status(fj_test_frame_domain_prepare(&bounds, &out, &failure, nullptr), 8);
         status(fj_test_frame_geometry_fault(0, 0));
         status(fj_test_frame_geometry_fault(1, 0));
         boundary_event.passed();

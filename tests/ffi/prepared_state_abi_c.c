@@ -17,19 +17,19 @@ typedef FjStatus (*FjInstanceDestroyFn)(FjInstance*, FjErrorBuffer*);
 typedef FjStatus (*FjInstanceBindIdentityFn)(const FjInstance*, uint64_t, uint64_t, FjErrorBuffer*);
 typedef FjStatus (*FjInstanceIdentityFn)(const FjInstance*, uint32_t*, uint64_t*, uint64_t*, FjErrorBuffer*);
 typedef FjStatus (*FjInstanceInvalidateSubmissionFn)(const FjInstance*, int32_t, uintptr_t, uint32_t*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_instance_create, FjInstanceCreateFn: 1, default: 0), "instance create signature");
-_Static_assert(_Generic(&fj_legacy_instance_begin_capture, FjBeginCaptureFn: 1, default: 0), "begin capture signature");
-_Static_assert(_Generic(&fj_legacy_instance_capture_is_current, FjCaptureCurrentFn: 1, default: 0), "capture current signature");
-_Static_assert(_Generic(&fj_legacy_instance_begin_host_write, FjBeginHostWriteFn: 1, default: 0), "begin host write signature");
-_Static_assert(_Generic(&fj_legacy_host_write_finish, FjHostWriteFinishFn: 1, default: 0), "host write finish signature");
-_Static_assert(_Generic(&fj_legacy_instance_begin_snapshot, FjBeginSnapshotFn: 1, default: 0), "begin snapshot signature");
-_Static_assert(_Generic(&fj_legacy_instance_install, FjInstallFn: 1, default: 0), "install signature");
-_Static_assert(_Generic(&fj_legacy_instance_invalidate, FjInvalidateFn: 1, default: 0), "invalidate signature");
-_Static_assert(_Generic(&fj_legacy_instance_admit, FjAdmitFn: 1, default: 0), "instance admit signature");
-_Static_assert(_Generic(&fj_legacy_instance_destroy, FjInstanceDestroyFn: 1, default: 0), "instance destroy signature");
-_Static_assert(_Generic(&fj_legacy_instance_bind_identity, FjInstanceBindIdentityFn: 1, default: 0), "bind identity signature");
-_Static_assert(_Generic(&fj_legacy_instance_identity, FjInstanceIdentityFn: 1, default: 0), "read identity signature");
-_Static_assert(_Generic(&fj_legacy_instance_invalidate_submission, FjInstanceInvalidateSubmissionFn: 1, default: 0), "invalidate submission signature");
+_Static_assert(_Generic(&fj_test_instance_create, FjInstanceCreateFn: 1, default: 0), "instance create signature");
+_Static_assert(_Generic(&fj_test_instance_begin_capture, FjBeginCaptureFn: 1, default: 0), "begin capture signature");
+_Static_assert(_Generic(&fj_test_instance_capture_is_current, FjCaptureCurrentFn: 1, default: 0), "capture current signature");
+_Static_assert(_Generic(&fj_test_instance_begin_host_write, FjBeginHostWriteFn: 1, default: 0), "begin host write signature");
+_Static_assert(_Generic(&fj_test_host_write_finish, FjHostWriteFinishFn: 1, default: 0), "host write finish signature");
+_Static_assert(_Generic(&fj_test_instance_begin_snapshot, FjBeginSnapshotFn: 1, default: 0), "begin snapshot signature");
+_Static_assert(_Generic(&fj_test_instance_install, FjInstallFn: 1, default: 0), "install signature");
+_Static_assert(_Generic(&fj_test_instance_invalidate, FjInvalidateFn: 1, default: 0), "invalidate signature");
+_Static_assert(_Generic(&fj_test_instance_admit, FjAdmitFn: 1, default: 0), "instance admit signature");
+_Static_assert(_Generic(&fj_test_instance_destroy, FjInstanceDestroyFn: 1, default: 0), "instance destroy signature");
+_Static_assert(_Generic(&fj_test_instance_bind_identity, FjInstanceBindIdentityFn: 1, default: 0), "bind identity signature");
+_Static_assert(_Generic(&fj_test_instance_identity, FjInstanceIdentityFn: 1, default: 0), "read identity signature");
+_Static_assert(_Generic(&fj_test_instance_invalidate_submission, FjInstanceInvalidateSubmissionFn: 1, default: 0), "invalidate submission signature");
 
 _Static_assert(_Generic(((FjCaptureStart*)0)->capture, uint64_t: 1, default: 0), "capture ticket width");
 _Static_assert(_Generic(((FjCaptureStart*)0)->kind, uint32_t: 1, default: 0), "capture tag width");
@@ -101,220 +101,220 @@ uint32_t fj_test_instance_c_witness(const FjAssets* assets, const FjPreparationP
         }                                   \
     } while (0)
 
-    status = fj_legacy_instance_create(&instance, &error);
+    status = fj_test_instance_create(&instance, &error);
     FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && instance != NULL, 1);
-    status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+    status = fj_test_instance_admit(instance, assets, &admission, &error);
     FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_NEEDS_CAPTURE &&
                           admission.state == NULL && admission.input_identity == 0 && admission.build == 0 && admission.route == 0,
                       2);
 
     if (scenario == 0) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_REFRESH, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_REFRESH, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_NOT_STARTED && capture.capture == 0, 28);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED && capture.capture != 0, 3);
         ticket = capture.capture;
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &changed, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &changed, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && changed.kind == FJ_CAPTURE_NOT_STARTED && changed.capture == 0, 4);
-        status = fj_legacy_instance_capture_is_current(instance, ticket + 1, &current, &error);
+        status = fj_test_instance_capture_is_current(instance, ticket + 1, &current, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && current == 0, 5);
-        status = fj_legacy_instance_capture_is_current(instance, ticket, &current, &error);
+        status = fj_test_instance_capture_is_current(instance, ticket, &current, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && current == 1, 25);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && changed.kind == FJ_CAPTURE_STARTED && changed.capture > ticket, 6);
-        status = fj_legacy_instance_capture_is_current(instance, ticket, &current, &error);
+        status = fj_test_instance_capture_is_current(instance, ticket, &current, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && current == 0, 7);
         ticket = changed.capture;
 
-        status = fj_legacy_instance_begin_host_write(instance, ticket, &write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, ticket, &write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && start == FJ_HOST_WRITE_STARTED && write != NULL, 8);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURING && admission.state == NULL, 26);
-        status = fj_legacy_instance_begin_snapshot(instance, ticket, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_DEFERRED && snapshot.write_revision == 0, 9);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURING && admission.state == NULL, 27);
-        status = fj_legacy_instance_begin_host_write(instance, ticket, &rejected_write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, ticket, &rejected_write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && start == FJ_HOST_WRITE_IGNORED && rejected_write == NULL, 10);
-        status = fj_legacy_host_write_finish(write, FJ_HOST_WRITE_SUCCEEDED, empty, &refresh, &error);
+        status = fj_test_host_write_finish(write, FJ_HOST_WRITE_SUCCEEDED, empty, &refresh, &error);
         write = NULL;
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && refresh == 1, 11);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_NEEDS_REFRESH && admission.state == NULL, 12);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_REFRESH, &replacement, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_REFRESH, &replacement, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && replacement.kind == FJ_CAPTURE_STARTED && replacement.capture > ticket, 13);
         ticket = replacement.capture;
-        status = fj_legacy_instance_begin_host_write(instance, ticket, &write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, ticket, &write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && start == FJ_HOST_WRITE_NONE && write == NULL, 14);
-        status = fj_legacy_instance_begin_snapshot(instance, ticket, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 15);
         revision = snapshot.write_revision;
-        status = fj_legacy_instance_begin_snapshot(instance, ticket, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && snapshot.kind == FJ_SNAPSHOT_NONE && snapshot.write_revision == 0, 16);
-        status = fj_legacy_instance_begin_host_write(instance, ticket, &write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, ticket, &write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && start == FJ_HOST_WRITE_NONE && write == NULL, 17);
-        status = fj_legacy_instance_install(instance, ticket, revision + 1, params, 0, &update, &error);
+        status = fj_test_instance_install(instance, ticket, revision + 1, params, 0, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && update == FJ_UPDATE_NONE, 18);
-        status = fj_legacy_instance_install(instance, ticket, revision, params, 0, &update, &error);
+        status = fj_test_instance_install(instance, ticket, revision, params, 0, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 19);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && admission.state != NULL &&
                               admission.input_identity == 0 && admission.build == 1 && admission.route == FJ_LEGACY_ROUTE_NEGATIVE_DIRECT,
                           20);
         prepared = admission.state;
         admission.state = NULL;
-        status = fj_legacy_instance_destroy(instance, &error);
+        status = fj_test_instance_destroy(instance, &error);
         instance = NULL;
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS, 21);
-        status = fj_legacy_instance_create(&instance, &error);
+        status = fj_test_instance_create(&instance, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && instance != NULL, 22);
-        status = fj_legacy_instance_destroy(instance, &error);
+        status = fj_test_instance_destroy(instance, &error);
         instance = NULL;
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS, 23);
         {
             FjPreparedStateView view = {0};
-            status = fj_legacy_prepared_state_view(prepared, &view, &error);
+            status = fj_test_prepared_state_view(prepared, &view, &error);
             FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && view.recipe_hash != 0, 24);
         }
     } else if (scenario == 1) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 31);
-        status = fj_legacy_instance_invalidate(instance, capture.capture, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &update, &error);
+        status = fj_test_instance_invalidate(instance, capture.capture, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 32);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 33);
     } else if (scenario == 2) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 41);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && changed.kind == FJ_CAPTURE_STARTED, 42);
-        status = fj_legacy_instance_invalidate(instance, capture.capture, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &update, &error);
+        status = fj_test_instance_invalidate(instance, capture.capture, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_IGNORED, 43);
         snapshot.write_revision = UINT64_C(99);
         snapshot.kind = UINT32_C(99);
-        status = fj_legacy_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_IGNORED && snapshot.write_revision == 0, 47);
-        status = fj_legacy_instance_begin_snapshot(instance, changed.capture, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, changed.capture, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 44);
-        status = fj_legacy_instance_install(instance, changed.capture, snapshot.write_revision, params, 7, &update, &error);
+        status = fj_test_instance_install(instance, changed.capture, snapshot.write_revision, params, 7, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 45);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY &&
                               admission.input_identity == 7 && admission.state != NULL,
                           46);
         prepared = admission.state;
         admission.state = NULL;
     } else if (scenario == 3) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 51);
-        status = fj_legacy_instance_begin_host_write(instance, capture.capture, &write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, capture.capture, &write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && start == FJ_HOST_WRITE_STARTED && write != NULL, 52);
-        status = fj_legacy_host_write_finish(write, UINT32_C(99), malformed_diagnostic, &refresh, &error);
+        status = fj_test_host_write_finish(write, UINT32_C(99), malformed_diagnostic, &refresh, &error);
         write = NULL; /* The consuming call owns/frees this pointer for every result. */
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && refresh == 0, 53);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 54);
     } else if (scenario == 4) {
         capture.capture = UINT64_C(99);
         capture.kind = UINT32_C(99);
-        status = fj_legacy_instance_begin_capture(instance, UINT32_C(99), &capture, &error);
+        status = fj_test_instance_begin_capture(instance, UINT32_C(99), &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && capture.capture == 0 && capture.kind == FJ_CAPTURE_START_NONE, 61);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 62);
         ticket = capture.capture;
         current = UINT32_C(99);
-        status = fj_legacy_instance_capture_is_current(instance, ticket + 1, &current, &error);
+        status = fj_test_instance_capture_is_current(instance, ticket + 1, &current, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && current == 0, 63);
         snapshot.write_revision = UINT64_C(99);
         snapshot.kind = UINT32_C(99);
-        status = fj_legacy_instance_begin_snapshot(instance, ticket + 100, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket + 100, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && snapshot.write_revision == 0 && snapshot.kind == FJ_SNAPSHOT_NONE, 64);
-        status = fj_legacy_instance_begin_snapshot(instance, ticket, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 65);
         revision = snapshot.write_revision;
         update = UINT32_C(99);
-        status = fj_legacy_instance_install(instance, ticket, revision + 1, params, 0, &update, &error);
+        status = fj_test_instance_install(instance, ticket, revision + 1, params, 0, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && update == FJ_UPDATE_NONE, 66);
-        status = fj_legacy_instance_install(instance, ticket, revision, params, 0, &update, &error);
+        status = fj_test_instance_install(instance, ticket, revision, params, 0, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 67);
         admission.state = (FjPreparedState*)(uintptr_t)1;
         admission.input_identity = UINT64_C(99);
         admission.build = UINT64_C(99);
         admission.kind = UINT32_C(99);
         admission.route = UINT32_C(99);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && admission.state != NULL && admission.input_identity == 0 && admission.build == 1, 68);
     } else if (scenario == 5) {
         FjPreparationParams malformed = *params;
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 71);
         ticket = capture.capture;
-        status = fj_legacy_instance_begin_snapshot(instance, ticket, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, ticket, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 72);
         malformed.scan_route = UINT32_C(99);
-        status = fj_legacy_instance_install(instance, ticket, snapshot.write_revision, &malformed, UINT64_C(71), &update, &error);
+        status = fj_test_instance_install(instance, ticket, snapshot.write_revision, &malformed, UINT64_C(71), &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && update == FJ_UPDATE_APPLIED, 73);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 74);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && changed.kind == FJ_CAPTURE_STARTED, 75);
-        status = fj_legacy_instance_install(instance, ticket, snapshot.write_revision, &malformed, UINT64_C(72), &update, &error);
+        status = fj_test_instance_install(instance, ticket, snapshot.write_revision, &malformed, UINT64_C(72), &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_IGNORED, 76);
-        status = fj_legacy_instance_begin_snapshot(instance, changed.capture, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, changed.capture, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 77);
-        status = fj_legacy_instance_install(instance, changed.capture, snapshot.write_revision, params, UINT64_C(73), &update, &error);
+        status = fj_test_instance_install(instance, changed.capture, snapshot.write_revision, params, UINT64_C(73), &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 78);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && admission.input_identity == UINT64_C(73), 79);
     } else if (scenario == 6) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 81);
-        status = fj_legacy_instance_invalidate(instance, capture.capture, FJ_CAPTURE_INVALID_CONTROLS, empty, &update, &error);
+        status = fj_test_instance_invalidate(instance, capture.capture, FJ_CAPTURE_INVALID_CONTROLS, empty, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 82);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 83);
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_CHANGE, &changed, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && changed.kind == FJ_CAPTURE_STARTED, 84);
-        status = fj_legacy_instance_invalidate(instance, changed.capture, FJ_CAPTURE_ALLOCATION_FAILURE, empty, &update, &error);
+        status = fj_test_instance_invalidate(instance, changed.capture, FJ_CAPTURE_ALLOCATION_FAILURE, empty, &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 85);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_ALLOCATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 86);
     } else if (scenario == 7) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 91);
-        status = fj_legacy_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 92);
-        status = fj_legacy_instance_install(instance, capture.capture, snapshot.write_revision, params, UINT64_C(91), &update, &error);
+        status = fj_test_instance_install(instance, capture.capture, snapshot.write_revision, params, UINT64_C(91), &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 93);
         fj_test_prepared_contents_reservation_failure();
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_ALLOCATION_FAILURE && admission.kind == FJ_ADMISSION_PREPARATION_FAILED && admission.state == NULL, 94);
         FJ_INSTANCE_CHECK(fj_test_prepared_contents_reservation_failure_consumed() == 1, 95);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && admission.state != NULL && admission.input_identity == UINT64_C(91) && admission.build == 1, 96);
     } else if (scenario == 8) {
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 101);
-        status = fj_legacy_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
+        status = fj_test_instance_begin_snapshot(instance, capture.capture, &snapshot, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && snapshot.kind == FJ_SNAPSHOT_READY, 102);
-        status = fj_legacy_instance_install(instance, capture.capture, snapshot.write_revision, params, UINT64_C(101), &update, &error);
+        status = fj_test_instance_install(instance, capture.capture, snapshot.write_revision, params, UINT64_C(101), &update, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && update == FJ_UPDATE_APPLIED, 103);
         FJ_INSTANCE_CHECK(fj_test_spectral_arm_fault(3, 1, 2).category == FJ_STATUS_SUCCESS, 106);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_INTERNAL_FAILURE && admission.kind == FJ_ADMISSION_POISONED && admission.state == NULL, 104);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_INTERNAL_FAILURE && admission.kind == FJ_ADMISSION_POISONED && admission.state == NULL, 105);
     } else if (scenario == 9) {
         static const char invalid_utf8[] = {(char)0xff};
         FjStringView malformed_text = {invalid_utf8, sizeof(invalid_utf8)};
-        status = fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
+        status = fj_test_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && capture.kind == FJ_CAPTURE_STARTED, 111);
-        status = fj_legacy_instance_begin_host_write(instance, capture.capture, &write, &start, &error);
+        status = fj_test_instance_begin_host_write(instance, capture.capture, &write, &start, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_SUCCESS && start == FJ_HOST_WRITE_STARTED && write != NULL, 112);
-        status = fj_legacy_host_write_finish(write, FJ_CAPTURE_HOST_FAILURE, malformed_text, &refresh, &error);
+        status = fj_test_host_write_finish(write, FJ_CAPTURE_HOST_FAILURE, malformed_text, &refresh, &error);
         write = NULL; /* Invalid diagnostics still consume and fail the safe guard as Host. */
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_UNSUPPORTED_INPUT && refresh == 0, 113);
-        status = fj_legacy_instance_admit(instance, assets, &admission, &error);
+        status = fj_test_instance_admit(instance, assets, &admission, &error);
         FJ_INSTANCE_CHECK(status.category == FJ_STATUS_PREPARATION_FAILURE && admission.kind == FJ_ADMISSION_CAPTURE_FAILED && admission.state == NULL, 114);
     } else {
         failure = 90;
@@ -322,17 +322,17 @@ uint32_t fj_test_instance_c_witness(const FjAssets* assets, const FjPreparationP
 
 cleanup:
     if (write) {
-        (void)fj_legacy_host_write_finish(write, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &refresh, &error);
+        (void)fj_test_host_write_finish(write, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &refresh, &error);
         write = NULL;
     }
     if (rejected_write)
-        (void)fj_legacy_host_write_finish(rejected_write, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &refresh, &error);
+        (void)fj_test_host_write_finish(rejected_write, FJ_CAPTURE_HOST_FAILURE, host_diagnostic, &refresh, &error);
     if (admission.state)
-        (void)fj_legacy_prepared_state_release(admission.state, &error);
+        (void)fj_test_prepared_state_release(admission.state, &error);
     if (prepared)
-        (void)fj_legacy_prepared_state_release(prepared, &error);
+        (void)fj_test_prepared_state_release(prepared, &error);
     if (instance)
-        (void)fj_legacy_instance_destroy(instance, &error);
+        (void)fj_test_instance_destroy(instance, &error);
 #undef FJ_INSTANCE_CHECK
     return failure;
 }
@@ -389,9 +389,9 @@ _Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, d
 _Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerLutFn: 1, default: 0), "scanner LUT callback signature");
 _Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->trace_submission, FjTraceSubmissionFn: 1, default: 0), "submission trace signature");
-_Static_assert(_Generic(&fj_legacy_prepared_state_frame_policy, FjPolicyEntryFn: 1, default: 0), "frame policy entry signature");
-_Static_assert(_Generic(&fj_legacy_prepared_state_render, FjRenderEntryFn: 1, default: 0), "prepared render entry signature");
-_Static_assert(_Generic(&fj_legacy_prepared_unavailable, FjUnavailableEntryFn: 1, default: 0), "unavailable entry signature");
+_Static_assert(_Generic(&fj_test_prepared_state_frame_policy, FjPolicyEntryFn: 1, default: 0), "frame policy entry signature");
+_Static_assert(_Generic(&fj_test_prepared_state_render, FjRenderEntryFn: 1, default: 0), "prepared render entry signature");
+_Static_assert(_Generic(&fj_test_prepared_unavailable, FjUnavailableEntryFn: 1, default: 0), "unavailable entry signature");
 _Static_assert(_Generic(&fj_test_with_host_preparation, FjHostPreparationScopeFn: 1, default: 0), "scoped preparation facade signature");
 
 static FjStatus consume_host_preparation(void* user, const FjHostPreparation* preparation, FjErrorBuffer* error) {
@@ -474,52 +474,52 @@ const size_t* fj_test_prepared_state_c_facts(size_t* count) {
 }
 
 FjStatus fj_test_prepared_state_create_c(const FjAssets* assets, const FjPreparationParams* params, FjPreparedState** out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*) = fj_legacy_prepared_state_create;
+    FjStatus (*call)(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*) = fj_test_prepared_state_create;
     return call(assets, params, out, error);
 }
 FjStatus fj_test_prepared_state_view_c(const FjPreparedState* state, FjPreparedStateView* out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*) = fj_legacy_prepared_state_view;
+    FjStatus (*call)(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*) = fj_test_prepared_state_view;
     return call(state, out, error);
 }
 FjStatus fj_test_prepared_state_release_c(FjPreparedState* state, FjErrorBuffer* error) {
-    FjStatus (*call)(FjPreparedState*, FjErrorBuffer*) = fj_legacy_prepared_state_release;
+    FjStatus (*call)(FjPreparedState*, FjErrorBuffer*) = fj_test_prepared_state_release;
     return call(state, error);
 }
 
 FjStatus fj_test_prepared_illuminants_acquire_c(const FjAssets* assets, FjIlluminantsOwner** out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjAssets*, FjIlluminantsOwner**, FjErrorBuffer*) = fj_legacy_assets_illuminants_acquire;
+    FjStatus (*call)(const FjAssets*, FjIlluminantsOwner**, FjErrorBuffer*) = fj_test_assets_illuminants_acquire;
     return call(assets, out, error);
 }
 FjStatus fj_test_prepared_illuminants_view_c(const FjIlluminantsOwner* owner, FjIlluminantsView* out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjIlluminantsOwner*, FjIlluminantsView*, FjErrorBuffer*) = fj_legacy_illuminants_view;
+    FjStatus (*call)(const FjIlluminantsOwner*, FjIlluminantsView*, FjErrorBuffer*) = fj_test_illuminants_view;
     return call(owner, out, error);
 }
 FjStatus fj_test_prepared_illuminants_release_c(FjIlluminantsOwner* owner, FjErrorBuffer* error) {
-    FjStatus (*call)(FjIlluminantsOwner*, FjErrorBuffer*) = fj_legacy_illuminants_release;
+    FjStatus (*call)(FjIlluminantsOwner*, FjErrorBuffer*) = fj_test_illuminants_release;
     return call(owner, error);
 }
 FjStatus fj_test_prepared_hull_acquire_c(const FjAssets* assets, FjInputHullOwner** out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjAssets*, FjInputHullOwner**, FjErrorBuffer*) = fj_legacy_assets_input_hull_acquire;
+    FjStatus (*call)(const FjAssets*, FjInputHullOwner**, FjErrorBuffer*) = fj_test_assets_input_hull_acquire;
     return call(assets, out, error);
 }
 FjStatus fj_test_prepared_hull_view_c(const FjInputHullOwner* owner, FjInputHullView* out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjInputHullOwner*, FjInputHullView*, FjErrorBuffer*) = fj_legacy_input_hull_view;
+    FjStatus (*call)(const FjInputHullOwner*, FjInputHullView*, FjErrorBuffer*) = fj_test_input_hull_view;
     return call(owner, out, error);
 }
 FjStatus fj_test_prepared_hull_release_c(FjInputHullOwner* owner, FjErrorBuffer* error) {
-    FjStatus (*call)(FjInputHullOwner*, FjErrorBuffer*) = fj_legacy_input_hull_release;
+    FjStatus (*call)(FjInputHullOwner*, FjErrorBuffer*) = fj_test_input_hull_release;
     return call(owner, error);
 }
 FjStatus fj_test_prepared_boundary_acquire_c(const FjAssets* assets, const FjOutputBoundarySource* source, uint64_t expected, FjOutputBoundaryOwner** out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjAssets*, const FjOutputBoundarySource*, uint64_t, FjOutputBoundaryOwner**, FjErrorBuffer*) = fj_legacy_assets_output_boundary_acquire;
+    FjStatus (*call)(const FjAssets*, const FjOutputBoundarySource*, uint64_t, FjOutputBoundaryOwner**, FjErrorBuffer*) = fj_test_assets_output_boundary_acquire;
     return call(assets, source, expected, out, error);
 }
 FjStatus fj_test_prepared_boundary_view_c(const FjOutputBoundaryOwner* owner, FjOutputBoundaryView* out, FjErrorBuffer* error) {
-    FjStatus (*call)(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*) = fj_legacy_output_boundary_view;
+    FjStatus (*call)(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*) = fj_test_output_boundary_view;
     return call(owner, out, error);
 }
 FjStatus fj_test_prepared_boundary_release_c(FjOutputBoundaryOwner* owner, FjErrorBuffer* error) {
-    FjStatus (*call)(FjOutputBoundaryOwner*, FjErrorBuffer*) = fj_legacy_output_boundary_release;
+    FjStatus (*call)(FjOutputBoundaryOwner*, FjErrorBuffer*) = fj_test_output_boundary_release;
     return call(owner, error);
 }
 

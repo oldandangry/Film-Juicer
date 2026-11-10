@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 
 _Static_assert(sizeof(FjOutputEncoding) == 68 && _Alignof(FjOutputEncoding) == 4, "encoding layout");
@@ -18,7 +17,7 @@ _Static_assert(offsetof(FjOutputColorPreparation, xyz_to_rgb) == 40, "output inv
 _Static_assert(offsetof(FjOutputColorPreparation, white_xyz) == 76, "output white");
 _Static_assert(offsetof(FjOutputColorPreparation, encoding) == 88, "output encoding");
 _Static_assert(offsetof(FjOutputColorPreparation, entry_hash) == 160, "output identity");
-_Static_assert(_Generic(&fj_legacy_output_color, FjStatus (*)(uint32_t, FjOutputColorPreparation*): 1, default: 0), "output signature");
+_Static_assert(_Generic(&fj_test_boundary_output_color, FjStatus (*)(uint32_t, FjOutputColorPreparation*): 1, default: 0), "output signature");
 _Static_assert(_Generic(&fj_test_output_color, FjStatus (*)(uint32_t, FjOutputColorPreparation*): 1, default: 0), "facade signature");
 
 static int category(FjStatus result, uint32_t expected) {
@@ -26,7 +25,7 @@ static int category(FjStatus result, uint32_t expected) {
 }
 int output_color_abi_c(void) {
     typedef FjStatus (*Prepare)(uint32_t, FjOutputColorPreparation*);
-    const Prepare operations[2] = {fj_legacy_output_color, fj_test_output_color};
+    const Prepare operations[2] = {fj_test_boundary_output_color, fj_test_output_color};
     int failures = 0;
     struct Guarded {
         uint64_t before;
@@ -79,10 +78,10 @@ _Static_assert(sizeof(FjScannerColor) == 176 && _Alignof(FjScannerColor) == 8, "
 _Static_assert(offsetof(FjScannerColor, cat02) == 0 && offsetof(FjScannerColor, xyz_to_rgb) == 36 && offsetof(FjScannerColor, illuminant_xyz) == 72 && offsetof(FjScannerColor, output_space) == 84 && offsetof(FjScannerColor, flags) == 88 && offsetof(FjScannerColor, encoding) == 92 && offsetof(FjScannerColor, active_gamut_recipe_hash) == 160 && offsetof(FjScannerColor, hash) == 168, "scanner result offsets");
 _Static_assert(sizeof(FjScannerColorFailure) == 8 && _Alignof(FjScannerColorFailure) == 4 && offsetof(FjScannerColorFailure, reason) == 0 && offsetof(FjScannerColorFailure, stage) == 4, "scanner failure layout");
 typedef FjStatus (*ScannerColorPrepare)(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_scanner_color_prepare, ScannerColorPrepare: 1, default: 0), "scanner legacy signature");
+_Static_assert(_Generic(&fj_test_scanner_color_prepare, ScannerColorPrepare: 1, default: 0), "scanner legacy signature");
 _Static_assert(_Generic(&fj_test_scanner_color_prepare, ScannerColorPrepare: 1, default: 0), "scanner facade signature");
 int scanner_color_abi_c(void) {
-    const ScannerColorPrepare operations[2] = {fj_legacy_scanner_color_prepare, fj_test_scanner_color_prepare};
+    const ScannerColorPrepare operations[2] = {fj_test_scanner_color_prepare, fj_test_scanner_color_prepare};
     int failures = 0;
     const unsigned char zero[sizeof(FjScannerColor)] = {0};
     for (int facade = 0; facade < 2; ++facade) {

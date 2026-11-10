@@ -118,6 +118,7 @@ impl Instance {
     pub(crate) fn block(&self) {
         self.publication.block();
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn close(self) {}
 }
 

@@ -271,7 +271,7 @@ namespace {
 } // namespace
 
 namespace JuicerCudaTest {
-    void check_prepared_state_lifetime(std::optional<PreparedState>& owner, const FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
+    void check_prepared_state_lifetime(std::optional<JuicerTestSupport::PreparedStateHold>& owner, const FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
         JuicerProcess::Root& root = JuicerCuda::borrow_root(cuda);
         require(prepared.spatial_dir.hash != 0 && prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0, "held-state lifetime retains active spatial DIR");
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
@@ -350,7 +350,7 @@ namespace JuicerCudaTest {
             require(event && cudaEventQuery(event) == cudaErrorNotReady, "held-state native staging is pending at C return");
         if (lifetimeCase == StateLifetimeCase::AbsentStream || lifetimeCase == StateLifetimeCase::PinnedEventRecord)
             require(cudaStreamQuery(upload.stream) == cudaSuccess, "held-state required return-time completion");
-        require_status(fj_legacy_assets_release_cached_payloads(assets, error), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "release held-state asset cache");
+        require_status(fj_test_assets_release_cached_payloads(assets, error), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "release held-state asset cache");
         const auto live = fj_test_prepared_live_states();
         owner.reset();
         require(fj_test_prepared_live_states() + 1 == live, "consume held state exactly once after C return");

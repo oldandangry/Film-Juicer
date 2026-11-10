@@ -22,9 +22,7 @@
 #include "gtest/gtest.h"
 
 #include "ColorTransforms.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "output_encoding_oracle.h"
@@ -406,9 +404,9 @@ namespace {
     namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
 
     struct RouteInputs {
-        JuicerProcess::ProcessRuntime& runtime;
-        std::optional<PreparedState> state;
-        ParamSnapshot controls;
+        JuicerTestSupport::RuntimeFixture& runtime;
+        std::optional<JuicerTestSupport::PreparedStateHold> state;
+        JuicerTestSupport::PreparationInput controls;
         Scanner::ScannerSpectralLutDescriptor scanner;
         Scanner::ColorRuntime scannerColor;
         Scanner::ScannerColorCorrectionDescriptor correction;
@@ -425,22 +423,22 @@ namespace {
         std::uint64_t scannerHash = 0;
         std::uint64_t dirHash = 0;
 
-        static ParamSnapshot controls_for_route(Spektrafilm::ScanRoute route) {
-            ParamSnapshot controls;
-            controls.scanRoute = route;
+        static JuicerTestSupport::PreparationInput controls_for_route(Spektrafilm::ScanRoute route) {
+            JuicerTestSupport::PreparationInput controls;
+            controls.values.scan_route = static_cast<std::uint32_t>(route);
             return controls;
         }
-        RouteInputs(JuicerProcess::ProcessRuntime& processRuntime, Spektrafilm::ScanRoute route, int space, bool gamut)
+        RouteInputs(JuicerTestSupport::RuntimeFixture& processRuntime, Spektrafilm::ScanRoute route, int space, bool gamut)
             : RouteInputs(processRuntime, controls_for_route(route), space, gamut) {}
-        RouteInputs(JuicerProcess::ProcessRuntime& processRuntime, ParamSnapshot controls, int space, bool gamut) : runtime(processRuntime) {
-            const Spektrafilm::ScanRoute route = controls.scanRoute;
-            controls.grainControls.active = false;
-            controls.dirCouplers.active = false;
-            controls.cameraAutoExposureEnabled = 0;
-            controls.outputColorSpace = space;
-            controls.outputGamutCompressionEnabled = gamut ? 1 : 0;
+        RouteInputs(JuicerTestSupport::RuntimeFixture& processRuntime, JuicerTestSupport::PreparationInput controls, int space, bool gamut) : runtime(processRuntime) {
+            const Spektrafilm::ScanRoute route = static_cast<Spektrafilm::ScanRoute>(controls.values.scan_route);
+            controls.values.grain.active = false;
+            controls.values.dir_couplers.active = false;
+            controls.values.camera_auto_exposure_enabled = 0;
+            controls.values.output_color_space = space;
+            controls.values.output_gamut_compression_enabled = gamut ? 1 : 0;
             if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
-                controls.filmProfileKey = "fujifilm_provia_100f";
+                controls.film_key = "fujifilm_provia_100f";
             }
             this->controls = controls;
             state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, this->controls));
@@ -449,7 +447,7 @@ namespace {
             facts.renderExtent = {0, 0, 17, 9};
             facts.fullFrameExtent = facts.renderExtent;
             facts.pixelDefinition = facts.renderExtent;
-            facts.filmFormatLongEdgeMm = this->controls.cameraFilmFormatLongEdgeMm;
+            facts.filmFormatLongEdgeMm = this->controls.values.camera_film_format_long_edge_mm;
             facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.0f / 17.0f;
             facts.canonicalWidth = facts.filmFormatLongEdgeMm;
             facts.canonicalHeight = facts.filmFormatLongEdgeMm * 9.0 / 17.0;
@@ -646,7 +644,7 @@ namespace {
 
     class ScannerRoutes : public testing::Test {
     protected:
-        inline static JuicerProcess::ProcessRuntime runtime;
+        inline static JuicerTestSupport::RuntimeFixture runtime;
 
         static void SetUpTestSuite() {
             runtime.create(JuicerProcess::data_directory());
@@ -685,7 +683,7 @@ namespace {
             facts.renderExtent = {0, 0, image.width, image.height};
             facts.fullFrameExtent = facts.renderExtent;
             facts.pixelDefinition = facts.renderExtent;
-            facts.filmFormatLongEdgeMm = inputs.controls.cameraFilmFormatLongEdgeMm;
+            facts.filmFormatLongEdgeMm = inputs.controls.values.camera_film_format_long_edge_mm;
             facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.0f /
                                 static_cast<float>(std::max(image.width, image.height));
             facts.canonicalWidth = facts.filmFormatLongEdgeMm;
@@ -1000,8 +998,8 @@ namespace {
             call.facts.fullFrameExtent = call.facts.renderExtent;
             call.facts.pixelDefinition = call.facts.renderExtent;
             call.facts.pixelSizeUm = 100.0f;
-            call.facts.filmFormatLongEdgeMm = inputs.controls.cameraFilmFormatLongEdgeMm;
-            call.facts.canonicalWidth = inputs.controls.cameraFilmFormatLongEdgeMm;
+            call.facts.filmFormatLongEdgeMm = inputs.controls.values.camera_film_format_long_edge_mm;
+            call.facts.canonicalWidth = inputs.controls.values.camera_film_format_long_edge_mm;
             call.facts.canonicalHeight =
                 call.facts.canonicalWidth * static_cast<double>(image.height) / image.width;
             call.facts.scaleX = 1.0;
@@ -1047,10 +1045,10 @@ namespace {
             auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
-            controls.glareActive = false;
-            controls.scannerLutResolution = 17;
+            controls.values.glare_active = false;
+            controls.values.scanner_lut_resolution = 17;
             RouteInputs off(runtime, controls, 0, true);
-            controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
+            controls.values.scanner_black_correction = controls.values.scanner_white_correction = 1;
             RouteInputs held(runtime, controls, 0, true);
             const auto heldHash = held.recipeHash;
             const auto heldScannerHash = held.scannerRecipeHash;
@@ -1081,14 +1079,14 @@ namespace {
 
             if (correctionActive) {
                 auto failedControls = held.controls;
-                failedControls.scannerBlackLevel = failedControls.scannerWhiteLevel = 0.0;
+                failedControls.values.scanner_black_level = failedControls.values.scanner_white_level = 0.0;
 
-                std::optional<PreparedState> rejectedState;
+                std::optional<JuicerTestSupport::PreparedStateHold> rejectedState;
                 std::array<char, 1024> text{};
                 FjErrorBuffer error{text.data(), text.size(), 0};
                 const auto* const assets = runtime.borrow().assets;
                 ASSERT_NE(assets, nullptr);
-                const auto status = prepare_state(
+                const auto status = JuicerTestSupport::prepare_state(
                     assets,
                     failedControls,
                     rejectedState,
@@ -1136,9 +1134,9 @@ namespace {
         JuicerTests::GtestCohort cases("route-gamut-pass", ids);
         for (const auto route : routes) {
             auto controls = RouteInputs::controls_for_route(route);
-            controls.glareActive = false;
-            controls.scannerLutResolution = 17;
-            controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
+            controls.values.glare_active = false;
+            controls.values.scanner_lut_resolution = 17;
+            controls.values.scanner_black_correction = controls.values.scanner_white_correction = 1;
             RouteInputs disabled(runtime, controls, 0, false);
             RouteInputs enabled(runtime, controls, 0, true);
             const auto disabledHash = disabled.outputGamut.hash;
@@ -1210,12 +1208,13 @@ namespace {
         for (const auto route : routes) {
             auto row = cases.case_event(route_case_key(route));
             auto controls = RouteInputs::controls_for_route(route);
-            controls.glareActive = true;
-            controls.glarePercent = 2.0f;
-            controls.glareRoughness = 0.3f;
-            controls.glareBlurSigmaPx = 0.75f;
-            controls.scannerLensBlurSigmaPx = 0.75f;
-            controls.scannerUnsharpMask = {0.75, 0.8};
+            controls.values.glare_active = true;
+            controls.values.glare_percent = 2.0f;
+            controls.values.glare_roughness = 0.3f;
+            controls.values.glare_blur_sigma_px = 0.75f;
+            controls.values.scanner_lens_blur_sigma_px = 0.75f;
+            controls.values.scanner_unsharp_mask[0] = 0.75;
+            controls.values.scanner_unsharp_mask[1] = 0.8;
             RouteInputs inputs(runtime, controls, 0, false);
             Image image({17, 9}, 4);
             ASSERT_TRUE(inputs.post);
@@ -1257,7 +1256,7 @@ namespace {
             EXPECT_EQ(view.lensBlur.weights, retained);
             require(warm.finish(nullptr, failure), failure.diagnostic);
             auto changedControls = controls;
-            changedControls.scannerLensBlurSigmaPx = 1.25f;
+            changedControls.values.scanner_lens_blur_sigma_px = 1.25f;
             RouteInputs changedInputs(runtime, changedControls, 0, false);
             ASSERT_TRUE(changedInputs.post);
             auto changed = prepare_route(changedInputs, image);
@@ -1298,12 +1297,13 @@ namespace {
             EXPECT_EQ(view.lensBlur.weights, retained);
             require(restored.finish(nullptr, failure), failure.diagnostic);
             auto offControls = controls;
-            offControls.glareActive = false;
-            offControls.glarePercent = 0.0f;
-            offControls.glareRoughness = 0.0f;
-            offControls.glareBlurSigmaPx = 0.0f;
-            offControls.scannerLensBlurSigmaPx = 0.0f;
-            offControls.scannerUnsharpMask = {0.0, 0.0};
+            offControls.values.glare_active = false;
+            offControls.values.glare_percent = 0.0f;
+            offControls.values.glare_roughness = 0.0f;
+            offControls.values.glare_blur_sigma_px = 0.0f;
+            offControls.values.scanner_lens_blur_sigma_px = 0.0f;
+            offControls.values.scanner_unsharp_mask[0] = 0.0;
+            offControls.values.scanner_unsharp_mask[1] = 0.0;
             RouteInputs offInputs(runtime, offControls, 0, false);
             EXPECT_FALSE(offInputs.post);
             const auto offAcquires = fj_test_gaussian_kernel_acquires();
@@ -1432,10 +1432,10 @@ namespace {
             auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             const bool print = Spektrafilm::scan_route_is_print(route);
-            ParamSnapshot controls17 = RouteInputs::controls_for_route(route);
-            controls17.scannerLutResolution = 17;
-            ParamSnapshot controls33 = controls17;
-            controls33.scannerLutResolution = 33;
+            JuicerTestSupport::PreparationInput controls17 = RouteInputs::controls_for_route(route);
+            controls17.values.scanner_lut_resolution = 17;
+            JuicerTestSupport::PreparationInput controls33 = controls17;
+            controls33.values.scanner_lut_resolution = 33;
             RouteInputs inputs17(runtime, controls17, 0, false);
             RouteInputs inputs33(runtime, controls33, 0, false);
 
@@ -1475,14 +1475,14 @@ namespace {
         const std::vector<std::string> scenarios{
             "retained-default", "retained-gamma", "illuminant-change", "main-filter-change", "preflash-enabled", "preflash-disabled", "normalization-disabled", "normalization-enabled", "print-profile-change"};
         JuicerTests::GtestCohort cases("print-cache-scenario", scenarios);
-        ParamSnapshot defaultControls =
+        JuicerTestSupport::PreparationInput defaultControls =
             RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
-        ParamSnapshot gammaControls = defaultControls;
-        gammaControls.printGammaFactor = 1.1;
+        JuicerTestSupport::PreparationInput gammaControls = defaultControls;
+        gammaControls.values.print_gamma_factor = 1.1;
         RouteInputs retainedDefault(runtime, defaultControls, 0, false);
         RouteInputs retainedGamma(runtime, gammaControls, 0, false);
 
-        auto check_print = [&](const char* scenario, ParamSnapshot controls) {
+        auto check_print = [&](const char* scenario, JuicerTestSupport::PreparationInput controls) {
             SCOPED_TRACE(scenario);
             auto row = cases.case_event(scenario);
             RouteInputs inputs(runtime, std::move(controls), 0, false);
@@ -1504,28 +1504,30 @@ namespace {
             row.passed();
         }
 
-        ParamSnapshot illuminantControls = defaultControls;
-        illuminantControls.enlIll = 0;
+        JuicerTestSupport::PreparationInput illuminantControls = defaultControls;
+        illuminantControls.values.enl_ill = 0;
         check_print("illuminant-change", illuminantControls);
 
-        ParamSnapshot filterControls = defaultControls;
-        filterControls.printUiYmcCc = {4.0, -3.0, 2.0};
+        JuicerTestSupport::PreparationInput filterControls = defaultControls;
+        filterControls.values.print_ui_ymc_cc[0] = 4.0;
+        filterControls.values.print_ui_ymc_cc[1] = -3.0;
+        filterControls.values.print_ui_ymc_cc[2] = 2.0;
         check_print("main-filter-change", filterControls);
 
-        ParamSnapshot preflashControls = defaultControls;
-        preflashControls.printPreflashExposure = 0.1;
-        preflashControls.preflashMFilterCc = 3.0;
-        preflashControls.preflashYFilterCc = -2.0;
+        JuicerTestSupport::PreparationInput preflashControls = defaultControls;
+        preflashControls.values.print_preflash_exposure = 0.1;
+        preflashControls.values.preflash_m_filter_cc = 3.0;
+        preflashControls.values.preflash_y_filter_cc = -2.0;
         check_print("preflash-enabled", preflashControls);
         check_print("preflash-disabled", defaultControls);
 
-        ParamSnapshot unnormalizedControls = defaultControls;
-        unnormalizedControls.normalizePrintExposure = 0;
+        JuicerTestSupport::PreparationInput unnormalizedControls = defaultControls;
+        unnormalizedControls.values.normalize_print_exposure = 0;
         check_print("normalization-disabled", unnormalizedControls);
         check_print("normalization-enabled", defaultControls);
 
-        ParamSnapshot profileControls = defaultControls;
-        profileControls.printProfileKey = "kodak_supra_endura";
+        JuicerTestSupport::PreparationInput profileControls = defaultControls;
+        profileControls.print_key = "kodak_supra_endura";
         check_print("print-profile-change", profileControls);
     }
     TEST_F(ScannerRoutes, LutConstructionFailuresPreserveCategoryAndCache) {
@@ -1546,7 +1548,7 @@ namespace {
         for (const auto route : routes) {
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
-            controls.scannerLutResolution = 17;
+            controls.values.scanner_lut_resolution = 17;
             RouteInputs inputs(runtime, controls, 0, false);
             Image image({31, 19}, 4);
             std::string diagnostic;
@@ -1569,7 +1571,7 @@ namespace {
             }
             require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
             const auto original = bit_patterns(image.output.download());
-            controls.scannerLutResolution = 33;
+            controls.values.scanner_lut_resolution = 33;
             RouteInputs replacement(runtime, controls, 0, false);
             {
                 auto row = cases.case_event(route_case_key(route) + "/cache-hit-armed-fault");
@@ -1608,15 +1610,15 @@ namespace {
             auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
-            controls.filmProfileKey = "kodak_portra_400";
-            controls.printProfileKey = "kodak_portra_endura";
-            controls.scannerLutResolution = 17;
+            controls.film_key = "kodak_portra_400";
+            controls.print_key = "kodak_portra_endura";
+            controls.values.scanner_lut_resolution = 17;
             RouteInputs original(runtime, controls, 0, false);
             const bool print = Spektrafilm::scan_route_is_print(route);
             if (print)
-                controls.printProfileKey = "kodak_2383";
+                controls.print_key = "kodak_2383";
             else
-                controls.filmProfileKey = "kodak_portra_800";
+                controls.film_key = "kodak_portra_800";
             RouteInputs changed(runtime, controls, 0, false);
             EXPECT_NE(original.scanner.channelDensityHash, changed.scanner.channelDensityHash);
             EXPECT_NE(original.scanner.densityBoundsHash, changed.scanner.densityBoundsHash);
@@ -1663,15 +1665,15 @@ namespace {
             const auto& row = frozen.at("products").at(index);
             auto product = products.case_event(ids[index]);
             const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
-            ParamSnapshot controls;
-            controls.scanRoute = route;
-            controls.filmProfileKey = row.at("route").get<unsigned>() < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            controls.printProfileKey = "kodak_portra_endura";
-            controls.cameraAutoExposureEnabled = 0;
-            controls.inputCompressionEnabled = 0;
-            controls.outputGamutCompressionEnabled = 0;
-            controls.printPreflashExposure = 0.125;
-            controls.scannerLutResolution = 17;
+            JuicerTestSupport::PreparationInput controls;
+            controls.values.scan_route = static_cast<std::uint32_t>(route);
+            controls.film_key = row.at("route").get<unsigned>() < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            controls.print_key = "kodak_portra_endura";
+            controls.values.camera_auto_exposure_enabled = 0;
+            controls.values.input_compression_enabled = 0;
+            controls.values.output_gamut_compression_enabled = 0;
+            controls.values.print_preflash_exposure = 0.125;
+            controls.values.scanner_lut_resolution = 17;
             RouteInputs inputs(runtime, controls, 0, false);
             const bool print = Spektrafilm::scan_route_is_print(route);
             ASSERT_EQ(inputs.scanner.hash, row.at("descriptor_hash").get<std::uint64_t>());

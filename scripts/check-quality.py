@@ -62,7 +62,7 @@ RUST_DEPENDENCIES = {
     "film-juicer-plugin": frozenset({"film-juicer-core"}),
 }
 REPRESENTATIVE_NATIVE_FILES = (
-    "src/main.cpp",
+    "native/ofx_exports.cpp",
     "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
     "tests/hash/hash_contract_test.cpp",
 )

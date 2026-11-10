@@ -188,7 +188,7 @@ namespace ofx_test {
     }
     class RenderHost {
     public:
-        explicit RenderHost(OfxPlugin* plugin = fj_ofx_plugin(0)) : plugin_(plugin) {
+        explicit RenderHost(OfxPlugin* plugin = OfxGetPlugin(0)) : plugin_(plugin) {
             require_render(plugin_ != nullptr, "candidate descriptor missing");
             plugin_->setHost(host_.binding());
             require_render(call(kOfxActionLoad) == kOfxStatOK, "load candidate");

@@ -1,18 +1,35 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
-#include "DiffusionHostBehavior.h"
-#include "RenderControls.h"
+#include "diffusion_fixture.h"
+#include "halation_fixture.h"
+#include "effects_fixture.h"
+
 #include "RenderValues.h"
 #include "ScatterHalation.h"
 #include "FilmEffectsFrameDescriptors.h"
 #include "juicer_cuda_frame_values.h"
 #include "juicer_test_api.h"
+
+namespace Spektrafilm {
+    inline constexpr double kFilmGammaFactorMinimum = 0.05;
+    inline constexpr double kFilmGammaFactorMaximum = 4.0;
+    inline constexpr double kPrintGammaFactorMinimum = 0.5;
+    inline constexpr double kPrintGammaFactorMaximum = 2.0;
+
+    enum class SpatialOpticsComponent : std::uint8_t {
+        CameraDiffusion,
+        CameraLensBlur,
+        InEmulsionScatterHalation,
+        EnlargerDiffusion
+    };
+} // namespace Spektrafilm
 
 struct FjDirFrameInput;
 

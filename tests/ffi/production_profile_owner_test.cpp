@@ -21,22 +21,19 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "test_asset_library.h"
 #include "test_asset_workspace.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ColorTransforms.h"
 #include "Hash.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "juicer_cuda_owner.h"
-#include "NativePath.h"
-#include "test_asset_bridge.h"
-#include "PreparedState.h"
+#include "native_path.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
+#include "owner_fixture.h"
+#include "preparation_fixture.h"
 
 extern "C" const std::size_t* fj_test_production_profile_abi_c_facts(std::size_t* count);
 extern "C" const std::size_t* fj_test_production_profile_abi_facts(std::size_t* count);
@@ -48,18 +45,18 @@ extern "C" const std::size_t* fj_test_production_profile_abi_facts(std::size_t* 
 #undef FJ_ABI_FIELD
 #undef FJ_ABI_VALUE
 
-static_assert(std::is_same_v<decltype(&fj_legacy_film_profile_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjFilmProfile**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_profile_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjPrintProfile**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_profile_view), FjStatus (*)(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_profile_view), FjStatus (*)(const FjPrintProfile*, FjPrintProfileView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_profile_sample_density), FjStatus (*)(const FjPrintProfile*, double, FjPrintDensityCurves**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_density_view), FjStatus (*)(const FjPrintDensityCurves*, FjPrintDensityView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_profile_release), FjStatus (*)(FjFilmProfile*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_profile_release), FjStatus (*)(FjPrintProfile*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_density_release), FjStatus (*)(FjPrintDensityCurves*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_cached_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_derived_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_source_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjFilmProfile**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjPrintProfile**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_view), FjStatus (*)(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_view), FjStatus (*)(const FjPrintProfile*, FjPrintProfileView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_sample_density), FjStatus (*)(const FjPrintProfile*, double, FjPrintDensityCurves**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_density_view), FjStatus (*)(const FjPrintDensityCurves*, FjPrintDensityView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_release), FjStatus (*)(FjFilmProfile*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_release), FjStatus (*)(FjPrintProfile*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_density_release), FjStatus (*)(FjPrintDensityCurves*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_cached_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_derived_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_source_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
 
 namespace {
     namespace fs = std::filesystem;
@@ -67,8 +64,6 @@ namespace {
     fs::path resources;
     fs::path fixtures;
     fs::path scratch;
-    std::barrier<>* catalogPublicationBarrier = nullptr;
-
     FjStringView text(const std::string& value) {
         return {value.empty() ? nullptr : value.data(), value.size()};
     }
@@ -91,55 +86,55 @@ namespace {
         FjAssets* owner = nullptr;
         explicit Assets(const fs::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            expect_status(fj_legacy_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Assets() {
-            require_release(fj_legacy_assets_destroy(owner, nullptr));
+            require_release(fj_test_assets_destroy(owner, nullptr));
         }
     };
     struct Film {
         FjFilmProfile* owner = nullptr;
         Film(const FjAssets* assets, const std::string& key) {
-            expect_status(fj_legacy_film_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_film_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         Film(const Assets& assets, const std::string& key)
             : Film(assets.owner, key) {}
         ~Film() {
-            require_release(fj_legacy_film_profile_release(owner, nullptr));
+            require_release(fj_test_assets_film_release(owner, nullptr));
         }
         FjFilmProfileView view() const {
             FjFilmProfileView out{};
-            expect_status(fj_legacy_film_profile_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_film_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
             return out;
         }
     };
     struct Print {
         FjPrintProfile* owner = nullptr;
         Print(const FjAssets* assets, const std::string& key) {
-            expect_status(fj_legacy_print_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_print_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         Print(const Assets& assets, const std::string& key)
             : Print(assets.owner, key) {}
         ~Print() {
-            require_release(fj_legacy_print_profile_release(owner, nullptr));
+            require_release(fj_test_print_profile_release(owner, nullptr));
         }
         FjPrintProfileView view() const {
             FjPrintProfileView out{};
-            expect_status(fj_legacy_print_profile_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_print_profile_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
             return out;
         }
     };
     struct Density {
         FjPrintDensityCurves* owner = nullptr;
         Density(const Print& print, double gamma) {
-            expect_status(fj_legacy_print_profile_sample_density(print.owner, gamma, &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_print_profile_sample_density(print.owner, gamma, &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Density() {
-            require_release(fj_legacy_print_density_release(owner, nullptr));
+            require_release(fj_test_print_density_release(owner, nullptr));
         }
         FjPrintDensityView view() const {
             FjPrintDensityView out{};
-            expect_status(fj_legacy_print_density_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_print_density_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
             return out;
         }
     };
@@ -234,13 +229,13 @@ namespace {
         Assets assets(resources);
         FjCatalog* catalog = nullptr;
         FjCatalogCounts counts{};
-        expect_status(fj_legacy_catalog_acquire(assets.owner, &catalog, &counts, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_catalog_acquire(assets.owner, &catalog, &counts, nullptr), FJ_STATUS_SUCCESS);
         ASSERT_EQ(counts.film_count + counts.print_count, 28u);
         for (std::uint32_t role : {FJ_PROFILE_ROLE_FILM, FJ_PROFILE_ROLE_PRINT}) {
             const auto count = role == FJ_PROFILE_ROLE_FILM ? counts.film_count : counts.print_count;
             for (std::size_t i = 0; i < count; ++i) {
                 FjCatalogEntryView entry{};
-                expect_status(fj_legacy_catalog_entry(catalog, role, i, &entry, nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_catalog_entry(catalog, role, i, &entry, nullptr), FJ_STATUS_SUCCESS);
                 const std::string key(entry.key.data, entry.key.count);
                 auto profile_row = profile_rows.case_event(key);
                 SCOPED_TRACE(key);
@@ -303,7 +298,7 @@ namespace {
                 profile_row.passed();
             }
         }
-        expect_status(fj_legacy_catalog_release(catalog, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_catalog_release(catalog, nullptr), FJ_STATUS_SUCCESS);
     }
 
     TEST(ProductionProfileOwner, BorrowedViewsAndOwnedGammaSurviveCacheAndAssetsDrop) {
@@ -316,8 +311,8 @@ namespace {
         const auto dv = density.view();
         const auto first = dv.totals_cmy.data[0];
         const auto hash = dv.hash;
-        expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
-        expect_status(fj_legacy_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(film.view().tables.log_exposure.data, fv.tables.log_exposure.data);
         EXPECT_EQ(print.view().tables.log_exposure.data, pv.tables.log_exposure.data);
         std::array<std::thread, 8> readers;
@@ -327,11 +322,11 @@ namespace {
                 FjPrintDensityCurves* curves = nullptr;
                 FjPrintDensityView view{};
                 FjFilmProfileView filmView{};
-                const auto a = fj_legacy_print_profile_sample_density(print.owner, 1.1, &curves, nullptr);
-                const auto b = fj_legacy_print_density_view(curves, &view, nullptr);
-                const auto c = fj_legacy_film_profile_view(film.owner, &filmView, nullptr);
+                const auto a = fj_test_print_profile_sample_density(print.owner, 1.1, &curves, nullptr);
+                const auto b = fj_test_print_density_view(curves, &view, nullptr);
+                const auto c = fj_test_assets_film_view(film.owner, &filmView, nullptr);
                 passed[i] = a.category == FJ_STATUS_SUCCESS && b.category == FJ_STATUS_SUCCESS && c.category == FJ_STATUS_SUCCESS && view.hash == hash && filmView.tables.log_exposure.data == fv.tables.log_exposure.data;
-                passed[i] = passed[i] && fj_legacy_print_density_release(curves, nullptr).category == FJ_STATUS_SUCCESS;
+                passed[i] = passed[i] && fj_test_print_density_release(curves, nullptr).category == FJ_STATUS_SUCCESS;
             });
         }
         for (auto& reader : readers) {
@@ -340,7 +335,7 @@ namespace {
         for (bool pass : passed) {
             EXPECT_TRUE(pass);
         }
-        expect_status(fj_legacy_print_profile_release(std::exchange(print.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_print_profile_release(std::exchange(print.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(density.view().hash, hash);
         EXPECT_EQ(density.view().totals_cmy.data[0], first);
     }
@@ -353,8 +348,8 @@ namespace {
             auto malformed_keys_case = malformed_keys_cases.case_event(std::to_string(malformed_keys_index++));
             FjFilmProfile* film = nullptr;
             FjPrintProfile* print = nullptr;
-            expect_status(fj_legacy_film_profile_acquire(assets.owner, key, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-            expect_status(fj_legacy_print_profile_acquire(assets.owner, key, &print, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            expect_status(fj_test_assets_film_acquire(assets.owner, key, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            expect_status(fj_test_print_profile_acquire(assets.owner, key, &print, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(film, nullptr);
             EXPECT_EQ(print, nullptr);
 
@@ -365,14 +360,14 @@ namespace {
         for (const std::string& key : {std::string(), std::string("missing"), std::string("kodak_portra_400\0", 17), std::string("kodak_portra_endura")}) {
             auto missing_keys_case = missing_keys_cases.case_event(std::to_string(missing_keys_index++));
             FjFilmProfile* film = nullptr;
-            expect_status(fj_legacy_film_profile_acquire(assets.owner, text(key), &film, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+            expect_status(fj_test_assets_film_acquire(assets.owner, text(key), &film, nullptr), FJ_STATUS_PREPARATION_FAILURE);
             EXPECT_EQ(film, nullptr);
 
             missing_keys_case.passed();
         }
         FjFilmProfileView fv{};
         fv.asset_token = 42;
-        expect_status(fj_legacy_film_profile_view(nullptr, &fv, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_assets_film_view(nullptr, &fv, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fv.asset_token, 0u);
         EXPECT_EQ(fv.tables.log_exposure.data, nullptr);
         Print print(assets, "kodak_portra_endura");
@@ -381,7 +376,7 @@ namespace {
         for (double gamma : {0.0, -1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
             auto invalid_gamma_case = invalid_gamma_cases.case_event(std::to_string(invalid_gamma_index++));
             FjPrintDensityCurves* curves = nullptr;
-            expect_status(fj_legacy_print_profile_sample_density(print.owner, gamma, &curves, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            expect_status(fj_test_print_profile_sample_density(print.owner, gamma, &curves, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(curves, nullptr);
 
             invalid_gamma_case.passed();
@@ -392,18 +387,18 @@ namespace {
             auto faults_case = faults_cases.case_event(std::to_string(faults_index++));
             fj_test_profile_fault(fault);
             FjFilmProfile* out = nullptr;
-            expect_status(fj_legacy_film_profile_acquire(assets.owner, text("kodak_portra_400"), &out, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
+            expect_status(fj_test_assets_film_acquire(assets.owner, text("kodak_portra_400"), &out, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
             EXPECT_EQ(out, nullptr);
             fj_test_profile_fault(fault);
             FjPrintDensityCurves* curves = nullptr;
-            expect_status(fj_legacy_print_profile_sample_density(print.owner, 1.1, &curves, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
+            expect_status(fj_test_print_profile_sample_density(print.owner, 1.1, &curves, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
             EXPECT_EQ(curves, nullptr);
 
             faults_case.passed();
         }
         Film film(assets, "kodak_portra_400");
         FjErrorBuffer malformedFilm{nullptr, 1, 99};
-        expect_status(fj_legacy_film_profile_release(std::exchange(film.owner, nullptr), &malformedFilm), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_assets_film_release(std::exchange(film.owner, nullptr), &malformedFilm), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_profile_live_owners(), 1u);
         JuicerTests::GtestCohort malformed_releases_cases("malformed-releases", 2u);
         std::size_t malformed_releases_index = 0;
@@ -412,12 +407,12 @@ namespace {
             if (gammaResult) {
                 Density released(print, 1.1);
                 fj_test_profile_fault(3);
-                expect_status(fj_legacy_print_density_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                expect_status(fj_test_print_density_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
                 EXPECT_EQ(fj_test_print_density_live_owners(), 0u);
             } else {
                 Film released(assets, "kodak_portra_400");
                 fj_test_profile_fault(3);
-                expect_status(fj_legacy_film_profile_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                expect_status(fj_test_assets_film_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
                 EXPECT_EQ(fj_test_profile_live_owners(), 1u);
             }
 
@@ -425,50 +420,49 @@ namespace {
         }
         FjErrorBuffer malformed{nullptr, 1, 99};
         Density density(print, 1.1);
-        expect_status(fj_legacy_print_density_release(std::exchange(density.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_print_density_release(std::exchange(density.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_print_density_live_owners(), 0u);
         EXPECT_EQ(malformed.length, 0u);
-        expect_status(fj_legacy_print_profile_release(std::exchange(print.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_print_profile_release(std::exchange(print.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_profile_live_owners(), 0u);
         std::array<char, 4> bytes{};
         FjErrorBuffer tiny{bytes.data(), bytes.size(), 99};
-        expect_status(fj_legacy_print_density_view(nullptr, nullptr, &tiny), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_print_density_view(nullptr, nullptr, &tiny), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(tiny.length, 3u);
         EXPECT_EQ(bytes.back(), '\0');
-        expect_status(fj_legacy_print_density_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_print_density_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
     }
 
 
     void check_cleanup_precedence(bool earlier) {
-        JuicerAssets::AssetBridge bridge(resources);
-        ASSERT_TRUE(bridge.load_catalog().valid);
-        Film original(bridge.borrow_assets(), "kodak_portra_400");
-        Film warm(bridge.borrow_assets(), "kodak_portra_400");
+        Assets assets(resources);
+        Film original(assets, "kodak_portra_400");
+        Film warm(assets, "kodak_portra_400");
         const auto before = original.view();
         ASSERT_EQ(before.tables.log_exposure.data, warm.view().tables.log_exposure.data);
         FjIlluminantsOwner* illuminants = nullptr;
-        expect_status(fj_test_assets_illuminants_acquire(bridge.borrow_assets(), &illuminants, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_illuminants_acquire(assets.owner, &illuminants, nullptr), FJ_STATUS_SUCCESS);
         expect_status(fj_test_illuminants_release(illuminants, nullptr), FJ_STATUS_SUCCESS);
-        expect_status(fj_test_cache_clear_failures(bridge.borrow_assets(), earlier, 1, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_cache_clear_failures(assets.owner, earlier, 1, nullptr), FJ_STATUS_SUCCESS);
         std::array<char, 256> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
-        const auto result = bridge.release_cached_payloads(&error);
+        const auto result = fj_test_assets_release_cached_payloads(assets.owner, &error);
         expect_status(result, earlier ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_STREQ(message.data(), earlier ? "host cache cleanup allocation failed" : "injected post-release cache failure");
         EXPECT_EQ(error.length, std::strlen(message.data()));
         FjCacheMetrics metrics{};
-        expect_status(fj_test_cache_metrics(bridge.borrow_assets(), FJ_TEST_CACHE_ILLUMINANTS, &metrics, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_cache_metrics(assets.owner, FJ_TEST_CACHE_ILLUMINANTS, &metrics, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(metrics.destructions, earlier ? 0u : 1u);
         EXPECT_EQ(original.view().tables.log_exposure.data, before.tables.log_exposure.data);
-        Film fresh(bridge.borrow_assets(), "kodak_portra_400");
+        Film fresh(assets, "kodak_portra_400");
         const auto after = fresh.view();
         EXPECT_NE(before.tables.log_exposure.data, after.tables.log_exposure.data);
         ASSERT_EQ(before.tables.log_exposure.count, after.tables.log_exposure.count);
         EXPECT_EQ(std::memcmp(before.tables.log_exposure.data, after.tables.log_exposure.data, before.tables.log_exposure.count * sizeof(float)), 0);
         // Source release still runs after an earlier derived-cache failure; a
         // second call observes the already-consumed injected source failure.
-        expect_status(fj_legacy_assets_release_source_payloads(bridge.borrow_assets(), nullptr), FJ_STATUS_SUCCESS);
-        expect_status(bridge.release_cached_payloads(), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_source_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(original.view().tables.log_exposure.data, before.tables.log_exposure.data);
     }
 
@@ -482,44 +476,66 @@ namespace {
         std::size_t publication_overlap_index = 0;
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
             auto publication_overlap_case = publication_overlap_cases.case_event(std::to_string(publication_overlap_index++));
-            JuicerAssets::Library library(resources);
-            expect_status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
+            Assets assets(resources);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
             std::barrier barrier(2);
-            catalogPublicationBarrier = &barrier;
-            const Spektrafilm::ProfileCatalog* selected = nullptr;
-            std::exception_ptr failure;
+            struct HookContext {
+                std::barrier<>* barrier;
+            } hook{&barrier};
+            FjCatalog* selected = nullptr;
+            FjCatalogCounts counts{};
+            FjStatus acquireStatus{};
             std::thread loader([&] {
-                try {
-                    selected = &library.spektrafilm_profile_catalog();
-                } catch (...) {
-                    failure = std::current_exception();
-                }
+                fj_test_catalog_publication_hook([](void* opaque) {
+                    auto* context = static_cast<HookContext*>(opaque);
+                    context->barrier->arrive_and_wait();
+                    context->barrier->arrive_and_wait();
+                },
+                                                 &hook);
+                acquireStatus = fj_test_catalog_acquire(assets.owner, &selected, &counts, nullptr);
+                fj_test_catalog_publication_hook(nullptr, nullptr);
             });
             barrier.arrive_and_wait();
             // Release must finish while the first catalog is still unpublished.
-            expect_status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             barrier.arrive_and_wait();
             for (unsigned release = 0; release < 32; ++release) {
-                expect_status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             }
             loader.join();
-            catalogPublicationBarrier = nullptr;
-            if (failure) {
-                std::rethrow_exception(failure);
-            }
+            expect_status(acquireStatus, FJ_STATUS_SUCCESS);
             ASSERT_NE(selected, nullptr);
-            ASSERT_TRUE(selected->valid);
-            ASSERT_FALSE(selected->filmProfiles.empty());
-            ASSERT_FALSE(selected->printProfiles.empty());
-            const auto* publication = selected;
-            const auto* firstKey = selected->filmProfiles.front().key.data();
-            expect_status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            EXPECT_EQ(&library.spektrafilm_profile_catalog(), publication);
-            EXPECT_EQ(publication->filmProfiles.front().key.data(), firstKey);
+            EXPECT_GT(counts.film_count, 0u);
+            EXPECT_GT(counts.print_count, 0u);
+            FjCatalogEntryView firstEntry{};
+            expect_status(fj_test_catalog_entry(selected, FJ_PROFILE_ROLE_FILM, 0, &firstEntry, nullptr), FJ_STATUS_SUCCESS);
+            const char* firstKey = firstEntry.key.data;
+            uintptr_t firstBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(selected, &firstBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_NE(firstBacking, 0u);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            FjCatalogEntryView heldEntry{};
+            expect_status(fj_test_catalog_entry(selected, FJ_PROFILE_ROLE_FILM, 0, &heldEntry, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(heldEntry.key.data, firstKey);
+            uintptr_t heldBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(selected, &heldBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(heldBacking, firstBacking);
+
+            FjCatalog* repeated = nullptr;
+            FjCatalogCounts repeatedCounts{};
+            expect_status(fj_test_catalog_acquire(assets.owner, &repeated, &repeatedCounts, nullptr), FJ_STATUS_SUCCESS);
+            FjCatalogEntryView repeatedEntry{};
+            expect_status(fj_test_catalog_entry(repeated, FJ_PROFILE_ROLE_FILM, 0, &repeatedEntry, nullptr), FJ_STATUS_SUCCESS);
+            uintptr_t repeatedBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(repeated, &repeatedBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(repeatedBacking, firstBacking);
+            EXPECT_EQ(repeatedEntry.key.data, firstKey);
+            expect_status(fj_test_catalog_release(repeated, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_catalog_live_owners(), 1u);
-            expect_status(library.close(), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_catalog_release(selected, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
+            expect_status(fj_test_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_assets_live_owners(), 0u);
 
             publication_overlap_case.passed();
@@ -542,7 +558,7 @@ namespace {
             std::ofstream file(root / "profiles/kodak_portra_endura.json");
             file << modified;
         }
-        expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(oldPrint.view().asset_token, oldView.asset_token);
         EXPECT_EQ(oldDensity.view().hash, oldDensityView.hash);
         EXPECT_EQ(oldDensity.view().totals_cmy.data, oldDensityView.totals_cmy.data);
@@ -563,27 +579,27 @@ namespace {
             std::ofstream file(root / "profiles/kodak_portra_400.json");
             file << document;
         }
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
     }
-    ParamSnapshot direct_controls() {
-        ParamSnapshot controls;
-        controls.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        controls.spectralUpsamplingMode = 1;
-        controls.dirCouplers.active = false;
-        controls.outputGamutCompressionEnabled = 0;
+    JuicerTestSupport::PreparationInput direct_controls() {
+        JuicerTestSupport::PreparationInput controls;
+        controls.values.scan_route = FJ_ROUTE_NEGATIVE_DIRECT;
+        controls.values.spectral_upsampling_mode = 1;
+        controls.values.dir_couplers.active = 0;
+        controls.values.output_gamut_compression_enabled = 0;
         return controls;
     }
 
     bool prepared_view(
         const FjAssets* assets,
-        const ParamSnapshot& controls,
-        std::optional<PreparedState>& owner,
+        const JuicerTestSupport::PreparationInput& controls,
+        std::optional<JuicerTestSupport::PreparedStateHold>& owner,
         FjPreparedStateView& view,
         std::string& diagnostic) {
         diagnostic.clear();
         std::array<char, 1024> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
-        FjStatus status = prepare_state(
+        FjStatus status = JuicerTestSupport::prepare_state(
             assets,
             controls,
             owner,
@@ -601,18 +617,18 @@ namespace {
     }
 
     TEST(ProductionProfileOwner, FilmDefaultsCopiesFixedDigestAndClearsMissingResult) {
-        JuicerAssets::Library library(resources);
+        Assets assets(resources);
         FjFilmDigest defaults{};
         std::array<char, 1024> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
-        expect_status(library.film_defaults("kodak_portra_400", defaults, error), FJ_STATUS_SUCCESS);
-        Film source(library.borrow_rust_assets(), "kodak_portra_400");
+        expect_status(fj_test_assets_film_defaults(assets.owner, text("kodak_portra_400"), &defaults, &error), FJ_STATUS_SUCCESS);
+        Film source(assets, "kodak_portra_400");
         const FjFilmProfileView view = source.view();
         EXPECT_EQ(std::memcmp(&defaults, &view.digest, sizeof(defaults)), 0);
 
         std::memset(&defaults, 0xa5, sizeof(defaults));
         error.length = 0;
-        const FjStatus missing = library.film_defaults("missing-film-profile", defaults, error);
+        const FjStatus missing = fj_test_assets_film_defaults(assets.owner, text("missing-film-profile"), &defaults, &error);
         EXPECT_EQ(missing.category, FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(missing.api, FJ_API_NONE);
         EXPECT_EQ(missing.native_code, 0);
@@ -623,7 +639,7 @@ namespace {
     TEST(ProductionProfileConsumer, TypedOriginalBbReachesEveryProfileIlluminantConsumer) {
         const auto root = consumer_resources("bb-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         JuicerTests::GtestCohort typed_blackbody_cases("typed-blackbody", 3u);
         std::size_t typed_blackbody_index = 0;
@@ -636,7 +652,7 @@ namespace {
             save_film(owner.borrow().assets, root, changed);
             auto controls = direct_controls();
             std::string diagnostic;
-            std::optional<PreparedState> prepared;
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
             FjPreparedStateView preparedState{};
             ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
             Film filmSource(owner.borrow().assets, "kodak_portra_400");
@@ -687,8 +703,8 @@ namespace {
                 std::ofstream file(root / "profiles/kodak_portra_endura.json");
                 file << printDocument;
             }
-            expect_status(fj_legacy_assets_release_cached_payloads(owner.borrow().assets, nullptr), FJ_STATUS_SUCCESS);
-            controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+            expect_status(fj_test_assets_release_cached_payloads(owner.borrow().assets, nullptr), FJ_STATUS_SUCCESS);
+            controls.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
             prepared.reset();
             ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
             expect_span_bits(preparedState.scanner_tables.illuminant, expected);
@@ -715,7 +731,7 @@ namespace {
             Film selected(owner.borrow().assets, "kodak_portra_400");
             const FjFilmProfileView selectedView = selected.view();
             EXPECT_EQ(selectedView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
-            std::optional<PreparedState> rejected;
+            std::optional<JuicerTestSupport::PreparedStateHold> rejected;
             FjPreparedStateView rejectedView{};
             std::string diagnostic;
             EXPECT_FALSE(prepared_view(owner.borrow().assets, direct_controls(), rejected, rejectedView, diagnostic));
@@ -730,16 +746,16 @@ namespace {
         const auto root = consumer_resources("canonical-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
         const auto canonicalProfile = read_json(resources / "profiles/kodak_portra_400.json");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         auto controls = direct_controls();
-        controls.printProfileKey = "missing-unselected-print";
+        controls.print_key = "missing-unselected-print";
         {
             std::ofstream file(root / "profiles/kodak_portra_endura.json");
             file << R"({"info":{"stock":"kodak_portra_endura","stage":"printing"},"data":{"wavelengths":[]}})";
         }
         std::string diagnostic;
-        std::optional<PreparedState> prepared;
+        std::optional<JuicerTestSupport::PreparedStateHold> prepared;
         FjPreparedStateView preparedState{};
         ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
         const auto baselineFilmVersion = preparedState.film_profile_asset_version;
@@ -779,12 +795,12 @@ namespace {
     TEST(ProductionProfileConsumer, HanatosWindowBroaderValuesReachAcceptedFormula) {
         const auto root = consumer_resources("hanatos-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         auto controls = direct_controls();
-        controls.spectralUpsamplingMode = 0;
-        controls.hanatos2025AdaptationWindow = 1;
-        controls.hanatos2025AdaptationSurface = 0;
+        controls.values.spectral_upsampling_mode = 0;
+        controls.values.hanatos2025_adaptation_window = 1;
+        controls.values.hanatos2025_adaptation_surface = 0;
         JuicerTests::GtestCohort hanatos_widths_cases("hanatos-widths", 3u);
         std::size_t hanatos_widths_index = 0;
         for (double width : {-100.0, 1e40, 0.0}) {
@@ -797,7 +813,7 @@ namespace {
             const FjFilmProfileView sourceView = source.view();
             ASSERT_EQ(sourceView.hanatos_window.count, 4u);
             EXPECT_EQ(sourceView.hanatos_window.data[1], static_cast<float>(width));
-            std::optional<PreparedState> prepared;
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
             FjPreparedStateView preparedState{};
             std::string preparedDiagnostic;
             const bool preparedBuilt = prepared_view(
@@ -820,7 +836,7 @@ namespace {
     TEST(ProductionProfileConsumer, BroaderAxesAreCopiedAndReachLocalComputations) {
         const auto root = consumer_resources("axis-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const std::array<Json, 4> axes{Json::array({0.0}), Json::array({-1.0, 0.0, 0.0, 1.0}), Json::array({1.00000004, 1.00000003}), Json::array({-1e40, 0.0, 1e40})};
         JuicerTests::GtestCohort broader_axes_cases("broader-axes", axes.size());
@@ -838,7 +854,7 @@ namespace {
             for (std::size_t i = 0; i < axis.size(); ++i) {
                 EXPECT_EQ(sourceView.tables.log_exposure.data[i], static_cast<float>(axis[i].get<double>()));
             }
-            std::optional<PreparedState> prepared;
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
             FjPreparedStateView preparedState{};
             std::string preparedDiagnostic;
             const bool preparedBuilt = prepared_view(
@@ -855,9 +871,9 @@ namespace {
                 EXPECT_FALSE(preparedDiagnostic.empty());
             }
             auto active = direct_controls();
-            active.dirCouplers.active = true;
+            active.values.dir_couplers.active = 1;
             if (axis.size() == 1 || std::isinf(sourceView.tables.log_exposure.data[0])) {
-                std::optional<PreparedState> activePrepared;
+                std::optional<JuicerTestSupport::PreparedStateHold> activePrepared;
                 EXPECT_FALSE(prepared_view(owner.borrow().assets, active, activePrepared, preparedState, preparedDiagnostic));
                 EXPECT_FALSE(activePrepared.has_value());
                 EXPECT_FALSE(preparedDiagnostic.empty());
@@ -869,15 +885,6 @@ namespace {
 
 
 } // namespace
-
-namespace JuicerAssets::ProfileTest {
-    void before_catalog_publication() {
-        if (catalogPublicationBarrier) {
-            catalogPublicationBarrier->arrive_and_wait();
-            catalogPublicationBarrier->arrive_and_wait();
-        }
-    }
-} // namespace JuicerAssets::ProfileTest
 
 int main(int argc, char** argv) {
     try {

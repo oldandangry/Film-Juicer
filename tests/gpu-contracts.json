@@ -140,7 +140,7 @@
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
     "Ffi.Gpu.CudaRender.negative-direct": 20,
     "Ffi.Gpu.CudaRender.negative-print": 20,
-    "Ffi.Gpu.PreparedStateLifetime": 52,
+    "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
   "gtest_cohorts": {
@@ -190,5 +190,29 @@
   "excluded_gtest": {
     "ExposureCache.DISABLED_SixKTiming": "Explicit CUDA-event timing benchmark; never part of ordinary CTest.",
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
+  },
+  "native_membership": {
+    "Ffi.Gpu.PreparedStateLifetime": {
+      "listed": 31,
+      "terminal": 333,
+      "required": [
+        [
+          "production-state-contract",
+          "negative-direct/cold"
+        ],
+        [
+          "production-state-contract",
+          "negative-direct/warm"
+        ],
+        [
+          "production-state-contract",
+          "negative-print/cold"
+        ],
+        [
+          "production-state-contract",
+          "negative-print/warm"
+        ]
+      ]
+    }
   }
 }

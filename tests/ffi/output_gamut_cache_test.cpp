@@ -28,9 +28,8 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "GamutCompression.h"
-#include "ProcessRuntime.h"
+#include "owner_fixture.h"
 #include "test_asset_library.h"
-#include "RustGamutBridge.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "spectral_allocation_probe.h"
@@ -233,7 +232,7 @@ namespace {
         }
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) {
             status(fj_test_cache_clear_failures(owner(), std::exchange(Hooks::rejectIlluminantClear, false), std::exchange(lateFailure, false), nullptr), FJ_STATUS_SUCCESS);
-            const auto result = fj_legacy_assets_release_cached_payloads(owner(), error);
+            const auto result = fj_test_assets_release_cached_payloads(owner(), error);
             status(fj_test_output_cache_generation(owner(), &Hooks::observedGeneration, nullptr), FJ_STATUS_SUCCESS);
             return result;
         }
@@ -264,7 +263,7 @@ namespace {
         decode(source.white_xyz, row["source"]["white"]);
         decode(source.d65_white_xyz, row["source"]["d65"]);
         FjOutputGamutTransform result{};
-        status(fj_legacy_gamut_output_transform(&source, &result, nullptr), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_gamut_output_transform(&source, &result, nullptr), FJ_STATUS_SUCCESS);
         Expected out;
         std::copy_n(result.native_rgb_to_d65_xyz, 9, out.transform.nativeRgbToD65Xyz.begin());
         std::copy_n(result.d65_xyz_to_native_rgb, 9, out.transform.d65XyzToNativeRgb.begin());
@@ -557,7 +556,7 @@ namespace {
     }
 } // namespace
 int main(int argc, char** argv) {
-    JuicerProcess::ProcessRuntime runtime;
+    JuicerTestSupport::RuntimeFixture runtime;
     try {
         JuicerTests::CaseLog case_log;
         if (argc == 5 && std::string_view(argv[argc - 1]) == "--list-cases") {

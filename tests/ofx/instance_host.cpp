@@ -94,6 +94,8 @@ namespace ofx_test {
         int fail_remaining = 1;
         int null_remaining = 1;
         std::function<void()> reentry;
+        std::function<int()> abort_callback;
+        std::function<OfxStatus(std::string_view, std::string_view, std::string_view)> message_callback;
         bool error = false;
         bool fail_after_store = false;
         bool current_store_failure = false;
@@ -575,8 +577,10 @@ namespace ofx_test {
                 return 1;
             auto& e = effect(raw);
             try {
-                const auto status = e.bag.owner->record({"abort", e.bag.name, {}, 0, {e.bag.owner->abort_requested ? 1 : 0}, {}});
-                return accepted(status) ? static_cast<int>(e.bag.owner->abort_requested) : 1;
+                const int value = e.bag.owner->abort_callback ? e.bag.owner->abort_callback()
+                                                              : static_cast<int>(e.bag.owner->abort_requested);
+                const auto status = e.bag.owner->record({"abort", e.bag.name, {}, 0, {value}, {}});
+                return accepted(status) ? value : 1;
             } catch (...) {
                 e.bag.owner->error = true;
                 return 1;
@@ -717,7 +721,10 @@ namespace ofx_test {
                     return kOfxStatFailed;
                 std::vector<char> text(static_cast<std::size_t>(size) + 1);
                 std::vsnprintf(text.data(), text.size(), message_format, args);
-                return e.bag.owner->record({"message", e.bag.name, message_type ? message_type : "", 0, {std::string(message_id ? message_id : ""), std::string(text.data())}, {}});
+                const auto result = e.bag.owner->record({"message", e.bag.name, message_type ? message_type : "", 0, {std::string(message_id ? message_id : ""), std::string(text.data())}, {}});
+                if (!accepted(result) || !e.bag.owner->message_callback)
+                    return result;
+                return e.bag.owner->message_callback(message_type ? message_type : "", message_id ? message_id : "", text.data());
             });
             va_end(args);
             return status;
@@ -939,6 +946,13 @@ namespace ofx_test {
     }
     void InstanceHost::set_abort(bool abort) noexcept {
         impl_->abort_requested = abort;
+    }
+    std::function<int()> InstanceHost::set_abort_callback(std::function<int()> callback) {
+        return std::exchange(impl_->abort_callback, std::move(callback));
+    }
+    std::function<OfxStatus(std::string_view, std::string_view, std::string_view)> InstanceHost::set_message_callback(
+        std::function<OfxStatus(std::string_view, std::string_view, std::string_view)> callback) {
+        return std::exchange(impl_->message_callback, std::move(callback));
     }
     void InstanceHost::clear_calls() {
         impl_->trace.clear();

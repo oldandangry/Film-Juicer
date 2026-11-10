@@ -1,3 +1,4 @@
+#include "../route/route_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "integration_test.h"
 #include "../ofx/render_assertions.h"
@@ -35,13 +36,11 @@
 
 #include "ColorTransforms.h"
 #include "Hash.h"
-#include "JuicerState.h"
 #include "prepared_product_fixture.h"
 #include "ProcessRoot.h"
-#include "RenderControls.h"
+
 #include "RenderValues.h"
 #include "juicer_cuda_owner.h"
-#include "ProcessRuntime.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/case_results.h"
 #include "../ffi/test_asset_workspace.h"
@@ -427,38 +426,58 @@ namespace {
             !controls_equal(first, distinct) && firstRecipe.hash != distinctRecipe.hash,
             "distinct retained Float32 controls must change recipe identity");
 
-        const auto check_gamma_success = [&results](
+        const auto capture_gamma_input = [](
+                                             double filmGamma,
+                                             double printGamma,
+                                             JuicerTestSupport::PreparationInput& input,
+                                             std::string& diagnostic) {
+            std::array<char, 2048> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            float film = 0.0f;
+            double print = 0.0;
+            const FjStatus status = fj_test_capture_gamma(
+                input.values.scan_route, filmGamma, printGamma, &film, &print, &error);
+            diagnostic.assign(text.data(), std::min(error.length, text.size()));
+            if (status.category != FJ_STATUS_SUCCESS) {
+                return false;
+            }
+            input.values.film_gamma_factor = film;
+            input.values.print_gamma_factor = print;
+            return true;
+        };
+
+        const auto check_gamma_success = [&results, &capture_gamma_input](
                                              std::string name,
                                              Spektrafilm::ScanRoute route,
                                              double filmGamma,
                                              double printGamma) {
-            ParamSnapshot snapshot;
-            snapshot.scanRoute = route;
+            JuicerTestSupport::PreparationInput snapshot;
+            snapshot.values.scan_route = static_cast<std::uint32_t>(route);
             std::string diagnostic;
-            const bool success = set_gamma_snapshot_values(
+            const bool success = capture_gamma_input(
                 filmGamma,
                 printGamma,
                 snapshot,
                 diagnostic);
             const bool printRetained = std::isnan(printGamma)
-                                           ? std::isnan(snapshot.printGammaFactor)
-                                           : snapshot.printGammaFactor == printGamma;
+                                           ? std::isnan(snapshot.values.print_gamma_factor)
+                                           : snapshot.values.print_gamma_factor == printGamma;
             results.record(
                 std::move(name),
                 success &&
-                    snapshot.filmGammaFactor == static_cast<float>(filmGamma) &&
+                    snapshot.values.film_gamma_factor == static_cast<float>(filmGamma) &&
                     printRetained,
                 diagnostic);
         };
-        const auto check_gamma_failure = [&results](
+        const auto check_gamma_failure = [&results, &capture_gamma_input](
                                              std::string name,
                                              Spektrafilm::ScanRoute route,
                                              double filmGamma,
                                              double printGamma) {
-            ParamSnapshot snapshot;
-            snapshot.scanRoute = route;
+            JuicerTestSupport::PreparationInput snapshot;
+            snapshot.values.scan_route = static_cast<std::uint32_t>(route);
             std::string diagnostic;
-            const bool success = set_gamma_snapshot_values(
+            const bool success = capture_gamma_input(
                 filmGamma,
                 printGamma,
                 snapshot,
@@ -1054,16 +1073,16 @@ namespace {
             "fixed CUDA-visible constants retain frozen Float32 bit patterns");
     }
 
-    ParamSnapshot direct_snapshot() {
-        ParamSnapshot snapshot;
-        snapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+    JuicerTestSupport::PreparationInput direct_snapshot() {
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan);
         return snapshot;
     }
 
-    void seed_valid_pending(RenderInstance& state, const ParamSnapshot& snapshot, std::optional<std::uint64_t> fullHash = std::nullopt) {
+    void seed_valid_pending(JuicerTestSupport::InstanceFixture& state, const JuicerTestSupport::PreparationInput& snapshot, std::optional<std::uint64_t> fullHash = std::nullopt) {
         JuicerTestSupport::capture(state, snapshot, fullHash);
     }
-    void seed_invalid_pending(RenderInstance& state, const std::string& diagnostic) {
+    void seed_invalid_pending(JuicerTestSupport::InstanceFixture& state, const std::string& diagnostic) {
         JuicerTestSupport::invalidate(state, diagnostic);
     }
 
@@ -1081,7 +1100,7 @@ namespace {
         std::uint64_t scannerColorHash = 0;
     };
 
-    PreparedStateFacts inspect_prepared_state(const PreparedState& owner) {
+    PreparedStateFacts inspect_prepared_state(const JuicerTestSupport::PreparedStateHold& owner) {
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView state{};
@@ -1110,8 +1129,8 @@ namespace {
 
     bool try_prepare_product(
         const FjAssets* assets,
-        const ParamSnapshot& snapshot,
-        std::optional<PreparedState>& out,
+        const JuicerTestSupport::PreparationInput& snapshot,
+        std::optional<JuicerTestSupport::PreparedStateHold>& out,
         std::string& diagnostic) {
         out.reset();
         if (assets == nullptr) {
@@ -1120,7 +1139,7 @@ namespace {
         }
         std::array<char, 2048> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-        const FjStatus status = prepare_state(assets, snapshot, out, error);
+        const FjStatus status = JuicerTestSupport::prepare_state(assets, snapshot, out, error);
         diagnostic.assign(bytes.data(), std::min(error.length, bytes.size()));
         return status.category == FJ_STATUS_SUCCESS && out.has_value();
     }
@@ -1149,8 +1168,8 @@ namespace {
                 scannerDescriptor.glare_blur_radius == 2 && scannerDescriptor.lens_blur_radius == 2 && scannerDescriptor.unsharp_radius == 2,
             std::string(scannerMessage.data(), scannerError.length));
 
-        const ParamSnapshot direct = direct_snapshot();
-        std::optional<PreparedState> directState;
+        const JuicerTestSupport::PreparationInput direct = direct_snapshot();
+        std::optional<JuicerTestSupport::PreparedStateHold> directState;
         std::string directDiagnostic;
         const bool directBuilt = try_prepare_product(assets, direct, directState, directDiagnostic);
         const auto directFacts = directState
@@ -1165,8 +1184,8 @@ namespace {
                 directFacts.scannerHash != 0,
             directDiagnostic);
 
-        ParamSnapshot print;
-        std::optional<PreparedState> printState;
+        JuicerTestSupport::PreparationInput print;
+        std::optional<JuicerTestSupport::PreparedStateHold> printState;
         std::string printDiagnostic;
         const bool printBuilt = try_prepare_product(assets, print, printState, printDiagnostic);
         const auto printFacts = printState
@@ -1200,15 +1219,15 @@ namespace {
         JuicerTests::Cohort gammaCohort(std::string(gammaCaller), gammaIds);
         for (const GammaBuildCase& testCase : gammaBuildCases) {
             JuicerTests::CaseEvent row(gammaCaller, testCase.name);
-            ParamSnapshot gammaSnapshot;
-            gammaSnapshot.scanRoute = testCase.route;
-            gammaSnapshot.filmGammaFactor = testCase.filmGamma;
-            gammaSnapshot.printGammaFactor = testCase.printGamma;
+            JuicerTestSupport::PreparationInput gammaSnapshot;
+            gammaSnapshot.values.scan_route = static_cast<std::uint32_t>(testCase.route);
+            gammaSnapshot.values.film_gamma_factor = testCase.filmGamma;
+            gammaSnapshot.values.print_gamma_factor = testCase.printGamma;
             if (Spektrafilm::scan_route_metadata(testCase.route).capturePolarity ==
                 Spektrafilm::ProfilePolarity::Positive) {
-                gammaSnapshot.filmProfileKey = "fujifilm_provia_100f";
+                gammaSnapshot.film_key = "fujifilm_provia_100f";
             }
-            std::optional<PreparedState> gammaState;
+            std::optional<JuicerTestSupport::PreparedStateHold> gammaState;
             std::string gammaDiagnostic;
             const bool gammaBuilt = try_prepare_product(assets,
                                                         gammaSnapshot,
@@ -1221,10 +1240,13 @@ namespace {
             row.complete(gammaBuilt);
         }
 
-        ParamSnapshot requested = direct;
-        requested.scatterHalationControls = convert_or_throw(
-            ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
-        std::optional<PreparedState> requestedState;
+        JuicerTestSupport::PreparationInput requested = direct;
+        requested.values.scatter_halation.active = 1;
+        requested.values.scatter_halation.scatter_amount = 1.0f;
+        requested.values.scatter_halation.scatter_spatial_scale = 1.0f;
+        requested.values.scatter_halation.halation_amount = 1.0f;
+        requested.values.scatter_halation.halation_spatial_scale = 1.0f;
+        std::optional<JuicerTestSupport::PreparedStateHold> requestedState;
         std::string requestedStateDiagnostic;
         const bool requestedStateBuilt = try_prepare_product(assets,
                                                              requested,
@@ -1239,19 +1261,19 @@ namespace {
                 requestedFacts.scatterHalationHash != 0,
             requestedStateDiagnostic);
 
-        RenderInstance publicationState;
+        JuicerTestSupport::InstanceFixture publicationState;
         seed_valid_pending(publicationState, requested);
         const JuicerTestSupport::PublicationAdmission admitted =
             JuicerTestSupport::admit(assets, publicationState);
-        const ScatterHalationControls& defaultControls =
-            requested.scatterHalationControls;
+        const FjPreparationHalation& defaultControls =
+            requested.values.scatter_halation;
         results.record(
             "publication/default-active-one-admitted",
             defaultControls.active &&
-                float_bits(defaultControls.scatterAmount) == float_bits(1.0f) &&
-                float_bits(defaultControls.scatterSpatialScale) == float_bits(1.0f) &&
-                float_bits(defaultControls.halationAmount) == float_bits(1.0f) &&
-                float_bits(defaultControls.halationSpatialScale) == float_bits(1.0f) &&
+                float_bits(defaultControls.scatter_amount) == float_bits(1.0f) &&
+                float_bits(defaultControls.scatter_spatial_scale) == float_bits(1.0f) &&
+                float_bits(defaultControls.halation_amount) == float_bits(1.0f) &&
+                float_bits(defaultControls.halation_spatial_scale) == float_bits(1.0f) &&
                 admitted.kind == FJ_ADMISSION_READY &&
                 admitted.state &&
                 inspect_prepared_state(*admitted.state).recipeHash != 0 &&
@@ -1260,30 +1282,30 @@ namespace {
 
         // Keep an independent equal-valued object so this remains an identity oracle.
         // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
-        ParamSnapshot equalDirect = direct;
-        ParamSnapshot differentFilm = direct;
-        differentFilm.filmProfileKey = "kodak_portra_160";
-        ParamSnapshot inactivePrintSelection = direct;
-        inactivePrintSelection.printProfileKey = "kodak_supra_endura";
-        ParamSnapshot alternatePrint = print;
-        alternatePrint.printProfileKey = "kodak_supra_endura";
+        JuicerTestSupport::PreparationInput equalDirect = direct;
+        JuicerTestSupport::PreparationInput differentFilm = direct;
+        differentFilm.film_key = "kodak_portra_160";
+        JuicerTestSupport::PreparationInput inactivePrintSelection = direct;
+        inactivePrintSelection.print_key = "kodak_supra_endura";
+        JuicerTestSupport::PreparationInput alternatePrint = print;
+        alternatePrint.print_key = "kodak_supra_endura";
         results.record(
             "profile-selection/meaningful-hash-identity",
-            hash_params(direct) == hash_params(equalDirect) &&
-                hash_params(direct) != hash_params(differentFilm) &&
-                hash_params(direct) == hash_params(inactivePrintSelection) &&
-                hash_params(print) != hash_params(alternatePrint),
+            JuicerTestSupport::hash_input_identity(direct) == JuicerTestSupport::hash_input_identity(equalDirect) &&
+                JuicerTestSupport::hash_input_identity(direct) != JuicerTestSupport::hash_input_identity(differentFilm) &&
+                JuicerTestSupport::hash_input_identity(direct) == JuicerTestSupport::hash_input_identity(inactivePrintSelection) &&
+                JuicerTestSupport::hash_input_identity(print) != JuicerTestSupport::hash_input_identity(alternatePrint),
             "film keys and active print keys must distinguish identity; inactive print selection must not");
 
-        ParamSnapshot missingProfile = direct;
-        missingProfile.filmProfileKey = "missing_s07_profile";
-        std::optional<PreparedState> missingPreparedState;
+        JuicerTestSupport::PreparationInput missingProfile = direct;
+        missingProfile.film_key = "missing_s07_profile";
+        std::optional<JuicerTestSupport::PreparedStateHold> missingPreparedState;
         std::string missingDiagnostic;
         const bool missingBuilt = try_prepare_product(assets,
                                                       missingProfile,
                                                       missingPreparedState,
                                                       missingDiagnostic);
-        RenderInstance missingPublicationState;
+        JuicerTestSupport::InstanceFixture missingPublicationState;
         seed_valid_pending(missingPublicationState, missingProfile);
         const JuicerTestSupport::PublicationAdmission missingAdmission =
             JuicerTestSupport::admit(assets, missingPublicationState);
@@ -1301,12 +1323,12 @@ namespace {
                            {"pending/uninitialized-needs-snapshot", "pending/invalid-before-load", "pending/valid-direct-capture", "pending/valid-print-capture", "pending/valid-hash-zero", "pending/same-hash-ready-reuse", "pending/same-hash-independent-cold-build", "pending/invalid-after-linearization-retains-publication", "pending/invalid-to-equal-valid-reuse", "pending/rebuild-failure-does-not-admit-previous-state", "pending/edit-during-rebuild-retries-current"})) {
             return;
         }
-        RenderInstance uninitialized;
+        JuicerTestSupport::InstanceFixture uninitialized;
         const auto uninitializedResult = JuicerTestSupport::admit(assets, uninitialized);
         results.record("pending/uninitialized-needs-snapshot",
                        uninitializedResult.kind == FJ_ADMISSION_NEEDS_CAPTURE && !uninitializedResult.state,
                        uninitializedResult.diagnostic);
-        RenderInstance invalidBeforeLoad;
+        JuicerTestSupport::InstanceFixture invalidBeforeLoad;
         seed_invalid_pending(invalidBeforeLoad, "InvalidSnapshotControls before-load");
         const auto invalidBefore = JuicerTestSupport::admit(assets, invalidBeforeLoad);
         results.record("pending/invalid-before-load",
@@ -1314,32 +1336,32 @@ namespace {
                            invalidBefore.diagnostic == "InvalidSnapshotControls before-load" &&
                            JuicerTestSupport::PublicationObserver::metrics(invalidBeforeLoad).build == 0,
                        invalidBefore.diagnostic);
-        const ParamSnapshot direct = direct_snapshot();
-        RenderInstance directState;
+        const JuicerTestSupport::PreparationInput direct = direct_snapshot();
+        JuicerTestSupport::InstanceFixture directState;
         seed_valid_pending(directState, direct);
         const auto directResult = JuicerTestSupport::admit(assets, directState);
         results.record("pending/valid-direct-capture", directResult.kind == FJ_ADMISSION_READY && directResult.state && JuicerTestSupport::published_view(directResult).route == static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan), directResult.diagnostic);
-        ParamSnapshot print;
-        RenderInstance printState;
+        JuicerTestSupport::PreparationInput print;
+        JuicerTestSupport::InstanceFixture printState;
         seed_valid_pending(printState, print);
         const auto printResult = JuicerTestSupport::admit(assets, printState);
         results.record("pending/valid-print-capture", printResult.kind == FJ_ADMISSION_READY && printResult.state && (JuicerTestSupport::published_view(printResult).route & 1u) != 0, printResult.diagnostic);
-        RenderInstance zeroHashState;
+        JuicerTestSupport::InstanceFixture zeroHashState;
         seed_valid_pending(zeroHashState, direct, 0);
         const auto zeroHash = JuicerTestSupport::admit(assets, zeroHashState);
         results.record("pending/valid-hash-zero", zeroHash.kind == FJ_ADMISSION_READY && zeroHash.state && zeroHash.state->input_identity() == 0 && zeroHash.state->build() == 1, zeroHash.diagnostic);
-        RenderInstance sameHashState;
+        JuicerTestSupport::InstanceFixture sameHashState;
         seed_valid_pending(sameHashState, direct);
         const auto first = JuicerTestSupport::admit(assets, sameHashState);
         const auto readyReuse = JuicerTestSupport::admit(assets, sameHashState);
         const auto firstMetrics = JuicerTestSupport::PublicationObserver::metrics(sameHashState);
         results.record("pending/same-hash-ready-reuse", first.state && readyReuse.state && first.state->build() == 1 && readyReuse.state->build() == first.state->build() && JuicerTestSupport::published_view(first).film_development.density_rgb.data == JuicerTestSupport::published_view(readyReuse).film_development.density_rgb.data, readyReuse.diagnostic);
-        RenderInstance coldState;
+        JuicerTestSupport::InstanceFixture coldState;
         seed_valid_pending(coldState, direct);
         const auto cold = JuicerTestSupport::admit(assets, coldState);
         const auto coldMetrics = JuicerTestSupport::PublicationObserver::metrics(coldState);
         results.record("pending/same-hash-independent-cold-build", cold.kind == FJ_ADMISSION_READY && cold.state && cold.state->input_identity() == first.state->input_identity() && cold.state->build() == 1 && coldMetrics.backingIdentity != firstMetrics.backingIdentity, cold.diagnostic);
-        RenderInstance invalidAfterState;
+        JuicerTestSupport::InstanceFixture invalidAfterState;
         seed_valid_pending(invalidAfterState, direct);
         const auto beforeInvalid = JuicerTestSupport::admit(assets, invalidAfterState);
         const auto beforeMetrics = JuicerTestSupport::PublicationObserver::metrics(invalidAfterState);
@@ -1350,19 +1372,19 @@ namespace {
         seed_valid_pending(invalidAfterState, direct);
         const auto equalValid = JuicerTestSupport::admit(assets, invalidAfterState);
         results.record("pending/invalid-to-equal-valid-reuse", equalValid.kind == FJ_ADMISSION_READY && equalValid.state && equalValid.state->build() == beforeMetrics.build && JuicerTestSupport::PublicationObserver::metrics(invalidAfterState).backingIdentity == beforeMetrics.backingIdentity, equalValid.diagnostic);
-        RenderInstance failedAfterState;
+        JuicerTestSupport::InstanceFixture failedAfterState;
         seed_valid_pending(failedAfterState, direct);
         const auto validBeforeFailure = JuicerTestSupport::admit(assets, failedAfterState);
         const auto validMetrics = JuicerTestSupport::PublicationObserver::metrics(failedAfterState);
-        ParamSnapshot missingAfterValid = direct;
-        missingAfterValid.filmProfileKey = "missing_after_valid_profile";
+        JuicerTestSupport::PreparationInput missingAfterValid = direct;
+        missingAfterValid.film_key = "missing_after_valid_profile";
         seed_valid_pending(failedAfterState, missingAfterValid);
         const auto failedCurrent = JuicerTestSupport::admit(assets, failedAfterState);
         results.record("pending/rebuild-failure-does-not-admit-previous-state", validBeforeFailure.state && inspect_prepared_state(*validBeforeFailure.state).recipeHash != 0 && failedCurrent.kind == FJ_ADMISSION_PREPARATION_FAILED && !failedCurrent.state && JuicerTestSupport::PublicationObserver::metrics(failedAfterState).backingIdentity == validMetrics.backingIdentity, failedCurrent.diagnostic);
 
-        RenderInstance retryState;
-        ParamSnapshot edited = direct;
-        edited.cameraFilmFormatLongEdgeMm = 36.0f;
+        JuicerTestSupport::InstanceFixture retryState;
+        JuicerTestSupport::PreparationInput edited = direct;
+        edited.values.camera_film_format_long_edge_mm = 36.0f;
         seed_valid_pending(retryState, direct);
         JuicerTestSupport::PublicationAdmission retryResult;
         struct CaptureGate {
@@ -1418,7 +1440,7 @@ namespace {
         gate.condition.notify_one();
         admission.join();
         const auto retryMetrics = JuicerTestSupport::PublicationObserver::metrics(retryState);
-        results.record("pending/edit-during-rebuild-retries-current", capturedBeforeEdit && !gate.timedOut && !gate.failure && retryResult.kind == FJ_ADMISSION_READY && retryResult.state && retryResult.state->input_identity() == hash_params(edited) && retryMetrics.publishedIdentity == hash_params(edited) && retryMetrics.build == 1, retryResult.diagnostic);
+        results.record("pending/edit-during-rebuild-retries-current", capturedBeforeEdit && !gate.timedOut && !gate.failure && retryResult.kind == FJ_ADMISSION_READY && retryResult.state && retryResult.state->input_identity() == JuicerTestSupport::hash_input_identity(edited) && retryMetrics.publishedIdentity == JuicerTestSupport::hash_input_identity(edited) && retryMetrics.build == 1, retryResult.diagnostic);
     }
 
     struct FreshIdentity {
@@ -1432,13 +1454,14 @@ namespace {
         const FjAssets* assets,
         Results& results,
         std::string_view name,
-        const ParamSnapshot& a,
-        const ParamSnapshot& b,
+        const JuicerTestSupport::PreparationInput& a,
+        const JuicerTestSupport::PreparationInput& b,
         bool signedZero,
         std::optional<std::array<FreshIdentity, 2>> accepted) {
-        const bool printRoute = Spektrafilm::scan_route_is_print(a.scanRoute);
-        std::optional<PreparedState> heldA;
-        std::optional<PreparedState> heldB;
+        const bool printRoute = Spektrafilm::scan_route_is_print(
+            static_cast<Spektrafilm::ScanRoute>(a.values.scan_route));
+        std::optional<JuicerTestSupport::PreparedStateHold> heldA;
+        std::optional<JuicerTestSupport::PreparedStateHold> heldB;
         std::string diagnosticA;
         std::string diagnosticB;
         const bool builtA = try_prepare_product(assets, a, heldA, diagnosticA);
@@ -1477,13 +1500,13 @@ namespace {
         }
 
         for (bool reverse : {false, true}) {
-            RenderInstance state;
+            JuicerTestSupport::InstanceFixture state;
             seed_valid_pending(state, reverse ? b : a);
             const JuicerTestSupport::PublicationAdmission first = JuicerTestSupport::admit(assets, state);
             seed_valid_pending(state, reverse ? a : b);
             const JuicerTestSupport::PublicationAdmission destination =
                 JuicerTestSupport::admit(assets, state);
-            const PreparedState* actual = destination.state.get();
+            const JuicerTestSupport::PreparedStateHold* actual = destination.state.get();
             const PreparedStateFacts actualFacts = actual ? inspect_prepared_state(*actual) : PreparedStateFacts{};
             const PreparedStateFacts& expected = reverse ? freshA : freshB;
             const std::uint64_t firstBuild = first.state ? first.state->build() : 0;
@@ -1555,37 +1578,37 @@ namespace {
             const std::string routeId = printRoute ? "print" : "direct";
             JuicerTests::CaseEvent routeEvent(routeCaller, routeId);
             const int failuresBefore = results.failure_count();
-            ParamSnapshot a = direct_snapshot();
+            JuicerTestSupport::PreparationInput a = direct_snapshot();
             if (printRoute) {
-                a.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+                a.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
             }
-            a.cameraExposureCompensationEv = 1.0;
-            ParamSnapshot b = a;
-            b.cameraExposureCompensationEv = 1.00001;
+            a.values.camera_exposure_compensation_ev = 1.0;
+            JuicerTestSupport::PreparationInput b = a;
+            b.values.camera_exposure_compensation_ev = 1.00001;
             run_parameter_identity_pair(
                 assets, results, printRoute ? "identity/print-exposure-small" : "identity/direct-exposure-small", a, b, false, printRoute ? kPrintSmall : kDirectSmall);
 
-            a.cameraExposureCompensationEv = 0.0;
+            a.values.camera_exposure_compensation_ev = 0.0;
             b = a;
-            b.cameraExposureCompensationEv = -0.0;
+            b.values.camera_exposure_compensation_ev = -0.0;
             run_parameter_identity_pair(
                 assets, results, printRoute ? "identity/print-exposure-zero" : "identity/direct-exposure-zero", a, b, true, printRoute ? kPrintZero : kDirectZero);
             routeEvent.complete(results.failure_count() == failuresBefore);
         }
 
-        ParamSnapshot a = direct_snapshot();
-        a.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-        a.printExposure = 1.0;
-        ParamSnapshot b = a;
-        b.printExposure = 1.00001;
+        JuicerTestSupport::PreparationInput a = direct_snapshot();
+        a.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
+        a.values.print_exposure = 1.0;
+        JuicerTestSupport::PreparationInput b = a;
+        b.values.print_exposure = 1.00001;
         run_parameter_identity_pair(
             assets, results, "identity/print-medium-exposure-small", a, b, false, kPrintMediumSmall);
 
-        RenderInstance sameEffectiveState;
+        JuicerTestSupport::InstanceFixture sameEffectiveState;
         a = direct_snapshot();
-        a.cameraExposureCompensationEv = 1.0;
+        a.values.camera_exposure_compensation_ev = 1.0;
         b = a;
-        b.cameraExposureCompensationEv = std::nextafter(1.0, 2.0);
+        b.values.camera_exposure_compensation_ev = std::nextafter(1.0, 2.0);
         seed_valid_pending(sameEffectiveState, a);
         const JuicerTestSupport::PublicationAdmission first =
             JuicerTestSupport::admit(assets, sameEffectiveState);
@@ -1594,24 +1617,24 @@ namespace {
             JuicerTestSupport::admit(assets, sameEffectiveState);
         results.record(
             "identity/same-retained-float32-reuses",
-            a.cameraExposureCompensationEv != b.cameraExposureCompensationEv &&
-                float_bits(a.cameraExposureCompensationEv) ==
-                    float_bits(b.cameraExposureCompensationEv) &&
-                hash_params(a) == hash_params(b) &&
+            a.values.camera_exposure_compensation_ev != b.values.camera_exposure_compensation_ev &&
+                float_bits(a.values.camera_exposure_compensation_ev) ==
+                    float_bits(b.values.camera_exposure_compensation_ev) &&
+                JuicerTestSupport::hash_input_identity(a) == JuicerTestSupport::hash_input_identity(b) &&
                 first.state && sameEffective.state &&
                 first.state->build() ==
                     sameEffective.state->build(),
             sameEffective.diagnostic);
 
-        ParamSnapshot inactive = a;
-        inactive.cameraFilterUV[0] = 0.0;
-        inactive.grainControls.particleAreaUm2 =
-            std::nextafter(inactive.grainControls.particleAreaUm2, 100.0f);
-        inactive.printProfileKey = "kodak_supra_endura";
+        JuicerTestSupport::PreparationInput inactive = a;
+        inactive.values.camera_filter_uv[0] = 0.0;
+        inactive.values.grain.particle_area_um2 =
+            std::nextafter(inactive.values.grain.particle_area_um2, 100.0f);
+        inactive.print_key = "kodak_supra_endura";
         results.record(
             "identity/inactive-family-equivalence",
-            !a.cameraFilterOverride && !a.grainControls.active &&
-                hash_params(a) == hash_params(inactive),
+            !a.values.camera_filter_override && !a.values.grain.active &&
+                JuicerTestSupport::hash_input_identity(a) == JuicerTestSupport::hash_input_identity(inactive),
             "inactive camera filter, grain, and print selection remain outside the key");
     }
 
@@ -1626,58 +1649,58 @@ namespace {
         struct SignCase {
             const char* name;
             Setup setup;
-            void (*set)(ParamSnapshot&, double);
+            void (*set)(JuicerTestSupport::PreparationInput&, double);
         };
-        const std::array<SignCase, 17> cases{{{"print-preflash-exposure", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.printPreflashExposure = v;
+        const std::array<SignCase, 17> cases{{{"print-preflash-exposure", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.print_preflash_exposure = v;
                                                }},
-                                              {"print-ui-y", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.printUiYmcCc[0] = v;
+                                              {"print-ui-y", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.print_ui_ymc_cc[0] = v;
                                                }},
-                                              {"preflash-m", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.preflashMFilterCc = v;
+                                              {"preflash-m", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.preflash_m_filter_cc = v;
                                                }},
-                                              {"preflash-y", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.preflashYFilterCc = v;
+                                              {"preflash-y", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.preflash_y_filter_cc = v;
                                                }},
-                                              {"glare-percent", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.glarePercent = v;
+                                              {"glare-percent", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.glare_percent = v;
                                                }},
-                                              {"glare-roughness", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.glareRoughness = v;
+                                              {"glare-roughness", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.glare_roughness = v;
                                                }},
-                                              {"glare-blur", Setup::Print, [](ParamSnapshot& p, double v) {
-                                                   p.glareBlurSigmaPx = v;
+                                              {"glare-blur", Setup::Print, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.glare_blur_sigma_px = v;
                                                }},
-                                              {"scanner-lens-blur", Setup::Direct, [](ParamSnapshot& p, double v) {
-                                                   p.scannerLensBlurSigmaPx = v;
+                                              {"scanner-lens-blur", Setup::Direct, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.scanner_lens_blur_sigma_px = v;
                                                }},
-                                              {"scanner-unsharp-sigma", Setup::Direct, [](ParamSnapshot& p, double v) {
-                                                   p.scannerUnsharpMask[0] = v;
+                                              {"scanner-unsharp-sigma", Setup::Direct, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.scanner_unsharp_mask[0] = v;
                                                }},
-                                              {"scanner-unsharp-amount", Setup::Direct, [](ParamSnapshot& p, double v) {
-                                                   p.scannerUnsharpMask[1] = v;
+                                              {"scanner-unsharp-amount", Setup::Direct, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.scanner_unsharp_mask[1] = v;
                                                }},
-                                              {"scanner-black-level", Setup::Direct, [](ParamSnapshot& p, double v) {
-                                                   p.scannerBlackLevel = v;
+                                              {"scanner-black-level", Setup::Direct, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.scanner_black_level = v;
                                                }},
-                                              {"scanner-white-level", Setup::Direct, [](ParamSnapshot& p, double v) {
-                                                   p.scannerWhiteLevel = v;
+                                              {"scanner-white-level", Setup::Direct, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.scanner_white_level = v;
                                                }},
-                                              {"gate-weave", Setup::Effects, [](ParamSnapshot& p, double v) {
-                                                   p.gateWeaveAmount = v;
+                                              {"gate-weave", Setup::Effects, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.gate_weave_amount = v;
                                                }},
-                                              {"film-dust", Setup::Effects, [](ParamSnapshot& p, double v) {
-                                                   p.filmDustAmount = static_cast<float>(v);
+                                              {"film-dust", Setup::Effects, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.film_dust_amount = static_cast<float>(v);
                                                }},
-                                              {"grain-amplitude", Setup::Grain, [](ParamSnapshot& p, double v) {
-                                                   p.grainControls.amplitude = static_cast<float>(v);
+                                              {"grain-amplitude", Setup::Grain, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.grain.amplitude = static_cast<float>(v);
                                                }},
-                                              {"camera-filter-uv", Setup::Filter, [](ParamSnapshot& p, double v) {
-                                                   p.cameraFilterUV[0] = v;
+                                              {"camera-filter-uv", Setup::Filter, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.camera_filter_uv[0] = v;
                                                }},
-                                              {"camera-filter-ir", Setup::Filter, [](ParamSnapshot& p, double v) {
-                                                   p.cameraFilterIR[0] = v;
+                                              {"camera-filter-ir", Setup::Filter, [](JuicerTestSupport::PreparationInput& p, double v) {
+                                                   p.values.camera_filter_ir[0] = v;
                                                }}}};
         std::vector<std::string> caseIds;
         caseIds.reserve(cases.size());
@@ -1699,22 +1722,22 @@ namespace {
         for (const SignCase& signCase : cases) {
             JuicerTests::CaseEvent row(caller, signCase.name);
             const int failuresBefore = results.failure_count();
-            ParamSnapshot positive = direct_snapshot();
+            JuicerTestSupport::PreparationInput positive = direct_snapshot();
             if (signCase.setup == Setup::Print) {
-                positive.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+                positive.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
             } else if (signCase.setup == Setup::Grain) {
-                positive.grainControls.active = true;
+                positive.values.grain.active = true;
             } else if (signCase.setup == Setup::Effects) {
-                positive.filmDustAmount = 1.0f;
-                positive.gateWeaveAmount = 1.0;
+                positive.values.film_dust_amount = 1.0f;
+                positive.values.gate_weave_amount = 1.0;
             } else if (signCase.setup == Setup::Filter) {
-                positive.cameraFilterOverride = true;
+                positive.values.camera_filter_override = true;
             }
             signCase.set(positive, 0.0);
-            ParamSnapshot negative = positive;
+            JuicerTestSupport::PreparationInput negative = positive;
             signCase.set(negative, -0.0);
-            std::optional<PreparedState> heldPositive;
-            std::optional<PreparedState> heldNegative;
+            std::optional<JuicerTestSupport::PreparedStateHold> heldPositive;
+            std::optional<JuicerTestSupport::PreparedStateHold> heldNegative;
             std::string positiveDiagnostic;
             std::string negativeDiagnostic;
             const bool positiveBuilt = try_prepare_product(assets,
@@ -1735,7 +1758,7 @@ namespace {
             const PreparedStateFacts positiveFacts = inspect_prepared_state(*heldPositive);
             const PreparedStateFacts negativeFacts = inspect_prepared_state(*heldNegative);
             const bool recipeDiffers = positiveFacts.recipeHash != negativeFacts.recipeHash;
-            const bool keyDiffers = hash_params(positive) != hash_params(negative);
+            const bool keyDiffers = JuicerTestSupport::hash_input_identity(positive) != JuicerTestSupport::hash_input_identity(negative);
             results.record(name + "/key-follows-recipe", recipeDiffers == keyDiffers, std::string("recipeDiffers=") + (recipeDiffers ? "1" : "0") + " keyDiffers=" + (keyDiffers ? "1" : "0"));
             const std::size_t casesBeforeConditionalPair = results.cases().size();
             if (recipeDiffers) {
@@ -1760,29 +1783,29 @@ namespace {
                  "camera-format/invalid-alternative-admission",
                  "camera-format/same-float32-reuse-distinct-rebuild"}))
             return;
-        ParamSnapshot minimum;
-        minimum.cameraFilmFormatLongEdgeMm = 8.0f;
-        ParamSnapshot standard = minimum;
-        standard.cameraFilmFormatLongEdgeMm = 35.0f;
-        ParamSnapshot maximum = minimum;
-        maximum.cameraFilmFormatLongEdgeMm = 120.0f;
+        JuicerTestSupport::PreparationInput minimum;
+        minimum.values.camera_film_format_long_edge_mm = 8.0f;
+        JuicerTestSupport::PreparationInput standard = minimum;
+        standard.values.camera_film_format_long_edge_mm = 35.0f;
+        JuicerTestSupport::PreparationInput maximum = minimum;
+        maximum.values.camera_film_format_long_edge_mm = 120.0f;
         results.record(
             "camera-format/canonical-bounds-and-default-hash",
-            hash_params(minimum) != hash_params(standard) &&
-                hash_params(standard) != hash_params(maximum) &&
-                hash_params(minimum) != hash_params(maximum),
+            JuicerTestSupport::hash_input_identity(minimum) != JuicerTestSupport::hash_input_identity(standard) &&
+                JuicerTestSupport::hash_input_identity(standard) != JuicerTestSupport::hash_input_identity(maximum) &&
+                JuicerTestSupport::hash_input_identity(minimum) != JuicerTestSupport::hash_input_identity(maximum),
             "8, 35, and 120 mm exact-bit lanes must remain distinct");
 
-        ParamSnapshot same = standard;
-        ParamSnapshot distinct = standard;
-        distinct.cameraFilmFormatLongEdgeMm = std::nextafter(35.0f, 36.0f);
+        JuicerTestSupport::PreparationInput same = standard;
+        JuicerTestSupport::PreparationInput distinct = standard;
+        distinct.values.camera_film_format_long_edge_mm = std::nextafter(35.0f, 36.0f);
         results.record(
             "camera-format/same-vs-distinct-float32-hash",
-            hash_params(standard) == hash_params(same) &&
-                hash_params(standard) != hash_params(distinct),
+            JuicerTestSupport::hash_input_identity(standard) == JuicerTestSupport::hash_input_identity(same) &&
+                JuicerTestSupport::hash_input_identity(standard) != JuicerTestSupport::hash_input_identity(distinct),
             "snapshot hashing consumes the canonical Float32 exactly");
 
-        RenderInstance state;
+        JuicerTestSupport::InstanceFixture state;
         seed_invalid_pending(state, "InvalidSnapshotControls field=camera_film_format_long_edge_mm");
         const JuicerTestSupport::PublicationAdmission invalid = JuicerTestSupport::admit(assets, state);
         results.record(
@@ -1791,7 +1814,7 @@ namespace {
                 !invalid.diagnostic.empty(),
             invalid.diagnostic);
 
-        RenderInstance publicationState;
+        JuicerTestSupport::InstanceFixture publicationState;
         seed_valid_pending(publicationState, standard);
         const JuicerTestSupport::PublicationAdmission first =
             JuicerTestSupport::admit(assets, publicationState);
@@ -1834,7 +1857,7 @@ namespace {
     }
 
     struct PreparedInputs {
-        std::optional<PreparedState> state;
+        std::optional<JuicerTestSupport::PreparedStateHold> state;
         JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
@@ -1843,7 +1866,7 @@ namespace {
     };
 
     bool initialize_route_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& scatterHalationControls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
@@ -1854,23 +1877,38 @@ namespace {
         bool dirCouplersActive = true,
         bool disableScannerPostEffects = false) {
         out = PreparedInputs{};
-        ParamSnapshot snapshot;
-        snapshot.scanRoute = route;
-        snapshot.scatterHalationControls = scatterHalationControls;
-        snapshot.cameraDiffusion = cameraDiffusion;
-        snapshot.gateWeaveAmount = 0.0;
-        snapshot.dirCouplers.active = dirCouplersActive;
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.scan_route = static_cast<std::uint32_t>(route);
+        snapshot.values.scatter_halation.active = scatterHalationControls.active;
+        snapshot.values.scatter_halation.scatter_amount = scatterHalationControls.scatterAmount;
+        snapshot.values.scatter_halation.scatter_spatial_scale = scatterHalationControls.scatterSpatialScale;
+        snapshot.values.scatter_halation.halation_amount = scatterHalationControls.halationAmount;
+        snapshot.values.scatter_halation.halation_spatial_scale = scatterHalationControls.halationSpatialScale;
+        snapshot.values.camera_diffusion.active = cameraDiffusion.active;
+        snapshot.values.camera_diffusion.family = static_cast<std::uint32_t>(cameraDiffusion.family);
+        snapshot.values.camera_diffusion.strength = cameraDiffusion.strength;
+        snapshot.values.camera_diffusion.spatial_scale = cameraDiffusion.spatialScale;
+        snapshot.values.camera_diffusion.halo_warmth = cameraDiffusion.haloWarmth;
+        snapshot.values.camera_diffusion.core_intensity = cameraDiffusion.coreIntensity;
+        snapshot.values.camera_diffusion.core_size = cameraDiffusion.coreSize;
+        snapshot.values.camera_diffusion.halo_intensity = cameraDiffusion.haloIntensity;
+        snapshot.values.camera_diffusion.halo_size = cameraDiffusion.haloSize;
+        snapshot.values.camera_diffusion.bloom_intensity = cameraDiffusion.bloomIntensity;
+        snapshot.values.camera_diffusion.bloom_size = cameraDiffusion.bloomSize;
+        snapshot.values.gate_weave_amount = 0.0;
+        snapshot.values.dir_couplers.active = dirCouplersActive;
         if (disableScannerPostEffects) {
-            snapshot.glareActive = false;
-            snapshot.glarePercent = 0.0;
-            snapshot.glareRoughness = 0.0;
-            snapshot.glareBlurSigmaPx = 0.0;
-            snapshot.scannerLensBlurSigmaPx = 0.0;
-            snapshot.scannerUnsharpMask = {0.0, 0.0};
+            snapshot.values.glare_active = false;
+            snapshot.values.glare_percent = 0.0;
+            snapshot.values.glare_roughness = 0.0;
+            snapshot.values.glare_blur_sigma_px = 0.0;
+            snapshot.values.scanner_lens_blur_sigma_px = 0.0;
+            snapshot.values.scanner_unsharp_mask[0] = 0.0;
+            snapshot.values.scanner_unsharp_mask[1] = 0.0;
         }
         if (Spektrafilm::scan_route_metadata(route).capturePolarity ==
             Spektrafilm::ProfilePolarity::Positive) {
-            snapshot.filmProfileKey = "fujifilm_provia_100f";
+            snapshot.film_key = "fujifilm_provia_100f";
         }
         try {
             out.state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot));
@@ -1881,14 +1919,14 @@ namespace {
         out.frameFacts.renderExtent = {0, 0, extent.width, extent.height};
         out.frameFacts.fullFrameExtent = out.frameFacts.renderExtent;
         out.frameFacts.pixelDefinition = out.frameFacts.renderExtent;
-        out.frameFacts.filmFormatLongEdgeMm = snapshot.cameraFilmFormatLongEdgeMm;
+        out.frameFacts.filmFormatLongEdgeMm = snapshot.values.camera_film_format_long_edge_mm;
         out.frameFacts.pixelSizeUm = pixelSizeUm;
         out.frameFacts.frameRate = 24.0;
         return true;
     }
 
     bool initialize_prepared_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         bool printRoute,
         bool cameraDiffusion,
         bool scatterHalation,
@@ -1990,7 +2028,7 @@ namespace {
 
     class CudaPreparedFixture final {
     public:
-        explicit CudaPreparedFixture(JuicerProcess::ProcessRuntime& runtime) : _runtime(runtime) {}
+        explicit CudaPreparedFixture(JuicerTestSupport::RuntimeFixture& runtime) : _runtime(runtime) {}
 
         bool initialize(std::string& diagnostic) {
             diagnostic.clear();
@@ -2049,7 +2087,7 @@ namespace {
         }
 
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot(
-            const PreparedState& owner) {
+            const JuicerTestSupport::PreparedStateHold& owner) {
             std::array<char, 2048> text{};
             FjErrorBuffer error{text.data(), text.size(), 0};
             FjPreparedStateView state{};
@@ -2116,7 +2154,7 @@ namespace {
 
     private:
         inline static std::atomic<std::uint64_t> s_nextInstance{1};
-        JuicerProcess::ProcessRuntime& _runtime;
+        JuicerTestSupport::RuntimeFixture& _runtime;
         JuicerCuda::ResourceManager::DeviceContextKey _contextKey{};
         cudaStream_t _stream = nullptr;
         std::uint64_t _instanceToken = 0;
@@ -2307,13 +2345,13 @@ namespace {
                std::to_string(dedicated ? 2 : 1);
     }
 
-    void run_prepared_frame_rows(Results& results, JuicerProcess::ProcessRuntime* runtimeOwner, std::string_view caller = "scatter_halation.prepared") {
+    void run_prepared_frame_rows(Results& results, JuicerTestSupport::RuntimeFixture* runtimeOwner, std::string_view caller = "scatter_halation.prepared") {
         if (results.expect(caller, {"prepared/zero-no-descriptor", "prepared/finish-cleanup-zero", "prepared/dedicated-carrier", "prepared/finish-cleanup", "prepared/camera-diffusion-carrier", "prepared/camera-finish-cleanup", "prepared/camera-overlap-lease-admission", "prepared/camera-overlap-finish-cleanup", "prepared/nonzero-recipe-absent-descriptor", "prepared/zero-recipe-present-descriptor", "prepared/hash-mismatch", "prepared/zero-extent", "prepared/negative-extent", "prepared/overflow", "prepared/incompatible-carrier-admission", "prepared/overlap-nonalias", "prepared/overlap-finish-cleanup", "prepared/null-stream-finish", "prepared/sequential-streams-same-context", "prepared/abort-cleanup", "prepared/dependent-failure-cleanup", "prepared/pending-upload-queried", "prepared/last-legal-cpu-borrow", "prepared/native-owner-ledger-before-finish", "prepared/finish-retains-native-owner-until-event", "prepared/caller-storage-expired-with-owned-readback", "prepared/pending-upload-eventual-completion", "prepared/owned-readback-eventual-completion", "prepared/controlled-drain-failure-retains-ownership", "prepared/controlled-drain-failure-recovery", "prepared/idle-context-retire", "prepared/reset-context-retire"}))
             return;
         if (!runtimeOwner) {
             throw std::runtime_error("prepared frame rows require a live process Runtime");
         }
-        JuicerProcess::ProcessRuntime& runtime = *runtimeOwner;
+        JuicerTestSupport::RuntimeFixture& runtime = *runtimeOwner;
         constexpr int kWidth = 32;
         constexpr int kHeight = 24;
         const std::uintptr_t planeBytes =
@@ -2983,7 +3021,7 @@ namespace {
         return results.expect("scatter_halation.terminal_retention", {"terminal/gpu-failed-shutdown-retains-graph", "terminal/gpu-blocked-destroy-does-not-retry", "terminal/gpu-consumed-wrapper-empty"});
     }
 
-    void run_terminal_retention_rows(Results& results, JuicerProcess::ProcessRuntime& owner) {
+    void run_terminal_retention_rows(Results& results, JuicerTestSupport::RuntimeFixture& owner) {
         if (terminal_retention_membership(results))
             return;
         CudaPreparedFixture fixture(owner);
@@ -3097,13 +3135,13 @@ namespace {
         });
     }
 
-    void run_route_boundary_rows_impl(Results& results, JuicerProcess::ProcessRuntime& runtime) {
+    void run_route_boundary_rows_impl(Results& results, JuicerTestSupport::RuntimeFixture& runtime) {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         std::vector<std::string> routeIds;
         routeIds.reserve(
-            static_cast<std::size_t>(Spektrafilm::scan_route_option_count()));
-        for (int index = 0; index < Spektrafilm::scan_route_option_count(); ++index) {
+            static_cast<std::size_t>(JuicerTestFixture::Route::scan_route_option_count()));
+        for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
             routeIds.push_back(
                 Spektrafilm::scan_route_key(
                     static_cast<Spektrafilm::ScanRoute>(index)));
@@ -3121,7 +3159,7 @@ namespace {
         const auto captured = nlohmann::json::parse(std::ifstream(
             std::filesystem::path(__FILE__).parent_path() /
             "frame-fixtures/native-payload.json"));
-        for (int index = 0; index < Spektrafilm::scan_route_option_count(); ++index) {
+        for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
             const auto& metadata = Spektrafilm::scan_route_metadata(
                 static_cast<Spektrafilm::ScanRoute>(index));
             JuicerTests::CaseEvent row(
@@ -3182,7 +3220,7 @@ namespace {
         }
     }
 
-    void run_zero_work_rows_impl(Results& results, JuicerProcess::ProcessRuntime& runtime) {
+    void run_zero_work_rows_impl(Results& results, JuicerTestSupport::RuntimeFixture& runtime) {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         const std::array routes{
@@ -3318,13 +3356,13 @@ namespace {
         }
     }
 
-    void run_route_lifecycle_rows_impl(Results& results, JuicerProcess::ProcessRuntime* runtimeOwner) {
+    void run_route_lifecycle_rows_impl(Results& results, JuicerTestSupport::RuntimeFixture* runtimeOwner) {
         if (results.expect("scatter_halation.lifecycle", {"lifecycle/launcher-failure-abort", "lifecycle/after-enqueue-abort", "lifecycle/downstream-scratch-transition"}))
             return;
         if (!runtimeOwner) {
             throw std::runtime_error("lifecycle rows require a live process Runtime");
         }
-        JuicerProcess::ProcessRuntime& runtime = *runtimeOwner;
+        JuicerTestSupport::RuntimeFixture& runtime = *runtimeOwner;
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         CudaPreparedFixture fixture(runtime);
@@ -3430,7 +3468,7 @@ namespace {
                   << " failures=" << results.failure_count() << '\n';
     }
 
-    void report_fatal_and_shutdown(const char* detail, JuicerProcess::ProcessRuntime& runtime) noexcept {
+    void report_fatal_and_shutdown(const char* detail, JuicerTestSupport::RuntimeFixture& runtime) noexcept {
         std::fprintf(stderr, "fatal: %s\n", detail);
         try {
             (void)runtime.shutdown();
@@ -3444,8 +3482,8 @@ namespace {
 namespace ScatterHalationValidation {
 
     struct PreparedRouteInputs::Impl {
-        JuicerProcess::ProcessRuntime* runtimeOwner = nullptr;
-        std::optional<PreparedState> state;
+        JuicerTestSupport::RuntimeFixture* runtimeOwner = nullptr;
+        std::optional<JuicerTestSupport::PreparedStateHold> state;
         JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
@@ -3566,7 +3604,7 @@ namespace ScatterHalationValidation {
     }
 
     PreparedRouteInputs build_prepared_route_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
@@ -3577,31 +3615,45 @@ namespace ScatterHalationValidation {
             route,
             controls,
             cameraDiffusion,
-            Spektrafilm::DirCouplersControls{},
+            JuicerTestSupport::PreparationInput{}.values.dir_couplers,
             pixelSizeUm,
             extent);
     }
 
     PreparedRouteInputs build_prepared_route_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
-        const Spektrafilm::DirCouplersControls& dirCouplers,
+        const FjFilmDirParams& dirCouplers,
         float pixelSizeUm,
         ImageExtent extent,
         float filmGammaFactor,
         const std::string& filmProfileKey) {
-        ParamSnapshot snapshot;
-        snapshot.scanRoute = route;
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.scan_route = static_cast<std::uint32_t>(route);
         if (!filmProfileKey.empty()) {
-            snapshot.filmProfileKey = filmProfileKey;
+            snapshot.film_key = filmProfileKey;
         }
-        snapshot.scatterHalationControls = controls;
-        snapshot.cameraDiffusion = cameraDiffusion;
-        snapshot.dirCouplers = dirCouplers;
-        snapshot.filmGammaFactor = filmGammaFactor;
-        snapshot.gateWeaveAmount = 0.0;
+        snapshot.values.scatter_halation.active = controls.active;
+        snapshot.values.scatter_halation.scatter_amount = controls.scatterAmount;
+        snapshot.values.scatter_halation.scatter_spatial_scale = controls.scatterSpatialScale;
+        snapshot.values.scatter_halation.halation_amount = controls.halationAmount;
+        snapshot.values.scatter_halation.halation_spatial_scale = controls.halationSpatialScale;
+        snapshot.values.camera_diffusion.active = cameraDiffusion.active;
+        snapshot.values.camera_diffusion.family = static_cast<std::uint32_t>(cameraDiffusion.family);
+        snapshot.values.camera_diffusion.strength = cameraDiffusion.strength;
+        snapshot.values.camera_diffusion.spatial_scale = cameraDiffusion.spatialScale;
+        snapshot.values.camera_diffusion.halo_warmth = cameraDiffusion.haloWarmth;
+        snapshot.values.camera_diffusion.core_intensity = cameraDiffusion.coreIntensity;
+        snapshot.values.camera_diffusion.core_size = cameraDiffusion.coreSize;
+        snapshot.values.camera_diffusion.halo_intensity = cameraDiffusion.haloIntensity;
+        snapshot.values.camera_diffusion.halo_size = cameraDiffusion.haloSize;
+        snapshot.values.camera_diffusion.bloom_intensity = cameraDiffusion.bloomIntensity;
+        snapshot.values.camera_diffusion.bloom_size = cameraDiffusion.bloomSize;
+        snapshot.values.dir_couplers = dirCouplers;
+        snapshot.values.film_gamma_factor = filmGammaFactor;
+        snapshot.values.gate_weave_amount = 0.0;
         auto impl = std::make_unique<PreparedRouteInputs::Impl>();
         impl->runtimeOwner = &runtime;
         impl->state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot));
@@ -3609,7 +3661,7 @@ namespace ScatterHalationValidation {
         impl->frameFacts.fullFrameExtent = impl->frameFacts.renderExtent;
         impl->frameFacts.pixelDefinition = impl->frameFacts.renderExtent;
         impl->frameFacts.pixelSizeUm = pixelSizeUm;
-        impl->frameFacts.filmFormatLongEdgeMm = snapshot.cameraFilmFormatLongEdgeMm;
+        impl->frameFacts.filmFormatLongEdgeMm = snapshot.values.camera_film_format_long_edge_mm;
         impl->frameFacts.frameRate = 24.0;
         impl->requiresCameraDiffusion = cameraDiffusion.active;
         return PreparedRouteInputs(std::move(impl));
@@ -3747,7 +3799,7 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) noexcept {
-    JuicerProcess::ProcessRuntime runtimeOwner;
+    JuicerTestSupport::RuntimeFixture runtimeOwner;
     try {
         Arguments arguments = parse_arguments(argc, argv);
         if (requested_case_listing) {
@@ -3778,7 +3830,7 @@ int main(int argc, char** argv) noexcept {
         JuicerTestSupport::TestAssetWorkspaces profileWorkspaces;
         if (arguments.caseGroup != "terminal-retention")
             results.expect("scatter_halation.shutdown", {"terminal/native-shutdown-last"});
-        runtimeOwner.create(JuicerProcess::data_directory());
+        runtimeOwner.create(arguments.resourceRoot);
         arguments.runtimeOwner = &runtimeOwner;
         const auto run_mode = [&](std::string_view mode, auto&& run) {
             auto event = selected_modes.case_event(mode);

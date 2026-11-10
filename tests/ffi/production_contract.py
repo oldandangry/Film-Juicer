@@ -2,14 +2,12 @@
 
 from pathlib import Path
 import argparse
-import ctypes
 import hashlib
 import json
 import os
 import re
 import shutil
 import struct
-import subprocess
 import sys
 
 from shared_fixture import load_shared_fixture
@@ -158,576 +156,227 @@ def production_module_export_names(output, windows):
     return [line.split()[-1] for line in output.splitlines() if line.strip()]
 
 def execute(arguments):
+    from execution import NativeRun, OutputLease, windows_vctip
+    from qualification import validate_production_contract
+    import math
+
+    if arguments.preset not in {"linux-release", "windows-clang-release"}:
+        raise ValueError("production contract requires a Release preset")
     out = arguments.artifacts.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    commands = []
-    probe_header_directory = build / "production-probes"
-    probe_expected_header = probe_header_directory / "production-film-expected.h"
+    inherited = json.loads(os.environ.get("JUICER_OUTPUT_LEASES", "{}"))
+    leases = (OutputLease(root, build), OutputLease(root))
+    for lease in leases:
+        key = hashlib.sha256(os.path.normcase(str(lease.path)).encode()).hexdigest()
+        if key not in inherited:
+            raise RuntimeError("production contract requires delegated build and GPU owners")
 
-    def run(name, command, timeout=None):
-        result = subprocess.run(command, cwd=root, capture_output=True, timeout=timeout)
-        (out / (name + ".stdout")).write_bytes(result.stdout)
-        (out / (name + ".stderr")).write_bytes(result.stderr)
-        commands.append(
-            {
-                "name": name,
-                "command": command,
-                "returncode": result.returncode,
-                "stdout_sha256": digest(out / (name + ".stdout")),
-                "stderr_sha256": digest(out / (name + ".stderr")),
-            }
-        )
-        (out / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-        IO_COSTS["command_output_write_bytes"] += len(result.stdout) + len(result.stderr)
-        result.check_returncode()
-        return result.stdout.decode("utf-8", errors="replace")
+    def execute_owned():
+        run = NativeRun(root, out)
+        commands = []
+        commands_path = out / "commands.json"
 
-    build_hashes = {
-        str(build / name): digest(build / name)
-        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json"]
-    }
+        def command(name, argv, *, env=None, compiler=False):
+            try:
+                log = run.command(name, argv, env=env, stdout_only=True,
+                                  vctip_executable=windows_vctip(os.environ) if compiler else None)
+            finally:
+                record = dict(run.commands[-1])
+                stdout = out / (name + ".log")
+                stderr = out / (name + ".stderr.log")
+                if stdout.is_file():
+                    record["stdout_sha256"] = digest(stdout)
+                if stderr.is_file():
+                    record["stderr_sha256"] = digest(stderr)
+                commands.append(record)
+                commands_path.write_text(json.dumps(commands, indent=2) + "\n")
+                IO_COSTS["command_output_write_bytes"] += record.get("output_bytes", 0) + record.get("stderr_bytes", 0)
+            return log.read_text(encoding="utf-8", errors="replace")
 
-    def check_build_inputs():
-        assert {path: digest(Path(path)) for path in build_hashes} == build_hashes, "production build input changed"
-
-    assert "BUILD_TESTING:BOOL=OFF" in (build / "CMakeCache.txt").read_text()
-    production_features = build / "cargo" / "production" / "features.txt"
-    production_stamp = build / "cargo" / "production" / "build.stamp"
-    assert production_features.is_file()
-    assert production_features.read_text().splitlines()[0] == "features=none"
-    assert production_stamp.is_file()
-    compdb = json.loads((build / "compile_commands.json").read_text())
-    assert not any(
-        (re.search("JUICER_\\w*TEST_HOOK", row["command"]) for row in compdb)
-    )
-    cargo = [
-        line
-        for line in (build / "build.ninja").read_text().splitlines()
-        if "--package film-juicer-plugin" in line
-    ]
-    assert cargo and all(
-        ("--no-default-features" in line and "--features" not in line
-         and "/cargo/production" in line.replace("\\", "/") for line in cargo)
-    )
-    archive = (
-        build
-        / "cargo"
-        / "production"
-        / (
-            "x86_64-pc-windows-msvc/release/film_juicer_plugin.lib"
-            if windows
-            else "x86_64-unknown-linux-gnu/release/libfilm_juicer_plugin.a"
-        )
-    )
-    native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
-    module = build / "juicer.ofx"
-    prepared_executable = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
-    build_hashes.update({
-        str(path): digest(path)
-        for path in [production_features, production_stamp, native, archive, module, prepared_executable,
-                     *([build / "juicer.pdb"] if windows else [])]
-    })
-    processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
-    print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
-    consumed_paths = [root / "native/juicer_legacy_api.h", root / "native/juicer_cuda_call_scope.h",
-                      root / "native/juicer_cuda_frame_values.h",
-                      root / "CMakeLists.txt", fixtures / "production-prepared-render.cpp",
-                      fixtures / "prepared_state_abi_c.c", fixtures / "prepared_state_test.cpp",
-                      fixtures / "prepared_call_abi_facts.inc",
-                      root / "tests/ofx/fixtures/exposure/manifest.json", processor_fixture,
-                      root / "tests/print/illuminant-fixtures/manifest.json", print_updates,
-                      fixtures / "production-film.c.in",
-                      fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
-                      fixtures / "grain_probe_contract.py", Path(__file__),
-                      out / "production-film-expected.h"]
-    for directory in [root / "Resources", root / "tests/film/fixtures",
-                      root / "tests/film/input-fixtures", root / "tests/film/dir-fixtures"]:
-        consumed_paths.extend(path for path in directory.rglob("*") if path.is_file())
-    grain_directory = root / "tests/film/grain-fixtures"
-    grain_manifest = grain_directory / "manifest.json"
-    grain_payload = grain_directory / json.loads(grain_manifest.read_text())["presets"][arguments.preset]["values"]
-    consumed_paths.extend([grain_manifest, grain_payload])
-    effects_directory = root / "tests/film/effects-fixtures"
-    effects_manifest = effects_directory / "manifest.json"
-    effects_spec = json.loads(effects_manifest.read_text())
-    effects_payload = effects_directory / effects_spec["presets"][arguments.preset]["literal"]
-    assert digest(effects_payload) == effects_spec["payload_sha256"][effects_payload.name]
-    consumed_paths.extend([effects_manifest, effects_payload])
-    reference_manifest, reference_payload, _ = reference_fixture(arguments.preset)
-    consumed_paths.extend([reference_manifest, reference_payload])
-    balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
-    consumed_paths.extend([balance_manifest, balance_payload])
-    descriptor_manifest, descriptor_payload, descriptor_context, _, _ = scanner_descriptor_fixture(arguments.preset)
-    post_manifest, post_payload, post_context, _, _ = scanner_post_fixture(arguments.preset)
-    frame_manifest, frame_payload, frame_context, _ = frame_fixture(arguments.preset)
-    consumed_paths.extend([frame_manifest, frame_payload, frame_context, frame_manifest.parent / "inputs.json"])
-    halation_manifest, halation_payload, halation_context, halation_checked, _, halation_spec = halation_frame_fixture(arguments.preset)
-    consumed_paths.extend([halation_manifest, halation_payload, halation_context, halation_checked, halation_manifest.parent / "inputs.json"])
-    diffusion_manifest, diffusion_payload, diffusion_context, diffusion_checked, _, diffusion_spec = diffusion_frame_fixture(arguments.preset)
-    consumed_paths.extend([diffusion_manifest, diffusion_payload, diffusion_context, diffusion_checked, diffusion_manifest.parent / "inputs.json"])
-    edge_logical = diffusion_spec["presets"][arguments.preset]["edges"]
-    diffusion_edges_payload = diffusion_manifest.parent / diffusion_spec["payloads"][edge_logical]
-    diffusion_edges_context = diffusion_manifest.parent / diffusion_spec["contexts"][edge_logical]
-    diffusion_edges_inputs = diffusion_manifest.parent / "edge-inputs.json"
-    consumed_paths.extend([diffusion_edges_payload, diffusion_edges_context, diffusion_edges_inputs])
-    dir_boundary_manifest, dir_boundary_payload, dir_boundary_checked, _, dir_boundary_spec = dir_boundary_fixture(arguments.preset)
-    consumed_paths.extend([dir_boundary_manifest, dir_boundary_payload, dir_boundary_checked, dir_boundary_manifest.parent / "inputs.json"])
-    grain_frame_manifest, grain_frame_payload, grain_frame_checked, _, grain_frame_spec = grain_frame_fixture(arguments.preset)
-    consumed_paths.extend([grain_frame_manifest, grain_frame_payload, grain_frame_checked, grain_frame_manifest.parent / "inputs.json"])
-    effects_frame_manifest, effects_frame_payload, effects_frame_context, effects_frame_checked, effects_frame_spec = effects_frame_fixture(arguments.preset)
-    consumed_paths.extend([effects_frame_manifest, effects_frame_payload, effects_frame_context, effects_frame_checked,
-                           effects_frame_manifest.parent / "inputs.json", fixtures / "effects_frame_abi_assertions.inc",
-                           fixtures / "effects_frame_probe_contract.py"])
-    dir_manifest, dir_payload, dir_checked, _, dir_spec = dir_frame_fixture(arguments.preset)
-    consumed_paths.extend([dir_manifest, dir_payload, dir_checked, dir_manifest.parent / "inputs.json"])
-    consumed_paths.extend([post_manifest, post_payload, post_context])
-    consumed_paths.extend([descriptor_manifest, descriptor_payload, descriptor_context])
-    consumed_paths.extend([fixtures / "shared_fixture.py", fixtures / "compact_exposure_fixtures.py"])
-    correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
-    consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
-    color_manifest, color_payload, color_checked, _, _ = scanner_color_fixture(arguments.preset)
-    consumed_paths.extend([color_manifest, color_payload, color_checked])
-    consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
-
-    def check_consumed():
-        assert {path: digest(Path(path)) for path in consumed} == consumed, "production input changed"
-
-    scanned = []
-
-    def scan(path, name, tool, flags):
-        text = run(name, [str(llvm / (tool + suffix)), *flags, str(path)])
-        match = PRODUCTION_FORBIDDEN_SYMBOLS.search(text)
-        assert match is None, (name, match.group(0) if match else None)
-        raw = path.read_bytes()
-        assert not any((value in raw for value in PRODUCTION_FORBIDDEN_STRINGS)), name
-        assert hashlib.sha256(raw).hexdigest() == build_hashes[str(path)], "production build input changed during scan"
-        scanned.append(
-            {
-                "file": str(path),
-                "sha256": build_hashes[str(path)],
-                "symbols_and_fault_strings_absent": True,
-            }
-        )
-        return text
-
-    scan(native, "native-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    symbols = scan(archive, "rust-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    for name in [
-        "fj_legacy_dir_boundary_describe",
-        "fj_legacy_dir_boundary_acquire",
-        "fj_legacy_dir_boundary_view",
-        "fj_legacy_dir_boundary_release",
-        "fj_legacy_grain_frame_prepare",
-        "fj_legacy_effects_frame_prepare",
-        "fj_legacy_dir_frame_prepare",
-        "fj_legacy_scatter_halation_frame_prepare",
-        "fj_legacy_diffusion_sample_prepare",
-        "fj_legacy_diffusion_components_prepare",
-        "fj_legacy_diffusion_frame_prepare",
-        "fj_legacy_film_input_prepare",
-        "fj_legacy_film_development_acquire",
-        "fj_legacy_film_development_view",
-        "fj_legacy_film_development_release",
-        "fj_legacy_film_development_retain",
-        "fj_legacy_film_density_minimum_prepare",
-        "fj_legacy_film_reference_prepare",
-        "fj_legacy_film_dir_acquire",
-        "fj_legacy_film_dir_view",
-        "fj_legacy_film_dir_release",
-        "fj_legacy_film_density_bounds_prepare",
-        "fj_legacy_visual_grain_prepare",
-        "fj_legacy_physical_effects_prepare",
-        "fj_legacy_print_balance_prepare",
-        "fj_legacy_scanner_direct_correction_prepare",
-        "fj_legacy_scanner_print_correction_prepare",
-        "fj_legacy_scanner_correction_input_demand",
-        "fj_legacy_scanner_color_prepare",
-        "fj_legacy_scanner_lut_describe",
-        "fj_legacy_scanner_post_describe",
-        "fj_legacy_frame_domain_prepare",
-        "fj_legacy_frame_geometry_prepare",
-        "fj_legacy_output_color",
-        "fj_legacy_film_profile_acquire",
-        "fj_legacy_print_profile_acquire",
-        "fj_legacy_resolve_route",
-    ]:
-        assert re.search("\\b" + name + "\\b", symbols), name
-    for domain in ("scanner_lut", "gaussian_kernel"):
-        for operation in ("acquire", "view", "release"):
-            name = f"fj_legacy_{domain}_{operation}"
-            assert re.search(r"\b" + name + r"\b", symbols) is None, name
-    for name in ("fj_legacy_spatial_optics_prepare", "fj_legacy_print_illuminant_prepare",
-                 "fj_legacy_print_preflash_prepare"):
-        assert re.search(r"\b" + name + r"\b", symbols) is None, name
-    if windows:
-        exports = scan(module, "module-exports", "llvm-readobj", ["--coff-exports"])
-        module_export_names = production_module_export_names(exports, windows)
-        scan(
-            build / "juicer.pdb",
-            "pdb-symbols",
-            "llvm-pdbutil",
-            ["dump", "-globals", "-publics"],
-        )
-    else:
-        exports = scan(
-            module, "module-exports", "llvm-nm", ["--dynamic", "--defined-only"]
-        )
-        module_export_names = production_module_export_names(exports, windows)
-        scan(module, "module-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    assert sorted(module_export_names) == sorted(PRODUCTION_MODULE_EXPORTS), module_export_names
-    probes = [
-        ("film", fixtures / "production-film.c.in", "JuicerProductionFilmProbe"),
-        ("accepted-output-color", fixtures / "production-output-color.c.in",
-         "JuicerProductionOutputColorProbe"),
-    ]
-    probe_records = []
-    grain_results = []
-    effects_results = []
-    balance_results = []
-    scanner_correction_results = []
-    scanner_demand_results = []
-    scanner_color_results = []
-    scanner_descriptor_results = []
-    scanner_post_results = []
-    frame_results = []
-    halation_frame_results = []
-    diffusion_frame_results = []
-    dir_boundary_results = []
-    dir_frame_results = []
-    grain_frame_results = []
-    effects_frame_results = []
-    reference_results = []
-    prepared_state_results = []
-    for name, source, target in probes:
-        executable = build / "tests/bin" / (target + suffix)
-        target_source = out / (name + ".c")
-        target_source.write_bytes(source.read_bytes())
-        source_sha256 = digest(source)
-        source_entry = next(
-            (row for row in compdb if Path(row["file"]).resolve() == source.resolve()), None
-        )
-        assert source_entry is not None, f"missing compile command for C11 probe source {source}"
-        compile_command = source_entry.get("command")
-        if compile_command is None:
-            compile_command = " ".join(source_entry["arguments"])
-        compiler = (source_entry.get("arguments") or [None])[0]
-        if compiler is None:
-            compiler_match = re.match(r'^\s*(?:"([^"]+)"|(\S+))', compile_command)
-            assert compiler_match is not None, (target, compile_command)
-            compiler = compiler_match.group(1) or compiler_match.group(2)
-        normalized_command = compile_command.replace("\\", "/").lower()
-        assert re.search(r"(?:[/-]std:c11|-std=c11)", normalized_command), (target, compile_command)
+        cache = build / "CMakeCache.txt"
+        ninja = build / "build.ninja"
+        compdb_path = build / "compile_commands.json"
+        assert "BUILD_TESTING:BOOL=OFF" in cache.read_text()
+        features = build / "cargo/production/features.txt"
+        stamp = build / "cargo/production/build.stamp"
+        assert features.read_text().splitlines()[0] == "features=none" and stamp.is_file()
+        cargo_commands = [line for line in ninja.read_text().splitlines() if "--package film-juicer-plugin" in line]
+        assert cargo_commands and all("--no-default-features" in line and "--features" not in line
+                                      and "/cargo/production" in line.replace("\\", "/") for line in cargo_commands)
+        compdb = json.loads(compdb_path.read_text())
+        assert not any(re.search(r"JUICER_\w*TEST_HOOK", row.get("command", " ".join(row.get("arguments", []))))
+                       for row in compdb)
+        archive = build / "cargo/production" / ("x86_64-pc-windows-msvc/release/film_juicer_plugin.lib"
+                                                    if windows else "x86_64-unknown-linux-gnu/release/libfilm_juicer_plugin.a")
+        native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
+        build_module = build / "juicer.ofx"
+        contents = root / "out/stage" / arguments.preset / "juicer.ofx.bundle/Contents"
+        module = contents / ("Win64" if windows else "Linux-x86-64") / "juicer.ofx"
+        resources = contents / "Resources"
+        render = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
+        binary_inputs = [cache, ninja, compdb_path, features, stamp, archive, native, build_module, module, render]
         if windows:
-            assert "clang-cl" in normalized_command, (target, compile_command)
-            assert re.search(r"(?:^|\s)[/-]tc(?:\s|$)", normalized_command), (target, compile_command)
-            assert all(flag in normalized_command for flag in ("/w4", "/wx", "/od", "/ob0", "/undebug")), (target, compile_command)
+            binary_inputs.append(build / "juicer.pdb")
+        before = {str(path): digest(path) for path in binary_inputs}
+        assert before[str(build_module)] == before[str(module)], "staged and build modules differ"
+        processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
+        updates = root / "tests/print/illuminant-fixtures/product-updates.json"
+        source_inputs = [Path(__file__), root / "scripts/execution.py", root / "scripts/process_tree.py",
+                         root / "scripts/qualification.py", root / "CMakeLists.txt",
+                         fixtures / "production-ofx.c", fixtures / "production-cuda-abi.c",
+                         fixtures / "production-ofx-render.cpp", root / "tests/ofx/instance_host.cpp",
+                         root / "tests/ofx/instance_host.h", root / "tests/ofx/probe.py",
+                         root / "tests/ofx/descriptor_manifest.json", processor_fixture, updates,
+                         root / "tests/ofx/fixtures/exposure/manifest.json",
+                         root / "tests/print/illuminant-fixtures/manifest.json"]
+        source_inputs.extend(path for path in (root / "Resources").rglob("*") if path.is_file())
+        assert resources.is_dir(), "staged resources missing"
+        source_inputs.extend(path for path in resources.rglob("*") if path.is_file())
+        consumed_before = {str(path): digest(path) for path in sorted(set(source_inputs))}
+        forbidden = re.compile(PRODUCTION_FORBIDDEN_SYMBOLS.pattern +
+                               r"|\bfj_legacy_\w*\b|\b(?:JuicerEffect|JuicerProcessor|ProcessRuntime|PreparedState|ParamSnapshot)\b|\bOFX::|Ofx(?:PluginFactory|ImageEffect)Helper")
+        scans = []
+
+        def scan(name, path, tool, flags):
+            output = command(name, [str(llvm / (tool + suffix)), *flags, str(path)])
+            match = forbidden.search(output)
+            assert match is None, (name, match.group(0) if match else None)
+            data = path.read_bytes()
+            assert not any(value in data for value in PRODUCTION_FORBIDDEN_STRINGS), name
+            assert hashlib.sha256(data).hexdigest() == before[str(path)]
+            scans.append({"name": name, "file": str(path), "sha256": before[str(path)],
+                          "symbols_and_fault_strings_absent": True, "legacy_symbols_absent": True})
+            return output
+
+        scan("native-symbols", native, "llvm-nm", ["--defined-only", "--demangle"])
+        scan("rust-symbols", archive, "llvm-nm", ["--defined-only", "--demangle"])
+        if windows:
+            exports = scan("module-exports", module, "llvm-readobj", ["--coff-exports"])
+            scan("module-symbols", build / "juicer.pdb", "llvm-pdbutil", ["dump", "-globals", "-publics"])
         else:
-            assert re.search(r"(?:^|[/ ])gcc-?13(?:[ /]|$)", normalized_command), (target, compile_command)
-            assert re.search(r"(?:^|\s)-x\s+c(?:\s|$)", normalized_command), (target, compile_command)
-            assert all(flag in normalized_command for flag in ("-wall", "-wextra", "-werror", "-o0", "-undebug")), (target, compile_command)
-        assert str(probe_header_directory).replace("\\", "/").lower() in normalized_command, (
-            target, "generated expected-header include directory missing from compile command"
-        )
-        run(name + "-compile", ["cmake", "--build", str(build), "--config", "Release",
-                                 "--target", target, "--verbose"])
-        if name == "film":
-            header_hash = digest(probe_expected_header)
-            assert header_hash == digest(out / "production-film-expected.h"), "generated C11 expectations differ"
-            build_hashes[str(probe_expected_header)] = header_hash
-            consumed[str(probe_expected_header)] = header_hash
-        build_hashes[str(executable)] = digest(executable)
-        linked = digest(executable)
-        before = digest(executable)
-        assert before == linked
-        output = run(
-            name + "-values",
-            [str(executable), *([str(root / "Resources"), str(root / "tests/film/fixtures/synthetic/duplicates")] if name == "film" else [])],
-            120,
-        )
-        after = digest(executable)
-        assert after == before
-        assert digest(source) == source_sha256, "tracked probe source changed during execution"
-        assert digest(target_source) == source_sha256, "C11 source evidence copy changed"
-        probe_records.append({"name": name, "executable": str(executable),
-                              "linked_sha256": linked, "before_run_sha256": before,
-                              "after_run_sha256": after, "source": str(source),
-                              "source_sha256": source_sha256,
-                              "source_evidence_copy": str(target_source),
-                              "source_evidence_copy_sha256": digest(target_source),
-                              "compiler": compiler,
-                              "compile_command": compile_command,
-                              "compile_command_sha256": hashlib.sha256(compile_command.encode()).hexdigest(),
-                              "archive": str(archive), "archive_sha256": build_hashes[str(archive)],
-                              "native_archive": str(native), "native_archive_sha256": build_hashes[str(native)],
-                              "cmake_target": target,
-                              "expected_header": str(probe_expected_header),
-                              "expected_header_sha256": build_hashes[str(probe_expected_header)]})
-        if name == "film":
-            prepared_state_results = [json.loads(line.removeprefix("PREPARED_STATE_RESULT "))
-                                      for line in output.splitlines() if line.startswith("PREPARED_STATE_RESULT ")]
-            film_count = len(json.loads((root / "tests/film/fixtures" / (arguments.preset + ".json")).read_text())["profiles"]["kodak_portra_400"]["axis"])
-            expected_prepared = [{"case": "negative-" + route, "envelope": [0, 0, 0], "axis_count": film_count,
-                                  "density_count": film_count * 3, "cache_holds": 3, "expiry_and_clearing": True}
-                                 for route in ("direct", "print")]
-            assert prepared_state_results == expected_prepared, "production held-state executed membership/values/cache holds/expiry/clearing"
-            effects_frame_results = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
-                                     for line in output.splitlines() if line.startswith("EFFECTS_FRAME_RESULT ")]
-            assert effects_frame_results == effects_frame_spec["production_cases"][arguments.preset], "complete effects frame production values/failures/diagnostic membership"
-            grain_frame_results = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
-                                   for line in output.splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
-            assert len(grain_frame_results) == GRAIN_FRAME_CASE_COUNT and grain_frame_results == grain_frame_spec["production_cases"], "complete grain frame production values/metadata/failures/clearing/diagnostic membership"
-            dir_boundary_results = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
-                                    for line in output.splitlines() if line.startswith("DIR_BOUNDARY_RESULT ")]
-            assert len(dir_boundary_results) == 171 and dir_boundary_results == dir_boundary_spec["production_cases"], "complete DIR boundary production values/key/metadata/raw/lifetime membership"
-            dir_frame_results = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
-                                 for line in output.splitlines() if line.startswith("DIR_FRAME_RESULT ")]
-            assert len(dir_frame_results) == 121 and dir_frame_results == dir_spec["production_cases"], "complete DIR production values/failure trace membership"
-            diffusion_frame_results = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
-                                       for line in output.splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
-            assert len(diffusion_frame_results) == 507 and diffusion_frame_results == diffusion_spec["production_cases"], "complete diffusion production values/failure membership"
-            halation_frame_results = [json.loads(line.removeprefix("HALATION_FRAME_RESULT "))
-                                      for line in output.splitlines() if line.startswith("HALATION_FRAME_RESULT ")]
-            assert len(halation_frame_results) == 86 and halation_frame_results == halation_spec["production_cases"], "complete halation production values/failure membership"
-            _, _, reference_rows = reference_fixture(arguments.preset)
-            expected = []
-            for row in reference_rows:
-                method = row["method"]
-                for case in range(8 if method == 1 else 7):
-                    envelope = ([0, 0, 0, 0, 0, 0, 0] if case in (0, 5) else
-                                [2, 0, 0, 1, 0, 0, 0] if case in (1, 4) else
-                                [3, 0, 0, 2, 1, 0, 0] if case == 2 else
-                                [3, 0, 0, 2, 2, 1, 0] if case == 3 else
-                                [3, 0, 0, 3, 0, 7, 0] if case == 6 else
-                                [3, 0, 0, 4, 1, 8, 1])
-                    expected.append((f"reference-{method}-{case}", envelope,
-                                     row["reference"]["hash"] if case in (0, 5) else 0))
-            lines = [line for line in output.splitlines() if line.startswith("REFERENCE_CASE")]
-            assert len(lines) == len(expected), lines
-            for line, (case, envelope, identity) in zip(lines, expected):
-                match = re.fullmatch(r"REFERENCE_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) exposure=(\d+) operation=(\d+) channel=(\d+) fields=13-pass hash=(\d+)", line)
-                assert match and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == [*envelope, identity], line
-                reference_results.append({"case": case, "envelope": envelope,
-                                          "hash": identity, "fields": "13-pass"})
-            pattern = r"^GRAIN_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=pass$"
-            expected = [("grain-active-layers", 0, 0), ("grain-inactive", 0, 0),
-                        ("grain-raw-boolean", 2, 1), ("grain-raw-owner", 2, 1),
-                        ("grain-controls-area", 3, 17), ("grain-missing-layers", 3, 18)]
-            lines = [line for line in output.splitlines() if line.startswith("GRAIN_CASE")]
-            assert len(lines) == len(expected), lines
-            for line, (case, category, reason) in zip(lines, expected):
-                match = re.fullmatch(pattern, line)
-                assert match is not None, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert match[1] == case and actual == [category, 0, 0, reason, 3, 2**64 - 1], line
-                grain_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                      "native_code": actual[2], "reason": actual[3],
-                                      "channel": actual[4], "sample": actual[5], "fields": "pass"})
-            effects_pattern = r"^EFFECTS_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=156-pass$"
-            case_names = ["effects-active", "effects-inactive", "effects-debug-suppressed",
-                     "effects-grain-off-debug", "effects-sanitized", "effects-weave-negative-zero",
-                     "effects-weave-subfloat", "effects-raw-boolean", "effects-raw-params"]
-            lines = [line for line in output.splitlines() if line.startswith("EFFECTS_CASE")]
-            assert len(lines) == 9, lines
-            for index, (line, case) in enumerate(zip(lines, case_names)):
-                match = re.fullmatch(effects_pattern, line)
-                assert match is not None and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == ([0, 0, 0, 0, 3, 2**64 - 1] if index < 7 else [2, 0, 0, 1, 3, 2**64 - 1]), line
-                effects_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                        "native_code": actual[2], "reason": actual[3],
-                                        "channel": actual[4], "sample": actual[5], "fields": "156-pass"})
-            _, _, names, _, envelopes = balance_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("PRINT_BALANCE_CASE")]
-            assert len(lines) == 16, lines
-            for line, case, envelope in zip(lines, names, envelopes, strict=True):
-                match = re.fullmatch(r"PRINT_BALANCE_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) fields=11-pass", line)
-                assert match is not None and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == [envelope[0], 0, 0, envelope[1], envelope[2]], line
-                balance_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                        "native_code": actual[2], "reason": actual[3],
-                                        "channel": actual[4], "fields": "11-pass"})
-            _, _, _, names, rows, envelopes = scanner_correction_fixture(arguments.preset)
-            for prefix, results in (("SCANNER_CORRECTION_CASE", scanner_correction_results),
-                                    ("SCANNER_DEMAND_CASE", scanner_demand_results)):
-                lines = [line for line in output.splitlines() if line.startswith(prefix)]
-                assert len(lines) == 28, lines
-                for line, case, row, envelope in zip(lines, names, rows, envelopes, strict=True):
-                    match = re.fullmatch(prefix + r" (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) fields=pass", line)
-                    assert match is not None and match[1] == case, line
-                    actual = [int(value) for value in match.groups()[1:]]
-                    expected = envelope if prefix == "SCANNER_CORRECTION_CASE" else correction_demand(case, row)[0]
-                    assert actual == [expected[0], 0, 0, expected[1]], line
-                    results.append({"case": case, "category": actual[0], "api": actual[1],
-                                    "native_code": actual[2], "reason": actual[3], "fields": "pass"})
-            _, _, _, _, color_cases = scanner_color_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("SCANNER_COLOR_CASE ")]
-            assert len(lines) == len(color_cases)
-            for line, expected in zip(lines, color_cases, strict=True):
-                match = re.fullmatch(r"SCANNER_COLOR_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) stage=(\d+) fields=pass", line)
-                assert match and match[1] == expected["id"], line
-                actual = [int(x) for x in match.groups()[1:]]
-                assert actual == expected["envelope"], line
-                scanner_color_results.append({"case": expected["id"], "fields": actual})
-            _, _, _, _, descriptor_cases = scanner_descriptor_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("SCANNER_DESCRIPTOR_CASE ")]
-            assert len(lines) == len(descriptor_cases)
-            for line, expected in zip(lines, descriptor_cases, strict=True):
-                match = re.fullmatch(r"SCANNER_DESCRIPTOR_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) lane=(\d+) fields=10-pass hash=(\d+)", line)
-                assert match and match[1] == expected["case"], line
-                actual = [int(x) for x in match.groups()[1:]]
-                assert actual == [*expected["envelope"], expected["hash"]], line
-                scanner_descriptor_results.append(expected)
-            _, _, _, _, post_cases = scanner_post_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("SCANNER_POST_CASE ")]
-            assert len(lines) == len(post_cases)
-            for line, expected in zip(lines, post_cases, strict=True):
-                match = re.fullmatch(r"SCANNER_POST_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) lane=(\d+) fields=13-pass hash=(\d+)", line)
-                assert match and match[1] == expected["case"], line
-                assert [int(x) for x in match.groups()[1:]] == [*expected["envelope"], expected["hash"]], line
-                scanner_post_results.append(expected)
-            _, _, _, frame_spec = frame_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("FRAME_CASE ")]
-            assert len(lines) == len(frame_spec["production_cases"])
-            for line, expected in zip(lines, frame_spec["production_cases"], strict=True):
-                actual = json.loads(line.removeprefix("FRAME_CASE "))
-                assert actual == expected, actual["case"]
-                frame_results.append(actual)
-    prepared_before = digest(prepared_executable)
-    prepared_command = [str(prepared_executable), str(root / "Resources"), str(processor_fixture),
-                        arguments.preset, str(print_updates)]
-    prepared_output = run("prepared-render", prepared_command)
-    prepared_after = digest(prepared_executable)
-    assert prepared_before == prepared_after == build_hashes[str(prepared_executable)], "prepared executable changed"
-    raw_document = json.loads(prepared_output)
-    assert set(raw_document) == {"rows"}, "prepared render stdout schema"
-    raw_rows = raw_document["rows"]
-    assert [row["case_id"] for row in raw_rows] == [
-        "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"
-    ], "prepared render exact row membership"
+            exports = scan("module-exports", module, "llvm-nm", ["--dynamic", "--defined-only"])
+            scan("module-symbols", module, "llvm-nm", ["--defined-only", "--demangle"])
+        export_names = production_module_export_names(exports, windows)
+        assert sorted(export_names) == sorted(PRODUCTION_MODULE_EXPORTS), export_names
 
-    def word_hash(words):
-        assert isinstance(words, list) and all(type(word) is int and 0 <= word <= 0xffffffff for word in words)
-        return hashlib.sha256(b"".join(struct.pack("<I", word) for word in words)).hexdigest()
+        no_device_env = os.environ.copy()
+        no_device_env["CUDA_VISIBLE_DEVICES"] = "-1"
+        if windows:
+            cuda = Path(no_device_env["CUDA_PATH_V13_2"])
+            no_device_env["PATH"] = os.pathsep.join([str(cuda / "bin"), str(cuda / "bin/x64"),
+                                                     no_device_env.get("PATH", "")])
+        probe_records = []
+        for name, source, target in (("ofx", fixtures / "production-ofx.c", "JuicerProductionOfxProbe"),
+                                     ("cuda-abi", fixtures / "production-cuda-abi.c", "JuicerProductionCudaAbiProbe")):
+            entry = next(row for row in compdb if Path(row["file"]).resolve() == source.resolve())
+            compile_command = entry.get("command") or " ".join(entry["arguments"])
+            normalized = compile_command.replace("\\", "/").lower()
+            assert re.search(r"(?:[/-]std:c11|-std=c11)", normalized), (name, compile_command)
+            if windows:
+                assert "clang-cl" in normalized and re.search(r"(?:^|\s)[/-]tc(?:\s|$)", normalized)
+            else:
+                assert re.search(r"(?:^|[/ ])gcc-?13(?:[ /]|$)", normalized)
+            command(name + "-probe-build", ["cmake", "--build", str(build), "--config", "Release",
+                                             "--target", target, "--verbose"], compiler=True)
+            executable = build / "tests/bin" / (target + suffix)
+            linked = digest(executable)
+            before[str(executable)] = linked
+            command(name + "-probe", [str(executable), *([str(module)] if name == "ofx" else [])],
+                    env=no_device_env)
+            after = digest(executable)
+            assert linked == after
+            probe_records.append({"name": name, "executable": str(executable), "linked_sha256": linked,
+                                  "before_run_sha256": linked, "after_run_sha256": after,
+                                  "source": str(source), "compile_command": compile_command})
 
-    prepared_rows = []
-    for raw in raw_rows:
-        row = dict(raw)
-        row["input_sha256"] = word_hash(row.pop("input_f32_words"))
-        row["output_f32_words_sha256"] = word_hash(row.pop("output_f32_words"))
-        assert all(type(row[name]) is int and row[name] == 0 for name in ("status", "api", "native_code"))
-        assert row["accepted_fixture_match"] is True and row["diagnostic"] == ""
-        prepared_rows.append(row)
-    retained_prepared = out / "build" / prepared_executable.relative_to(build)
-    prepared_render = {
-        "executable": str(retained_prepared), "executable_sha256_before": prepared_before,
-        "executable_sha256_after": prepared_after, "command": prepared_command,
-        "fixture": str(processor_fixture), "fixture_sha256": digest(processor_fixture),
-        "stdout_sha256": digest(out / "prepared-render.stdout"),
-        "stderr_sha256": digest(out / "prepared-render.stderr"), "rows": prepared_rows,
-    }
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    if windows:
-        cuda = Path(os.environ["CUDA_PATH_V13_2"])
-        _dll_directories = [
-            os.add_dll_directory(str(path))
-            for path in [cuda / "bin", cuda / "bin/x64"]
-            if path.is_dir()
-        ]
-    loaded = ctypes.CDLL(str(module))
-    loaded.OfxGetNumberOfPlugins.restype = ctypes.c_int
-    loaded.OfxGetPlugin.argtypes = [ctypes.c_int]
-    loaded.OfxGetPlugin.restype = ctypes.c_void_p
-    assert loaded.OfxGetNumberOfPlugins() == 1 and loaded.OfxGetPlugin(0)
-    retained_build_inputs = {}
-    for original, expected in build_hashes.items():
-        path = Path(original)
-        retained = out / "build" / path.relative_to(build)
-        retained.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, retained)
-        IO_COSTS["copy_read_bytes"] += path.stat().st_size
-        IO_COSTS["copy_write_bytes"] += retained.stat().st_size
-        assert digest(retained) == expected, "production build input changed during retention"
-        retained_build_inputs[original] = {"file": str(retained), "sha256": expected}
-        if path == prepared_executable:
-            assert retained == retained_prepared, "prepared executable retention path changed"
-    check_consumed()
-    check_build_inputs()
-    report = {
-        "schema": "production-contract-v1",
-        "io_costs": IO_COSTS,
-        "preset": arguments.preset,
-        "build_testing": "OFF",
-        "test_support": "OFF",
-        "scanned": scanned,
-        "build_inputs": retained_build_inputs,
-        "consumed_inputs": consumed,
-        "grain_fixture": {"manifest": str(grain_manifest), "payload": str(grain_payload),
-                          "logical_preset": arguments.preset},
-        "probes": probe_records,
-        "grain_results": grain_results,
-        "effects_results": effects_results,
-        "balance_results": balance_results,
-        "scanner_correction_results": scanner_correction_results,
-        "scanner_demand_results": scanner_demand_results,
-        "scanner_color_results": scanner_color_results,
-        "scanner_descriptor_results": scanner_descriptor_results,
-        "scanner_post_results": scanner_post_results,
-        "frame_results": frame_results,
-        "dir_boundary_results": dir_boundary_results,
-        "dir_boundary_fixture": {"manifest": str(dir_boundary_manifest), "payload": str(dir_boundary_payload), "normative": str(dir_boundary_checked),
-                                 "input_spec": str(dir_boundary_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "grain_frame_results": grain_frame_results,
-        "effects_frame_results": effects_frame_results,
-        "effects_frame_fixture": {"manifest": str(effects_frame_manifest), "payload": str(effects_frame_payload),
-                                  "context": str(effects_frame_context), "normative": str(effects_frame_checked),
-                                  "input_spec": str(effects_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "grain_frame_fixture": {"manifest": str(grain_frame_manifest), "payload": str(grain_frame_payload), "normative": str(grain_frame_checked),
-                                "input_spec": str(grain_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "dir_frame_results": dir_frame_results,
-        "dir_frame_fixture": {"manifest": str(dir_manifest), "payload": str(dir_payload), "normative": str(dir_checked),
-                              "input_spec": str(dir_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "diffusion_frame_results": diffusion_frame_results,
-        "diffusion_frame_fixture": {"edges_payload": str(diffusion_edges_payload), "edges_context": str(diffusion_edges_context), "edges_input_spec": str(diffusion_edges_inputs), "manifest": str(diffusion_manifest), "payload": str(diffusion_payload), "context": str(diffusion_context),
-                                    "normative": str(diffusion_checked), "input_spec": str(diffusion_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "halation_frame_results": halation_frame_results,
-        "halation_frame_fixture": {"manifest": str(halation_manifest), "payload": str(halation_payload), "context": str(halation_context),
-                                   "normative": str(halation_checked), "input_spec": str(halation_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-        "frame_fixture": {"manifest": str(frame_manifest), "payload": str(frame_payload), "context": str(frame_context), "logical_preset": arguments.preset},
-        "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
-        "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
-        "prepared_state_results": prepared_state_results,
-        "prepared_render": prepared_render,
-        "reference_results": reference_results,
-        "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
-        "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
-        "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
-                                       "normative": str(correction_checked), "logical_preset": arguments.preset},
-        "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
-        "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
-                            "logical_preset": arguments.preset},
-        "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
-        "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
-                            for row in commands for suffix in [".stdout", ".stderr"]},
-        "loaded_module": {"file": str(module), "sha256": build_hashes[str(module)]},
-        "exports": sorted(module_export_names),
-        "hidden_device_load": True,
-        "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",
-    }
-    for field in (
-        "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
-        "optics_results", "optics_fixture", "print_illuminant_results",
-        "print_illuminant_fixture", "preflash_results", "preflash_fixture",
-    ):
-        assert field not in report, "production retired mathematical owner field remains: " + field
-    (out / "production.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("PRODUCTION_MANIFEST_SHA256", digest(out / "production.json"), flush=True)
-    print(
-        "PASS complete OFF film and retained output-color gate, archive/module/PDB isolation, two exports and hidden-device loading",
-        flush=True,
-    )
+        module_command = [sys.executable, "-B", str(root / "tests/ofx/probe.py"), str(module),
+                          "--expected-descriptor", str(root / "tests/ofx/descriptor_manifest.json")]
+        command("module-probe", module_command, env=no_device_env)
+        render_command = [str(render), str(module), str(resources), str(processor_fixture),
+                          arguments.preset, str(updates)]
+        document = json.loads(command("prepared-render", render_command))
+        assert set(document) == {"rows", "lifecycle"}
+        fixture_tokens = iter(processor_fixture.read_text().split())
+        fixture_cases = ("negative-direct", "negative-print", "positive-direct", "positive-print",
+                         "combined-print", "glare-plus-zero", "glare-minus-zero")
+        patch_spec = json.loads(updates.read_text())
+        assert patch_spec["schema"] == 1 and patch_spec["policy"] == "print-erff-0.2.15-2026-10-20"
+        expected_words = {}
+        for case in fixture_cases:
+            assert next(fixture_tokens) == case
+            count = int(next(fixture_tokens))
+            values = [struct.unpack("<I", struct.pack("<f", float(next(fixture_tokens))))[0]
+                      for _ in range(count)]
+            logical = f"ofx/fixtures/exposure/{processor_fixture.name}.{case}"
+            patches = patch_spec["fixtures"].get(logical, [])
+            assert len(patches) % 2 == 0
+            for test, replace in zip(patches[::2], patches[1::2], strict=True):
+                assert test["op"] == "test" and replace["op"] == "replace" and test["path"] == replace["path"]
+                index = int(test["path"].removeprefix("/"))
+                assert values[index] == test["value"]
+                values[index] = replace["value"]
+            expected_words[case] = values
+        assert next(fixture_tokens, None) is None
+        rows = []
+        for raw in document["rows"]:
+            row = dict(raw)
+            expected_count = 105 if row["route"] == "negative-direct" else 140
+            for key, target in (("input_f32_words", "input_sha256"),
+                                ("output_f32_words", "output_f32_words_sha256")):
+                words = row.pop(key)
+                assert isinstance(words, list) and len(words) == expected_count
+                assert all(type(word) is int and 0 <= word <= 0xffffffff for word in words)
+                packed = b"".join(struct.pack("<I", word) for word in words)
+                if key == "output_f32_words":
+                    values = [value[0] for value in struct.iter_unpack("<f", packed)]
+                    expected = [struct.unpack("<f", struct.pack("<I", word))[0]
+                                for word in expected_words[row["route"]]]
+                    assert len(values) == len(expected)
+                    assert all(math.isfinite(actual) and math.isfinite(want)
+                               and abs(actual - want) <= 2.0e-4 + 3.0e-4 * abs(want)
+                               for actual, want in zip(values, expected, strict=True))
+                row[target] = hashlib.sha256(packed).hexdigest()
+            rows.append(row)
+        current = {path: digest(path) for path in before}
+        assert current == before, "production build input changed"
+        consumed_after = {path: digest(path) for path in consumed_before}
+        assert consumed_after == consumed_before, "production source or fixture changed"
+        build_inputs = {path: {"sha256_before": value, "sha256_after": current[path]}
+                        for path, value in before.items()}
+        for original, identity in build_inputs.items():
+            source = Path(original)
+            retained = out / "inputs" / source.relative_to(root)
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, retained)
+            IO_COSTS["copy_read_bytes"] += source.stat().st_size
+            IO_COSTS["copy_write_bytes"] += retained.stat().st_size
+            assert digest(retained) == identity["sha256_before"], "retained production input changed"
+            identity["file"] = str(retained)
+        consumed = {path: {"sha256_before": value, "sha256_after": consumed_after[path]}
+                    for path, value in consumed_before.items()}
+        render_record = commands[-1]
+        prepared = {"module": str(module), "module_sha256": before[str(module)],
+                    "executable": str(render), "executable_sha256_before": before[str(render)],
+                    "executable_sha256_after": current[str(render)], "fixture": str(processor_fixture),
+                    "fixture_sha256": consumed_before[str(processor_fixture)], "command": render_command,
+                    "stdout_sha256": render_record["stdout_sha256"], "stderr_sha256": render_record["stderr_sha256"],
+                    "rows": rows, "lifecycle": document["lifecycle"]}
+        report = {"schema": "production-contract-v2", "preset": arguments.preset,
+                  "build_testing": "OFF", "test_support": "OFF", "hidden_device_load": True,
+                  "io_costs": IO_COSTS, "exports": sorted(export_names), "scanned": scans,
+                  "build_inputs": build_inputs, "consumed_inputs": consumed,
+                  "loaded_module": {"file": str(module), "sha256": before[str(module)],
+                                    "build_file": str(build_module)},
+                  "probes": probe_records, "prepared_render": prepared,
+                  "commands": {"file": str(commands_path), "sha256": digest(commands_path)}}
+        report_data = (json.dumps(report, indent=2) + "\n").encode()
+        validate_production_contract(arguments.preset, {"production-contract.json": report_data,
+                                                       "production-commands.json": commands_path.read_bytes()})
+        (out / "production.json").write_bytes(report_data)
+        print("PRODUCTION_MANIFEST_SHA256", digest(out / "production.json"), flush=True)
+
+    with leases[0], leases[1]:
+        execute_owned()
 
 
 def reference_fixture(preset):
@@ -1486,7 +1135,7 @@ def expected_scanner_correction_header(out):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--preset", choices=["linux-release", "windows-clang-release"], required=True
+        "--preset", choices=["linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"], required=True
     )
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--generate-expected-header", action="store_true",
@@ -1495,20 +1144,21 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     build = root / "out/build" / arguments.preset
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
-    expected_film_header(arguments.artifacts)
-    expected_balance_header(arguments.artifacts)
-    expected_scanner_correction_header(arguments.artifacts)
-    expected_scanner_color_header(arguments.artifacts)
-    expected_scanner_descriptor_header(arguments.artifacts)
-    expected_scanner_post_header(arguments.artifacts)
-    expected_frame_header(arguments.artifacts)
-    expected_halation_frame_header(arguments.artifacts)
-    expected_diffusion_frame_header(arguments.artifacts)
-    expected_grain_frame_header(arguments.artifacts)
-    expected_effects_frame_header(arguments.artifacts)
-    expected_dir_frame_header(arguments.artifacts)
-    expected_dir_boundary_header(arguments.artifacts)
-    if not arguments.generate_expected_header:
+    if arguments.generate_expected_header:
+        expected_film_header(arguments.artifacts)
+        expected_balance_header(arguments.artifacts)
+        expected_scanner_correction_header(arguments.artifacts)
+        expected_scanner_color_header(arguments.artifacts)
+        expected_scanner_descriptor_header(arguments.artifacts)
+        expected_scanner_post_header(arguments.artifacts)
+        expected_frame_header(arguments.artifacts)
+        expected_halation_frame_header(arguments.artifacts)
+        expected_diffusion_frame_header(arguments.artifacts)
+        expected_grain_frame_header(arguments.artifacts)
+        expected_effects_frame_header(arguments.artifacts)
+        expected_dir_frame_header(arguments.artifacts)
+        expected_dir_boundary_header(arguments.artifacts)
+    else:
         execute(arguments)
 
 

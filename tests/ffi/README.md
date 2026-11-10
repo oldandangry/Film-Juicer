@@ -11,9 +11,11 @@ render implementation.
 
 `Rust.Bridge` additionally runs the plugin's internal ABI tests. The fixture's
 Test exports are gated by the nondefault `test-support` feature selected by
-CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings;
-they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
-archive with the corresponding feature selection.
+CMake for facade/fault consumers with `BUILD_TESTING=ON`. Shipping and production
+witnesses always select the separate `cargo/production` archive; test-support
+consumers select `cargo/test-support`. Enabling tests does not switch shipping
+features. Product builds consume committed bindings without bindgen or libclang.
+See the [ownership and maintenance map](../../CONTRIBUTING.md#ownership-and-maintenance-map).
 
 ## OFX C ABI evidence
 
@@ -43,10 +45,11 @@ compile declarations and type evidence without linking the C fixture stubs.
 
 The selected records are Host, Plugin, PropertySuiteV1 (18 slots),
 ParameterSuiteV1 (18), ImageEffectSuiteV1 (13), MessageSuiteV1 (1), RangeD,
-PointI/D and RectI/D. Complete suite layouts retain unused slots. There is no
-production Rust host adapter or new standard OFX export. Action/lifecycle,
-reentry, image ownership, borrowed host strings and installed Resolve behavior
-remain later host-adapter obligations.
+PointI/D and RectI/D. Complete suite layouts retain unused slots. The standard discovery exports are defined by `native/ofx_exports.cpp` and
+delegate count and descriptor lookup to Rust. Rust owns OFX callbacks, lifecycle,
+reentry, image ownership and borrowed host strings; native CUDA Root retains CUDA
+resources and frame admission. Installed Resolve behavior remains outside these
+fixture claims.
 
 Run through the maintained owner in any native preset:
 
@@ -110,37 +113,24 @@ the component and its native producer/zero contract. Their `clip_token`,
 or temporal facts; they are not resource content fingerprints. Fixed ABI field
 names remain governed by `native/juicer_cuda_api.h`.
 
-Configure and build first, then run the bounded evidence (substitute any of the
-four supported presets):
+Prepare and run the focused evidence through the maintained owner (substitute
+any of the four supported presets):
 
 ```sh
-cmake --preset linux-debug -DBUILD_TESTING=ON
-cmake --build --preset linux-debug --target juicer JuicerCudaAbiTests
-ctest --preset linux-debug -R '^(Ffi\.Host\.CudaAbi|Rust\.Bridge)$'
+python -B scripts/verify.py development --preset linux-debug \
+  --tests Ffi.Host.CudaAbi Rust.Bridge --runtime host
 ```
 
 ## Native owner lifecycle
 
-The OFX factory owns one move-only `JuicerProcess::ProcessRuntime` for each
-loaded process module. `load()` creates it from the module data directory;
-effects retain an explicit reference and borrow a callback-local
-`FjRuntimeView` containing borrowed Assets and native-handle projections. Both
-projections expire before Runtime close. Product callbacks receive these owners explicitly. There is no
-ambient process-owner lookup. The native CUDA `Root` remains the owner of CUDA
-resources, contexts, epochs and frame admission/retirement; the process runtime
-binds that native owner to Rust's Assets lifetime.
-
-The private Runtime C boundary consists of
-`fj_legacy_runtime_create`, `fj_legacy_runtime_borrow`,
-`fj_legacy_runtime_check_close`, `fj_legacy_runtime_shutdown` and
-`fj_legacy_runtime_destroy`. Borrowed shutdown leaves the runtime owner in
-place. `ProcessRuntime::close()` first checks whether consuming close is
-currently allowed, and only then exchanges and consumes its handle. A rejected
-precheck preserves the live owner. The destructor makes one nonthrowing close
-attempt, reports an actual cleanup error through the existing logging path, and
-does not retry a rejected or uncertain teardown. Native shutdown has precedence
-over host cleanup: uncertain native teardown retains only the native graph,
-never Rust Assets or host-side borrowed storage.
+The OFX module and instance callbacks borrow the Rust-owned Runtime and Instance
+through the Rust OFX implementation. `native/ofx_exports.cpp` supplies only the
+standard discovery entry points and delegates descriptor lookup to Rust. There
+is no C++ ProcessRuntime projection or legacy Runtime C export. Native CUDA
+`Root` remains the owner of CUDA resources, contexts, epochs and frame
+admission/retirement. Rust Runtime owns process Assets and the native CUDA handle;
+consuming close preserves native-before-host failure precedence and releases host
+state outside native locks.
 
 `Ffi.Host.CudaOwner` and `Ffi.Host.CudaTerminal.*` retain their existing native
 CUDA-owner lifecycle coverage: no-GPU creation, terminal transition, error
@@ -205,35 +195,37 @@ controlled failure fixture, not real driver-loss or forced-unload qualification.
 Ordinary prepared-frame/lifecycle and native failure/cancellation fixtures use
 the same typed terminal operations for final cleanup.
 
-Fixtures that need Runtime-owned Assets use `JuicerProcess::ProcessRuntime`.
-Isolated native lifecycle cases create `FjCuda` directly with `fj_cuda_create`
-and consume it with `fj_cuda_destroy`.
-Production effects use their factory-supplied `ProcessRuntime` reference and
-callback-local C-record projection; both production routes share the admitted
-body with `fj_cuda_render`.
+Fixtures that need process Assets use the Rust test-support facade; standalone
+native lifecycle cases create and consume `FjCuda` directly. Product effects
+borrow Runtime and Instance through Rust-owned OFX callbacks, while native CUDA
+Root remains the execution and resource owner.
 
-The native execution object target has no OFX include or link dependency. Its
-objects, current C++ host preparation, and OFX adapter objects enter one
-`juicer_core` archive used by existing product and test links. Isolated test-hook
-objects replace selected archive members without rebuilding CUDA in Cargo.
+`native/ofx_exports.cpp` is the native OFX discovery shim. CUDA execution values,
+composers and resource objects remain native; retired C++ host preparation,
+ProcessRuntime, effect and OFXS implementation sources are not in the product
+host source set. Test-only scalar binders under `tests/ffi` call checked facade
+operations directly.
 
 ## Release production probes
 
-The excluded `JuicerProductionFilmProbe` and `JuicerProductionOutputColorProbe`
-targets compile as C11 and link the production Rust/native archives. Release
-configuration selects Python 3.13 for their fixture tooling. CMake owns the Film
-probe's `production-probes/production-film-expected.h`: selecting that probe
-generates a missing header before compilation, with dependencies on its Python
-helpers and the consumed frozen JSON fixture families. A preceding testing-OFF
-run is not required to build the probe in a testing-ON tree.
+With testing ON, `Ffi.Host.PreparedValues` and
+`Ffi.Host.OutputColorValues` register complete prepared-value and output-color
+checks as two strict-C11 cases. Their test-only C sources call direct checked
+facade operations; the prepared-values case consumes the existing generated
+`production-probes/production-film-expected.h` and synthetic duplicate-film
+fixture arguments.
+
+The Release testing-OFF contract uses strict-C11 standard OFX discovery and
+native CUDA ABI probes plus the prepared-render/native-CUDA contract. It records
+ten logical commands in `production-contract-v2`; the offline reader continues
+to accept historical v1 reports. The ON value fixtures are not OFF probes.
 
 `python -B tests/ffi/production_contract.py --preset <release-preset>
 --artifacts <directory> --generate-expected-header` runs the same fixture conversion without native
 commands or driver access. It generates a C header from existing expectations;
-it does not regenerate scientific fixtures. The complete OFF contract generates
-its own expected header, builds the CMake probes, then compares and pins the
-actual generated header before executing the value checks. It does not seed the
-build-tree header by copying a prior result.
+it does not regenerate scientific fixtures. The OFF contract writes a v2 command report for standard discovery, native ABI
+and actual prepared rendering. It does not generate the ON value fixture header;
+the offline collector continues to read historical v1 command reports.
 
 ## Binding maintenance
 
@@ -377,8 +369,7 @@ order and final identities. Its six competing-failure cases also check visitatio
 and nonconsumption of a later fault. Checked-in expectations are never regenerated
 by these tests.
 
-The temporary `fj_legacy_prepared_state_{create,view,release}` family returns one
-completed immutable owner or a typed failure. A view borrows that owner; its
+The checked test facade returns one completed immutable owner or a typed failure. A view borrows that owner; its
 arrays are not detached application storage. Create nulls the owner output before
 work, view clears every defined field on failure, and release consumes one hold
 even when diagnostic admission fails. The test facade calls the same private
@@ -616,36 +607,27 @@ view uses. Outputs and diagnostics are aligned, exclusive and disjoint. Every
 valid output is cleared before validation. Malformed diagnostics skip ordinary
 work, while destroy/release consume their owner once on every result.
 Truncation changes text only. Rust publishes one cached catalog result,
-including ordinary source failure. Native `ProcessRuntime` copies the result's
-keys, labels, roles, defaults and order into its UI presentation, then releases
-the temporary `FjCatalog`; it retains no owning catalog handle. An internal
-native presentation-conversion failure can retry against that same cached Rust
-result. Conversion and publication test hooks remain at their actual production
-points.
+including ordinary source failure. Rust owns the catalog result, keys, labels, roles, defaults and ordering used by
+the OFX descriptor. Test-only catalog helpers observe the same Rust-owned result;
+there is no copied C++ UI catalog. Conversion and publication hooks are test-only
+and remain at the checked acquisition/publication points.
 
-The native factory holds `ProcessRuntime` as a wrapper for the safe Rust owner.
-Borrowed shutdown leaves the Runtime and Assets owner in place. Native shutdown
-failure has precedence and prevents borrowed host-cache cleanup.
-Consuming close first calls `check_close`; a rejected precheck preserves the
-handle and presentation. Consuming close releases Rust host state after the native
-terminal attempt on every result, preserving native failure precedence. Uncertain native teardown retains only the native CUDA
-graph, never Rust Assets or host-side borrowed storage. Test-only Bridge and
-Library convenience wrappers live under `tests/ffi/test_asset_*`; they are
-standalone fixtures, not a second product owner or ambient service locator.
-Fixtures calling production APIs borrow Assets explicitly from their owning
-`ProcessRuntime`.
+Rust Runtime owns Assets and applies native-before-host failure precedence during
+consuming close. Test-only Bridge and Library wrappers live under
+`tests/ffi/test_asset_*`; they exercise explicit Assets ownership and are not a
+product service locator.
 
 The catalog path transport/Windows encoding/native selected-profile opening
-bridge has been removed. Native root-path transport remains an actual consumer
-and continues to use the existing `NativePath` ABI. Later-family production
+bridge has been removed. NativePath encoding is a test fixture helper under `tests/ffi/native_path.*`; it
+is not a product ABI or production path transport. Later-family production
 acquisition remains outside this boundary. Installed Resolve acceptance remains
 separate from these automated ABI, host and GPU checks.
 
 ## Production profile and gamma bridge
 
-`Ffi.Host.ProductionProfileOwner` calls the actual film/print acquisition, borrowed
-view, gamma sampling and consume-once release APIs in `juicer_legacy_api.h`.
-C11, C++20 and Rust check every production field, tag and signature. All 28
+`Ffi.Host.ProductionProfileOwner` calls the Rust-backed test facade for film/print
+acquisition, borrowed view, gamma sampling and consume-once release. C11, C++20
+and Rust check every record field, tag and signature. All 28
 profiles and the accepted gamma cohort are compared with immutable public
 captures. Owned gamma totals survive print release, and retained profiles survive
 Assets release/destruction. Safe projections share the core Arc and borrow tables.
@@ -758,14 +740,16 @@ asset panic/capacity cases exercise the shared admission boundary separately.
 address/content/identity reuse across Hanatos/Mallett direct/print CCTF-only and
 warm transitions. It records bounded preparation times and retires only its idle
 test-owned context between completed triplets.
-The host groups execute no device operation. All groups have finite CTest
-process timeouts. No ordinary run generates or changes expectations.
+The host groups execute no device operation. Ordinary CTest processes have no
+elapsed deadline (`TIMEOUT 0`); explicit fault-control bounds remain. No ordinary
+run generates or changes expectations.
 
 `fixtures/color/manifest.json` records native-parent provenance, representation,
 case membership and exact identity order. Finite values, signed zero and infinity
 signs are exact; NaNs compare classification. Each complete-consumer run selects
-its preset capture. Existing Rust-density/render fixtures and their limits stay
-unchanged. The temporary native value bridge has removal owner S4.E.
+its preset capture. Existing Rust-density/render fixtures and their numerical bounds stay
+unchanged. The strict-C11 value fixture uses the direct checked test facade; no production
+C++ value bridge is retained.
 
 
 ## CAT02 preparation
@@ -795,8 +779,8 @@ NaN classification; completed consumers, identities and control fields compare
 exactly. Comparator controls reject transpose, one-bit, reversed whites, changed
 identity and the wrong platform fixture. Platform differences in downstream
 recipes remain in their respective captures. Existing CAT16 fixtures and limits
-are unchanged. Both temporary color bridges have removal owner S4.E; device
-CAT02 device execution retains its existing owner. Input-color host mathematics use the boundary described below; CUDA decoders remain unchanged.
+are unchanged. The scalar color fixtures call direct checked boundary operations through the
+test facade; device CAT02 execution retains its existing owner. Input-color host mathematics use the boundary described below; CUDA decoders remain unchanged.
 
 
 ## Input-color preparation
@@ -1073,7 +1057,8 @@ changes. This pilot adds no CI lane.
 
 ## Bounded cache and owner repetition
 
-After configuring and building the complete native Debug preset, run this exact
+For this explicit maintenance campaign, prepare the owning native Debug targets
+through `verify.py prepare` before running this exact
 seven-group host cohort (replace `linux-debug` with `windows-clang-debug` on
 native Windows). Create a fresh campaign directory under the preset's validation
 root and retain the verbose output, log and JUnit from that invocation:
@@ -1092,11 +1077,13 @@ ctest --preset linux-debug --parallel 1 --no-tests=error --repeat until-fail:20 
 Confirm discovery contains exactly these seven groups before execution. Each
 successful invocation runs 140 independent test processes. Repetition launches
 fresh processes rather than looping inside a retained process owner. Existing
-arguments, per-test timeouts and `RUN_SERIAL`/resource-lock properties remain;
-this cohort executes no GPU work or Cargo operation. Keep configuration/build
+arguments and `RUN_SERIAL`/resource-lock properties remain. Ordinary processes
+use `TIMEOUT 0` with no elapsed deadline. This cohort executes no GPU work or
+Cargo operation. Keep configuration/build
 writers and other CTest invocations out of the same build tree while it runs.
-Use an outer finite campaign deadline; the qualified 20-repeat workload and
-actual native timings are recorded in the investigation handoff.
+Keep the finite repetition count and injected-control bounds. Historical campaign
+deadlines and timings retain their observation-time meaning; ordinary execution
+now has no outer elapsed kill deadline.
 
 The cache test retains its W1–W7 acknowledged gates, matching/conflicting fixed
 operands, all table-word comparisons, fault codes, generation exhaustion,
@@ -1178,7 +1165,8 @@ Its resources are synchronous fixed-array borrows and existing identities; the
 result retains no profile or resource pointer. Explicit-operand color leaves
 remain separate, including the accepted inverse-B conversion fixtures.
 
-`fj_legacy_film_input_prepare` remains the raw fixed-value ABI/fixture transport.
+The strict-C11 film-input fixture calls the direct checked test facade with the
+fixed-value record.
 Actual complete Rust preparation constructs the input recipe after its existing
 control/source checks; the native foundation and `FilmSource` adapter are removed.
 The direct fixture facade shares the
@@ -1254,9 +1242,9 @@ establish those gates.
 
 ## Diffusion sample, frame and component preparation
 
-The temporary `fj_legacy_diffusion_{sample,frame,components}_prepare` exports copy
-fixed, synchronous values; their same-signature `fj_test_diffusion_*_prepare`
-facade calls share the checked production bodies. No pointer is retained and no
+The strict-C11 diffusion fixture calls direct checked test-facade operations
+for sample, frame and component values. These operations share checked Rust
+bodies with product preparation. No pointer is retained and no
 CUDA owner is introduced. The permanent CUDA records remain unchanged.
 
 Sample support construction, component readiness and optional frame activity are
@@ -1267,11 +1255,11 @@ BlackProMist default; raw failure clears family to zero. Optional diagnostics
 support absent/zero-capacity backing and bounded NUL-terminated truncation.
 
 See the [exact native characterization](../diffusion/frame-fixtures/README.md),
-`Ffi.Host.DiffusionFrame` and `Optics.Host.DiffusionFrameProducts`. The strict C11
-Release OFF probe requires all three exports and executes 507 complete frozen
-value/failure results alongside the retained production contracts. Native
-sample/frame bindings retire at their last native caller by S6.D. They bind
-completed values and do not reconstruct the removed owning recipe graph.
+`Ffi.Host.DiffusionFrame` and `Optics.Host.DiffusionFrameProducts`. The ON
+strict-C11 fixture executes 507 complete frozen value/failure results through
+the direct test facade. OFF Release commands verify standard discovery, native
+ABI and prepared rendering. Native execution binds completed values and does
+not reconstruct the removed owning recipe graph.
 
 ## Spatial DIR mathematical frames
 
@@ -1281,8 +1269,7 @@ coefficients. Its private immutable storage has read-only accessors. An ordinary
 failure carries a separate `FailureTrace`, including completed components and a
 partially written next slot; it cannot be consumed as an executable Plan.
 
-The temporary `fj_legacy_dir_frame_prepare` export copies fixed synchronous
-values through `FjDirFrameInput`, `FjDirFrameMath` and `FjDirFrameFailure`. Each
+The strict-C11 DIR-frame fixture calls the direct checked test facade with `FjDirFrameInput`, `FjDirFrameMath` and `FjDirFrameFailure`. Each
 independently admitted output clears before argument admission. Raw executable
 Math remains zero on failure; typed ordinary progress belongs only to the failure
 record. Optional diagnostics use bounded NUL-terminated truncation. The complete
@@ -1301,11 +1288,11 @@ the permanent prepared boundary's existing identity admission.
 See the [four-context native characterization](../dir/frame-fixtures/README.md),
 `Ffi.Host.DirFrame`, `Film.Host.DirFrameProducts` and `Ofx.Gpu.DirFrame`.
 The last group observes both actual prepared direct/print schedules before their
-existing failure branches, and uses the existing GPU lock and 180-second limit.
-Both native Release OFF C11 probes execute all 121 mathematical/default/failure
-rows, retaining the other current production rows and artifact/isolation checks.
-`SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native transport consumer by S6.D.
-Its current execution inputs are narrowed to completed values. Reflected-YVV
+existing failure branches, and uses the existing GPU lock with no elapsed deadline.
+The ON strict-C11 DIR-frame fixture executes all 121 mathematical/default/failure
+rows through the direct checked test facade. OFF Release contract commands cover
+standard discovery, native ABI and prepared rendering. Native execution inputs
+are completed values. Reflected-YVV
 boundary construction is described below.
 
 ## Spatial DIR reflected boundaries
@@ -1317,8 +1304,9 @@ double-double operation order and uses pinned `libm::fma` only for the original
 explicit fused product residual. Signed size admission covers retained Root/CUDA
 index expressions as well as vector extents and doubled axis periods.
 
-The four temporary `fj_legacy_dir_boundary_{describe,acquire,view,release}` exports
-transport literal `FjDirGaussian` coefficients. Describe derives only the key
+The retained native `JuicerDirBoundary` operations
+`fj_dir_boundary_{describe,acquire,view,release}` transport literal
+`FjDirGaussian` coefficients. Describe derives only the key
 after outer eligibility. The native `JuicerDirBoundary::Boundary` hold is acquired
 after the warm-cache opportunity, outside the resource mutex. Its borrowed view
 survives synchronous staging; native pinned memory owns later asynchronous reads.
@@ -1336,10 +1324,10 @@ abort limitation.
 
 See [the independent four-profile characterizations](../dir/boundary-fixtures/README.md),
 `Ffi.Host.DirBoundary`, `Film.Host.DirBoundaryProducts` and the existing
-`Dir.Gpu.ExposureCache`. Strict C11 Release OFF probes require all four exports
-and all 171 boundary rows, alongside retained probes and artifact/isolation
-check. `SF_TEMP_BRIDGE_DIR_BOUNDARY` narrows with S4.E execution inputs and retires
-at its last native model caller, no later than S6.D.
+`Dir.Gpu.ExposureCache`. The ON strict-C11 fixture checks all 171 boundary rows
+through the test facade; the four `fj_dir_boundary_*` operations remain the native
+boundary API. OFF Release commands verify standard discovery, native ABI and
+prepared rendering.
 
 ## Visual-grain mathematical frame boundary
 
@@ -1363,16 +1351,16 @@ bytes, with zero-capacity backing ignored and positive capacity reserving NUL.
 The complete operation contains unwind. Test-only one-shot faults and observer
 hooks stay outside ordinary objects and testing-OFF artifacts.
 
-Legacy and testing facade entries share the checked body and native composer.
+The ON strict-C11 fixture calls the direct checked test facade and native
+composer; the retired legacy export is not part of the product ABI.
 See [the independent fixtures](../grain/frame-fixtures/README.md),
 `Ffi.Host.GrainFrame`, `Film.Host.GrainFrameProducts` and `Ofx.Gpu.GrainFrame`.
 The C11 reader checks all fixed field/layout/signature facts and complete results.
 R1 requires C layer0/count failure before M total0 after all nine reductions;
 its cleared output, reason2/field12/layer0/channel0 and diagnostic are exact.
-Both Release OFF probes retain all 188 grain rows plus the retained predecessor results
-and archive/module/PDB/fault/facade/export isolation check.
-`SF_TEMP_BRIDGE_GRAIN_FRAME` narrows at S4.E and retires at its last native model
-caller no later than S6.D. Independent review and phase acceptance are separate.
+The ON strict-C11 fixture retains all 188 grain rows plus predecessor results.
+OFF Release contract commands verify standard discovery, native ABI and prepared
+rendering, with test-only fault/facade code excluded from product artifacts.
 
 `FjEffectsFrameInput`, `FjEffectsFrameMath` and `FjEffectsFrameFailure` carry the
 fixed physical-effects mathematical frame. The real ON reader and generated OFF

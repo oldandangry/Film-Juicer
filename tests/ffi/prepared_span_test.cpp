@@ -11,7 +11,7 @@
 #include "gtest_cases.h"
 #include "juicer_cuda_prepared.h"
 #include "prepared_descriptors.h"
-#include "ProcessRuntime.h"
+#include "owner_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "Cuda/JuicerCudaHostViews.h"
 
@@ -79,7 +79,7 @@ namespace {
             {}, {}, {}, nullptr, nullptr, nullptr, 0, 0, 3, nullptr, diffusion, halation, geometry, 0, 0, 0, 1, 0, meter, false, false};
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         JuicerCuda::PendingContextLossRecovery recovery;
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create("prepared-span-admission");
         const FjRuntimeView runtimeView = runtime.borrow();
         JuicerProcess::Root& root = JuicerCuda::borrow_root(runtimeView.cuda);

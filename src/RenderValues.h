@@ -3,16 +3,12 @@
 #include <array>
 #include <cstdint>
 #include <optional>
-#include <string>
 
 #include "DiffusionHostBehavior.h"
 #include "GamutCompression.h"
 #include "ScanRoute.h"
 #include "ScatterHalation.h"
 
-namespace JuicerDir {
-    class MathOutcome;
-}
 struct FjDirFrameMath;
 
 // Production photographic policy and profile ownership live in Rust PreparedState.
@@ -22,8 +18,6 @@ namespace Spektrafilm {
 
     inline constexpr const char kQuantizedMedianNotAcceptedForPhase3[] =
         "QuantizedMedianNotAcceptedForPhase3";
-    inline constexpr const char kExactOpticsNotImplementedForPhase6[] =
-        "ExactOpticsNotImplementedForPhase6";
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,
@@ -374,16 +368,14 @@ namespace Spektrafilm {
     // Native workspace policy for an already resolved nonempty DIR operator plan.
     void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept;
 
-    bool compose_spatial_dir_descriptor(
-        const JuicerDir::MathOutcome&, const char* traceRouteLabel, SpatialDirDescriptor& out);
 
     // S4.E consumes an already-computed Rust frame result; native code retains
     // final scratch/role/alias and execution hash binding.
+    // Bind completed execution math before scratch/hash composition.
+    bool bind_spatial_dir_math(const FjDirFrameMath&, const char* traceRouteLabel, SpatialDirDescriptor&);
+    bool finish_spatial_dir_descriptor(float pixelSizeUm, SpatialDirDescriptor&);
+
     bool compose_spatial_dir_descriptor(
         const FjDirFrameMath&, float pixelSizeUm, const char* traceRouteLabel, SpatialDirDescriptor& out);
-
-    bool preflight_camera_lens_blur(
-        const CameraLensBlurOpticsRecipe& recipe,
-        std::string& outDiagnostic);
 
 } // namespace Spektrafilm

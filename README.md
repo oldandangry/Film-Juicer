@@ -293,22 +293,29 @@ The GPU will suffer according to your ambitions.
 ## Building from source
 
 Open the repository folder directly in Visual Studio and select a shared CMake
-preset. The shared build uses Ninja, C++20, CUDA C++20, and CUDA Toolkit 13.2.
+preset. The shared build uses Ninja, Rust/Cargo 1.98.1 (pinned in
+[`rust-toolchain.toml`](rust-toolchain.toml)), C++20, CUDA C++20, and CUDA Toolkit
+13.2. CMake owns the two-crate Rust workspace build and links the
+`film-juicer-plugin` static library into the OFX module. See the
+[building guide](docs/building.md) for setup and the
+[ownership and maintenance map](CONTRIBUTING.md#ownership-and-maintenance-map)
+for the Rust model/host and native CUDA boundaries.
 
 | Preset | Host compiler | Configuration |
 | --- | --- | --- |
-| `windows-clang-debug` | ClangCL + NVCC/MSVC | Debug |
+| `windows-clang-debug` | ClangCL + NVCC/MSVC | Optimised Debug with ThinLTO |
 | `windows-clang-release` | ClangCL + NVCC/MSVC | Release with ThinLTO |
-| `linux-debug` | GCC 13 + NVCC/GCC | Debug |
+| `linux-debug` | GCC 13 + NVCC/GCC | Optimised Debug |
 | `linux-release` | GCC 13 + NVCC/GCC | Release |
 
 The Windows presets are **windows-clang-debug** and
 **windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit
 13.2, and C++20 for both host and CUDA code. MSVC v145 and the Windows SDK
 remain required for the Windows ABI and as NVCC's host toolchain. The consumed
-OpenFX 1.4 headers, Resolve OFXS support sources, and JSON header are vendored
-with provenance and notices. No sibling SDK checkout or Eigen installation is
-required.
+OpenFX 1.4 headers and JSON header are vendored with provenance and notices. The
+retained Resolve OFXS support headers have continuing native/test consumers; the old
+OFXS support implementation sources are not part of the product host source set.
+No sibling SDK checkout or Eigen installation is required.
 
 From a configured developer environment, run:
 
@@ -341,7 +348,10 @@ produce the complete bundle and matching compressed package together under
 The maintained public CMake/CTest suite, Python 3.13 setup, host/GPU labels,
 fixture boundaries, and exact test commands are documented in
 [tests/README.md](tests/README.md). Tests are opt-in with
-`-DBUILD_TESTING=ON`; normal plug-in builds keep testing off by default.
+`-DBUILD_TESTING=ON`; normal plug-in builds keep testing off by default. Test
+targets and Rust test metadata are excluded from the default build; use the
+test guide's selected `verify.py` commands to prepare and run their dependencies.
+CUDA-independent model checks use its `--cuda-free` entry.
 
 ## Project status
 

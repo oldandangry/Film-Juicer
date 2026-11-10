@@ -112,6 +112,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         return Ok(());
     }
     let full = domain(source.bounds)?;
+    #[cfg(feature = "test-support")]
+    crate::frame_observer::record_full_domain(full);
     let assets = owner.loaded.runtime().assets();
     let mut admitted = owner.state.admit(assets);
     if matches!(
@@ -147,6 +149,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         return Err(Status::FATAL);
     }
     let policy = cuda::FramePolicy::prepare(state, full).map_err(|_| Status::FATAL)?;
+    #[cfg(feature = "test-support")]
+    policy.observe_callback(state.development().route() as u32);
     let mut effects = cuda::sys::FjEffectsGeometry {
         pixel_definition: cuda::sys::FjExtent {
             x: 0,
@@ -180,6 +184,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             scale_y: source.scale[1],
             pixel_aspect_ratio: source.pixel_aspect_ratio,
         };
+        #[cfg(feature = "test-support")]
+        crate::frame_observer::record_effects_geometry(effects);
     }
     let frame_rate = callback.frame_rate(&owner.handles)?;
     let frame_rate = if frame_rate.is_finite() && frame_rate > 0.0 {

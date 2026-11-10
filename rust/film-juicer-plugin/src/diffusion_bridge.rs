@@ -1,10 +1,11 @@
-//! SF_TEMP_BRIDGE_DIFFUSION_FRAME: sample/frame projection retires by S6.D;
-//! native-resource component conversion retires with S4.E execution inputs.
+//! Completed diffusion math, native component expansion and checked fixture transport.
 
 use std::mem::{align_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use film_juicer_core::optics::diffusion_frame::{self, Components, FrameSet, Sample, SampleFields};
+#[cfg(any(test, feature = "test-support"))]
+use film_juicer_core::optics::diffusion_frame::Sample;
+use film_juicer_core::optics::diffusion_frame::{self, Components, FrameSet, SampleFields};
 
 use crate::cuda::sys::{FjDiffusion, FjErrorBuffer, FjExtent, FjStatus};
 use crate::optics_bridge::FjDiffusionRecipe;
@@ -281,6 +282,7 @@ unsafe fn checked<I: Copy, O: Copy>(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn sample_projection(fields: SampleFields) -> FjDiffusionSample {
     FjDiffusionSample {
         family: fields.family,
@@ -305,6 +307,7 @@ fn sample_fields(wire: FjDiffusionSample) -> SampleFields {
         hash: wire.hash,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn sample_build(
     input: FjDiffusionSampleInput,
     _fault: u32,
@@ -336,6 +339,7 @@ fn components_build(
         blue_weights: *components.blue_weights(),
     })
 }
+#[cfg(any(test, feature = "test-support"))]
 fn stage_input(wire: FjDiffusionRecipe) -> diffusion_frame::StageInput {
     diffusion_frame::StageInput {
         domain: wire.domain,
@@ -348,6 +352,7 @@ fn stage_input(wire: FjDiffusionRecipe) -> diffusion_frame::StageInput {
         hash: wire.hash,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn empty_stage() -> FjDiffusion {
     FjDiffusion {
         family: 0,
@@ -362,6 +367,7 @@ fn empty_stage() -> FjDiffusion {
         hash: 0,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn empty_frame() -> FjDiffusionFrameSet {
     FjDiffusionFrameSet {
         route: 0,
@@ -377,6 +383,7 @@ fn empty_frame() -> FjDiffusionFrameSet {
         hash: 0,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn stage_projection(stage: &diffusion_frame::Stage) -> FjDiffusion {
     let fields = stage.sample().fields();
     FjDiffusion {
@@ -392,6 +399,7 @@ fn stage_projection(stage: &diffusion_frame::Stage) -> FjDiffusion {
         hash: stage.hash(),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn frame_build(
     input: FjDiffusionFrameInput,
     _fault: u32,
@@ -424,6 +432,7 @@ fn frame_build(
 
 /// # Safety
 /// Initialized/live/aligned records; writable peers/backing exclusive and disjoint.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn sample_prepare(
     input: *const FjDiffusionSampleInput,
     out: *mut FjDiffusionSample,
@@ -466,12 +475,15 @@ pub(crate) unsafe fn components_prepare(
 }
 /// # Safety
 /// Initialized/live/aligned records; writable peers/backing exclusive and disjoint.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn frame_prepare(
     input: *const FjDiffusionFrameInput,
     out: *mut FjDiffusionFrameSet,
     failure: *mut FjDiffusionFailure,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    crate::frame_observer::record_diffusion_transport();
     // SAFETY: Delegates the complete synchronous foreign contract to the checked operation.
     unsafe {
         checked(
@@ -543,21 +555,8 @@ pub(crate) mod diffusion_frame_faults {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// Same live/aligned/exclusive/disjoint record obligations as sample_prepare.
-unsafe extern "C" fn fj_legacy_diffusion_sample_prepare(
-    input: *const FjDiffusionSampleInput,
-    out: *mut FjDiffusionSample,
-    failure: *mut FjDiffusionFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export shares the complete checked synchronous operation.
-    unsafe { sample_prepare(input, out, failure, error) }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
 /// Same live/aligned/exclusive/disjoint record obligations as components_prepare.
-unsafe extern "C" fn fj_legacy_diffusion_components_prepare(
+unsafe extern "C" fn fj_diffusion_components_prepare(
     input: *const FjDiffusionSample,
     out: *mut FjDiffusionComponents,
     failure: *mut FjDiffusionFailure,
@@ -565,19 +564,6 @@ unsafe extern "C" fn fj_legacy_diffusion_components_prepare(
 ) -> FjStatus {
     // SAFETY: The export shares the complete checked synchronous operation.
     unsafe { components_prepare(input, out, failure, error) }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same live/aligned/exclusive/disjoint record obligations as frame_prepare.
-unsafe extern "C" fn fj_legacy_diffusion_frame_prepare(
-    input: *const FjDiffusionFrameInput,
-    out: *mut FjDiffusionFrameSet,
-    failure: *mut FjDiffusionFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export shares the complete checked synchronous operation.
-    unsafe { frame_prepare(input, out, failure, error) }
 }
 
 const _: () = {
@@ -679,24 +665,11 @@ const _: fn(FjDiffusionFailure) = |v| {
     let _: u32 = v.field;
 };
 const _: unsafe extern "C" fn(
-    *const FjDiffusionSampleInput,
-    *mut FjDiffusionSample,
-    *mut FjDiffusionFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_diffusion_sample_prepare;
-const _: unsafe extern "C" fn(
     *const FjDiffusionSample,
     *mut FjDiffusionComponents,
     *mut FjDiffusionFailure,
     *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_diffusion_components_prepare;
-const _: unsafe extern "C" fn(
-    *const FjDiffusionFrameInput,
-    *mut FjDiffusionFrameSet,
-    *mut FjDiffusionFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_diffusion_frame_prepare;
-
+) -> FjStatus = fj_diffusion_components_prepare;
 const _: () = {
     assert!(size_of::<FjDiffusion>() == 112 && align_of::<FjDiffusion>() == 8);
     assert!(std::mem::offset_of!(FjDiffusion, family) == 0);

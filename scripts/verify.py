@@ -366,7 +366,7 @@ def native_case(args):
         if args.protocol == "gtest":
             environment["GTEST_OUTPUT"] = "xml:" + str(bundle / (key + ".xml"))
         invoke(command)
-        from qualification import case_events, framework_terminals, gtest_discovery, native_cohort_count, optics_keys
+        from qualification import case_events, framework_terminals, gtest_discovery, native_cohort_count, native_membership, optics_keys
         def read(name):
             nonlocal bookkeeping_reads
             data = (bundle / (key + name)).read_bytes()
@@ -392,7 +392,9 @@ def native_case(args):
             expected = optics_keys([json.loads(line) for line in read(".list.jsonl").splitlines()])
             if not expected:
                 raise ValueError("empty native host case listing")
-        case_events(read(".jsonl"), expected, cohorts=cohorts)
+        terminals = case_events(read(".jsonl"), expected, cohorts=cohorts)
+        if args.protocol == "custom":
+            native_membership(contract, name, expected, terminals)
         outcomes_valid = True
         return 0
     finally:

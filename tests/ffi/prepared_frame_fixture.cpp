@@ -14,7 +14,7 @@
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "GamutCompression.h"
-#include "RustEffectsFrameBridge.h"
+#include "effects_fixture.h"
 #include "Scanner.h"
 #include "host_preparation_fixture.h"
 #include "juicer_test_api.h"
@@ -78,17 +78,17 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             NoiseHold& operator=(const NoiseHold&) = delete;
             ~NoiseHold() {
                 if (_owner != nullptr &&
-                    fj_legacy_noise_release(_owner, nullptr).category != FJ_STATUS_SUCCESS) {
+                    fj_test_noise_release(_owner, nullptr).category != FJ_STATUS_SUCCESS) {
                     std::abort();
                 }
             }
 
             FjStatus acquire(const FjAssets* assets, FjErrorBuffer* error) {
-                return fj_legacy_noise_acquire(assets, &_owner, error);
+                return fj_test_assets_noise_acquire(assets, &_owner, error);
             }
 
             FjStatus view(FjStaticNoise& out, FjErrorBuffer* error) const {
-                return fj_legacy_noise_view(_owner, &out, error);
+                return fj_test_noise_view(_owner, &out, error);
             }
 
             FjStatus release(FjErrorBuffer* error) {
@@ -96,7 +96,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
                     return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
                 // Release consumes the handle even if diagnostic delivery fails.
                 FjNoise* const owner = std::exchange(_owner, nullptr);
-                return fj_legacy_noise_release(owner, error);
+                return fj_test_noise_release(owner, error);
             }
 
         private:
@@ -375,7 +375,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
     } // namespace
 
     bool with_prepared_frame_inputs(const FjAssets* assets,
-                                    const PreparedState& state,
+                                    const JuicerTestSupport::PreparedStateHold& state,
                                     const FrameFacts& facts,
                                     void* user,
                                     Consumer consume,

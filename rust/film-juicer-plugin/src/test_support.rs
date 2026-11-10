@@ -1,18 +1,388 @@
-//! Feature-only C fixture facade. Raw pointers never enter the safe core.
+//! Test C fixture facade and unit consumers. Raw pointers never enter the safe core.
 
-use crate::asset_illuminant::{self, FjIlluminant, FjIlluminantCoverage};
+use crate::asset_illuminant::{FjIlluminant, FjIlluminantCoverage};
+#[cfg(feature = "test-support")]
+use crate::asset_illuminant;
+#[cfg(feature = "test-support")]
 use film_juicer_core::illuminant;
 use crate::scanner_bridge;
 use crate::asset_bridge::FjAssets;
 use crate::preparation::{
     self, FjIlluminantsOwner, FjIlluminantsView, FjInputHullOwner, FjInputHullView,
     FjOutputBoundaryOwner, FjOutputBoundarySource, FjOutputBoundaryView, FjPreparationParams,
-    FjPreparedState, FjPreparedStateView, FjOutputCacheHooks, FjCacheMetrics,
+    FjPreparedState, FjPreparedStateView,
 };
-use crate::preparation::FjIlluminantCacheHooks;
+#[cfg(feature = "test-support")]
+use crate::preparation::{FjIlluminantCacheHooks, FjOutputCacheHooks, FjCacheMetrics};
+#[cfg(feature = "test-support")]
 use crate::preparation::{FjInputHullCacheHooks, FjCacheObservationOwner};
 #[cfg(feature = "test-support")]
 use crate::cuda::NoiseCallObservation;
+
+macro_rules! checked_export {
+    ($name:ident($($arg:ident: $ty:ty),*) -> $result:ty => $operation:path) => {
+        /// # Safety
+        /// Matching live owners, initialized aligned inputs and exclusive disjoint
+        /// outputs/diagnostics obey juicer_test_api.h. Calls and callbacks are
+        /// synchronous on the calling thread, contain foreign exceptions and
+        /// retain nothing; consuming release excludes every outstanding reader.
+        #[cfg_attr(not(test), unsafe(no_mangle))]
+        unsafe extern "C" fn $name($($arg: $ty),*) -> $result {
+            // SAFETY: This facade preserves the shared checked operation's full
+            // owner, extent, aliasing, calling-thread and non-retention contract.
+            unsafe { $operation($($arg),*) }
+        }
+        const _: unsafe extern "C" fn($($ty),*) -> $result = $name;
+    };
+}
+// Checked dependency boundaries and independent direct-core fixtures retain
+// distinct fault controls. Both call their real mathematical operation.
+checked_export!(fj_test_boundary_cat16_matrix(source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32) -> FjStatus => crate::color_values::boundary_cat16_matrix);
+checked_export!(fj_test_boundary_adapt_cat16(xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32) -> FjStatus => crate::color_values::boundary_adapt_cat16);
+checked_export!(fj_test_boundary_cat02_matrix(source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32) -> FjStatus => crate::color_values::boundary_cat02_matrix);
+checked_export!(fj_test_boundary_input_matrices(input_space_tag: u32,
+    out: *mut crate::color_values::FjInputColorMatrices) -> FjStatus => crate::color_values::boundary_input_matrices);
+checked_export!(fj_test_boundary_linear_srgb_to_xyz(rgb: *const f32,
+    out_xyz: *mut f32) -> FjStatus => crate::color_values::boundary_linear_srgb_to_xyz);
+checked_export!(fj_test_boundary_project_linear_rgb_to_xyz(rgb: *const f32,
+    rgb_to_xyz: *const f32,
+    xyz_adapt: *const f32,
+    out_xyz: *mut f32) -> FjStatus => crate::color_values::boundary_project_linear_rgb_to_xyz);
+checked_export!(fj_test_boundary_output_color(output_space: u32,
+    out: *mut crate::color_values::FjOutputColorPreparation) -> FjStatus => crate::color_values::boundary_output_color);
+checked_export!(fj_test_boundary_reconstruction_tc_lut(input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::color_values::boundary_reconstruction_tc_lut);
+checked_export!(fj_test_boundary_reconstruction_sample_tc_lut(lut: crate::cuda::sys::FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::color_values::boundary_reconstruction_sample_tc_lut);
+checked_export!(fj_test_boundary_reconstruction_release_tc_lut(owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut) -> FjStatus => crate::color_values::boundary_reconstruction_release_tc_lut);
+checked_export!(fj_test_boundary_reconstruction_reference_white(input: *const crate::exposure_bridge::FjReferenceWhiteInput,
+    out: *mut crate::exposure_bridge::FjReferenceWhite,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_reconstruction_reference_white);
+checked_export!(fj_test_boundary_exposure_sensitivity(input: *const crate::exposure_bridge::FjSensitivityInput,
+    out: *mut crate::exposure_bridge::FjSensitivity,
+    failure: *mut crate::exposure_bridge::FjSensitivityFailure,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_exposure_sensitivity);
+checked_export!(fj_test_boundary_exposure_mallett_midgray(input: *const crate::exposure_bridge::FjMallettMidgrayInput,
+    out: *mut crate::exposure_bridge::FjMallettMidgray,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_exposure_mallett_midgray);
+checked_export!(fj_test_boundary_exposure_tc_midgray(green: f32,
+    out: *mut crate::exposure_bridge::FjMidgrayNormalization,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_exposure_tc_midgray);
+checked_export!(fj_test_boundary_exposure_reference_source(exposure_ev: f32,
+    out: *mut f32,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_exposure_reference_source);
+checked_export!(fj_test_boundary_exposure_mallett_reference_raw(input: *const crate::exposure_bridge::FjMallettReferenceInput,
+    out: *mut crate::exposure_bridge::FjReferenceRaw,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::exposure_bridge::boundary_exposure_mallett_reference_raw);
+checked_export!(fj_test_boundary_spectral_tables(input: *const crate::spectral_bridge::FjSpectralInput,
+    out: *mut crate::spectral_bridge::FjSpectralTables,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::spectral_bridge::boundary_spectral_tables);
+checked_export!(fj_test_boundary_spectral_white(input: *const crate::spectral_bridge::FjSpectralWhiteInput,
+    out: *mut crate::spectral_bridge::FjSpectralWhite,
+    failure: *mut crate::spectral_bridge::FjSpectralWhiteFailure,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::spectral_bridge::boundary_spectral_white);
+checked_export!(fj_test_boundary_spectral_s_inverse(input: *const crate::spectral_bridge::FjSpectralSInput,
+    out: *mut crate::spectral_bridge::FjSpectralInverse,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::spectral_bridge::boundary_spectral_s_inverse);
+checked_export!(fj_test_boundary_gamut_input_hull(source: *const crate::gamut_bridge::FjInputHullSource,
+    out: *mut crate::gamut_bridge::FjInputHull,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::gamut_bridge::boundary_gamut_input_hull);
+checked_export!(fj_test_boundary_gamut_output_transform(source: *const crate::gamut_bridge::FjOutputGamutSource,
+    out: *mut crate::gamut_bridge::FjOutputGamutTransform,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::gamut_bridge::boundary_gamut_output_transform);
+checked_export!(fj_test_boundary_gamut_output_boundary(source: *const crate::gamut_bridge::FjOutputBoundarySource,
+    cmax: *mut f32,
+    count: usize,
+    identity: *mut crate::gamut_bridge::FjOutputBoundaryIdentity,
+    failure: *mut crate::gamut_bridge::FjOutputBoundaryFailure,
+    error: *mut crate::cuda::sys::FjErrorBuffer) -> FjStatus => crate::gamut_bridge::boundary_gamut_output_boundary);
+checked_export!(fj_test_assets_create(root: crate::cuda::sys::FjPathView, out: *mut *mut FjAssets, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::create);
+checked_export!(fj_test_assets_destroy(owner: *mut FjAssets, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::destroy);
+checked_export!(fj_test_assets_release_cached_payloads(owner: *const FjAssets, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::release_caches);
+checked_export!(fj_test_assets_release_derived_payloads(owner: *const FjAssets, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::release_derived);
+checked_export!(fj_test_assets_release_source_payloads(owner: *const FjAssets, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::release_sources);
+checked_export!(fj_test_assets_film_acquire(owner: *const FjAssets, key: crate::cuda::sys::FjStringView, out: *mut *mut crate::asset_bridge::FjFilmProfile, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::acquire_film);
+checked_export!(fj_test_assets_film_view(owner: *const crate::asset_bridge::FjFilmProfile, out: *mut crate::asset_bridge::FjFilmProfileView, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::view_film);
+checked_export!(fj_test_assets_film_release(owner: *mut crate::asset_bridge::FjFilmProfile, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::release_film);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_assets_film_defaults(assets: *const FjAssets, key: FjStringView, out: *mut crate::asset_bridge::FjFilmDigest, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::assets_film_defaults);
+checked_export!(fj_test_assets_noise_acquire(owner: *const FjAssets, out: *mut *mut crate::asset_bridge::FjNoise, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::acquire_assets_noise);
+checked_export!(fj_test_csv_acquire(owner: *const FjAssets, source: u32, out: *mut *mut crate::asset_bridge::FjCsvPairs, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::acquire_csv);
+checked_export!(fj_test_csv_view(owner: *const crate::asset_bridge::FjCsvPairs, out: *mut FjFloatSpan, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::view_csv);
+checked_export!(fj_test_csv_release(owner: *mut crate::asset_bridge::FjCsvPairs, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::release_csv);
+checked_export!(fj_test_illuminant_from_samples(input: FjFloatSpan, out: *mut FjIlluminant, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::from_samples);
+
+/// # Safety
+/// A non-null output is one exclusive writable byte, live through this call.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_resolve_route(polarity: u8, selection: u8, out: *mut u8) -> u32 {
+    use film_juicer_core::route::{self, CapturePolarity, RouteSelection, ScanRoute};
+    if out.is_null() {
+        return 3;
+    }
+    let result = std::panic::catch_unwind(|| {
+        let polarity = match polarity {
+            0 | 2 => CapturePolarity::Negative,
+            1 => CapturePolarity::Positive,
+            _ => return Err(1),
+        };
+        let selection = match selection {
+            0 | 2 => RouteSelection::Direct,
+            1 | 3 => RouteSelection::Print,
+            _ => return Err(2),
+        };
+        Ok(match route::resolve(polarity, selection) {
+            ScanRoute::NegativeDirect => 0,
+            ScanRoute::NegativePrint => 1,
+            ScanRoute::PositiveDirect => 2,
+            ScanRoute::PositivePrint => 3,
+        })
+    });
+    match result {
+        Ok(Ok(route)) => {
+            // SAFETY: The caller supplies one exclusive writable output byte.
+            unsafe { out.write(route) };
+            0
+        }
+        Ok(Err(failure)) => failure,
+        Err(_) => 4,
+    }
+}
+checked_export!(fj_test_catalog_acquire(assets: *const FjAssets, out_catalog: *mut *mut crate::asset_bridge::FjCatalog, out_counts: *mut crate::asset_bridge::FjCatalogCounts, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::catalog_acquire);
+checked_export!(fj_test_catalog_entry(catalog: *const crate::asset_bridge::FjCatalog, role: u32, index: usize, out_entry: *mut crate::asset_bridge::FjCatalogEntryView, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::catalog_entry);
+checked_export!(fj_test_catalog_release(catalog: *mut crate::asset_bridge::FjCatalog, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::catalog_release);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_catalog_backing_identity(catalog: *const crate::asset_bridge::FjCatalog, out: *mut usize, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::catalog_backing_identity);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_catalog_publication_hook(callback: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>, user: *mut std::ffi::c_void) -> () => crate::asset_bridge::catalog_publication_hook);
+checked_export!(fj_test_print_profile_acquire(assets: *const FjAssets, input_key: FjStringView, out_profile: *mut *mut crate::asset_bridge::FjPrintProfile, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_profile_acquire);
+checked_export!(fj_test_print_profile_view(profile: *const crate::asset_bridge::FjPrintProfile, out_view: *mut crate::asset_bridge::FjPrintProfileView, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_profile_view);
+checked_export!(fj_test_print_profile_release(profile: *mut crate::asset_bridge::FjPrintProfile, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_profile_release);
+checked_export!(fj_test_print_profile_sample_density(profile: *const crate::asset_bridge::FjPrintProfile, gamma: f64, out_curves: *mut *mut crate::asset_bridge::FjPrintDensityCurves, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_profile_sample_density);
+checked_export!(fj_test_print_density_view(curves: *const crate::asset_bridge::FjPrintDensityCurves, out_view: *mut crate::asset_bridge::FjPrintDensityView, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_density_view);
+checked_export!(fj_test_print_density_release(curves: *mut crate::asset_bridge::FjPrintDensityCurves, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::print_density_release);
+checked_export!(fj_test_hanatos_acquire(assets: *const FjAssets, out_owner: *mut *mut crate::asset_bridge::FjSpectraLut, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::hanatos_acquire);
+checked_export!(fj_test_arctic_acquire(assets: *const FjAssets, out_owner: *mut *mut crate::asset_bridge::FjSpectraLut, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::arctic_acquire);
+checked_export!(fj_test_mallett_acquire(assets: *const FjAssets, out_owner: *mut *mut crate::asset_bridge::FjMallettBasis, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::mallett_acquire);
+checked_export!(fj_test_cmf_acquire(assets: *const FjAssets, out_owner: *mut *mut crate::asset_bridge::FjCmf, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::cmf_acquire);
+checked_export!(fj_test_spectra_lut_view(owner: *const crate::asset_bridge::FjSpectraLut, out_view: *mut crate::asset_bridge::FjSpectraLutView, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::spectra_lut_view);
+checked_export!(fj_test_spectra_lut_release(owner: *mut crate::asset_bridge::FjSpectraLut, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::spectra_lut_release);
+checked_export!(fj_test_mallett_view(owner: *const crate::asset_bridge::FjMallettBasis, out_view: *mut FjFloatSpan, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::mallett_view);
+checked_export!(fj_test_mallett_release(owner: *mut crate::asset_bridge::FjMallettBasis, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::mallett_release);
+checked_export!(fj_test_cmf_view(owner: *const crate::asset_bridge::FjCmf, out_view: *mut FjFloatSpan, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::cmf_view);
+checked_export!(fj_test_cmf_release(owner: *mut crate::asset_bridge::FjCmf, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::cmf_release);
+checked_export!(fj_test_neutral_calibration_lookup(assets: *const FjAssets, print_stock: FjStringView, illuminant: FjStringView, film_stock: FjStringView, out_result: *mut crate::asset_bridge::FjNeutralCalibrationResult, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_bridge::neutral_calibration_lookup);
+checked_export!(fj_test_illuminant_blackbody(temperature: f32, out: *mut FjIlluminant, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::blackbody);
+checked_export!(fj_test_illuminant_equal_energy(out: *mut FjIlluminant, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::equal_energy);
+checked_export!(fj_test_illuminant_tungsten_kg3(span: FjFloatSpan, out: *mut FjIlluminant, coverage: *mut FjIlluminantCoverage, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::tungsten_kg3);
+checked_export!(fj_test_illuminant_lens_prepare(span: FjFloatSpan, out: *mut *mut crate::asset_illuminant::FjIlluminantLens, coverage: *mut FjIlluminantCoverage, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::lens_prepare);
+checked_export!(fj_test_illuminant_lens_finish(io: *mut *mut crate::asset_illuminant::FjIlluminantLens, span: FjFloatSpan, out: *mut FjIlluminant, coverage: *mut FjIlluminantCoverage, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::lens_finish);
+checked_export!(fj_test_illuminant_lens_release(io: *mut *mut crate::asset_illuminant::FjIlluminantLens, error: *mut FjErrorBuffer) -> FjStatus => crate::asset_illuminant::lens_release);
+checked_export!(fj_test_scanner_correction_input_demand(params: *const scanner_bridge::FjScannerCorrectionParams, operation: u32, required: *mut u32, failure: *mut scanner_bridge::FjScannerCorrectionFailure, error: *mut FjErrorBuffer) -> FjStatus => scanner_bridge::input_demand);
+checked_export!(fj_test_prepared_state_frame_policy(owner: *const FjPreparedState, full_frame: *const crate::cuda::sys::FjExtent, out: *mut crate::cuda::edge::FjPreparedFramePolicy, error: *mut FjErrorBuffer) -> FjStatus => crate::cuda::edge::prepared_state_frame_policy);
+checked_export!(fj_test_camera_lens_blur_preflight(sigma_um: f32, error: *mut FjErrorBuffer) -> FjStatus => crate::cuda::edge::camera_lens_blur_preflight);
+/// # Safety
+/// Matching live owners, frame/policy and synchronous callback tables obey the
+/// held-render contract. Inputs and exclusive diagnostics are disjoint, callers
+/// retain all backing through completion, and callbacks retain no borrow.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+pub(crate) unsafe extern "C" fn fj_test_prepared_state_render(
+    assets: *const FjAssets,
+    owner: *const FjPreparedState,
+    access: crate::cuda::edge::FjCudaCallAccess,
+    frame: *const crate::cuda::sys::FjFrame,
+    policy: *const crate::cuda::edge::FjPreparedFramePolicy,
+    instance: *const crate::instance_bridge::FjInstance,
+    token: u64,
+    abort: crate::cuda::sys::FjAbortCallback,
+    error: *mut FjErrorBuffer,
+) -> crate::cuda::edge::FjCallCompletionResult {
+    // SAFETY: Grouping unadmitted frame inputs changes no admission or lifetime;
+    // the shared checked operation preserves its diagnostic/failure ordering.
+    unsafe {
+        crate::cuda::edge::prepared_state_render(
+            assets,
+            owner,
+            access,
+            crate::cuda::edge::PreparedFrameInput {
+                frame,
+                policy,
+                token,
+            },
+            instance,
+            abort,
+            error,
+        )
+    }
+}
+const _: unsafe extern "C" fn(
+    *const FjAssets,
+    *const FjPreparedState,
+    crate::cuda::edge::FjCudaCallAccess,
+    *const crate::cuda::sys::FjFrame,
+    *const crate::cuda::edge::FjPreparedFramePolicy,
+    *const crate::instance_bridge::FjInstance,
+    u64,
+    crate::cuda::sys::FjAbortCallback,
+    *mut FjErrorBuffer,
+) -> crate::cuda::edge::FjCallCompletionResult = fj_test_prepared_state_render;
+checked_export!(fj_test_prepared_unavailable(assets: *const FjAssets, owner: *const FjPreparedState, kind: u32, access: crate::cuda::edge::FjCudaCallAccess, frame: *const crate::cuda::sys::FjFrame, abort: crate::cuda::sys::FjAbortCallback, error: *mut FjErrorBuffer) -> crate::cuda::edge::FjCallCompletionResult => crate::cuda::edge::prepared_unavailable);
+
+checked_export!(fj_test_instance_create(out: *mut *mut crate::instance_bridge::FjInstance, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::create);
+checked_export!(fj_test_instance_bind_identity(owner: *const crate::instance_bridge::FjInstance, session_seed: u64, instance_token: u64, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::bind_identity);
+checked_export!(fj_test_instance_identity(owner: *const crate::instance_bridge::FjInstance, out_initialized: *mut u32, out_seed: *mut u64, out_token: *mut u64, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::identity);
+checked_export!(fj_test_instance_invalidate_submission(owner: *const crate::instance_bridge::FjInstance, device_id: i32, context: usize, out_cleared: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::invalidate_submission);
+checked_export!(fj_test_instance_begin_capture(owner: *mut crate::instance_bridge::FjInstance, mode: u32, out: *mut crate::instance_bridge::FjCaptureStart, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::begin_capture);
+checked_export!(fj_test_instance_capture_is_current(owner: *const crate::instance_bridge::FjInstance, capture: u64, out_current: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::capture_is_current);
+checked_export!(fj_test_instance_begin_host_write(owner: *mut crate::instance_bridge::FjInstance, capture: u64, out: *mut *mut crate::instance_bridge::FjHostWrite, out_start: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::begin_host_write);
+checked_export!(fj_test_host_write_finish(owner: *mut crate::instance_bridge::FjHostWrite, failure: u32, diagnostic: FjStringView, out_refresh: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::host_write_finish);
+checked_export!(fj_test_instance_begin_snapshot(owner: *mut crate::instance_bridge::FjInstance, capture: u64, out: *mut crate::instance_bridge::FjSnapshotStart, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::begin_snapshot);
+checked_export!(fj_test_instance_install(owner: *mut crate::instance_bridge::FjInstance, capture: u64, write_revision: u64, params: *const crate::preparation::FjPreparationParams, input_identity: u64, out_update: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::install);
+checked_export!(fj_test_instance_invalidate(owner: *mut crate::instance_bridge::FjInstance, capture: u64, failure: u32, diagnostic: FjStringView, out_update: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::invalidate);
+checked_export!(fj_test_instance_admit(owner: *mut crate::instance_bridge::FjInstance, assets: *const crate::asset_bridge::FjAssets, out: *mut crate::instance_bridge::FjAdmission, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::admit);
+checked_export!(fj_test_instance_destroy(owner: *mut crate::instance_bridge::FjInstance, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::destroy);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_preparation_defaults(out: *mut FjPreparationParams, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::preparation_defaults);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_ofx_lifetime_live(owner: *const crate::instance_bridge::FjOfxLifetime, out: *mut u32, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::ofx_lifetime_live);
+#[cfg(feature = "test-support")]
+checked_export!(fj_test_ofx_lifetime_release(owner: *mut crate::instance_bridge::FjOfxLifetime, error: *mut FjErrorBuffer) -> FjStatus => crate::instance_bridge::ofx_lifetime_release);
+
+#[repr(C)]
+#[cfg(feature = "test-support")]
+struct FjOfxFrameObservation {
+    phases: [u32; 3],
+    count: u32,
+    full_count: u32,
+    policy_count: u32,
+    effects_count: u32,
+    diffusion_transport_calls: u32,
+    halation_transport_calls: u32,
+    full_frame: crate::cuda::sys::FjExtent,
+    policy: crate::cuda::edge::FjPreparedFramePolicy,
+    effects: crate::cuda::sys::FjEffectsGeometry,
+    route: u32,
+}
+#[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
+extern "C" fn fj_test_ofx_frame_reset() {
+    crate::frame_observer::reset();
+}
+
+/// # Safety
+/// Out authorizes one live, aligned, exclusive complete observation record;
+/// no callback or owner pointer is retained by this calling-thread projection.
+#[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
+unsafe extern "C" fn fj_test_ofx_frame_observe(out: *mut FjOfxFrameObservation) -> i32 {
+    if out.is_null()
+        || !(out as usize).is_multiple_of(std::mem::align_of::<FjOfxFrameObservation>())
+        || (out as usize)
+            .checked_add(std::mem::size_of::<FjOfxFrameObservation>())
+            .is_none()
+    {
+        return 0;
+    }
+    let observed = crate::frame_observer::read();
+    // SAFETY: Every field is a pointer-free C value, and the caller admits the
+    // complete exclusive extent. Absent stages are cleared, never invented.
+    unsafe {
+        std::ptr::write_bytes(out, 0, 1);
+        (*out).phases = observed.phases;
+        (*out).count = observed.count;
+        (*out).full_count = observed.full_count;
+        (*out).policy_count = observed.policy_count;
+        (*out).effects_count = observed.effects_count;
+        (*out).diffusion_transport_calls = observed.diffusion_transport_calls;
+        (*out).halation_transport_calls = observed.halation_transport_calls;
+        if let Some([x, y, width, height]) = observed.full {
+            (*out).full_frame = crate::cuda::sys::FjExtent {
+                x,
+                y,
+                width,
+                height,
+            };
+        }
+        if let Some((route, policy)) = observed.policy {
+            (*out).policy = policy;
+            (*out).route = route;
+        }
+        if let Some(effects) = observed.effects {
+            (*out).effects = effects;
+        }
+    }
+    1
+}
+
+/// # Safety
+/// Both initialized scalar outputs and diagnostic record/backing are live,
+/// aligned, exclusive, mutually disjoint and disjoint from all other storage.
+/// This calling-thread operation retains nothing and invokes no foreign code.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_capture_gamma(
+    route: u32,
+    film: f64,
+    print: f64,
+    out_film: *mut f32,
+    out_print: *mut f64,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    fn valid<T>(pointer: *mut T) -> bool {
+        !pointer.is_null()
+            && (pointer as usize).is_multiple_of(std::mem::align_of::<T>())
+            && (pointer as usize)
+                .checked_add(std::mem::size_of::<T>())
+                .is_some()
+    }
+    let film_valid = valid(out_film);
+    let print_valid = valid(out_print);
+    // SAFETY: Each independently admitted output is an exclusive live scalar.
+    unsafe {
+        if film_valid {
+            out_film.write(0.0);
+        }
+        if print_valid {
+            out_print.write(0.0);
+        }
+        crate::asset_bridge::run(error, || {
+            if !film_valid || !print_valid || route > 3 {
+                return Err(crate::asset_bridge::Failure::Input(
+                    "invalid gamma capture arguments",
+                ));
+            }
+            let film = film_juicer_core::film::capture_gamma(film)
+                .map_err(crate::asset_bridge::Failure::Input)?;
+            let print = film_juicer_core::print::capture_gamma(print, route == 1 || route == 3)
+                .map_err(crate::asset_bridge::Failure::Input)?;
+            out_film.write(film);
+            out_print.write(print);
+            Ok(())
+        })
+        .map_or_else(
+            |status| status,
+            |()| FjStatus {
+                category: 0,
+                api: 0,
+                native_code: 0,
+            },
+        )
+    }
+}
+checked_export!(fj_test_runtime_create(path: crate::cuda::sys::FjPathView, out: *mut *mut crate::runtime_bridge::FjRuntime, error: *mut crate::cuda::sys::FjErrorBuffer) -> crate::cuda::sys::FjStatus => crate::runtime_bridge::create);
+checked_export!(fj_test_runtime_borrow(owner: *const crate::runtime_bridge::FjRuntime, out: *mut crate::runtime_bridge::FjRuntimeView, error: *mut crate::cuda::sys::FjErrorBuffer) -> crate::cuda::sys::FjStatus => crate::runtime_bridge::borrow);
+checked_export!(fj_test_runtime_check_close(owner: *const crate::runtime_bridge::FjRuntime, error: *mut crate::cuda::sys::FjErrorBuffer) -> crate::cuda::sys::FjStatus => crate::runtime_bridge::check_close);
+checked_export!(fj_test_runtime_shutdown(owner: *const crate::runtime_bridge::FjRuntime, error: *mut crate::cuda::sys::FjErrorBuffer) -> crate::cuda::sys::FjStatus => crate::runtime_bridge::shutdown);
+checked_export!(fj_test_runtime_destroy(owner: *mut crate::runtime_bridge::FjRuntime, error: *mut crate::cuda::sys::FjErrorBuffer) -> crate::cuda::sys::FjStatus => crate::runtime_bridge::destroy);
 
 macro_rules! preparation_export {
     ($name:ident($($arg:ident: $ty:ty),*) => $operation:ident($($value:ident),*)) => {
@@ -39,16 +409,20 @@ preparation_export!(fj_test_prepared_state_create(assets: *const FjAssets, param
 preparation_export!(fj_test_prepared_state_view(owner: *const FjPreparedState, out: *mut FjPreparedStateView, error: *mut FjErrorBuffer) => state_view(owner, out, error));
 preparation_export!(fj_test_prepared_state_release(owner: *mut FjPreparedState, error: *mut FjErrorBuffer) => state_release(owner, error));
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_state_release_observer(
     observer: Option<unsafe extern "C" fn(*const f32)>,
 ) {
     preparation::set_prepared_state_release_observer(observer);
 }
 
+#[cfg(feature = "test-support")]
 type InputPreparationObserver = unsafe extern "C" fn(FjFloatSpan, u64, FjFloatSpan, u64);
+#[cfg(feature = "test-support")]
 thread_local! {
     static INPUT_PREPARATION_OBSERVER: std::cell::Cell<Option<InputPreparationObserver>> = const { std::cell::Cell::new(None) };
 }
+#[cfg(feature = "test-support")]
 fn observe_prepared_input(
     profile: &film_juicer_core::profile::FilmProfile,
     hull: Option<&film_juicer_core::assets::InputHull>,
@@ -83,6 +457,7 @@ fn observe_prepared_input(
 /// spans only during its invocation. It fires once on this arming thread after
 /// actual profile/hull selection, outside cache locks and before completion.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_prepared_input_observer(observer: Option<InputPreparationObserver>) {
     INPUT_PREPARATION_OBSERVER.set(observer);
     film_juicer_core::recipe::testing::set_input_observer(if observer.is_some() {
@@ -91,36 +466,62 @@ unsafe extern "C" fn fj_test_prepared_input_observer(observer: Option<InputPrepa
         None
     });
 }
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_calibration_source(destination: *const FjAssets, source: *const FjAssets, error: *mut FjErrorBuffer) => calibration_source(destination, source, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_input_hull_fault(owner: *const FjAssets, fault: u32, error: *mut FjErrorBuffer) => hull_operation_fault(owner, fault, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_input_hull_fault_pending(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => hull_operation_pending(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_illuminant_operation_fault(owner: *const FjAssets, operation: u32, fault: u32, error: *mut FjErrorBuffer) => illuminant_operation_fault(owner, operation, fault, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_illuminant_operation_consumed(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => illuminant_operation_consumed(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_curve_fault(owner: *const FjAssets, source: u32, fault: u32, error: *mut FjErrorBuffer) => curve_fault(owner, source, fault, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_curve_fault_pending(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => curve_fault_pending(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_output_boundary_acquire_observed(owner: *const FjAssets, source: *const FjOutputBoundarySource, expected: u64, hooks: *const FjOutputCacheHooks, out: *mut *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_acquire_observed(owner, source, expected, hooks, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_output_cache_generation(owner: *const FjAssets, out: *mut u64, error: *mut FjErrorBuffer) => output_cache_generation(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_output_cache_set_generation(owner: *const FjAssets, generation: u64, error: *mut FjErrorBuffer) => output_cache_set_generation(owner, generation, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_metrics(owner: *const FjAssets, family: u32, out: *mut FjCacheMetrics, error: *mut FjErrorBuffer) => cache_metrics(owner, family, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_fault(owner: *const FjAssets, family: u32, fault: u32, error: *mut FjErrorBuffer) => cache_fault(owner, family, fault, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_fault_consumed(owner: *const FjAssets, family: u32, out: *mut u64, error: *mut FjErrorBuffer) => cache_fault_consumed(owner, family, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_clear_failures(owner: *const FjAssets, early: u32, late: u32, error: *mut FjErrorBuffer) => cache_clear_failures(owner, early, late, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_drop_reentry(owner: *const FjAssets, family: u32, error: *mut FjErrorBuffer) => cache_drop_reentry(owner, family, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_entry_live(owner: *const FjAssets, family: u32, entry: usize, out: *mut u32, error: *mut FjErrorBuffer) => cache_entry_live(owner, family, entry, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_illuminants_acquire_observed(owner: *const FjAssets, hooks: *const FjIlluminantCacheHooks, out: *mut *mut FjIlluminantsOwner, error: *mut FjErrorBuffer) => illuminants_acquire_observed(owner, hooks, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_assets_input_hull_acquire_observed(owner: *const FjAssets, hooks: *const FjInputHullCacheHooks, out: *mut *mut FjInputHullOwner, error: *mut FjErrorBuffer) => hull_acquire_observed(owner, hooks, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_input_hull_entry_fault(owner: *const FjAssets, active: u32, error: *mut FjErrorBuffer) => hull_entry_fault(owner, active, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_input_hull_entry_fault_consumed(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => hull_entry_fault_consumed(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_input_hull_source_tail(owner: *const FjAssets, active: u32, add: f32, error: *mut FjErrorBuffer) => hull_source_tail(owner, active, add, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_observation_acquire(owner: *const FjAssets, out: *mut *mut FjCacheObservationOwner, error: *mut FjErrorBuffer) => cache_observation_acquire(owner, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_observation_metrics(owner: *const FjCacheObservationOwner, family: u32, out: *mut FjCacheMetrics, error: *mut FjErrorBuffer) => cache_observation_metrics(owner, family, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_observation_entry_live(owner: *const FjCacheObservationOwner, family: u32, entry: usize, out: *mut u32, error: *mut FjErrorBuffer) => cache_observation_entry_live(owner, family, entry, out, error));
+#[cfg(feature = "test-support")]
 preparation_export!(fj_test_cache_observation_release(owner: *mut FjCacheObservationOwner, error: *mut FjErrorBuffer) => cache_observation_release(owner, error));
 
 /// # Safety
 /// count is one initialized, aligned, exclusively writable usize slot. The
 /// returned immutable static facts are borrowed and cannot be freed.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_prepared_state_abi_facts(count: *mut usize) -> *const usize {
     if count.is_null() || !(count as usize).is_multiple_of(std::mem::align_of::<usize>()) {
         return std::ptr::null();
@@ -132,6 +533,7 @@ unsafe extern "C" fn fj_test_prepared_state_abi_facts(count: *mut usize) -> *con
 }
 thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_illuminant_arm_fault(
     operation: u32,
     call_index: u32,
@@ -140,10 +542,12 @@ extern "C" fn fj_test_illuminant_arm_fault(
     asset_illuminant::arm_fault(operation, call_index, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_illuminant_clear_fault() {
     asset_illuminant::clear_fault();
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_illuminant_live_lenses() -> usize {
     asset_illuminant::live_lenses()
 }
@@ -154,6 +558,7 @@ extern "C" fn fj_test_illuminant_arm_facade_fault() {
 /// # Safety
 /// Output authorizes ten exclusive aligned usize elements, with no overlapping call storage.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_illuminant_scratch_capacities(out: *mut usize) -> usize {
     if out.is_null() || !(out as usize).is_multiple_of(align_of::<usize>()) {
         return 0;
@@ -168,6 +573,7 @@ unsafe extern "C" fn fj_test_illuminant_scratch_capacities(out: *mut usize) -> u
 /// # Safety
 /// Required storage follows the illuminant header; rows are immutable until return.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_illuminant_curve(
     operation: u32,
     source: FjFloatSpan,
@@ -243,11 +649,15 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use film_juicer_core::assets::{AssetError, Assets};
-use film_juicer_core::profile::{Antihalation, ProfileCompletionErrorKind, ProfileUse};
+use film_juicer_core::profile::ProfileCompletionErrorKind;
+#[cfg(feature = "test-support")]
+use film_juicer_core::profile::{Antihalation, ProfileUse};
 
-use crate::asset_profile::{FilmOwner, FilmFixtureView};
+use crate::asset_profile::FilmOwner;
+#[cfg(feature = "test-support")]
+use crate::asset_profile::FilmFixtureView;
 use film_juicer_core::color;
-use crate::legacy_bridge::{FjInputColorMatrices, FjInputColorConversion, input_space};
+use crate::color_values::{FjInputColorMatrices, FjInputColorConversion, input_space};
 use crate::cuda::sys::{FjErrorBuffer, FjFloatSpan, FjStatus, FjStringView};
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
@@ -320,6 +730,7 @@ unsafe extern "C" fn fj_test_film_development_retain(
 /// Fault 1 rejects normalized-table reservation; 2/3 zero curve/final identity;
 /// 4 zeroes the layer identity consumed by the required-layer grain constructor.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_development_construction_fault(fault: u32) -> FjStatus {
     if !(1..=4).contains(&fault) {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
@@ -331,6 +742,7 @@ extern "C" fn fj_test_development_construction_fault(fault: u32) -> FjStatus {
 /// Observe actual normalized-curve lifetimes: 0 live, 1 successful reservations,
 /// 2 drops. Unknown metric tags return zero; these counts never drive policy.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_development_curve_count(metric: u32) -> usize {
     film_juicer_core::film::test_support::curve_counts()
         .get(metric as usize)
@@ -366,6 +778,7 @@ struct FjFilmFixtureView {
 }
 
 impl FjFilmFixtureView {
+    #[cfg(feature = "test-support")]
     fn empty() -> Self {
         let empty = floats(&[]);
         Self {
@@ -388,6 +801,7 @@ impl FjFilmFixtureView {
 
     // Raw projection stays private to this foreign boundary. The export's caller
     // retains the owner through every subsequent use of the returned spans.
+    #[cfg(feature = "test-support")]
     fn from_view(view: FilmFixtureView<'_>) -> Self {
         Self {
             r#use: match view.usage {
@@ -420,6 +834,7 @@ impl FjFilmFixtureView {
     }
 }
 
+#[cfg(feature = "test-support")]
 fn floats(samples: &[f32]) -> FjFloatSpan {
     FjFloatSpan {
         data: if samples.is_empty() {
@@ -623,6 +1038,7 @@ unsafe extern "C" fn fj_test_film_profile_acquire(
 /// every use of the spans. Output/error storage follows the acquire contract and
 /// cannot overlap the owner. The caller excludes concurrent release.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_film_profile_view(
     owner: *const FjFilmProfile,
     out_view: *mut FjFilmFixtureView,
@@ -726,6 +1142,7 @@ const _: unsafe extern "C" fn(
     *mut *mut FjFilmProfile,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_film_profile_acquire;
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(
     *const FjFilmProfile,
     *mut FjFilmFixtureView,
@@ -739,6 +1156,7 @@ use crate::asset_bridge::{self, FjNoise};
 use crate::cuda::sys::FjStaticNoise;
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_noise_reservation_failure(active: u32) -> FjStatus {
     use film_juicer_core::data_io::noise::testing;
     match active {
@@ -750,6 +1168,7 @@ extern "C" fn fj_test_noise_reservation_failure(active: u32) -> FjStatus {
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_noise_reservation_consumed() -> u32 {
     u32::from(film_juicer_core::data_io::noise::testing::reservation_failure_consumed())
 }
@@ -758,6 +1177,7 @@ extern "C" fn fj_test_noise_reservation_consumed() -> u32 {
 /// `owner` is a live isolated scratch Assets owner with no concurrent users.
 /// Optional diagnostics obey the usual exclusive disjoint-storage contract.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_assets_poison_noise(
     owner: *const FjAssets,
     error: *mut FjErrorBuffer,
@@ -775,6 +1195,7 @@ unsafe extern "C" fn fj_test_assets_poison_noise(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_noise_short_view(active: u32) -> FjStatus {
     if active > 1 {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
@@ -784,12 +1205,14 @@ extern "C" fn fj_test_prepared_noise_short_view(active: u32) -> FjStatus {
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_noise_short_view_consumed() -> u32 {
     u32::from(crate::cuda::short_noise_view_consumed())
 }
 
 /// Reset calling-thread observations of the real prepared-render CallGuard.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_noise_observation_reset() {
     crate::cuda::reset_noise_call_observation();
 }
@@ -797,6 +1220,7 @@ extern "C" fn fj_test_prepared_noise_observation_reset() {
 /// # Safety
 /// `out` authorizes one aligned, exclusively writable observation record.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_prepared_noise_observation(
     out: *mut NoiseCallObservation,
 ) -> FjStatus {
@@ -1063,15 +1487,17 @@ fn color_facade_fault(operation: u32) -> Result<(), u32> {
 
 /// Arm a one-shot calling-thread fault on a matching production export.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_color_arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
-    catch_unwind(|| crate::legacy_bridge::arm_color_fault(operation, call_index, fault))
+    catch_unwind(|| crate::color_values::arm_color_fault(operation, call_index, fault))
         .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
 }
 
 /// Idempotently disarm the calling thread's fault.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_color_clear_fault() -> FjStatus {
-    catch_unwind(crate::legacy_bridge::clear_color_fault)
+    catch_unwind(crate::color_values::clear_color_fault)
         .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
 }
 
@@ -1369,7 +1795,7 @@ const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_test_dwg_to
 const _: unsafe extern "C" fn(*const f32, *const f32, *const f32, *mut f32) -> FjStatus =
     fj_test_project_linear_rgb_to_xyz;
 const _: unsafe extern "C" fn(u32, u32, *const f32, *mut f32) -> FjStatus = fj_test_decode_input;
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 mod tests {
     use std::path::Path;
     use std::sync::Arc;
@@ -1577,20 +2003,24 @@ mod tests {
     }
 }
 
+#[cfg(feature = "test-support")]
 thread_local! { static SPECTRAL_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! {
     static EXPOSURE_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static EXPOSURE_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_exposure_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     crate::exposure_bridge::arm_fault(operation, index, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_exposure_clear_fault() {
     crate::exposure_bridge::clear_fault();
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_exposure_fault_consumed(operation: u32, fault: u32) -> u32 {
     u32::from(crate::exposure_bridge::fault_consumed(operation, fault))
 }
@@ -1641,6 +2071,7 @@ unsafe extern "C" fn fj_test_exposure_sensitivity(
 /// # Safety
 /// Initialized four-value parameters and exclusive scalar/error obey the header.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_exposure_window_sample(
     wavelength: f32,
     params: FjFloatSpan,
@@ -1653,17 +2084,21 @@ unsafe extern "C" fn fj_test_exposure_window_sample(
     }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_spectral_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     crate::spectral_bridge::arm_fault(operation, index, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_spectral_clear_fault() {
     crate::spectral_bridge::clear_fault();
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_spectral_arm_facade_fault() {
     SPECTRAL_FACADE_FAULT.set(true);
 }
+#[cfg(feature = "test-support")]
 pub(crate) fn spectral_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
     if SPECTRAL_FACADE_FAULT.replace(false) {
         Err(crate::asset_bridge::Failure::Internal(
@@ -1713,14 +2148,17 @@ thread_local! {
     static TC_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_tc_lut_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     crate::reconstruction_bridge::arm_fault(operation, index, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_tc_lut_clear_fault() {
     crate::reconstruction_bridge::clear_fault();
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_tc_lut_fault_consumed(operation: u32, fault: u32) -> u32 {
     u32::from(crate::reconstruction_bridge::take_consumed() == Some((operation, fault)))
 }
@@ -1789,6 +2227,7 @@ unsafe extern "C" fn fj_test_reconstruction_release_tc_lut(
 /// # Safety
 /// Output authorizes two aligned exclusive usize values, disjoint from all live call storage.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_tc_lut_allocation_counts(out: *mut usize) -> FjStatus {
     if out.is_null()
         || !(out as usize).is_multiple_of(align_of::<usize>())
@@ -1873,9 +2312,9 @@ unsafe extern "C" fn fj_test_exposure_mallett_reference_raw(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_output_color(
     output_space: u32,
-    out: *mut crate::legacy_bridge::FjOutputColorPreparation,
+    out: *mut crate::color_values::FjOutputColorPreparation,
 ) -> FjStatus {
-    use crate::legacy_bridge::{FjOutputColorPreparation, output_record_valid};
+    use crate::color_values::{FjOutputColorPreparation, output_record_valid};
     let valid = output_record_valid(out);
     if valid {
         // SAFETY: Only independently valid exclusively writable output is cleared.
@@ -1898,14 +2337,13 @@ unsafe extern "C" fn fj_test_output_color(
     })
     .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
 }
-const _: unsafe extern "C" fn(
-    u32,
-    *mut crate::legacy_bridge::FjOutputColorPreparation,
-) -> FjStatus = fj_test_output_color;
+const _: unsafe extern "C" fn(u32, *mut crate::color_values::FjOutputColorPreparation) -> FjStatus =
+    fj_test_output_color;
 
 /// # Safety
 /// Count authorizes one exclusive writable size_t; returned immutable facts are static.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_film_input_abi_facts(count: *mut usize) -> *const usize {
     if count.is_null() {
         return std::ptr::null();
@@ -1934,6 +2372,7 @@ unsafe extern "C" fn fj_test_film_input_prepare(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_film_input_arm_boundary_fault(stage: u32) {
     crate::film_input_bridge::arm_boundary_fault(stage);
 }
@@ -2057,6 +2496,7 @@ const _: unsafe extern "C" fn(
 /// # Safety
 /// Identical fixed spatial-optics record/diagnostic lifetime and disjointness contract.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_spatial_optics_prepare(
     params: *const crate::optics_bridge::FjSpatialOpticsParams,
     out: *mut crate::optics_bridge::FjSpatialOpticsRecipe,
@@ -2066,6 +2506,7 @@ unsafe extern "C" fn fj_test_spatial_optics_prepare(
     // SAFETY: The facade forwards to the same checked operation, never a legacy export.
     unsafe { crate::optics_bridge::prepare(params, out, failure, error) }
 }
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(
     *const crate::optics_bridge::FjSpatialOpticsParams,
     *mut crate::optics_bridge::FjSpatialOpticsRecipe,
@@ -2075,6 +2516,7 @@ const _: unsafe extern "C" fn(
 
 /// Arm the existing probability guard in the actual `RenderState` effects producer.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_effects_probability_fault() -> FjStatus {
     film_juicer_core::effects::test_support::substitute_next_probability(0.25);
     status(FJ_STATUS_SUCCESS)
@@ -2082,6 +2524,7 @@ extern "C" fn fj_test_prepared_effects_probability_fault() -> FjStatus {
 
 /// Arm the existing resolved-hash guard in the actual `RenderState` optics producer.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_optics_resolved_hash_fault() -> FjStatus {
     film_juicer_core::optics::test_support::zero_next_resolved_hash();
     status(FJ_STATUS_SUCCESS)
@@ -2090,6 +2533,7 @@ extern "C" fn fj_test_prepared_optics_resolved_hash_fault() -> FjStatus {
 /// # Safety
 /// Same initialized, aligned, live and disjoint records/source as the checked operation.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_print_illuminant_prepare(
     params: *const crate::print_bridge::FjPrintIlluminantParams,
     source: FjFloatSpan,
@@ -2100,6 +2544,7 @@ unsafe extern "C" fn fj_test_print_illuminant_prepare(
     // SAFETY: The facade uses the common checked implementation, not its legacy export.
     unsafe { crate::print_bridge::prepare(params, source, out, failure, error) }
 }
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(
     *const crate::print_bridge::FjPrintIlluminantParams,
     FjFloatSpan,
@@ -2142,6 +2587,7 @@ unsafe extern "C" fn fj_test_print_preflash_primitive(
 /// The same live, initialized, aligned and disjoint synchronous raw contract as
 /// print_bridge::prepare_preflash; inputs contain exactly 81/81/243 f32 elements.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_print_preflash_prepare(
     input: *const crate::print_bridge::FjPrintPreflashInput,
     out: *mut crate::print_bridge::FjPrintPreflashRaw,
@@ -2151,6 +2597,7 @@ unsafe extern "C" fn fj_test_print_preflash_prepare(
     // SAFETY: Identical checked operation, not a call through the legacy export.
     unsafe { crate::print_bridge::prepare_preflash(input, out, failure, error) }
 }
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(
     *const crate::print_bridge::FjPrintPreflashInput,
     *mut crate::print_bridge::FjPrintPreflashRaw,
@@ -2268,6 +2715,7 @@ unsafe extern "C" fn fj_test_scanner_print_correction_prepare(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scanner_correction_fault(operation: u32, fault: u32) -> FjStatus {
     scanner_bridge::faults::arm(operation, fault)
 }
@@ -2275,6 +2723,7 @@ extern "C" fn fj_test_scanner_correction_fault(operation: u32, fault: u32) -> Fj
 /// # Safety
 /// Live immutable spans and two exclusive/disjoint writable output elements.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_scanner_lookup(
     query: f32,
     axis: FjFloatSpan,
@@ -2289,6 +2738,7 @@ unsafe extern "C" fn fj_test_scanner_lookup(
 /// # Safety
 /// Live immutable axis/packed C/M/Y spans and exclusive/disjoint scalar outputs.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_scanner_density_curve(
     query: f32,
     axis: FjFloatSpan,
@@ -2317,9 +2767,12 @@ const _: unsafe extern "C" fn(
     *mut scanner_bridge::FjScannerCorrectionTrace,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_print_correction_prepare;
+#[cfg(feature = "test-support")]
 const _: extern "C" fn(u32, u32) -> FjStatus = fj_test_scanner_correction_fault;
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(f32, FjFloatSpan, FjFloatSpan, *mut f32, *mut u32) -> FjStatus =
     fj_test_scanner_lookup;
+#[cfg(feature = "test-support")]
 const _: unsafe extern "C" fn(f32, FjFloatSpan, FjFloatSpan, u32, *mut f32, *mut u32) -> FjStatus =
     fj_test_scanner_density_curve;
 
@@ -2368,6 +2821,7 @@ const _: unsafe extern "C" fn(
 /// # Safety
 /// Same fixed borrow and disjoint output contract as reference_density_lookup.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_film_reference_density_lookup(
     query: f32,
     axis: FjFloatSpan,
@@ -2387,6 +2841,7 @@ unsafe extern "C" fn fj_test_film_reference_density_lookup(
 /// # Safety
 /// Same checked, disjoint synchronous contract as scanner_bridge::lut_acquire.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_scanner_lut_acquire(
     input: *const scanner_bridge::FjScannerLutInput,
     out: *mut *mut scanner_bridge::FjScannerLutOwner,
@@ -2399,6 +2854,7 @@ unsafe extern "C" fn fj_test_scanner_lut_acquire(
 /// # Safety
 /// Same live unique-owner and disjoint output contract as scanner_bridge::lut_view.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_scanner_lut_view(
     owner: *const scanner_bridge::FjScannerLutOwner,
     out: *mut scanner_bridge::FjScannerLutView,
@@ -2411,6 +2867,7 @@ unsafe extern "C" fn fj_test_scanner_lut_view(
 /// # Safety
 /// Same consuming unique-owner contract as scanner_bridge::lut_release.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_scanner_lut_release(
     owner: *mut scanner_bridge::FjScannerLutOwner,
     error: *mut FjErrorBuffer,
@@ -2419,10 +2876,12 @@ unsafe extern "C" fn fj_test_scanner_lut_release(
     unsafe { scanner_bridge::lut_release(owner, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scanner_lut_fault(operation: u32, fault: u32) -> FjStatus {
     scanner_bridge::lut_faults::arm(operation, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scanner_lut_live_owners() -> usize {
     scanner_bridge::lut_faults::live()
 }
@@ -2459,6 +2918,7 @@ unsafe extern "C" fn fj_test_scanner_lut_describe(
     unsafe { scanner_bridge::describe_lut(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scanner_lut_descriptor_fault(fault: u32) -> FjStatus {
     if fault > 6 {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
@@ -2480,6 +2940,7 @@ unsafe extern "C" fn fj_test_scanner_post_describe(
     unsafe { scanner_bridge::describe_post(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scanner_post_fault(fault: u32) -> FjStatus {
     if fault > 2 {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
@@ -2504,6 +2965,7 @@ const _: unsafe extern "C" fn(
 /// # Safety
 /// Same initialized/disjoint ownership-transfer contract as the production acquire.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_gaussian_kernel_acquire(
     input: *const crate::optics_bridge::FjGaussianKernelInput,
     out: *mut *mut crate::optics_bridge::FjGaussianKernelOwner,
@@ -2516,6 +2978,7 @@ unsafe extern "C" fn fj_test_gaussian_kernel_acquire(
 /// # Safety
 /// Legitimate live owner excluding release; initialized disjoint outputs/diagnostics.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_gaussian_kernel_view(
     owner: *const crate::optics_bridge::FjGaussianKernelOwner,
     out: *mut crate::optics_bridge::FjGaussianKernelView,
@@ -2528,6 +2991,7 @@ unsafe extern "C" fn fj_test_gaussian_kernel_view(
 /// # Safety
 /// NULL or one matching live owner transfers once, excluding all views.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_gaussian_kernel_release(
     owner: *mut crate::optics_bridge::FjGaussianKernelOwner,
     error: *mut FjErrorBuffer,
@@ -2536,14 +3000,17 @@ unsafe extern "C" fn fj_test_gaussian_kernel_release(
     unsafe { crate::optics_bridge::gaussian_release(owner, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_gaussian_kernel_fault(operation: u32, fault: u32) -> FjStatus {
     crate::optics_bridge::gaussian_faults::arm(operation, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_gaussian_kernel_acquires() -> usize {
     crate::optics_bridge::gaussian_faults::counts()[0]
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_gaussian_kernel_live_owners() -> usize {
     crate::optics_bridge::gaussian_faults::counts()[1]
 }
@@ -2574,6 +3041,7 @@ unsafe extern "C" fn fj_test_frame_geometry_prepare(
     unsafe { crate::frame_bridge::prepare_geometry(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_frame_geometry_fault(operation: u32, fault: u32) -> FjStatus {
     crate::frame_bridge::faults::arm(operation, fault)
 }
@@ -2592,6 +3060,7 @@ unsafe extern "C" fn fj_test_scatter_halation_frame_prepare(
     unsafe { crate::optics_bridge::halation_frame_prepare(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_scatter_halation_frame_fault(fault: u32) -> FjStatus {
     crate::optics_bridge::halation_frame_faults::arm(fault)
 }
@@ -2636,6 +3105,7 @@ unsafe extern "C" fn fj_test_diffusion_frame_prepare(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_diffusion_frame_fault(operation: u32, fault: u32) -> FjStatus {
     crate::diffusion_bridge::diffusion_frame_faults::arm(operation, fault)
 }
@@ -2654,6 +3124,7 @@ unsafe extern "C" fn fj_test_dir_frame_prepare(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_dir_frame_fault(fault: u32) -> FjStatus {
     crate::dir_frame_bridge::dir_frame_faults::arm(fault)
 }
@@ -2705,10 +3176,12 @@ unsafe extern "C" fn fj_test_dir_boundary_release(
     unsafe { crate::dir_boundary_bridge::release(owner, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_dir_boundary_fault(operation: u32, fault: u32) -> FjStatus {
     crate::dir_boundary_bridge::faults::arm(operation, fault)
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_dir_boundary_count(index: u32) -> u64 {
     crate::dir_boundary_bridge::faults::counts()
         .get(index as usize)
@@ -2729,6 +3202,7 @@ unsafe extern "C" fn fj_test_grain_frame_prepare(
     unsafe { crate::grain_frame_bridge::prepare(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_grain_frame_fault(fault: u32) -> FjStatus {
     crate::grain_frame_bridge::faults::arm(fault)
 }
@@ -2746,22 +3220,26 @@ unsafe extern "C" fn fj_test_effects_frame_prepare(
     unsafe { crate::effects_frame_bridge::prepare(input, out, failure, error) }
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_effects_frame_fault(fault: u32) -> FjStatus {
     crate::effects_frame_bridge::faults::arm(fault)
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_live_states() -> usize {
     crate::preparation::live_states()
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_trace() -> crate::preparation::FjPreparationTrace {
     let (stages, count) = film_juicer_core::recipe::testing::trace();
     crate::preparation::FjPreparationTrace { count, stages }
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_identity_fault(target: u32) -> FjStatus {
     use film_juicer_core::recipe::testing::{self, ZeroIdentity};
     testing::arm_zero_identity(None);
@@ -2786,10 +3264,12 @@ extern "C" fn fj_test_prepared_identity_fault(target: u32) -> FjStatus {
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_contents_reservation_failure() {
     film_juicer_core::recipe::testing::arm_contents_reservation_failure();
 }
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 extern "C" fn fj_test_prepared_contents_reservation_failure_consumed() -> u32 {
     u32::from(film_juicer_core::recipe::testing::contents_reservation_failure_consumed())
 }
@@ -2797,6 +3277,7 @@ extern "C" fn fj_test_prepared_contents_reservation_failure_consumed() -> u32 {
 /// # Safety
 /// The matching owner remains live and immutable for this synchronous observation.
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 unsafe extern "C" fn fj_test_prepared_state_identity(owner: *const FjPreparedState) -> usize {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // SAFETY: Forward the caller's live matching-owner borrow.

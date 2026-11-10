@@ -8,9 +8,10 @@ mod test_cases;
 
 #[allow(
     unsafe_code,
-    reason = "the temporary C ABI validates its foreign input at this boundary"
+    reason = "checked color fixture operations validate initialized, disjoint foreign storage at this private raw edge"
 )]
-mod legacy_bridge;
+#[cfg(any(test, feature = "test-support"))]
+mod color_values;
 
 mod cuda;
 mod ofx;
@@ -19,6 +20,9 @@ mod asset_catalog;
 
 mod instance;
 mod submission;
+
+#[cfg(feature = "test-support")]
+mod frame_observer;
 
 mod runtime;
 
@@ -32,12 +36,14 @@ mod platform;
     unsafe_code,
     reason = "the private process edge admits native paths and projects synchronous borrows and consume-once Runtime ownership"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod runtime_bridge;
 
 #[allow(
     unsafe_code,
     reason = "the instance C edge validates foreign records and consumes host-write and admission handles"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod instance_bridge;
 
 #[allow(
@@ -58,6 +64,7 @@ mod asset_profile;
     unsafe_code,
     reason = "the temporary film development edge scopes profile borrows and consumes result owners once"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod film_bridge;
 
 #[allow(
@@ -70,6 +77,7 @@ mod film_recipe_bridge;
     unsafe_code,
     reason = "the film-input value boundary checks fixed extents and scopes immutable profile/resource borrows"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod film_input_bridge;
 
 mod asset_spectral;
@@ -84,7 +92,7 @@ mod asset_calibration;
 )]
 mod asset_illuminant;
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(
     unsafe_code,
     reason = "the test facade checks foreign inputs and consumes retained profile owners at the C boundary"
@@ -95,24 +103,28 @@ mod test_support;
     unsafe_code,
     reason = "the fixed spectral edge checks foreign extents and scopes immutable borrows"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod spectral_bridge;
 
 #[allow(
     unsafe_code,
     reason = "the exposure edge checks fixed foreign spans and scopes immutable tensor borrows"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod exposure_bridge;
 
 #[allow(
     unsafe_code,
     reason = "the TC edge validates spans and transfers/releases an exact Vec allocation"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod reconstruction_bridge;
 
 #[allow(
     unsafe_code,
     reason = "the gamut edge checks fixed foreign operands, optional diagnostics and synchronous result copies"
 )]
+#[cfg(any(test, feature = "test-support"))]
 mod gamut_bridge;
 
 #[allow(

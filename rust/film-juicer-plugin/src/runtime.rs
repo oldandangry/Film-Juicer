@@ -48,6 +48,7 @@ impl Runtime {
         self.native().check_close()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn shutdown(&self) -> Result<(), Failure> {
         self.native().shutdown()?;
         *self

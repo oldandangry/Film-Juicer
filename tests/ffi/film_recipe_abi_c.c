@@ -1,6 +1,5 @@
 #include <stddef.h>
 #include <string.h>
-#include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 #define JUICER_EFFECTS_FRAME_ON_ASSERTIONS 1
 #include "effects_frame_abi_assertions.inc"
@@ -27,6 +26,8 @@ static int effects_frame_equal(const FjEffectsFrameMath* a, const FjEffectsFrame
            memcmp(&a->hash, &b->hash, sizeof(a->hash)) == 0;
 }
 int fj_test_effects_frame_c_check(uint32_t facade, const FjEffectsFrameInput* input, const FjEffectsFrameMath* expected, FjStatus expected_status, FjEffectsFrameFailure expected_failure, const char* diagnostic) {
+    /* The argument preserves both original caller cohorts at the single facade. */
+    (void)facade;
     const size_t length = strlen(diagnostic);
     const size_t capacities[] = {0, 1, 7, length, length + 1};
     for (size_t index = 0; index < 5; ++index) {
@@ -39,8 +40,7 @@ int fj_test_effects_frame_c_check(uint32_t facade, const FjEffectsFrameInput* in
         memset(&out, 0xa5, sizeof(out));
         memset(&failure, 0xa5, sizeof(failure));
         memset(bytes, 0x5a, sizeof(bytes));
-        const FjStatus actual = facade ? fj_test_effects_frame_prepare(input, &out, &failure, &error)
-                                       : fj_legacy_effects_frame_prepare(input, &out, &failure, &error);
+        const FjStatus actual = fj_test_effects_frame_prepare(input, &out, &failure, &error);
         if (actual.category != expected_status.category || actual.api != expected_status.api || actual.native_code != expected_status.native_code || failure.reason != expected_failure.reason || error.length != count)
             return 0;
         if (capacity ? (bytes[count] != '\0' || memcmp(bytes, diagnostic, count) != 0) : bytes[0] != 0x5a)
@@ -52,6 +52,7 @@ int fj_test_effects_frame_c_check(uint32_t facade, const FjEffectsFrameInput* in
 }
 
 int fj_test_effects_frame_c_raw(uint32_t facade, const FjEffectsFrameInput* baseline, uint32_t mode, const FjEffectsFrameMath* expected) {
+    (void)facade;
     FjEffectsFrameInput input = *baseline;
     FjEffectsFrameMath math;
     FjEffectsFrameFailure failure;
@@ -131,8 +132,7 @@ int fj_test_effects_frame_c_raw(uint32_t facade, const FjEffectsFrameInput* base
             break;
     }
     const int rejected = (mode >= 1 && mode <= 15) || mode == 19;
-    const FjStatus result = facade ? fj_test_effects_frame_prepare(source, output, details, diagnostic)
-                                   : fj_legacy_effects_frame_prepare(source, output, details, diagnostic);
+    const FjStatus result = fj_test_effects_frame_prepare(source, output, details, diagnostic);
     if (result.category != (rejected ? 2u : 0u) || result.api != 0 || result.native_code != 0)
         return 0;
     if (mode >= 4 && mode <= 6) {
@@ -159,6 +159,7 @@ int fj_test_effects_frame_c_raw(uint32_t facade, const FjEffectsFrameInput* base
 
 
 int fj_test_grain_frame_c_check(uint32_t facade, const FjGrainFrameInput* input, const FjGrainFrameMath* expected, FjStatus expected_status, FjGrainFrameFailure expected_failure, const char* diagnostic) {
+    (void)facade;
     FjGrainFrameMath out;
     FjGrainFrameFailure failure;
     char bytes[256];
@@ -167,8 +168,7 @@ int fj_test_grain_frame_c_check(uint32_t facade, const FjGrainFrameInput* input,
     memset(&out, 0xa5, sizeof(out));
     memset(&failure, 0xa5, sizeof(failure));
     memset(bytes, 0x5a, sizeof(bytes));
-    actual = facade ? fj_test_grain_frame_prepare(input, &out, &failure, &error)
-                    : fj_legacy_grain_frame_prepare(input, &out, &failure, &error);
+    actual = fj_test_grain_frame_prepare(input, &out, &failure, &error);
     if (actual.category != expected_status.category || actual.api != expected_status.api || actual.native_code != expected_status.native_code || failure.reason != expected_failure.reason || failure.field != expected_failure.field || failure.layer != expected_failure.layer || failure.channel != expected_failure.channel || error.length != strlen(diagnostic) || error.length >= sizeof(bytes) || bytes[error.length] != '\0' || memcmp(bytes, diagnostic, error.length) != 0)
         return 0;
     return memcmp(&out.present, &expected->present, sizeof(out.present)) == 0 && memcmp(&out.capture_polarity, &expected->capture_polarity, sizeof(out.capture_polarity)) == 0 && memcmp(&out.render_extent, &expected->render_extent, sizeof(out.render_extent)) == 0 && memcmp(&out.full_frame_extent, &expected->full_frame_extent, sizeof(out.full_frame_extent)) == 0 && memcmp(&out.pixel_size_um, &expected->pixel_size_um, sizeof(out.pixel_size_um)) == 0 && memcmp(&out.frame0, &expected->frame0, sizeof(out.frame0)) == 0 && memcmp(&out.frame_alpha, &expected->frame_alpha, sizeof(out.frame_alpha)) == 0 && memcmp(&out.seed_base, &expected->seed_base, sizeof(out.seed_base)) == 0 && memcmp(&out.seed_base_next, &expected->seed_base_next, sizeof(out.seed_base_next)) == 0 && memcmp(&out.session_seed, &expected->session_seed, sizeof(out.session_seed)) == 0 && memcmp(&out.clip_token, &expected->clip_token, sizeof(out.clip_token)) == 0 && memcmp(&out.pitch_px, &expected->pitch_px, sizeof(out.pitch_px)) == 0 && memcmp(&out.breathing_period_frames, &expected->breathing_period_frames, sizeof(out.breathing_period_frames)) == 0 && memcmp(&out.clump_morph_period_frames, &expected->clump_morph_period_frames, sizeof(out.clump_morph_period_frames)) == 0 && memcmp(&out.wang_cell_mm, &expected->wang_cell_mm, sizeof(out.wang_cell_mm)) == 0 && memcmp(&out.breathing_amplitude, &expected->breathing_amplitude, sizeof(out.breathing_amplitude)) == 0 && memcmp(&out.breathing_cell_um_small, &expected->breathing_cell_um_small, sizeof(out.breathing_cell_um_small)) == 0 && memcmp(&out.breathing_cell_um_large, &expected->breathing_cell_um_large, sizeof(out.breathing_cell_um_large)) == 0 && memcmp(&out.breathing_mix, &expected->breathing_mix, sizeof(out.breathing_mix)) == 0 && memcmp(&out.breathing_drift_um_per_frame, &expected->breathing_drift_um_per_frame, sizeof(out.breathing_drift_um_per_frame)) == 0 && memcmp(&out.debug_scale, &expected->debug_scale, sizeof(out.debug_scale)) == 0 && memcmp(&out.density_max_cmy, &expected->density_max_cmy, sizeof(out.density_max_cmy)) == 0 && memcmp(&out.n_particles_cmy, &expected->n_particles_cmy, sizeof(out.n_particles_cmy)) == 0 && memcmp(&out.od_particle_cmy, &expected->od_particle_cmy, sizeof(out.od_particle_cmy)) == 0 && memcmp(&out.density_min_layers, &expected->density_min_layers, sizeof(out.density_min_layers)) == 0 && memcmp(&out.density_max_layers, &expected->density_max_layers, sizeof(out.density_max_layers)) == 0 && memcmp(&out.n_particles_layers, &expected->n_particles_layers, sizeof(out.n_particles_layers)) == 0 && memcmp(&out.od_particle_layers, &expected->od_particle_layers, sizeof(out.od_particle_layers)) == 0 && memcmp(&out.correlation, &expected->correlation, sizeof(out.correlation)) == 0 && memcmp(&out.dye_cloud, &expected->dye_cloud, sizeof(out.dye_cloud)) == 0 && memcmp(&out.size_mix_weights, &expected->size_mix_weights, sizeof(out.size_mix_weights)) == 0 && memcmp(&out.size_mix_gain, &expected->size_mix_gain, sizeof(out.size_mix_gain)) == 0 && memcmp(&out.requires_full_frame, &expected->requires_full_frame, sizeof(out.requires_full_frame)) == 0 && memcmp(&out.recipe_hash, &expected->recipe_hash, sizeof(out.recipe_hash)) == 0 && memcmp(&out.density_layers_hash, &expected->density_layers_hash, sizeof(out.density_layers_hash)) == 0;
@@ -191,11 +191,11 @@ _Static_assert(_Generic(((FjHalationFrameFailure*)0)->index, uint32_t: 1, defaul
 _Static_assert(offsetof(FjHalationFrameFailure, index) == 12, "FjHalationFrameFailure.index offset");
 _Static_assert(_Generic(((FjHalationFrameFailure*)0)->sigma_px, double: 1, default: 0), "FjHalationFrameFailure.sigma_px type");
 _Static_assert(offsetof(FjHalationFrameFailure, sigma_px) == 16, "FjHalationFrameFailure.sigma_px offset");
-_Static_assert(_Generic(&fj_legacy_scatter_halation_frame_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scatter_halation_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_scatter_halation_frame_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scatter_halation_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_scatter_halation_frame_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scatter_halation_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_scatter_halation_frame_c_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scatter_halation_frame_c_prepare signature");
 FjStatus fj_test_scatter_halation_frame_c_prepare(const FjHalationFrameInput* input, FjScatterHalation* out, FjHalationFrameFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_scatter_halation_frame_prepare(input, out, failure, error);
+    return fj_test_scatter_halation_frame_prepare(input, out, failure, error);
 }
 _Static_assert(_Generic(((FjRect*)0)->x1, int32_t: 1, default: 0), "FjRect.x1 type");
 _Static_assert(_Generic(((FjRect*)0)->y1, int32_t: 1, default: 0), "FjRect.y1 type");
@@ -216,16 +216,16 @@ _Static_assert(sizeof(FjFrameGeometry) == 20 && _Alignof(FjFrameGeometry) == 4, 
 _Static_assert(_Generic(((FjFrameGeometryFailure*)0)->reason, uint32_t: 1, default: 0), "FjFrameGeometryFailure.reason type");
 _Static_assert(sizeof(FjFrameGeometryFailure) == 4 && _Alignof(FjFrameGeometryFailure) == 4, "FjFrameGeometryFailure layout");
 typedef FjStatus (*FrameDomainPrepare)(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain legacy signature");
+_Static_assert(_Generic(&fj_test_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain legacy signature");
 _Static_assert(_Generic(&fj_test_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain test signature");
 FjStatus fj_test_frame_domain_c_prepare(const FjRect* input, FjExtent* out, FjFrameGeometryFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_frame_domain_prepare(input, out, failure, error);
+    return fj_test_frame_domain_prepare(input, out, failure, error);
 }
 typedef FjStatus (*FrameGeometryPrepare)(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry legacy signature");
+_Static_assert(_Generic(&fj_test_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry legacy signature");
 _Static_assert(_Generic(&fj_test_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry test signature");
 FjStatus fj_test_frame_geometry_c_prepare(const FjFrameGeometryInput* input, FjFrameGeometry* out, FjFrameGeometryFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_frame_geometry_prepare(input, out, failure, error);
+    return fj_test_frame_geometry_prepare(input, out, failure, error);
 }
 _Static_assert(_Generic(((FjFilmReferenceInput*)0)->method, uint32_t: 1, default: 0), "reference method type");
 _Static_assert(_Generic(((FjFilmReferenceInput*)0)->auto_exposure_enabled, uint32_t: 1, default: 0), "reference auto type");
@@ -247,10 +247,10 @@ _Static_assert(_Generic(((FjFilmReferenceFailure*)0)->exposure, uint32_t: 1, def
 _Static_assert(_Generic(((FjFilmReferenceFailure*)0)->operation, uint32_t: 1, default: 0), "reference operation type");
 _Static_assert(_Generic(((FjFilmReferenceFailure*)0)->channel, uint32_t: 1, default: 0), "reference channel type");
 typedef FjStatus (*FilmReferencePrepare)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "reference production signature");
+_Static_assert(_Generic(&fj_test_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "reference production signature");
 _Static_assert(_Generic(&fj_test_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "reference facade signature");
 FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner* development, const FjFilmReferenceInput* input, FjFilmReference* out, FjFilmReferenceFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_film_reference_prepare(development, input, out, failure, error);
+    return fj_test_film_reference_prepare(development, input, out, failure, error);
 }
 _Static_assert(_Generic(((FjVisualGrainParams*)0)->active, uint32_t: 1, default: 0), "FjVisualGrainParams.active type");
 _Static_assert(_Generic(((FjVisualGrainParams*)0)->sublayers_active, uint32_t: 1, default: 0), "FjVisualGrainParams.sublayers_active type");
@@ -299,7 +299,7 @@ _Static_assert(_Generic(((FjVisualGrainRecipe*)0)->clump_morph_period_sec, float
 _Static_assert(_Generic(((FjVisualGrainRecipe*)0)->debug_view, int32_t: 1, default: 0), "FjVisualGrainRecipe.debug_view type");
 _Static_assert(_Generic(((FjVisualGrainRecipe*)0)->layers_hash, uint64_t: 1, default: 0), "FjVisualGrainRecipe.layers_hash type");
 _Static_assert(_Generic(((FjVisualGrainRecipe*)0)->hash, uint64_t: 1, default: 0), "FjVisualGrainRecipe.hash type");
-_Static_assert(_Generic(&fj_legacy_visual_grain_prepare, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_visual_grain_prepare signature");
+_Static_assert(_Generic(&fj_test_visual_grain_prepare, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_visual_grain_prepare signature");
 _Static_assert(_Generic(&fj_test_visual_grain_prepare, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_visual_grain_prepare signature");
 _Static_assert(sizeof(FjVisualGrainParams) == 120 && _Alignof(FjVisualGrainParams) == 4, "grain params x64 layout");
 _Static_assert(sizeof(FjVisualGrainRecipe) == 344 && _Alignof(FjVisualGrainRecipe) == 8 && offsetof(FjVisualGrainRecipe, layers_hash) == 328 && offsetof(FjVisualGrainRecipe, hash) == 336, "grain recipe x64 layout");
@@ -345,12 +345,12 @@ _Static_assert(_Generic(((FjFilmDensityBounds*)0)->inv_span_cmy, float*: 1, defa
 _Static_assert(_Generic(((FjFilmDensityBounds*)0)->authored_minimum_cmy, float*: 1, default: 0), "FjFilmDensityBounds.authored_minimum_cmy type");
 _Static_assert(_Generic(((FjFilmDensityBounds*)0)->authored_maximum_cmy, float*: 1, default: 0), "FjFilmDensityBounds.authored_maximum_cmy type");
 _Static_assert(_Generic(((FjFilmDensityBounds*)0)->hash, uint64_t: 1, default: 0), "FjFilmDensityBounds.hash type");
-_Static_assert(_Generic(&fj_legacy_film_development_retain, FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_development_retain signature");
-_Static_assert(_Generic(&fj_legacy_film_density_minimum_prepare, FjStatus (*)(const FjFilmDensityMinimum*, FjFilmDensityMinimum*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_density_minimum_prepare signature");
-_Static_assert(_Generic(&fj_legacy_film_dir_acquire, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDirParams*, FjFilmDirOwner**, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_dir_acquire signature");
-_Static_assert(_Generic(&fj_legacy_film_dir_view, FjStatus (*)(const FjFilmDirOwner*, FjFilmDirView*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_dir_view signature");
-_Static_assert(_Generic(&fj_legacy_film_dir_release, FjStatus (*)(FjFilmDirOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_dir_release signature");
-_Static_assert(_Generic(&fj_legacy_film_density_bounds_prepare, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDensityMinimum*, FjFilmDensityBounds*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_film_density_bounds_prepare signature");
+_Static_assert(_Generic(&fj_test_film_development_retain, FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*): 1, default: 0), "fj_test_film_development_retain signature");
+_Static_assert(_Generic(&fj_test_film_density_minimum_prepare, FjStatus (*)(const FjFilmDensityMinimum*, FjFilmDensityMinimum*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_film_density_minimum_prepare signature");
+_Static_assert(_Generic(&fj_test_film_dir_acquire, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDirParams*, FjFilmDirOwner**, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_film_dir_acquire signature");
+_Static_assert(_Generic(&fj_test_film_dir_view, FjStatus (*)(const FjFilmDirOwner*, FjFilmDirView*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_film_dir_view signature");
+_Static_assert(_Generic(&fj_test_film_dir_release, FjStatus (*)(FjFilmDirOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_film_dir_release signature");
+_Static_assert(_Generic(&fj_test_film_density_bounds_prepare, FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDensityMinimum*, FjFilmDensityBounds*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_film_density_bounds_prepare signature");
 const size_t* fj_test_film_recipe_abi_c_facts(size_t* count) {
     static const size_t facts[] = {
 #define FJ_RECIPE_TYPE(t) sizeof(t), _Alignof(t),
@@ -555,7 +555,7 @@ _Static_assert(_Generic(((FjScratch*)0)->strength_max, float: 1, default: 0), "F
 _Static_assert(offsetof(FjScratch, strength_max) == 140, "FjScratch.strength_max offset");
 _Static_assert(sizeof(FjScratch) == 144, "FjScratch size");
 _Static_assert(_Alignof(FjScratch) == 4, "FjScratch align");
-_Static_assert(_Generic(&fj_legacy_physical_effects_prepare, FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_physical_effects_prepare signature");
+_Static_assert(_Generic(&fj_test_physical_effects_prepare, FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_physical_effects_prepare signature");
 _Static_assert(_Generic(&fj_test_physical_effects_prepare, FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_physical_effects_prepare signature");
 _Static_assert(sizeof(float) == 4 && sizeof(double) == 8 && sizeof(_Bool) == 1, "physical scalar widths");
 
@@ -773,7 +773,7 @@ _Static_assert(FJ_PRINT_BALANCE_REASON_BASELINE_RAW == 2, "FJ_PRINT_BALANCE_REAS
 _Static_assert(FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW == 3, "FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW");
 _Static_assert(FJ_PRINT_BALANCE_REASON_BALANCE == 4, "FJ_PRINT_BALANCE_REASON_BALANCE");
 _Static_assert(FJ_PRINT_BALANCE_REASON_PANIC == 5, "FJ_PRINT_BALANCE_REASON_PANIC");
-_Static_assert(_Generic(&fj_legacy_print_balance_prepare, FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_print_balance_prepare signature");
+_Static_assert(_Generic(&fj_test_print_balance_prepare, FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_balance_prepare signature");
 _Static_assert(_Generic(&fj_test_print_balance_prepare, FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_balance_prepare signature");
 
 _Static_assert(sizeof(FjScannerCorrectionParams) == 16 && _Alignof(FjScannerCorrectionParams) == 4, "FjScannerCorrectionParams layout");
@@ -936,11 +936,11 @@ _Static_assert(FJ_SCANNER_CORRECTION_TRACE_ACCEPTED == 1, "FJ_SCANNER_CORRECTION
 _Static_assert(FJ_SCANNER_CORRECTION_TRACE_MIDGRAY == 2, "FJ_SCANNER_CORRECTION_TRACE_MIDGRAY");
 _Static_assert(FJ_SCANNER_CORRECTION_TRACE_MALFORMED == 3, "FJ_SCANNER_CORRECTION_TRACE_MALFORMED");
 _Static_assert(FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH == 4, "FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH");
-_Static_assert(_Generic(&fj_legacy_scanner_direct_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_direct_correction_prepare signature");
-_Static_assert(_Generic(&fj_legacy_scanner_print_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_print_correction_prepare signature");
 _Static_assert(_Generic(&fj_test_scanner_direct_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_direct_correction_prepare signature");
 _Static_assert(_Generic(&fj_test_scanner_print_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_print_correction_prepare signature");
-_Static_assert(_Generic(&fj_legacy_scanner_correction_input_demand, FjStatus (*)(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_correction_input_demand signature");
+_Static_assert(_Generic(&fj_test_scanner_direct_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_direct_correction_prepare signature");
+_Static_assert(_Generic(&fj_test_scanner_print_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_print_correction_prepare signature");
+_Static_assert(_Generic(&fj_test_scanner_correction_input_demand, FjStatus (*)(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_correction_input_demand signature");
 _Static_assert(_Generic(&fj_test_scanner_correction_fault, FjStatus (*)(uint32_t, uint32_t): 1, default: 0), "fj_test_scanner_correction_fault signature");
 _Static_assert(_Generic(&fj_test_scanner_lookup, FjStatus (*)(float, FjFloatSpan, FjFloatSpan, float*, uint32_t*): 1, default: 0), "fj_test_scanner_lookup signature");
 _Static_assert(_Generic(&fj_test_scanner_density_curve, FjStatus (*)(float, FjFloatSpan, FjFloatSpan, uint32_t, float*, uint32_t*): 1, default: 0), "fj_test_scanner_density_curve signature");
@@ -971,8 +971,8 @@ int fj_test_scanner_correction_c_call(unsigned operation, const FjScannerCorrect
     FjStatus status;
     memset(&out, 0x55, sizeof(out));
     memset(&trace, 0x55, sizeof(trace));
-    status = operation == 0 ? fj_legacy_scanner_direct_correction_prepare(params, direct, &out, &failure, &trace, &error)
-                            : fj_legacy_scanner_print_correction_prepare(params, print, &out, &failure, &trace, &error);
+    status = operation == 0 ? fj_test_scanner_direct_correction_prepare(params, direct, &out, &failure, &trace, &error)
+                            : fj_test_scanner_print_correction_prepare(params, print, &out, &failure, &trace, &error);
     if (status.category != category || status.api != FJ_API_NONE || status.native_code != 0 || failure.reason != reason || error.length != 0 || text[0] != '\0')
         return 0;
     return scanner_words_equal(&out, category == FJ_STATUS_SUCCESS ? expected : &zero);
@@ -1047,13 +1047,13 @@ _Static_assert(_Generic(((FjScannerLutDescriptor*)0)->observer_hash, uint64_t: 1
 _Static_assert(_Generic(((FjScannerLutDescriptor*)0)->hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.hash type");
 _Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->reason, uint32_t: 1, default: 0), "FjScannerLutDescriptorFailure.reason type");
 _Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->lane, uint32_t: 1, default: 0), "FjScannerLutDescriptorFailure.lane type");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_describe signature");
+_Static_assert(_Generic(&fj_test_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_describe signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_describe signature");
 
 int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput* input, const FjScannerLutDescriptor* expected) {
     FjScannerLutDescriptor result;
     FjScannerLutDescriptorFailure failure;
-    FjStatus status = fj_legacy_scanner_lut_describe(input, &result, &failure, NULL);
+    FjStatus status = fj_test_scanner_lut_describe(input, &result, &failure, NULL);
     return status.category == 0 && status.api == 0 && status.native_code == 0 && failure.reason == 0 && failure.lane == 0 && memcmp(&result, expected, sizeof result) == 0;
 }
 
@@ -1085,7 +1085,7 @@ _Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->reason, uint32_t: 1, 
 _Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->lane, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsFailure, lane) == 4, "FjScannerPostEffectsFailure.lane");
 _Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->rejected, FjScannerPostEffectsDescriptor: 1, default: 0) && offsetof(FjScannerPostEffectsFailure, rejected) == 8, "FjScannerPostEffectsFailure.rejected");
 typedef FjStatus (*ScannerPostDescribe)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_legacy_scanner_post_describe signature");
+_Static_assert(_Generic(&fj_test_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_test_scanner_post_describe signature");
 _Static_assert(_Generic(&fj_test_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_test_scanner_post_describe signature");
 
 _Static_assert(_Generic(((FjGaussianKernelInput*)0)->radius, int32_t: 1, default: 0), "FjGaussianKernelInput.radius type");
@@ -1138,7 +1138,7 @@ int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput* input, co
     FjHalationFrameFailure failure = {99, 98, 97, 96, -1.0};
     char text[256] = "seed";
     FjErrorBuffer error = {text, sizeof(text), 99};
-    FjStatus result = fj_legacy_scatter_halation_frame_prepare(input, &out, &failure, &error);
+    FjStatus result = fj_test_scatter_halation_frame_prepare(input, &out, &failure, &error);
     if (result.category != category || result.api != 0 || result.native_code != 0 ||
         failure.reason != expected_failure->reason || failure.field != expected_failure->field || failure.channel != expected_failure->channel || failure.index != expected_failure->index ||
         error.length != strlen(diagnostic) || strcmp(text, diagnostic) != 0)
@@ -1249,24 +1249,24 @@ _Static_assert(offsetof(FjDiffusionFailure, stage) == 4, "FjDiffusionFailure.sta
 _Static_assert(_Generic(((FjDiffusionFailure*)0)->stage, uint32_t: 1, default: 0), "FjDiffusionFailure.stage type");
 _Static_assert(offsetof(FjDiffusionFailure, field) == 8, "FjDiffusionFailure.field offset");
 _Static_assert(_Generic(((FjDiffusionFailure*)0)->field, uint32_t: 1, default: 0), "FjDiffusionFailure.field type");
-_Static_assert(_Generic(&fj_legacy_diffusion_sample_prepare, FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_sample_prepare signature");
+_Static_assert(_Generic(&fj_test_diffusion_sample_prepare, FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_diffusion_sample_prepare signature");
 _Static_assert(_Generic(&fj_test_diffusion_sample_prepare, FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_diffusion_sample_prepare signature");
 FjStatus fj_test_diffusion_sample_c_prepare(const FjDiffusionSampleInput* i, FjDiffusionSample* o, FjDiffusionFailure* f, FjErrorBuffer* e) {
-    return fj_legacy_diffusion_sample_prepare(i, o, f, e);
+    return fj_test_diffusion_sample_prepare(i, o, f, e);
 }
-_Static_assert(_Generic(&fj_legacy_diffusion_components_prepare, FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_components_prepare signature");
+_Static_assert(_Generic(&fj_diffusion_components_prepare, FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_diffusion_components_prepare signature");
 _Static_assert(_Generic(&fj_test_diffusion_components_prepare, FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_diffusion_components_prepare signature");
 FjStatus fj_test_diffusion_components_c_prepare(const FjDiffusionSample* i, FjDiffusionComponents* o, FjDiffusionFailure* f, FjErrorBuffer* e) {
-    return fj_legacy_diffusion_components_prepare(i, o, f, e);
+    return fj_diffusion_components_prepare(i, o, f, e);
 }
-_Static_assert(_Generic(&fj_legacy_diffusion_frame_prepare, FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_diffusion_frame_prepare, FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_diffusion_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_diffusion_frame_prepare, FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_diffusion_frame_prepare signature");
 FjStatus fj_test_diffusion_frame_c_prepare(const FjDiffusionFrameInput* i, FjDiffusionFrameSet* o, FjDiffusionFailure* f, FjErrorBuffer* e) {
-    return fj_legacy_diffusion_frame_prepare(i, o, f, e);
+    return fj_test_diffusion_frame_prepare(i, o, f, e);
 }
 
 FjStatus fj_test_dir_frame_c_prepare(const FjDirFrameInput* input, FjDirFrameMath* out, FjDirFrameFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_dir_frame_prepare(input, out, failure, error);
+    return fj_test_dir_frame_prepare(input, out, failure, error);
 }
 
 static int dir_frame_extent_equal(FjExtent a, FjExtent b) {
@@ -1483,7 +1483,7 @@ _Static_assert(FJ_DIR_OPERATOR_NONE == 0U, "FJ_DIR_OPERATOR_NONE value");
 _Static_assert(FJ_DIR_OPERATOR_IDENTITY == 1U, "FJ_DIR_OPERATOR_IDENTITY value");
 _Static_assert(FJ_DIR_OPERATOR_FIR_REFLECT == 2U, "FJ_DIR_OPERATOR_FIR_REFLECT value");
 _Static_assert(FJ_DIR_OPERATOR_YVV_REFLECT == 3U, "FJ_DIR_OPERATOR_YVV_REFLECT value");
-_Static_assert(_Generic(&fj_legacy_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_dir_frame_c_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_c_prepare signature");
 
@@ -1534,25 +1534,25 @@ _Static_assert(_Generic(((FjDirBoundaryFailure*)0)->sum, double: 1, default: 0),
 _Static_assert(offsetof(FjDirBoundaryFailure, sum) == 24, "FjDirBoundaryFailure.sum offset");
 _Static_assert(_Generic(((FjDirBoundaryFailure*)0)->tolerance, double: 1, default: 0), "FjDirBoundaryFailure.tolerance type");
 _Static_assert(offsetof(FjDirBoundaryFailure, tolerance) == 32, "FjDirBoundaryFailure.tolerance offset");
-_Static_assert(_Generic(&fj_legacy_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_describe signature");
+_Static_assert(_Generic(&fj_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_dir_boundary_describe signature");
 _Static_assert(_Generic(&fj_test_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_describe signature");
 FjStatus fj_test_dir_boundary_c_describe(const FjDirBoundaryInput* input, uint64_t* out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_dir_boundary_describe(input, out, failure, error);
+    return fj_dir_boundary_describe(input, out, failure, error);
 }
-_Static_assert(_Generic(&fj_legacy_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_acquire signature");
+_Static_assert(_Generic(&fj_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_dir_boundary_acquire signature");
 _Static_assert(_Generic(&fj_test_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_acquire signature");
 FjStatus fj_test_dir_boundary_c_acquire(const FjDirBoundaryInput* input, FjDirBoundaryOwner** out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_dir_boundary_acquire(input, out, failure, error);
+    return fj_dir_boundary_acquire(input, out, failure, error);
 }
-_Static_assert(_Generic(&fj_legacy_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_view signature");
+_Static_assert(_Generic(&fj_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_dir_boundary_view signature");
 _Static_assert(_Generic(&fj_test_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_view signature");
 FjStatus fj_test_dir_boundary_c_view(const FjDirBoundaryOwner* owner, FjDirBoundaryView* out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_dir_boundary_view(owner, out, failure, error);
+    return fj_dir_boundary_view(owner, out, failure, error);
 }
-_Static_assert(_Generic(&fj_legacy_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_release signature");
+_Static_assert(_Generic(&fj_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_dir_boundary_release signature");
 _Static_assert(_Generic(&fj_test_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_release signature");
 FjStatus fj_test_dir_boundary_c_release(FjDirBoundaryOwner* owner, FjErrorBuffer* error) {
-    return fj_legacy_dir_boundary_release(owner, error);
+    return fj_dir_boundary_release(owner, error);
 }
 _Static_assert(FJ_DIR_BOUNDARY_NONE == 0, "FJ_DIR_BOUNDARY_NONE value");
 _Static_assert(FJ_DIR_BOUNDARY_RAW == 1, "FJ_DIR_BOUNDARY_RAW value");

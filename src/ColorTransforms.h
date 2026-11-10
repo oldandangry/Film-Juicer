@@ -6,7 +6,6 @@
 #include <cstdint>
 
 #include "SpectralData.h"
-#include "RustColorBridge.h"
 
 namespace Spectral {
 

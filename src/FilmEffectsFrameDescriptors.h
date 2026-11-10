@@ -137,22 +137,12 @@ namespace Spektrafilm {
         std::uint64_t hash = 0;
     };
 
-    struct FilmJuicerEffectsFrameDescriptorInput final {
-        const FilmJuicerEffectsRecipe* recipe = nullptr;
-        FilmJuicerEffectsFrameExtent renderExtent{};
-        FilmJuicerEffectsFrameExtent fullFrameExtent{};
-        float pixelSizeUm = 0.0f;
-        double frameTime = 0.0;
-        double frameRate = 0.0;
-        std::uint64_t sessionSeed = 0;
-        std::uint64_t clipToken = 0;
-        FilmJuicerEffectsGeometry geometry{};
-        float filmFormatLongEdgeMm = 0.0f;
-    };
-
-    bool build_film_juicer_effects_frame_descriptor(
-        const FilmJuicerEffectsFrameDescriptorInput& input,
-        FilmJuicerEffectsFrameDescriptor& out,
-        std::string& diagnostic);
 
 } // namespace Spektrafilm
+
+struct FjEffectsFrameMath;
+struct FjDust;
+struct FjScratch;
+namespace JuicerEffects {
+    bool compose_frame_descriptor(const FjEffectsFrameMath&, const FjDust&, const FjScratch&, const FjDust&, const FjScratch&, Spektrafilm::FilmJuicerEffectsFrameDescriptor&, std::string&);
+}

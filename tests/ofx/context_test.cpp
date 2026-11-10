@@ -14,8 +14,9 @@
 #include "ofxParametricParam.h"
 
 #include "context_host.h"
+#include "host_reference.h"
+
 #include "juicer_ofx_api.h"
-#include "ofxsImageEffect.h"
 #include "../ffi/case_results.h"
 
 namespace {
@@ -174,7 +175,7 @@ namespace {
         return status;
     }
     bool same(const ContextHost& a, const ContextHost& b) {
-        if (a.definitions != b.definitions)
+        if (ofx_test::reference::context(a)[3] != ofx_test::reference::context(b)[3])
             return false;
         auto actual = b.calls;
 #ifdef NDEBUG
@@ -183,7 +184,7 @@ namespace {
             return c.operation == "dimension" && c.property == kOfxParamPropChoiceEnum;
         });
 #endif
-        return a.calls == actual;
+        return ofx_test::reference::calls(a.calls) == ofx_test::reference::calls(actual);
     }
     void check_census(const ContextHost& host) {
         require(host.definitions.size() == kExpected.size() + 2, "definition count");
@@ -321,6 +322,16 @@ namespace {
             require(describe(plugin, first) == kOfxStatOK && !first.callback_error, "candidate filter");
             check_census(first);
             require(same(reference, first), "candidate differs from reference");
+            auto altered = ofx_test::reference::context(reference);
+            altered[3][0][0] = "altered";
+            ContextHost changed;
+            ofx_test::reference::context(altered, changed);
+            require(!same(changed, first), "candidate accepted altered reference definition");
+            altered = ofx_test::reference::context(reference);
+            std::swap(altered[3][0], altered[3][1]);
+            ContextHost reordered;
+            ofx_test::reference::context(altered, reordered);
+            require(!same(reordered, first), "candidate accepted reordered reference definitions");
             row.passed();
         }
         {
@@ -720,26 +731,13 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
+    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: context fixture --reference file");
     JuicerTests::CaseLog log;
-    auto* reference = OfxGetPlugin(0);
-    auto* candidate = fj_ofx_plugin(0);
-    require(reference && candidate && reference->mainEntry != candidate->mainEntry, "independent callbacks");
-    ContextHost reference_binding;
-    reference->setHost(reference_binding.binding());
-    require(call(reference, kOfxActionLoad) == kOfxStatOK && !reference_binding.callback_error, "reference load");
-    std::vector<std::unique_ptr<ContextHost>> reference_contexts;
-    for (const auto* context : {kOfxImageEffectContextFilter, kOfxImageEffectContextGenerator, kOfxImageEffectContextTransition, kOfxImageEffectContextPaint, kOfxImageEffectContextGeneral, kOfxImageEffectContextRetimer}) {
-        auto host = std::make_unique<ContextHost>();
-        host->context = context;
-        require(describe(reference, *host) == kOfxStatOK && !host->callback_error, "reference context");
-        if (host->context != kOfxImageEffectContextFilter)
-            require(host->definitions.empty(), "reference nonfilter declarations");
-        reference_contexts.push_back(std::move(host));
-    }
-    require(call(reference, kOfxActionUnload) == kOfxStatOK, "reference unload");
-    reference = nullptr;
-    const auto& oracle = *reference_contexts.front();
-    reference_case(oracle, reference_binding.startup);
+    auto* candidate = OfxGetPlugin(0);
+    require(candidate, "candidate descriptor");
+    ContextHost oracle;
+    ofx_test::reference::context(ofx_test::reference::read(argv[2], "context"), oracle);
+    reference_case(oracle, oracle.startup);
     ContextHost binding;
     candidate->setHost(binding.binding());
     require(call(candidate, kOfxActionLoad) == kOfxStatOK, "candidate load");

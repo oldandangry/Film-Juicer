@@ -2,19 +2,25 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::assets::SpectraLut;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::data_io::{CsvPairs, CmfRows};
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct SpectraOwner {
     lut: Arc<SpectraLut>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct SpectraView<'a> {
     pub samples: &'a [f32],
     pub asset_hash: u64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl SpectraOwner {
     pub(crate) fn new(lut: Arc<SpectraLut>) -> Self {
         Self { lut }
@@ -27,9 +33,11 @@ impl SpectraOwner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct MallettOwner {
     basis: Arc<[[f32; 3]; 81]>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl MallettOwner {
     pub(crate) fn new(basis: Arc<[[f32; 3]; 81]>) -> Self {
         Self { basis }
@@ -39,9 +47,11 @@ impl MallettOwner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct CmfOwner {
     rows: Arc<CmfRows>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl CmfOwner {
     pub(crate) fn new(rows: Arc<CmfRows>) -> Self {
         Self { rows }
@@ -51,9 +61,11 @@ impl CmfOwner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct CsvPairsOwner {
     rows: Arc<CsvPairs>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl CsvPairsOwner {
     pub(crate) fn new(rows: Arc<CsvPairs>) -> Self {
         Self { rows }

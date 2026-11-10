@@ -2,16 +2,22 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(any(test, feature = "test-support"))]
 use std::path::PathBuf;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
+#[cfg(any(test, feature = "test-support"))]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
+#[cfg(any(test, feature = "test-support"))]
 use std::os::windows::ffi::OsStringExt;
 
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::profile::{Catalog, Polarity, Role};
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) enum PathView<'a> {
     #[cfg(target_os = "linux")]
     Bytes(&'a [u8]),
@@ -19,11 +25,13 @@ pub(crate) enum PathView<'a> {
     Wide(&'a [u16]),
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) enum PathError {
     Empty,
     ContainsNul,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl PathView<'_> {
     pub(crate) fn to_path_buf(&self) -> Result<PathBuf, PathError> {
         match self {
@@ -51,19 +59,27 @@ impl PathView<'_> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct CatalogOwner {
     catalog: Arc<Catalog>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct CatalogEntryView<'a> {
     pub key: &'a str,
     pub label: &'a str,
     pub polarity: Polarity,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl CatalogOwner {
     pub(crate) fn new(catalog: Arc<Catalog>) -> Self {
         Self { catalog }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn backing_identity(&self) -> usize {
+        Arc::as_ptr(&self.catalog) as usize
     }
 
     pub(crate) fn count(&self, role: Role) -> usize {

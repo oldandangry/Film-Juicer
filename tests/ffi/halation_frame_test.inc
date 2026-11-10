@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace HalationFrameTest {
     FjHalationFrameInput raw(const Json& input);
     Json project(const FjScatterHalation& v);
@@ -34,17 +35,21 @@ namespace HalationFrameTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& pixelBits, const Json& expectedRows) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (bool active : {false, true}) {
-                ParamSnapshot params;
-                params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                params.printProfileKey = "kodak_portra_endura";
-                params.scatterHalationControls = {active, 1, 1, 1, 1};
+                JuicerTestSupport::PreparationInput params;
+                params.values.scan_route = static_cast<std::uint32_t>(route);
+                params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                params.print_key = "kodak_portra_endura";
+                params.values.scatter_halation.active = active;
+                params.values.scatter_halation.scatter_amount = 1;
+                params.values.scatter_halation.scatter_spatial_scale = 1;
+                params.values.scatter_halation.halation_amount = 1;
+                params.values.scatter_halation.halation_spatial_scale = 1;
                 auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};
@@ -169,7 +174,7 @@ namespace HalationFrameTest {
             const auto& contract = checked.at("cases").at(row.at("input").at("name").get<std::string>());
             const auto failureExpected = expected_failure(contract);
             const auto outputExpected = expected(row.at("descriptor"));
-            for (auto prepare : {fj_legacy_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
+            for (auto prepare : {fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
                 FjScatterHalation out{};
                 std::memset(&out, 0x55, sizeof(out));
                 FjHalationFrameFailure failure{99, 98, 97, 96, -1.0};
@@ -227,7 +232,7 @@ namespace HalationFrameTest {
         JuicerTests::Cohort malformed_cases("halation_frame.raw_malformed", malformed_ids);
         JuicerTests::Cohort diagnostic_capacities("halation_frame.diagnostic_capacity", capacity_ids);
         unsigned caller_index = 0;
-        for (auto prepare : {fj_legacy_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
+        for (auto prepare : {fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
             for (unsigned malformed = 0; malformed < 8; ++malformed) {
                 auto row_event = malformed_cases.case_event("caller-" + std::to_string(caller_index) + "/malformed-" + std::to_string(malformed));
                 auto probe = input;
@@ -286,7 +291,7 @@ namespace HalationFrameTest {
         std::thread other([&] {
             FjScatterHalation out{};
             FjHalationFrameFailure failure{};
-            status(fj_legacy_scatter_halation_frame_prepare(&input, &out, &failure, nullptr));
+            status(fj_test_scatter_halation_frame_prepare(&input, &out, &failure, nullptr));
         });
         other.join();
         FjScatterHalation out{};
@@ -296,7 +301,7 @@ namespace HalationFrameTest {
         status(fj_test_scatter_halation_frame_prepare(&input, &out, &failure, &error), 8);
         metadata(failure, {4, 0, 3, 3, 0});
         require(project(out) == project(FjScatterHalation{}) && std::string_view(text) == "scatter/halation frame preparation panicked", "whole-operation panic clears output and exact envelope");
-        status(fj_legacy_scatter_halation_frame_prepare(&input, &out, &failure, nullptr));
+        status(fj_test_scatter_halation_frame_prepare(&input, &out, &failure, nullptr));
         ScatterHalationOpticsRecipe native;
         native.hash = input.recipe.hash;
         native.scatterActive = true;

@@ -1,12 +1,14 @@
-//! SF_TEMP_BRIDGE_EFFECTS_FRAME: synchronous resolved literal transport.
-//! S4.E narrows inputs; remove at the last native model caller by S6.D.
+//! Shared completed frame math and checked fixture transport.
 
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use film_juicer_core::effects::frame::{self, Frame};
 use film_juicer_core::frame::Domain;
-use crate::cuda::sys::{FjDefectOrigin, FjDust, FjScratch, FjExtent, FjErrorBuffer, FjStatus};
+#[cfg(any(test, feature = "test-support"))]
+use crate::cuda::sys::{FjErrorBuffer, FjStatus};
+use crate::cuda::sys::{FjDefectOrigin, FjDust, FjScratch, FjExtent};
 
 /// Shared checked construction for the resolved effects frame. Fault values
 /// above one remain fixed-wire corruption owned by the unsafe ABI projection.
@@ -207,19 +209,23 @@ const EMPTY_MATH: FjEffectsFrameMath = FjEffectsFrameMath {
     recipe_hash: 0,
     hash: 0,
 };
+#[cfg(any(test, feature = "test-support"))]
 const EMPTY_FAILURE: FjEffectsFrameFailure = FjEffectsFrameFailure { reason: 0 };
+#[cfg(any(test, feature = "test-support"))]
 fn valid<T>(pointer: *const T) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
         && size_of::<T>() <= isize::MAX as usize
         && (pointer as usize).checked_add(size_of::<T>()).is_some()
 }
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
     capacity: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// Optional initialized record and nonempty backing are live/exclusive/disjoint.
@@ -270,6 +276,7 @@ impl Diagnostic {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn domain(v: FjExtent) -> Domain {
     Domain {
         x: v.x,
@@ -278,6 +285,7 @@ fn domain(v: FjExtent) -> Domain {
         height: v.height,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn dust(v: FjDust) -> frame::DustInput {
     frame::DustInput {
         cell_width_mm: v.cell_width_mm,
@@ -324,6 +332,7 @@ fn dust(v: FjDust) -> frame::DustInput {
         compact_subsidiary_angle_max_radians: v.compact_subsidiary_angle_max_radians,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn scratch(v: FjScratch) -> frame::ScratchInput {
     frame::ScratchInput {
         cell_width_mm: v.cell_width_mm,
@@ -364,6 +373,7 @@ fn scratch(v: FjScratch) -> frame::ScratchInput {
         strength_max: v.strength_max,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn input(v: FjEffectsFrameInput) -> frame::Input {
     frame::Input {
         active: v.active != 0,
@@ -433,6 +443,7 @@ pub(crate) fn project(v: &Frame) -> FjEffectsFrameMath {
 pub(crate) fn empty_math() -> FjEffectsFrameMath {
     EMPTY_MATH
 }
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -443,6 +454,7 @@ fn status(category: u32) -> FjStatus {
 
 /// # Safety
 /// Independently admitted writable records are initialized, live, exclusive and disjoint.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear(out: *mut FjEffectsFrameMath, failure: *mut FjEffectsFrameFailure) {
     if valid(out) {
         // SAFETY: Numeric admission and caller's storage authorization cover this fixed write.
@@ -461,6 +473,7 @@ unsafe fn clear(out: *mut FjEffectsFrameMath, failure: *mut FjEffectsFrameFailur
 /// # Safety
 /// Input and writable peers have initialized, aligned, live, mutually disjoint storage.
 /// Optional diagnostic storage is exclusive for this synchronous call. Nothing escapes.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare(
     input_ptr: *const FjEffectsFrameInput,
     out: *mut FjEffectsFrameMath,
@@ -550,30 +563,11 @@ pub(crate) unsafe fn prepare(
     }
 }
 
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same initialized/live/exclusive/disjoint synchronous storage contract as prepare.
-unsafe extern "C" fn fj_legacy_effects_frame_prepare(
-    input: *const FjEffectsFrameInput,
-    out: *mut FjEffectsFrameMath,
-    failure: *mut FjEffectsFrameFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked implementation contains admission and whole-operation unwind.
-    unsafe { prepare(input, out, failure, error) }
-}
-
-const _: unsafe extern "C" fn(
-    *const FjEffectsFrameInput,
-    *mut FjEffectsFrameMath,
-    *mut FjEffectsFrameFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_effects_frame_prepare;
-
 #[cfg(feature = "test-support")]
 pub(crate) mod faults {
+    use crate::cuda::sys::FjStatus;
     use std::cell::Cell;
-    use super::{FjEffectsFrameMath, FjStatus, status};
+    use super::{FjEffectsFrameMath, status};
     thread_local! { static PENDING: Cell<u32> = const { Cell::new(0) }; }
     pub(crate) fn arm(code: u32) -> FjStatus {
         if code > 6 {

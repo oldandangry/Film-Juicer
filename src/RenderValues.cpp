@@ -4,9 +4,8 @@
 #include <bit>
 #include <cstddef>
 #include <iterator>
-#include <string>
 
-#include "RustDirBridge.h"
+#include "juicer_cuda_frame_values.h"
 #include "Hash.h"
 
 namespace {
@@ -161,6 +160,12 @@ namespace {
         }
     }
 
+
+} // namespace
+
+
+namespace Spektrafilm {
+
     bool finish_spatial_dir_descriptor(float pixelSizeUm, SpatialDirDescriptor& out) {
         Spektrafilm::resolve_spatial_dir_scratch(out);
         std::uint64_t hash = Hash::kFnvOffset;
@@ -179,11 +184,53 @@ namespace {
         return out.hash != 0;
     }
 
-
-} // namespace
-
-
-namespace Spektrafilm {
+    bool bind_spatial_dir_math(
+        const FjDirFrameMath& math,
+        const char* traceRouteLabel,
+        SpatialDirDescriptor& out) {
+        if (math.present != 1 ||
+            math.component_count > out.filterPlan.components.size() || !traceRouteLabel) {
+            return false;
+        }
+        out = SpatialDirDescriptor{};
+        const auto extent = [](const FjExtent& v) {
+            return DirFrameExtent{v.x, v.y, v.width, v.height};
+        };
+        out.support = DirDescriptorSupport::Supported;
+        out.dirRecipeHash = math.recipe_hash;
+        out.renderExtent = extent(math.render_extent);
+        out.fullFrameExtent = extent(math.full_frame_extent);
+        out.filterDomainExtent = extent(math.filter_domain_extent);
+        out.traceRouteLabel = traceRouteLabel;
+        out.filterPlan.componentCount = static_cast<int>(math.component_count);
+        for (std::size_t i = 0; i < out.filterPlan.components.size(); ++i) {
+            const auto& source = math.components[i];
+            auto& target = out.filterPlan.components[i];
+            target.sigmaPixels = source.sigma_px;
+            target.weight = source.weight;
+            target.radius = source.radius;
+            target.referenceOperator = static_cast<DirReferenceOperator>(source.reference_operator);
+            target.iir.feedforward = source.feedforward;
+            std::copy(std::begin(source.feedback), std::end(source.feedback), target.iir.feedback.begin());
+            target.iir.normalizationDenominator = source.normalization_denominator;
+            target.iir.feedforwardNumerator = source.feedforward_numerator;
+            std::copy(std::begin(source.feedback_numerators), std::end(source.feedback_numerators), target.iir.feedbackNumerators.begin());
+            target.boundaryTruncationAccuracy = source.boundary_truncation_accuracy;
+            target.boundaryCertificationTolerance = source.boundary_certification_tolerance;
+            target.boundaryDerivationVersion = source.boundary_derivation_version;
+            if (i < math.component_count) {
+                target.targetScratchTier = dir_target_scratch_tier_for_operator(target.referenceOperator);
+                if (target.weight > 0.0f) {
+                    if (target.targetScratchTier == DirScratchTier::Tier1IChannels) {
+                        out.targetScratchTier = DirScratchTier::Tier1IChannels;
+                    } else if (out.targetScratchTier == DirScratchTier::Tier0) {
+                        out.targetScratchTier = DirScratchTier::Tier1F;
+                    }
+                }
+            }
+        }
+        return true;
+    }
 
 
     void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept {
@@ -225,82 +272,9 @@ namespace Spektrafilm {
             return true;
         }
 
-        bool bind_spatial_dir_math(
-            const FjDirFrameMath& math,
-            const char* traceRouteLabel,
-            SpatialDirDescriptor& out) {
-            if (math.present != 1 ||
-                math.component_count > out.filterPlan.components.size() || !traceRouteLabel) {
-                return false;
-            }
-            out = SpatialDirDescriptor{};
-            const auto extent = [](const FjExtent& v) {
-                return DirFrameExtent{v.x, v.y, v.width, v.height};
-            };
-            out.support = DirDescriptorSupport::Supported;
-            out.dirRecipeHash = math.recipe_hash;
-            out.renderExtent = extent(math.render_extent);
-            out.fullFrameExtent = extent(math.full_frame_extent);
-            out.filterDomainExtent = extent(math.filter_domain_extent);
-            out.traceRouteLabel = traceRouteLabel;
-            out.filterPlan.componentCount = static_cast<int>(math.component_count);
-            for (std::size_t i = 0; i < out.filterPlan.components.size(); ++i) {
-                const auto& source = math.components[i];
-                auto& target = out.filterPlan.components[i];
-                target.sigmaPixels = source.sigma_px;
-                target.weight = source.weight;
-                target.radius = source.radius;
-                target.referenceOperator = static_cast<DirReferenceOperator>(source.reference_operator);
-                target.iir.feedforward = source.feedforward;
-                std::copy(std::begin(source.feedback), std::end(source.feedback), target.iir.feedback.begin());
-                target.iir.normalizationDenominator = source.normalization_denominator;
-                target.iir.feedforwardNumerator = source.feedforward_numerator;
-                std::copy(std::begin(source.feedback_numerators), std::end(source.feedback_numerators), target.iir.feedbackNumerators.begin());
-                target.boundaryTruncationAccuracy = source.boundary_truncation_accuracy;
-                target.boundaryCertificationTolerance = source.boundary_certification_tolerance;
-                target.boundaryDerivationVersion = source.boundary_derivation_version;
-                if (i < math.component_count) {
-                    target.targetScratchTier = dir_target_scratch_tier_for_operator(target.referenceOperator);
-                    if (target.weight > 0.0f) {
-                        if (target.targetScratchTier == DirScratchTier::Tier1IChannels) {
-                            out.targetScratchTier = DirScratchTier::Tier1IChannels;
-                        } else if (out.targetScratchTier == DirScratchTier::Tier0) {
-                            out.targetScratchTier = DirScratchTier::Tier1F;
-                        }
-                    }
-                }
-            }
-            return true;
-        }
+
     } // namespace
 
-    bool compose_spatial_dir_descriptor(
-        const JuicerDir::MathOutcome& outcome, const char* traceRouteLabel, SpatialDirDescriptor& out) {
-        out = SpatialDirDescriptor{};
-        const auto& result = outcome.result();
-        if (std::holds_alternative<JuicerDir::MathOutcome::Inactive>(result)) {
-            return true;
-        }
-        const auto* active = std::get_if<JuicerDir::MathOutcome::Active>(&result);
-        const auto* rejected = std::get_if<JuicerDir::MathOutcome::MathematicalFailure>(&result);
-        if (!active && !rejected) {
-            return false;
-        }
-        const auto& math = active ? active->math : rejected->failure.trace;
-        if (!bind_spatial_dir_math(math, traceRouteLabel, out)) {
-            return false;
-        }
-        if (rejected) {
-            if (rejected->failure.field == FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW) {
-                out.support = DirDescriptorSupport::UnsupportedPartialRenderWindow;
-                out.scratchTier = DirScratchTier::Unsupported;
-            } else if (rejected->failure.field == FJ_DIR_FRAME_FIELD_EMPTY_PLAN) {
-                out.support = DirDescriptorSupport::UnsupportedScratchTier;
-            }
-            return false;
-        }
-        return finish_spatial_dir_descriptor(outcome.input().pixel_size_um, out);
-    }
 
     bool compose_spatial_dir_descriptor(
         const FjDirFrameMath& math, float pixelSizeUm, const char* traceRouteLabel, SpatialDirDescriptor& out) {
@@ -312,17 +286,5 @@ namespace Spektrafilm {
                finish_spatial_dir_descriptor(pixelSizeUm, out);
     }
 
-
-    bool preflight_camera_lens_blur(
-        const CameraLensBlurOpticsRecipe& recipe,
-        std::string& outDiagnostic) {
-        outDiagnostic.clear();
-        if (recipe.hash == 0) {
-            return true;
-        }
-        outDiagnostic = std::string(kExactOpticsNotImplementedForPhase6) +
-                        " component=camera_lens_blur";
-        return false;
-    }
 
 } // namespace Spektrafilm

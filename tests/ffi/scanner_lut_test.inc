@@ -380,19 +380,19 @@ namespace ScannerLutTest {
 
 namespace ScannerLutTest {
     void check_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 4, "exact actual scanner product membership");
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent case_event("cpp", "scanner-lut/product-route/" + std::to_string(route));
             auto params = PrintPreflashTest::controls();
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.scannerLutResolution = 17;
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.values.scanner_lut_resolution = 17;
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            std::optional<PreparedState> product;
-            const auto prepared = prepare_state(owner.borrow().assets, params, product, error);
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
+            const auto prepared = JuicerTestSupport::prepare_state(owner.borrow().assets, params, product, error);
             const bool print = route % 2 != 0;
             require(prepared.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
             FjPreparedStateView view{};

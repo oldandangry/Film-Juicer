@@ -275,13 +275,11 @@ fn ray_polygon_distance<T: Copy + Into<f64>, const N: usize>(
         let ox = center[0] - ax;
         let oy = center[1] - ay;
         let distance = (-ox * ey + oy * ex) / denominator;
-        let edge_position = (-ox * direction[1] + oy * direction[0]) / denominator;
-        if distance > 1e-9
-            && edge_position >= -1e-9
-            && edge_position <= 1.0 + 1e-9
-            && distance < minimum
-        {
-            minimum = distance;
+        if distance > 1e-9 && distance < minimum {
+            let edge_position = (-ox * direction[1] + oy * direction[0]) / denominator;
+            if edge_position >= -1e-9 && edge_position <= 1.0 + 1e-9 {
+                minimum = distance;
+            }
         }
     }
     minimum

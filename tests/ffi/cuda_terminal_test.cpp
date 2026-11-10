@@ -1,10 +1,12 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <system_error>
 #include <cstring>
@@ -12,7 +14,7 @@
 #include <vector>
 
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
+#include "owner_fixture.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -35,16 +37,74 @@ namespace {
         }
     }
 
-    FjCuda* native(JuicerProcess::ProcessRuntime& owner) {
+    // This is a test-owned catalog hold; Runtime itself retains no FjCatalog.
+    class CatalogHold final {
+    public:
+        explicit CatalogHold(const FjAssets* assets) : assets_(assets) {
+            FjCatalogCounts counts{};
+            const FjStatus acquired = fj_test_catalog_acquire(assets_, &owner_, &counts, nullptr);
+            if (acquired.category != FJ_STATUS_SUCCESS || !owner_ || !counts.film_count || !counts.print_count) {
+                if (owner_)
+                    (void)fj_test_catalog_release(std::exchange(owner_, nullptr), nullptr);
+                throw std::runtime_error("cold terminal catalog failed");
+            }
+            if (fj_test_catalog_entry(owner_, FJ_PROFILE_ROLE_FILM, 0, &entry_, nullptr).category != FJ_STATUS_SUCCESS ||
+                !entry_.key.data || !entry_.label.data ||
+                fj_test_catalog_backing_identity(owner_, &backing_, nullptr).category != FJ_STATUS_SUCCESS || !backing_) {
+                (void)fj_test_catalog_release(std::exchange(owner_, nullptr), nullptr);
+                throw std::runtime_error("terminal catalog entry unavailable");
+            }
+        }
+        CatalogHold(const CatalogHold&) = delete;
+        CatalogHold& operator=(const CatalogHold&) = delete;
+        ~CatalogHold() {
+            if (owner_)
+                (void)fj_test_catalog_release(owner_, nullptr);
+        }
+        bool stable() const {
+            FjCatalogEntryView current{};
+            FjCatalogEntryView reacquired{};
+            FjCatalog* again = nullptr;
+            FjCatalogCounts counts{};
+            std::uintptr_t backing = 0;
+            if (fj_test_catalog_entry(owner_, FJ_PROFILE_ROLE_FILM, 0, &current, nullptr).category != FJ_STATUS_SUCCESS)
+                return false;
+            const FjStatus acquired = fj_test_catalog_acquire(assets_, &again, &counts, nullptr);
+            if (acquired.category != FJ_STATUS_SUCCESS || !again) {
+                if (again)
+                    (void)fj_test_catalog_release(again, nullptr);
+                return false;
+            }
+            const bool same = fj_test_catalog_entry(again, FJ_PROFILE_ROLE_FILM, 0, &reacquired, nullptr).category == FJ_STATUS_SUCCESS &&
+                              fj_test_catalog_backing_identity(again, &backing, nullptr).category == FJ_STATUS_SUCCESS &&
+                              backing == backing_ && current.key.data == entry_.key.data && current.key.count == entry_.key.count &&
+                              current.label.data == entry_.label.data && current.label.count == entry_.label.count &&
+                              reacquired.key.data == entry_.key.data && reacquired.key.count == entry_.key.count &&
+                              reacquired.label.data == entry_.label.data && reacquired.label.count == entry_.label.count;
+            return fj_test_catalog_release(again, nullptr).category == FJ_STATUS_SUCCESS && same;
+        }
+        void close() {
+            FjCatalog* owner = std::exchange(owner_, nullptr);
+            require(fj_test_catalog_release(owner, nullptr).category == FJ_STATUS_SUCCESS, "terminal catalog release failed");
+        }
+
+    private:
+        const FjAssets* assets_;
+        FjCatalog* owner_ = nullptr;
+        FjCatalogEntryView entry_{};
+        std::uintptr_t backing_ = 0;
+    };
+
+    FjCuda* native(JuicerTestSupport::RuntimeFixture& owner) {
         return owner.borrow().cuda;
     }
 
-    bool live(JuicerProcess::ProcessRuntime& owner) {
+    bool live(JuicerTestSupport::RuntimeFixture& owner) {
         FjRuntimeView view{};
         return owner.borrow(view).category == FJ_STATUS_SUCCESS;
     }
 
-    JuicerProcess::Root& root(JuicerProcess::ProcessRuntime& owner) {
+    JuicerProcess::Root& root(JuicerTestSupport::RuntimeFixture& owner) {
         return JuicerCuda::borrow_root(native(owner));
     }
 
@@ -102,10 +162,10 @@ namespace {
     }
 
     void check_success() {
-        JuicerProcess::ProcessRuntime empty;
+        JuicerTestSupport::RuntimeFixture empty;
         require(empty.close().category == FJ_STATUS_SUCCESS, "empty close failed");
         for (unsigned cycle = 0; cycle != 3; ++cycle) {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create("metadata-only");
             FjCuda* borrow = native(owner);
             require(fj_cuda_retire_instance(borrow, 0, nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "zero token accepted");
@@ -121,7 +181,7 @@ namespace {
         }
         const auto attempts = shutdownAttempts.load();
         {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create("accepting-destroy");
         }
         require(shutdownAttempts == attempts + 1 && destructions == 4,
@@ -129,19 +189,19 @@ namespace {
     }
 
     void check_host_cache_result(bool nativeFailure) {
-        JuicerProcess::ProcessRuntime owner;
-        owner.create(JuicerProcess::data_directory());
-        const auto& catalog = owner.spektrafilm_profile_catalog();
-        require(catalog.valid && fj_test_catalog_live_owners() == 0, "Runtime retained its temporary catalog handle");
-        const auto* const label = catalog.filmProfiles.front().label.c_str();
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(JUICER_TEST_RESOURCE_DIR);
+        CatalogHold catalog(owner.borrow().assets);
+        require(fj_test_catalog_live_owners() == 1, "unexpected terminal catalog holds");
         fj_test_cache_release_failure();
         auto* borrowed = native(owner);
         if (nativeFailure) {
             injection = "typed";
             require(owner.shutdown().native_code == -701, "host failure erased native close failure");
-            require(fj_test_runtime_cache_attempts() == 0 && fj_test_catalog_live_owners() == 0, "native failure started host purge");
-            require(catalog.filmProfiles.front().label.c_str() == label, "native failure invalidated copied catalog presentation");
+            require(fj_test_runtime_cache_attempts() == 0 && fj_test_catalog_live_owners() == 1, "native failure started host purge");
+            require(catalog.stable(), "native failure invalidated catalog backing");
             injection.clear();
+            catalog.close();
             require(owner.close().native_code == -701, "terminal cleanup erased native failure");
             require_host_detached();
             require(shutdownAttempts == 1 && destructions == 0, "failed native close was retired again or deleted");
@@ -172,11 +232,12 @@ namespace {
         for (std::size_t i = 0; i < workers.size(); ++i) {
             require(results[i].category == FJ_STATUS_INTERNAL_FAILURE && same_status(results[i], results[0]) && std::strcmp(diagnostics[i].data(), diagnostics[0].data()) == 0, "concurrent shutdown saw another cleanup result");
         }
-        require(fj_test_runtime_cache_attempts() == 1 && shutdownAttempts == 1 && fj_test_catalog_live_owners() == 0, "cache release repeated or retained its temporary catalog handle");
-        require(catalog.filmProfiles.front().label.c_str() == label, "cache cleanup invalidated copied catalog presentation");
+        require(fj_test_runtime_cache_attempts() == 1 && shutdownAttempts == 1 && fj_test_catalog_live_owners() == 1, "cache release repeated or changed the test catalog hold");
+        require(catalog.stable(), "cache cleanup invalidated catalog backing");
         reject_accepting_calls(borrowed);
         require(same_status(owner.shutdown(), results[0]) && fj_test_runtime_cache_attempts() == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
         fj_test_runtime_fault(3);
+        catalog.close();
         std::array<char, 256> terminalText{};
         FjErrorBuffer terminalError{terminalText.data(), terminalText.size(), 0};
         require(same_status(owner.close(&terminalError), results[0]) && destructions == 1 && !live(owner) &&
@@ -186,7 +247,7 @@ namespace {
     }
 
     void check_serialization() {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create("admission-order");
         auto outerGuard = JuicerCuda::borrow_root(native(owner)).begin_frame_preparation();
         FjCuda* borrow = native(owner);
@@ -208,7 +269,7 @@ namespace {
     }
 
     void check_unregistered(const std::string& mode) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create("unregistered-terminal-handle");
         auto* const invalid = reinterpret_cast<FjCuda*>(std::uintptr_t{8});
         if (mode == "unregistered") {
@@ -238,7 +299,7 @@ namespace {
         const FjStatus expected = saved ? FjStatus{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, -701}
                                         : FjStatus{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
         {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create("terminal-admission-exception");
             FjCuda* borrow = native(owner);
             std::array<char, 128> diagnostic{};
@@ -273,7 +334,7 @@ namespace {
     void check_buffers(const std::string& mode) {
         const bool blocked = mode == "malformed-blocked-destroy";
         {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create("terminal-error-buffer");
             FjCuda* borrow = native(owner);
             FjErrorBuffer malformed{nullptr, 1, 99};
@@ -308,7 +369,7 @@ namespace {
     }
 
     void check_shutdown_progress() {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create("shutdown-progress");
         injection = "typed";
         holdShutdown = true;
@@ -348,7 +409,7 @@ namespace {
             expected = {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, -701};
         }
         {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create("retained-terminal-owner");
             FjCuda* borrow = native(owner);
             injection = mode;
@@ -476,7 +537,7 @@ int main(int argc, char** argv) {
         }
         JuicerTests::CaseEvent event("cuda_terminal", mode);
         if (mode == "partial-library") {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             fj_test_runtime_fault(1);
             bool failed = false;
             try {
@@ -519,7 +580,7 @@ int main(int argc, char** argv) {
                     "Runtime stage 3 did not report after terminal host cleanup");
         } else if (mode == "construction") {
             injection = "construction";
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             bool failed = false;
             try {
                 owner.create("partial-host-construction");
@@ -531,35 +592,35 @@ int main(int argc, char** argv) {
             owner.create("retry-after-partial-construction");
             require(owner.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0, "construction retry failed");
         } else if (mode == "catalog-retention") {
-            JuicerProcess::ProcessRuntime owner;
-            owner.create(JuicerProcess::data_directory());
-            const auto& catalog = owner.spektrafilm_profile_catalog();
-            require(catalog.valid && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "cold terminal catalog failed");
-            const auto* label = catalog.filmProfiles.front().label.c_str();
+            JuicerTestSupport::RuntimeFixture owner;
+            owner.create(JUICER_TEST_RESOURCE_DIR);
+            CatalogHold catalog(owner.borrow().assets);
+            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "cold terminal catalog failed");
             injection = "typed";
             require(owner.shutdown().native_code == -701, "borrowed close lost injected failure");
-            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0 && catalog.filmProfiles.front().label.c_str() == label, "failed borrowed close expired catalog");
+            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1 && catalog.stable(), "failed borrowed close expired catalog");
             injection.clear();
+            catalog.close();
             const auto before = allocations.load();
             require(owner.close().native_code == -701, "catalog cleanup lost primary native failure");
             require(allocations.load() == before, "terminal Runtime cleanup allocated");
             require_host_detached();
             require(shutdownAttempts == 1 && destructions == 0, "catalog cleanup retried uncertain CUDA teardown");
         } else if (mode == "registered-reentry") {
-            JuicerProcess::ProcessRuntime owner;
-            owner.create(JuicerProcess::data_directory());
-            const auto& catalog = owner.spektrafilm_profile_catalog();
-            const auto* label = catalog.filmProfiles.front().label.c_str();
+            JuicerTestSupport::RuntimeFixture owner;
+            owner.create(JUICER_TEST_RESOURCE_DIR);
+            CatalogHold catalog(owner.borrow().assets);
             FjCuda* borrowed = native(owner);
             {
                 JuicerCuda::NativeCall call(borrowed);
                 require(fj_cuda_destroy(borrowed, nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "registered native reentry accepted");
-                require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "native reentry detached active host borrow");
-                require(label == catalog.filmProfiles.front().label.c_str(), "reentry invalidated option borrow");
+                require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "native reentry detached active host borrow");
+                require(catalog.stable(), "reentry invalidated catalog borrow");
             }
             // Reentry is explicitly an illegal terminal overlap, not evidence
             // of cleanup. After the active borrow ends, a legal terminal call
             // may consume its retained host owner without retrying native work.
+            catalog.close();
             fj_test_runtime_fault(3);
             require(owner.close().category == FJ_STATUS_UNSUPPORTED_INPUT, "saved reentry failure lost");
             require_host_detached();

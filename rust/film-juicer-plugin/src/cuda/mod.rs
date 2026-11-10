@@ -61,6 +61,7 @@ impl Failure {
             .unwrap_or("native terminal diagnostic is not UTF-8")
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.diagnostic[..self.length]
     }

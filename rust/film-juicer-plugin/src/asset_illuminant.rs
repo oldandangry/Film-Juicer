@@ -1,8 +1,14 @@
 //! Synchronous illuminant values and consuming call-local lens boundary.
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use film_juicer_core::illuminant::{self, Coverage, LensInput};
+use film_juicer_core::illuminant::Coverage;
+#[cfg(any(test, feature = "test-support"))]
+use film_juicer_core::illuminant::{self, LensInput};
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_bridge::{self, Failure};
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::FjFloatSpan;
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::{
     FjErrorBuffer, FjStatus, FJ_API_NONE, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT,
@@ -33,15 +39,18 @@ impl From<Coverage> for FjIlluminantCoverage {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjIlluminantLens {
     input: Option<LensInput>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for FjIlluminantLens {
     fn drop(&mut self) {
         #[cfg(feature = "test-support")]
         LIVE_LENSES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -49,12 +58,14 @@ fn status(category: u32) -> FjStatus {
         native_code: 0,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn aligned<T>(pointer: *const T) -> bool {
     !pointer.is_null() && (pointer as usize).is_multiple_of(std::mem::align_of::<T>())
 }
 
 /// # Safety
 /// Aligned nonnull outputs authorize complete exclusive writable records.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear<T: Default>(out: *mut T) -> bool {
     if !aligned(out) {
         return false;
@@ -65,6 +76,7 @@ unsafe fn clear<T: Default>(out: *mut T) -> bool {
 }
 /// # Safety
 /// Caller authorizes the initialized immutable scalar extent until return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn rows<'a>(span: FjFloatSpan) -> Result<&'a [[f32; 2]], Failure> {
     if !span.count.is_multiple_of(2) {
         return Err(Failure::Input("odd illuminant scalar count"));
@@ -89,6 +101,7 @@ pub(crate) unsafe fn rows<'a>(span: FjFloatSpan) -> Result<&'a [[f32; 2]], Failu
 /// # Safety
 /// Required diagnostic authorizes an initialized exclusive record and its
 /// backing extent. Captured consumed owners are destroyed inside containment.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn run(
     error: *mut FjErrorBuffer,
     action: impl FnOnce() -> Result<(), Failure>,
@@ -120,6 +133,7 @@ pub(crate) unsafe fn run(
 }
 /// # Safety
 /// A valid aligned location owns at most one live matching lens; no concurrent use.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn take(io: *mut *mut FjIlluminantLens) -> Result<Option<Box<FjIlluminantLens>>, Failure> {
     if !aligned(io) {
         return Err(Failure::Input("invalid lens owner location"));
@@ -135,6 +149,7 @@ unsafe fn take(io: *mut *mut FjIlluminantLens) -> Result<Option<Box<FjIlluminant
 }
 /// # Safety
 /// Coverage is an aligned exclusive output retained through this synchronous call.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn covered<T>(
     value: Result<(T, Coverage), illuminant::Error>,
     out: *mut FjIlluminantCoverage,
@@ -190,6 +205,7 @@ pub(crate) fn clear_fault() {
 pub(crate) fn live_lenses() -> usize {
     LIVE_LENSES.load(std::sync::atomic::Ordering::SeqCst)
 }
+#[cfg(any(test, feature = "test-support"))]
 fn inject(operation: u32) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
     {
@@ -222,6 +238,7 @@ fn inject(operation: u32) -> Result<(), Failure> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn checked_equal_energy() -> Result<[f32; 81], Failure> {
     illuminant::checked_equal_energy().map_err(|error| match error {
         illuminant::EqualEnergyError::Unsupported => {
@@ -231,6 +248,7 @@ fn checked_equal_energy() -> Result<[f32; 81], Failure> {
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn checked_blackbody(temperature: f32) -> Result<[f32; 81], Failure> {
     illuminant::checked_blackbody(temperature).map_err(|error| match error {
         illuminant::BlackbodyError::Unsupported => {
@@ -240,11 +258,12 @@ fn checked_blackbody(temperature: f32) -> Result<[f32; 81], Failure> {
     })
 }
 
-// FJ_TEMP_BRIDGE: illuminant value/source preparation; remove S4.E.
 /// # Safety
 /// Rows and required outputs/error obey the header's synchronous disjoint-storage contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_from_samples(
+/// Source spans are borrowed only until return; calls run on this thread and do
+/// not retain raw inputs or perform foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn from_samples(
     span: FjFloatSpan,
     out: *mut FjIlluminant,
     error: *mut FjErrorBuffer,
@@ -266,10 +285,11 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_from_samples(
         })
     }
 }
+
 /// # Safety
 /// Required outputs/error obey the header's exclusive disjoint-storage contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_blackbody(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn blackbody(
     temperature: f32,
     out: *mut FjIlluminant,
     error: *mut FjErrorBuffer,
@@ -288,13 +308,11 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_blackbody(
         })
     }
 }
+
 /// # Safety
 /// Required outputs/error obey the header's exclusive disjoint-storage contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_equal_energy(
-    out: *mut FjIlluminant,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn equal_energy(out: *mut FjIlluminant, error: *mut FjErrorBuffer) -> FjStatus {
     // SAFETY: The caller authorizes writable output and diagnostic storage.
     unsafe {
         let valid = clear(out);
@@ -309,10 +327,13 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_equal_energy(
         })
     }
 }
+
 /// # Safety
 /// Rows and required outputs/error obey the header's synchronous disjoint-storage contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_tungsten_kg3(
+/// Source spans are borrowed only until return; calls run on this thread and do
+/// not retain raw inputs or perform foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn tungsten_kg3(
     span: FjFloatSpan,
     out: *mut FjIlluminant,
     coverage: *mut FjIlluminantCoverage,
@@ -335,11 +356,11 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_tungsten_kg3(
         })
     }
 }
-// FJ_TEMP_BRIDGE: consuming call-local illuminant lens; remove S4.E.
+
 /// # Safety
 /// Rows and required outputs/error obey the header contract; successful owner transfers to caller.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_lens_prepare(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn lens_prepare(
     span: FjFloatSpan,
     out: *mut *mut FjIlluminantLens,
     coverage: *mut FjIlluminantCoverage,
@@ -364,10 +385,11 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_lens_prepare(
         })
     }
 }
+
 /// # Safety
 /// Valid io owns one live lens; required rows/outputs/error obey the header contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_lens_finish(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn lens_finish(
     io: *mut *mut FjIlluminantLens,
     span: FjFloatSpan,
     out: *mut FjIlluminant,
@@ -394,10 +416,11 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_lens_finish(
         })
     }
 }
+
 /// # Safety
 /// Valid io exclusively owns a live matching lens or NULL; required error obeys header contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_illuminant_lens_release(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn lens_release(
     io: *mut *mut FjIlluminantLens,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {

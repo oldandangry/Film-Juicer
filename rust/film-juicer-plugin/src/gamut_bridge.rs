@@ -110,11 +110,15 @@ fn production_fault() -> Result<(), Failure> {
     #[cfg(not(feature = "test-support"))]
     Ok(())
 }
-// FJ_TEMP_BRIDGE: standalone input-hull carrier for retained callers; remove at S4.E last use.
+
 /// # Safety
-/// The required fixed source/output/error storage obeys the legacy header.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_gamut_input_hull(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_gamut_input_hull(
     source: *const FjInputHullSource,
     out: *mut FjInputHull,
     error: *mut FjErrorBuffer,
@@ -474,11 +478,15 @@ fn output_fault(operation: u32) -> Result<(), Failure> {
         Ok(())
     }
 }
-// FJ_TEMP_BRIDGE: complete output transform into native recipes; remove S4.E.
+
 /// # Safety
-/// The synchronous fixed record/optional diagnostic contract in the header applies.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_gamut_output_transform(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_gamut_output_transform(
     source: *const FjOutputGamutSource,
     out: *mut FjOutputGamutTransform,
     error: *mut FjErrorBuffer,
@@ -486,11 +494,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_gamut_output_transform(
     // SAFETY: Shared checked operation scopes all foreign accesses and containment.
     unsafe { output_transform_call(source, out, error, || output_fault(1)) }
 }
-// FJ_TEMP_BRIDGE: standalone boundary carrier for retained callers; remove at S4.E last use.
+
 /// # Safety
-/// The synchronous fixed records/exact Cmax/optional diagnostic contract applies.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_gamut_output_boundary(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_gamut_output_boundary(
     source: *const FjOutputBoundarySource,
     cmax: *mut f32,
     count: usize,
@@ -668,7 +680,7 @@ mod output_tests {
             std::ptr::addr_of_mut!((*error).capacity).write(0);
             std::ptr::addr_of_mut!((*error).length).write(73);
             assert_eq!(
-                fj_legacy_gamut_output_transform(&source, &mut transform, error).category,
+                boundary_gamut_output_transform(&source, &mut transform, error).category,
                 crate::cuda::sys::FJ_STATUS_SUCCESS
             );
             assert_eq!(std::ptr::addr_of!((*error).length).read(), 0);
@@ -681,7 +693,7 @@ mod output_tests {
             let mut failure = FjOutputBoundaryFailure::default();
             let mut table = vec![7.0; gamut::OUTPUT_BOUNDARY_VALUE_COUNT];
             assert_eq!(
-                fj_legacy_gamut_output_boundary(
+                boundary_gamut_output_boundary(
                     &boundary,
                     table.as_mut_ptr(),
                     table.len(),

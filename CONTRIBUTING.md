@@ -1,7 +1,8 @@
 # Contributing to Film-Juicer
 
-Film-Juicer keeps photographic policy in immutable recipes and descriptors,
-with CUDA code binding or executing those decisions. Preserve arithmetic
+Film-Juicer keeps photographic policy in the complete immutable Rust `RenderState`
+and its named recipes. Native values, descriptors and CUDA code bind or execute
+those decisions. Preserve arithmetic
 order, units, channel order, hashes, seeds, stage order, external identifiers,
 and asynchronous lifetime while changing implementation language or structure.
 
@@ -21,10 +22,64 @@ and asynchronous lifetime while changing implementation language or structure.
 - Rust core code is safe and CUDA/OFX independent. Raw foreign operations stay
   at the named plug-in or native boundary; native CUDA resources remain owned
   by the exact context and epoch.
+- Prepare state outside publication locks and recheck the captured input before
+  admission. Host calls must not hold publication/UI locks or an exclusive Rust
+  instance borrow across possible reentry. Asynchronous work retains its inputs
+  through their last consumer; finish, abort and retirement belong to the owner.
+- Keep ordinary native implementation in its owning `.cpp` or `.cu`; headers
+  contain declarations and implementation that needs consumer visibility, such
+  as templates, constexpr and host/device code.
+
+## Ownership and maintenance map
+
+Film-Juicer has one production path: a Rust host/model and a retained native CUDA
+engine. Production pixel rendering requires CUDA; there is no CPU fallback or
+implemented Metal backend.
+
+| Responsibility | Entry points and ownership |
+| --- | --- |
+| OFX discovery and callbacks | [`native/ofx_exports.cpp`](native/ofx_exports.cpp) defines the two standard discovery exports and delegates to [Rust OFX](rust/film-juicer-plugin/src/ofx/mod.rs). Rust owns descriptors, parameters, actions and callback-local image release. Retained OFXS headers do not implement a second production host adapter. |
+| Process and instance | [Runtime](rust/film-juicer-plugin/src/runtime.rs) composes Assets and the native CUDA owner; Assets remains alive through native close. [Instance](rust/film-juicer-plugin/src/instance.rs), [submission](rust/film-juicer-plugin/src/submission.rs), [OFX instance handling](rust/film-juicer-plugin/src/ofx/instance.rs) and core [Publication](rust/film-juicer-core/src/state.rs) own capture, publication/admission and session policy. |
+| Photographic model and assets | Core [Assets](rust/film-juicer-core/src/assets.rs), [profiles](rust/film-juicer-core/src/profile.rs) and [recipes](rust/film-juicer-core/src/recipe.rs), with the film, print, optics and scanner modules, own source/derived data and resolved policy. Complete immutable `RenderState` retains the backing its consumers need. The core [forbids unsafe](rust/film-juicer-core/src/lib.rs) and has no OFX/CUDA dependency. |
+| Foreign submission and GPU execution | Plug-in [CUDA](rust/film-juicer-plugin/src/cuda/mod.rs) borrows admitted state through the [native C API](native/juicer_cuda_api.h). [RenderValues](src/RenderValues.h) binds resolved policy; [Root](src/ProcessRoot.h), [CUDA resources](src/Cuda/JuicerCudaResources.h) and kernels own execution and exact-context-plus-epoch residency. `PreparedCudaFrame` retains resources through finish/abort and asynchronous retirement. Native render code does not discover asset files. |
+| Build and test boundaries | [CMake/Cargo integration](cmake/JuicerRust.cmake) builds the two-crate workspace. Shipping and production witnesses link `cargo/production`; facade/fault consumers select `cargo/test-support`. [ABI and binding maintenance](tests/ffi/README.md) documents committed bindings, regeneration and the [test-preparation C facade](tests/ffi/juicer_test_api.h). Independent native oracles and nonshipping measurement helpers retain their test consumers. |
+
+For a maintenance change, follow the authoritative value to its actual consumer:
+
+| Change | Trace |
+| --- | --- |
+| Grain mapping/defaults | [OFX controls](rust/film-juicer-plugin/src/ofx/controls.rs) → [grain policy/conversion](rust/film-juicer-core/src/film/grain.rs) → [recipe identity](rust/film-juicer-core/src/recipe.rs) → [frame binding](rust/film-juicer-plugin/src/cuda/frame.rs) → [native film payloads](src/Cuda/JuicerCudaFilmPayloads.cpp). |
+| Scanner encoding | [Scanner policy](rust/film-juicer-core/src/scanner.rs) and recipe `scanner_params` → completed scanner/color identity → [native scanner binding](src/Scanner.h). Encoding changes must preserve unrelated spectral-medium reuse. |
+| Profile-derived preparation | Assets/profile → recipe foundation and gamma-derived preparation → retained `RenderState` backing. Releasing cache holds must not invalidate admitted frames; original f64 exposure and interpolation f32 axes have different consumers. |
+| Admission | Core `Publication::admit` takes pending inputs, prepares outside the publication lock, then rechecks before publishing the complete state. Follow the [plug-in consumer](rust/film-juicer-plugin/src/instance.rs) for capture failure and reentry. |
+| Native workspace attachment | [`WorkspaceLayout::create`](src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp) → Root frame preparation → exact-context leases and execution consumers → completion-aware release/alias reuse in [`ProcessRoot.cpp`](src/ProcessRoot.cpp). |
+
+Preserve arithmetic order, encodings, identities/seeds and fixture-specific bounds.
+The approved [density policy](tests/profile/fixtures/README.md) uses pinned
+`libm::erfcf`; [filtered print](tests/print/illuminant-fixtures/README.md) uses
+`libm::erff` with exact selected Rust expectations and resulting identities.
+The [input-color contract](tests/ffi/README.md#input-color-preparation) retains
+separate-f32 inverse authority. These are bounded numerical policies, not a
+general tolerance or permission to replace portable math for speed.
+
+The foreign trust boundary includes handwritten C++/CUDA, generated bindings,
+standard/dependency libraries, toolchains, CUDA/driver behavior and host lifetime
+contracts. Pointer/null/extent checks cannot prove pointer provenance or
+consume-once correctness. Panic containment does not make every allocation
+fallible. Native failure retention does not retain foreign images, streams,
+contexts or unloaded module code; driver loss and forced unload have no universal
+safety guarantee. Review the [ABI/lifetime contract](native/juicer_cuda_api.h)
+and [fixture limitations](tests/ffi/README.md) when changing those edges. The
+plug-in as a whole is not entirely memory-safe.
 
 ## Naming
 
 Use the shortest name that preserves the distinction visible at the call site.
+Use established photographic, OFX and CUDA vocabulary consistently; distinguish
+film/print density, RGB/CMY order, linear/log exposure, resolved policy/borrowed
+views, and enqueue/completion where the surrounding type or module does not.
+Review declarations and representative consumers together, and keep shared
+concepts searchable through their owning module or explicit boundary mapping.
 Rust types and variants use `PascalCase`; functions, modules, fields, and values
 use `snake_case`; constants use `SCREAMING_SNAKE_CASE`. Familiar type acronyms
 are `Rgb`, `Lut`, `Ofx`, and `Cuda`. New native free functions use
@@ -119,6 +174,8 @@ Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
 components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
+Preserve `.clang-format`, pinned rustfmt, configured Clippy/tidy and compiler
+warnings-as-errors; do not weaken checks or language standards to land a change.
 Use the shared verifier for native preparation, focused development checks and
 qualification. Keep the existing preset checkout path and cache; configure and
 build through the native owner. A `prepare` command configures and builds only its
@@ -233,9 +290,9 @@ negative cases remain in their owning tests; do not add product APIs just for a
 compiler fixture. Cargo metadata is read from the command output and source
 workspace.
 
-The shared tooling CMake entry registers 13 Debug tests: the three native result
+The shared tooling CMake entry registers 14 Debug tests: the three native result
 groups; Dispatcher, ToolingLint, Execution, BuildEvidence, BuildRegistration,
-Verify and Checkpoint; CTest Report and Repetition; and the Rust build contract.
+Verify and Checkpoint; CTest Report and Repetition; the Rust build contract; and the offline OFX measurement report tests.
 Ordinary host/GPU CTest registrations use explicit `TIMEOUT 0`, and the native
 verifier dispatches CTest with `timeout=None`. Live execution rejects finite,
 missing or malformed ordinary timeouts. Historical result readers still accept

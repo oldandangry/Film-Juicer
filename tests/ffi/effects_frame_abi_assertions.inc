@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 /* Shared C11 physical-effects frame layout, field-type and signature assertions. */
 _Static_assert(sizeof(FjEffectsFrameInput) == 776 && _Alignof(FjEffectsFrameInput) == 8, "FjEffectsFrameInput layout");
 _Static_assert(offsetof(FjEffectsFrameInput, active) == 0, "FjEffectsFrameInput.active offset");
@@ -86,7 +87,7 @@ _Static_assert(_Generic(&(((FjEffectsFrameMath*)0)->hash), uint64_t(*): 1, defau
 _Static_assert(sizeof(FjEffectsFrameFailure) == 4 && _Alignof(FjEffectsFrameFailure) == 4, "FjEffectsFrameFailure layout");
 _Static_assert(offsetof(FjEffectsFrameFailure, reason) == 0, "FjEffectsFrameFailure.reason offset");
 _Static_assert(_Generic(&(((FjEffectsFrameFailure*)0)->reason), uint32_t(*): 1, default: 0), "FjEffectsFrameFailure.reason type");
-_Static_assert(_Generic(&fj_legacy_effects_frame_prepare, FjStatus (*)(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*): 1, default: 0), "physical effects frame production signature");
+_Static_assert(_Generic(&fj_test_effects_frame_prepare, FjStatus (*)(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*): 1, default: 0), "physical effects frame production signature");
 #ifdef JUICER_EFFECTS_FRAME_ON_ASSERTIONS
 _Static_assert(_Generic(&fj_test_effects_frame_prepare, FjStatus (*)(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*): 1, default: 0), "physical effects frame facade signature");
 #endif

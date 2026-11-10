@@ -68,13 +68,6 @@ FjCallCompletionResult fj_cuda_call(FjCuda*, uint32_t route, FjCudaCallContinuat
  * Instance latch. No Rust/host owner is retained and no host context is reset. */
 uint32_t fj_cuda_call_retire_context(void*, const FjCallCompletionInput*);
 
-#define FJ_UNAVAILABLE_STATE 0U
-#define FJ_UNAVAILABLE_INSTANCE 1U
-
-FjStatus fj_legacy_prepared_state_frame_policy(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
-FjCallCompletionResult fj_legacy_prepared_state_render(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, uint64_t, FjAbortCallback, FjErrorBuffer*);
-FjCallCompletionResult fj_legacy_prepared_unavailable(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
-
 #ifdef __cplusplus
 }
 

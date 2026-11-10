@@ -160,7 +160,9 @@ class CtestRepetitionTests(unittest.TestCase):
 class FixtureLifetimeTests(unittest.TestCase):
     def test_successful_repetition_cleans_owned_scratch(self):
         case = CtestRepetitionTests("test_success_repeats_in_fresh_processes_with_exact_operands")
-        result = case.run(unittest.TestResult())
+        with patch.dict(os.environ):
+            os.environ.pop("JUICER_TEST_RETAIN_FIXTURES", None)
+            result = case.run(unittest.TestResult())
         self.assertTrue(result.wasSuccessful(), result.errors)
         self.assertFalse(case.directory.exists())
         self.assertNotIn(case.lease.path, execution.OutputLease.held)

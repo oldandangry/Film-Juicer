@@ -8,8 +8,9 @@
 #include <vector>
 
 #include "instance_host.h"
+#include "host_reference.h"
+
 #include "juicer_ofx_api.h"
-#include "ofxsImageEffect.h"
 #include "../ffi/case_results.h"
 
 namespace {
@@ -155,7 +156,50 @@ namespace {
             require(!host.callback_error(), "host callback");
         }
     };
-    using Observations = std::vector<std::vector<Observation>>;
+    struct NamedObservation {
+        std::string id;
+        Observation value;
+    };
+    using Observations = std::vector<std::vector<NamedObservation>>;
+    using ofx_test::reference::Json;
+    Json encode(const Observation& observation) {
+        return Json::array({observation.status, ofx_test::reference::calls(observation.calls), ofx_test::reference::values(observation.output)});
+    }
+    Json encode(const Observations& observations) {
+        auto result = Json::array();
+        for (std::size_t i = 0; i < observations.size(); ++i) {
+            auto values = Json::array();
+            for (const auto& observation : observations[i])
+                values.push_back(Json::array({observation.id, encode(observation.value)}));
+            result.push_back(Json::array({kActions.at(i).id, std::move(values)}));
+        }
+        return result;
+    }
+    Observations decode(const Json& record) {
+        if (!record.is_array() || record.size() != kActions.size())
+            throw std::runtime_error("action reference membership");
+        Observations result;
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < record.size(); ++i) {
+            const auto& entry = record[i];
+            if (!entry.is_array() || entry.size() != 2 || entry[0] != kActions[i].id || !entry[1].is_array())
+                throw std::runtime_error("action reference order");
+            std::vector<NamedObservation> observations;
+            for (const auto& named : entry[1]) {
+                if (!named.is_array() || named.size() != 2)
+                    throw std::runtime_error("action reference row");
+                const auto& item = named[1];
+                if (!item.is_array() || item.size() != 3)
+                    throw std::runtime_error("action reference observation");
+                observations.push_back({named[0].get<std::string>(), {item[0].get<int>(), ofx_test::reference::instance_calls(item[1]), ofx_test::reference::instance_values(item[2])}});
+            }
+            count += observations.size();
+            result.push_back(std::move(observations));
+        }
+        if (count != 1034 || encode(result) != record)
+            throw std::runtime_error("action reference count or encoding");
+        return result;
+    }
     Observations exercise(Fixture& fixture, const Observations* expected) {
         Observations all;
         std::unique_ptr<JuicerTests::Cohort> cohort;
@@ -169,7 +213,9 @@ namespace {
             if (expected)
                 row = std::make_unique<JuicerTests::CaseEvent>(kCaller, action.id);
             const std::string prefix = std::string(action.id) + "/";
+            std::string current_id;
             auto begin_internal = [&](const std::string& id) {
+                current_id = id;
                 return cohort ? std::make_unique<JuicerTests::CaseEvent>("ofx.actions.rows", id) : nullptr;
             };
             auto pass_internal = [](const std::unique_ptr<JuicerTests::CaseEvent>& event) {
@@ -201,11 +247,22 @@ namespace {
                     }
                 }
             }
-            std::vector<Observation> observations;
+            std::vector<NamedObservation> observations;
             auto check = [&](Observation actual) {
-                if (expected)
-                    require(actual == expected->at(all.size()).at(observations.size()), "native action observation");
-                observations.push_back(std::move(actual));
+                if (expected) {
+                    const auto& reference = expected->at(all.size()).at(observations.size());
+                    require(reference.id == current_id && encode(actual) == encode(reference.value), "native action observation");
+                    if (all.empty() && observations.empty()) {
+                        auto altered = reference.value;
+                        altered.status = -100;
+                        require(encode(actual) != encode(altered), "candidate accepted altered action reference");
+                        altered = reference.value;
+                        require(altered.calls.size() > 3, "action reference order boundary");
+                        std::swap(altered.calls[2], altered.calls[3]);
+                        require(encode(actual) != encode(altered), "candidate accepted reordered action reference");
+                    }
+                }
+                observations.push_back({current_id, std::move(actual)});
             };
             auto valid_event = begin_internal(prefix + "valid");
             auto valid = fixture.call(action);
@@ -286,15 +343,11 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, action.id);
         return 0;
     }
+    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: action fixture --reference file");
     JuicerTests::CaseLog log;
-    auto* reference = OfxGetPlugin(0);
-    auto* candidate = fj_ofx_plugin(0);
-    require(reference && candidate && reference->mainEntry != candidate->mainEntry, "independent descriptors");
-    InstanceHost reference_host;
-    Fixture native(reference, reference_host);
-    const auto expected = exercise(native, nullptr);
-    native.close();
-    reference = nullptr;
+    auto* candidate = OfxGetPlugin(0);
+    require(candidate, "candidate descriptor");
+    const auto expected = decode(ofx_test::reference::read(argv[2], "actions"));
     InstanceHost candidate_host;
     Fixture rust(candidate, candidate_host);
     exercise(rust, &expected);

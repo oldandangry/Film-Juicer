@@ -18,8 +18,8 @@
 
 #include "exposure_fixture.h"
 #include "OutputColor.h"
-#include "RustColorBridge.h"
-#include "RustScannerBridge.h"
+#include "color_fixture.h"
+#include "scanner_fixture.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Scanner.h"
 #include "output_encoding_oracle.h"
@@ -60,7 +60,7 @@ namespace {
         for (int c = 0; c < 3; ++c)
             illuminant.whiteXYZ[c] = std::bit_cast<float>(input.at("illuminant_xyz")[c].get<std::uint32_t>());
         illuminant.hash = input.at("illuminant_hash");
-        return Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(input.at("medium").get<int>()), illuminant, {static_cast<OutputEncoding::ColorSpace>(input.at("output_space").get<int>()), input.at("apply_cctf").get<bool>(), input.at("input_is_output_space").get<bool>()}, input.at("active_gamut_recipe_hash"));
+        return JuicerTestFixture::Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(input.at("medium").get<int>()), illuminant, {static_cast<OutputEncoding::ColorSpace>(input.at("output_space").get<int>()), input.at("apply_cctf").get<bool>(), input.at("input_is_output_space").get<bool>()}, input.at("active_gamut_recipe_hash"));
     }
     std::string scanner_case_id(const Json& row) {
         return std::to_string(row.at("medium").get<int>()) + "/" + std::to_string(row.at("tag").get<int>()) + "/" + std::to_string(row.at("encoded").get<int>()) + "/illuminant-" + std::to_string(row.at("illuminant_hash").get<std::uint64_t>());
@@ -160,7 +160,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     for (std::size_t i = 0; i < results.size(); ++i) {
         threads.emplace_back([&, i] {
             barrier.arrive_and_wait();
-            statuses[i] = (i % 2 ? fj_test_output_color : fj_legacy_output_color)(static_cast<std::uint32_t>(i % 9), &results[i]).category;
+            statuses[i] = (i % 2 ? fj_test_output_color : fj_test_boundary_output_color)(static_cast<std::uint32_t>(i % 9), &results[i]).category;
         });
     }
     for (auto& thread : threads)
@@ -181,7 +181,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     for (int tag = 0; tag < 9; ++tag) {
         JuicerTests::CaseEvent entry_event("output_color", std::string("entry.") + std::to_string(tag));
         require(fixture.at("entries")[tag].at("name") == OutputEncoding::kColorSpaceLabels[tag], "native UI tag/label correspondence");
-        const auto out = JuicerColor::output_color(static_cast<OutputEncoding::ColorSpace>(tag));
+        const auto out = JuicerTestFixture::Color::output_color(static_cast<OutputEncoding::ColorSpace>(tag));
         compare(out, fixture.at("entries")[tag]);
         FjOutputColorPreparation direct{};
         require(fj_test_output_color(tag, &direct).category == FJ_STATUS_SUCCESS, "independent direct facade");
@@ -190,7 +190,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     }
     {
         JuicerTests::CaseEvent fallback_event("output_color", "invalid_tag_fallback");
-        compare(JuicerColor::output_color(static_cast<OutputEncoding::ColorSpace>(255)), fixture.at("entries")[0]);
+        compare(JuicerTestFixture::Color::output_color(static_cast<OutputEncoding::ColorSpace>(255)), fixture.at("entries")[0]);
         fallback_event.passed();
     }
     for (const auto& row : fixture.at("scanner")) {
@@ -202,7 +202,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
         illuminant.whiteXYZ[2] = 1.089058f;
         illuminant.hash = row.at("illuminant_hash");
         const auto tag = row.at("tag").get<int>();
-        const auto runtime = Scanner::build_color_runtime(
+        const auto runtime = JuicerTestFixture::Scanner::build_color_runtime(
             static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), illuminant, {static_cast<OutputEncoding::ColorSpace>(tag), row.at("encoded").get<int>() != 0, false}, 7654321);
         require(words(runtime.cat02, 9) == row.at("cat02") && words(runtime.xyzToRgb, 9) == row.at("xyz_to_rgb"), "frozen scanner arrays and fallback");
         require(words(runtime.illuminantXYZ, 3) == row.at("illuminant_xyz") && runtime.hash == row.at("hash") && runtime.outputGamutRecipeHash == row.at("gamut_recipe_hash"), "frozen scanner white/identities");
@@ -220,11 +220,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
         const std::string operation_id = operation == FJ_TEST_OUTPUT_COLOR ? "invalid_illuminant.output_color" : "invalid_illuminant.cat02_matrix";
         JuicerTests::CaseEvent event("output_color", operation_id);
         require(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC).category == FJ_STATUS_SUCCESS, "arm early-order witness");
-        require(Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, {}, {}, 0).hash == 0, "invalid illuminant returns before color work");
+        require(JuicerTestFixture::Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, {}, {}, 0).hash == 0, "invalid illuminant returns before color work");
         FjOutputColorPreparation prepared{};
         const float white[3]{1.0f, 1.0f, 1.0f};
         float matrix[9]{};
-        const auto status = operation == FJ_TEST_OUTPUT_COLOR ? fj_legacy_output_color(0, &prepared) : fj_legacy_cat02_matrix(white, white, matrix);
+        const auto status = operation == FJ_TEST_OUTPUT_COLOR ? fj_test_boundary_output_color(0, &prepared) : fj_test_boundary_cat02_matrix(white, white, matrix);
         require(status.category == FJ_STATUS_INTERNAL_FAILURE, "early failure preserves operation-specific fault");
         (void)fj_test_color_clear_fault();
         event.passed();

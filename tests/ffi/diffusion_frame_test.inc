@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace DiffusionFrameTest {
     FjDiffusionFrameInput raw_frame(const Json& input);
     Json project(const FjDiffusionFrameSet& v);
@@ -122,7 +123,7 @@ namespace DiffusionFrameTest {
             std::fflush(stderr);
         };
         progress("bootstrap", "");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -142,13 +143,13 @@ namespace DiffusionFrameTest {
             auto frameEvent = frame_products.case_event(name + "/product-check");
             progress("recipe", name);
             const auto route = spec.at("route").get<unsigned>();
-            ParamSnapshot params;
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.printProfileKey = "kodak_portra_endura";
-            params.cameraDiffusion.active = spec.at("camera");
-            params.enlargerDiffusion.active = spec.at("enlarger");
-            params.cameraDiffusion.family = params.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(spec.at("family").get<unsigned>());
+            JuicerTestSupport::PreparationInput params;
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.print_key = "kodak_portra_endura";
+            params.values.camera_diffusion.active = spec.at("camera");
+            params.values.enlarger_diffusion.active = spec.at("enlarger");
+            params.values.camera_diffusion.family = params.values.enlarger_diffusion.family = static_cast<std::uint32_t>(spec.at("family").get<unsigned>());
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer viewError{};
@@ -334,7 +335,7 @@ namespace DiffusionFrameTest {
         const auto input = raw_sample(row.at("input"));
         const bool validSample = row.at("success");
         const auto expected = validSample ? expected_sample(row.at("sample")) : FjDiffusionSample{};
-        for (auto prepare : {fj_legacy_diffusion_sample_prepare, fj_test_diffusion_sample_prepare, fj_test_diffusion_sample_c_prepare}) {
+        for (auto prepare : {fj_test_diffusion_sample_prepare, fj_test_diffusion_sample_prepare, fj_test_diffusion_sample_c_prepare}) {
             FjDiffusionSample out{};
             std::memset(&out, 0x55, sizeof(out));
             FjDiffusionFailure failure{99, 99, 99};
@@ -352,7 +353,7 @@ namespace DiffusionFrameTest {
             return;
         }
         const auto sample = expected_sample(row.at("sample"));
-        for (auto prepare : {fj_legacy_diffusion_components_prepare, fj_test_diffusion_components_prepare, fj_test_diffusion_components_c_prepare}) {
+        for (auto prepare : {fj_diffusion_components_prepare, fj_test_diffusion_components_prepare, fj_test_diffusion_components_c_prepare}) {
             FjDiffusionComponents out{};
             std::memset(&out, 0x55, sizeof(out));
             FjDiffusionFailure failure{99, 99, 99};
@@ -379,7 +380,7 @@ namespace DiffusionFrameTest {
         JuicerTests::CaseEvent c11Event("c11", caseId);
         const auto input = raw_frame(row.at("input"));
         const auto expected = expected_frame(row.at("frame"));
-        for (auto prepare : {fj_legacy_diffusion_frame_prepare, fj_test_diffusion_frame_prepare, fj_test_diffusion_frame_c_prepare}) {
+        for (auto prepare : {fj_test_diffusion_frame_prepare, fj_test_diffusion_frame_prepare, fj_test_diffusion_frame_c_prepare}) {
             FjDiffusionFrameSet out{};
             std::memset(&out, 0x55, sizeof(out));
             FjDiffusionFailure failure{99, 99, 99};

@@ -160,12 +160,30 @@
       "protocol": "custom",
       "registrations": 1
     },
-    "JuicerOfxInstanceTests": { "protocol": "custom", "registrations": 1 },
-    "JuicerOfxActionTests": { "protocol": "custom", "registrations": 1 },
-    "JuicerOfxRenderTests": { "protocol": "custom", "registrations": 1 },
-    "JuicerOfxRenderControlTests": { "protocol": "custom", "registrations": 1 },
-    "JuicerOfxCaptureTests": { "protocol": "custom", "registrations": 1 },
-    "JuicerOfxInstanceControlTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxInstanceTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxActionTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxRenderTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxRenderControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxCaptureTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxInstanceControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerOfxContextControlTests": {
       "protocol": "custom",
       "registrations": 1
@@ -177,6 +195,18 @@
     "JuicerOfxModuleControlTests": {
       "protocol": "custom",
       "registrations": 3
+    },
+    "JuicerPreparedValueTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOutputColorValueTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxMeasurementTests": {
+      "protocol": "gtest",
+      "registrations": 1
     }
   },
   "native_cohorts": {
@@ -254,7 +284,9 @@
     "Ofx.Host.Module": 3,
     "Ofx.Host.ModuleControls.Construction": 4,
     "Ofx.Host.ModuleControls.Panic": 2,
-    "Ofx.Host.ModuleControls.Terminal": 1
+    "Ofx.Host.ModuleControls.Terminal": 1,
+    "Ffi.Host.PreparedValues": 1,
+    "Ffi.Host.OutputColorValues": 1
   },
   "rust_cohorts": {
     "film-juicer-core": 89,
@@ -268,7 +300,7 @@
     "film-juicer-core::film_dir_density": 5,
     "film-juicer-core::hash": 4,
     "film-juicer-core::illuminant": 8,
-    "film-juicer-core::input_hull": 4,
+    "film-juicer-core::input_hull": 5,
     "film-juicer-core::noise": 7,
     "film-juicer-core::output_gamut": 4,
     "film-juicer-core::print_gamma": 5,

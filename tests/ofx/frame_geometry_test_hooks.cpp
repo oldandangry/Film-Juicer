@@ -1,78 +1,63 @@
 #include "frame_geometry_test_hooks.h"
 
+#include <algorithm>
 #include <stdexcept>
+
+#include "../ffi/juicer_test_api.h"
 
 namespace JuicerFrame::FrameGeometryTest {
     namespace {
-        thread_local InstanceRetirementObservation retirement;
-        thread_local Observation observed;
-        thread_local HalationObservation halation;
-        thread_local DiffusionObservation diffusion;
-        thread_local PreparedPolicyObservation prepared;
-        void phase(unsigned value) {
-            if (observed.count >= observed.phases.size())
-                throw std::runtime_error("frame geometry observation exceeds three phases");
-            observed.phases[observed.count++] = value;
+        FjOfxFrameObservation observe() {
+            FjOfxFrameObservation value{};
+            if (fj_test_ofx_frame_observe(&value) != 1)
+                throw std::runtime_error("cannot inspect Rust callback frame stages");
+            return value;
         }
     } // namespace
-    void instance_retired(const FjInstance* instance, std::uint64_t token, FjStatus status) noexcept {
-        std::uint32_t initialized = 0;
-        std::uint64_t seed = 0;
-        std::uint64_t actualToken = 0;
-        const auto read = fj_legacy_instance_identity(instance, &initialized, &seed, &actualToken, nullptr);
-        retirement = {retirement.count + 1, read.category == FJ_STATUS_SUCCESS && initialized != 0 && actualToken == token, token, status};
-    }
     InstanceRetirementObservation instance_retirement_snapshot() {
-        return retirement;
+        FjOfxRetirementObservation value{};
+        if (fj_test_ofx_retirement_observe(&value) != 1)
+            throw std::runtime_error("cannot inspect OFX instance retirement");
+        return {value.count, value.identity_live != 0, value.token, value.status};
     }
     void reset_instance_retirement() {
-        retirement = {};
+        fj_test_ofx_retirement_reset();
     }
     void reset() {
-        observed = {};
-        halation = {};
-        diffusion = {};
-        prepared = {};
+        fj_test_ofx_frame_reset();
     }
     Observation snapshot() {
-        return observed;
+        const auto value = observe();
+        Observation result{};
+        std::copy(std::begin(value.phases), std::end(value.phases), result.phases.begin());
+        result.count = value.count;
+        result.fullDomain = {value.full_frame.x, value.full_frame.y, value.full_frame.width, value.full_frame.height};
+        result.pixelSizeUm = value.policy.geometry.pixel_size_um;
+        if (value.effects_count != 0) {
+            const auto& source = value.effects;
+            result.effects = {{source.pixel_definition.x, source.pixel_definition.y, source.pixel_definition.width, source.pixel_definition.height},
+                              source.canonical_x,
+                              source.canonical_y,
+                              source.canonical_width,
+                              source.canonical_height,
+                              source.scale_x,
+                              source.scale_y,
+                              source.pixel_aspect_ratio};
+        }
+        return result;
     }
     HalationObservation halation_snapshot() {
-        return halation;
+        HalationObservation result{};
+        result.count = observe().halation_transport_calls;
+        return result;
     }
     DiffusionObservation diffusion_snapshot() {
-        return diffusion;
+        DiffusionObservation result{};
+        result.count = observe().diffusion_transport_calls;
+        return result;
     }
     PreparedPolicyObservation prepared_policy_snapshot() {
-        return prepared;
-    }
-    void prepared_policy(const FjPreparedFramePolicy& policy, std::uint32_t route) {
-        if (observed.count != 1 || prepared.count != 0)
-            throw std::runtime_error("prepared policy observation must follow full-domain observation exactly once");
-        prepared = {1, route, policy};
-    }
-    void diffusion_frame(double pixelSizeUm, Spektrafilm::ScanRoute route, Spektrafilm::DiffusionFrameDomain domain, bool success, const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>& descriptor) {
-        if (observed.count != 2 || halation.count != 0)
-            throw std::runtime_error("diffusion observation must follow scalar geometry and precede halation");
-        diffusion = {diffusion.count + 1, pixelSizeUm, route, domain, success, descriptor};
-    }
-    void halation_frame(float pixelSizeUm, bool success, const std::optional<ScatterHalationFrameDescriptor>& descriptor) {
-        if (diffusion.count != 1 || !diffusion.success)
-            throw std::runtime_error("halation observation must follow successful diffusion construction");
-        halation = {halation.count + 1, pixelSizeUm, success, descriptor};
-    }
-    void full_domain(const Spektrafilm::DiffusionFrameDomain& domain) {
-        phase(1);
-        observed.fullDomain = domain;
-    }
-    void scalar_pixel(float pixel) {
-        phase(2);
-        observed.pixelSizeUm = pixel;
-    }
-    void effects_domain(const Spektrafilm::FilmJuicerEffectsGeometry& geometry) {
-        if (prepared.count != 1 || observed.count != 2)
-            throw std::runtime_error("effects observation must follow prepared frame policy and pixel observation");
-        phase(3);
-        observed.effects = geometry;
+        const auto value = observe();
+        return {value.policy_count, value.route, value.policy};
     }
 } // namespace JuicerFrame::FrameGeometryTest

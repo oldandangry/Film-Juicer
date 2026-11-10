@@ -1,5 +1,7 @@
 #pragma once
 
+#include "juicer_test_api.h"
+
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -9,8 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "NativePath.h"
-#include "juicer_legacy_api.h"
+#include "native_path.h"
 
 namespace JuicerTestSupport {
     struct SpectralFixturePaths {
@@ -28,12 +29,12 @@ namespace JuicerTestSupport {
     public:
         explicit SpectralSourceAssets(const std::filesystem::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            require_spectral_source_status(fj_legacy_assets_create(path.view(), &owner_, nullptr), "asset creation");
+            require_spectral_source_status(fj_test_assets_create(path.view(), &owner_, nullptr), "asset creation");
         }
 
         ~SpectralSourceAssets() noexcept {
             if (owner_ != nullptr) {
-                const FjStatus status = fj_legacy_assets_destroy(std::exchange(owner_, nullptr), nullptr);
+                const FjStatus status = fj_test_assets_destroy(std::exchange(owner_, nullptr), nullptr);
                 if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
                     std::abort();
                 }
@@ -54,9 +55,9 @@ namespace JuicerTestSupport {
     class HanatosSource {
     public:
         explicit HanatosSource(const FjAssets* assets) {
-            require_spectral_source_status(fj_legacy_hanatos_acquire(assets, &owner_, nullptr), "Hanatos acquire");
+            require_spectral_source_status(fj_test_hanatos_acquire(assets, &owner_, nullptr), "Hanatos acquire");
             try {
-                require_spectral_source_status(fj_legacy_spectra_lut_view(owner_, &view_, nullptr), "Hanatos view");
+                require_spectral_source_status(fj_test_spectra_lut_view(owner_, &view_, nullptr), "Hanatos view");
                 if (view_.samples.data == nullptr || view_.samples.count != kLutSamples) {
                     throw std::runtime_error("spectral source Hanatos extent mismatch");
                 }
@@ -87,7 +88,7 @@ namespace JuicerTestSupport {
         void release() noexcept {
             if (owner_ != nullptr) {
                 FjSpectraLut* owner = std::exchange(owner_, nullptr);
-                const FjStatus status = fj_legacy_spectra_lut_release(owner, nullptr);
+                const FjStatus status = fj_test_spectra_lut_release(owner, nullptr);
                 if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
                     std::abort();
                 }
@@ -98,9 +99,9 @@ namespace JuicerTestSupport {
     class ArcticSource {
     public:
         explicit ArcticSource(const FjAssets* assets) {
-            require_spectral_source_status(fj_legacy_arctic_acquire(assets, &owner_, nullptr), "Arctic acquire");
+            require_spectral_source_status(fj_test_arctic_acquire(assets, &owner_, nullptr), "Arctic acquire");
             try {
-                require_spectral_source_status(fj_legacy_spectra_lut_view(owner_, &view_, nullptr), "Arctic view");
+                require_spectral_source_status(fj_test_spectra_lut_view(owner_, &view_, nullptr), "Arctic view");
                 if (view_.samples.data == nullptr || view_.samples.count != kLutSamples) {
                     throw std::runtime_error("spectral source Arctic extent mismatch");
                 }
@@ -131,7 +132,7 @@ namespace JuicerTestSupport {
         void release() noexcept {
             if (owner_ != nullptr) {
                 FjSpectraLut* owner = std::exchange(owner_, nullptr);
-                const FjStatus status = fj_legacy_spectra_lut_release(owner, nullptr);
+                const FjStatus status = fj_test_spectra_lut_release(owner, nullptr);
                 if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
                     std::abort();
                 }
@@ -142,9 +143,9 @@ namespace JuicerTestSupport {
     class MallettSource {
     public:
         explicit MallettSource(const FjAssets* assets) {
-            require_spectral_source_status(fj_legacy_mallett_acquire(assets, &owner_, nullptr), "Mallett acquire");
+            require_spectral_source_status(fj_test_mallett_acquire(assets, &owner_, nullptr), "Mallett acquire");
             try {
-                require_spectral_source_status(fj_legacy_mallett_view(owner_, &samples_, nullptr), "Mallett view");
+                require_spectral_source_status(fj_test_mallett_view(owner_, &samples_, nullptr), "Mallett view");
                 if (samples_.data == nullptr || samples_.count != 243u) {
                     throw std::runtime_error("spectral source Mallett extent mismatch");
                 }
@@ -174,7 +175,7 @@ namespace JuicerTestSupport {
         void release() noexcept {
             if (owner_ != nullptr) {
                 FjMallettBasis* owner = std::exchange(owner_, nullptr);
-                const FjStatus status = fj_legacy_mallett_release(owner, nullptr);
+                const FjStatus status = fj_test_mallett_release(owner, nullptr);
                 if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
                     std::abort();
                 }
@@ -185,9 +186,9 @@ namespace JuicerTestSupport {
     class CmfSource {
     public:
         explicit CmfSource(const FjAssets* assets) {
-            require_spectral_source_status(fj_legacy_cmf_acquire(assets, &owner_, nullptr), "CMF acquire");
+            require_spectral_source_status(fj_test_cmf_acquire(assets, &owner_, nullptr), "CMF acquire");
             try {
-                require_spectral_source_status(fj_legacy_cmf_view(owner_, &rows_, nullptr), "CMF view");
+                require_spectral_source_status(fj_test_cmf_view(owner_, &rows_, nullptr), "CMF view");
                 if (rows_.data == nullptr || rows_.count != 4u * kSamples) {
                     throw std::runtime_error("spectral source CMF extent mismatch");
                 }
@@ -242,7 +243,7 @@ namespace JuicerTestSupport {
         void release() noexcept {
             if (owner_ != nullptr) {
                 FjCmf* owner = std::exchange(owner_, nullptr);
-                const FjStatus status = fj_legacy_cmf_release(owner, nullptr);
+                const FjStatus status = fj_test_cmf_release(owner, nullptr);
                 if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
                     std::abort();
                 }

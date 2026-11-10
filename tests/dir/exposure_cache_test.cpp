@@ -22,10 +22,8 @@
 #include "gtest/gtest.h"
 
 #include "ColorTransforms.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
-#include "RustDirBoundaryBridge.h"
+#include "JuicerDirBoundary.h"
 #include "boundary_test_hooks.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
@@ -78,8 +76,8 @@ namespace {
     };
 
     struct Inputs {
-        JuicerProcess::ProcessRuntime& runtime;
-        PreparedState state;
+        JuicerTestSupport::RuntimeFixture& runtime;
+        JuicerTestSupport::PreparedStateHold state;
         Spektrafilm::SpatialDirDescriptor dir;
         JuicerCuda::FilmPayloadInput filmPayload{};
         std::uint64_t uploadCoreHash = 0;
@@ -89,7 +87,7 @@ namespace {
         int width;
         int height;
 
-        Inputs(JuicerProcess::ProcessRuntime& processRuntime, Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
+        Inputs(JuicerTestSupport::RuntimeFixture& processRuntime, Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
             : runtime(processRuntime), state(JuicerTestSupport::prepare_product(runtime.borrow().assets, controls(route, method, tailWeight))),
               pixelSizeUm(pixelSize), width(extent.width), height(extent.height) {
             FrameFixture::FrameFacts facts;
@@ -109,21 +107,21 @@ namespace {
             dirRecipeHash = captured.dirRecipeHash;
         }
 
-        static ParamSnapshot controls(Spektrafilm::ScanRoute route,
-                                      Spektrafilm::RgbToRawMethod method,
-                                      float tailWeight) {
-            ParamSnapshot result;
-            result.scanRoute = route;
-            result.spectralUpsamplingMode = static_cast<int>(method);
-            result.grainControls.active = false;
-            result.scatterHalationControls = {};
+        static JuicerTestSupport::PreparationInput controls(Spektrafilm::ScanRoute route,
+                                                            Spektrafilm::RgbToRawMethod method,
+                                                            float tailWeight) {
+            JuicerTestSupport::PreparationInput result;
+            result.values.scan_route = static_cast<std::uint32_t>(route);
+            result.values.spectral_upsampling_mode = static_cast<int>(method);
+            result.values.grain.active = false;
+            result.values.scatter_halation = {};
             if (Spektrafilm::scan_route_metadata(route).capturePolarity ==
                 Spektrafilm::ProfilePolarity::Positive) {
-                result.filmProfileKey = "fujifilm_provia_100f";
+                result.film_key = "fujifilm_provia_100f";
             }
-            result.dirCouplers.diffusionSizeUm = 20.0f;
-            result.dirCouplers.diffusionTailUm = 200.0f;
-            result.dirCouplers.diffusionTailWeight = tailWeight;
+            result.values.dir_couplers.diffusion_size_um = 20.0f;
+            result.values.dir_couplers.diffusion_tail_um = 200.0f;
+            result.values.dir_couplers.diffusion_tail_weight = tailWeight;
             return result;
         }
 
@@ -326,7 +324,7 @@ namespace {
 
     class ExposureCache : public testing::Test {
     protected:
-        inline static JuicerProcess::ProcessRuntime runtime;
+        inline static JuicerTestSupport::RuntimeFixture runtime;
 
         static void SetUpTestSuite() {
             runtime.create(JuicerProcess::data_directory());

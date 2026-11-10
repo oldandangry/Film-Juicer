@@ -3,7 +3,8 @@
 #include <cstdint>
 #include <string>
 
-#include "PreparedState.h"
+#include "owner_fixture.h"
+#include "preparation_fixture.h"
 #include "ProcessRoot.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaFilmPayloads.h"
@@ -50,7 +51,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
     // Consumers must finish synchronously and must not retain any reference.
     bool with_prepared_frame_inputs(
         const FjAssets* assets,
-        const PreparedState& state,
+        const JuicerTestSupport::PreparedStateHold& state,
         const FrameFacts& facts,
         void* user,
         Consumer consume,

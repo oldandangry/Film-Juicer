@@ -57,26 +57,26 @@ type Gaussian = unsafe extern "C" fn(
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
 type TraceSubmission = unsafe extern "C" fn(*mut core::ffi::c_void, *const sys::FjSubmission, u32);
-type PolicyEntry = unsafe extern "C" fn(
+type PolicyEntry = unsafe fn(
     *const super::FjPreparedState,
     *const sys::FjExtent,
     *mut super::FjPreparedFramePolicy,
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
-type BindSubmissionIdentity = unsafe extern "C" fn(
+type BindSubmissionIdentity = unsafe fn(
     *const crate::instance_bridge::FjInstance,
     u64,
     u64,
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
-type ReadSubmissionIdentity = unsafe extern "C" fn(
+type ReadSubmissionIdentity = unsafe fn(
     *const crate::instance_bridge::FjInstance,
     *mut u32,
     *mut u64,
     *mut u64,
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
-type InvalidateSubmission = unsafe extern "C" fn(
+type InvalidateSubmission = unsafe fn(
     *const crate::instance_bridge::FjInstance,
     i32,
     usize,
@@ -94,7 +94,16 @@ type RenderEntry = unsafe extern "C" fn(
     sys::FjAbortCallback,
     *mut sys::FjErrorBuffer,
 ) -> super::FjCallCompletionResult;
-type UnavailableEntry = unsafe extern "C" fn(
+type RenderOperation = unsafe fn(
+    *const crate::asset_bridge::FjAssets,
+    *const super::FjPreparedState,
+    super::FjCudaCallAccess,
+    super::PreparedFrameInput,
+    *const crate::instance_bridge::FjInstance,
+    sys::FjAbortCallback,
+    *mut sys::FjErrorBuffer,
+) -> super::FjCallCompletionResult;
+type UnavailableEntry = unsafe fn(
     *const crate::asset_bridge::FjAssets,
     *const super::FjPreparedState,
     u32,
@@ -104,12 +113,13 @@ type UnavailableEntry = unsafe extern "C" fn(
     *mut sys::FjErrorBuffer,
 ) -> super::FjCallCompletionResult;
 
-const _: PolicyEntry = super::fj_legacy_prepared_state_frame_policy;
-const _: RenderEntry = super::fj_legacy_prepared_state_render;
-const _: UnavailableEntry = super::fj_legacy_prepared_unavailable;
-const _: BindSubmissionIdentity = crate::instance_bridge::fj_legacy_instance_bind_identity;
-const _: ReadSubmissionIdentity = crate::instance_bridge::fj_legacy_instance_identity;
-const _: InvalidateSubmission = crate::instance_bridge::fj_legacy_instance_invalidate_submission;
+const _: PolicyEntry = super::prepared_state_frame_policy;
+const _: RenderEntry = crate::test_support::fj_test_prepared_state_render;
+const _: RenderOperation = super::prepared_state_render;
+const _: UnavailableEntry = super::prepared_unavailable;
+const _: BindSubmissionIdentity = crate::instance_bridge::bind_identity;
+const _: ReadSubmissionIdentity = crate::instance_bridge::identity;
+const _: InvalidateSubmission = crate::instance_bridge::invalidate_submission;
 
 const _: fn(&super::FjCudaCallAccess) = |access| {
     let _: &Option<Precheck> = &access.precheck;

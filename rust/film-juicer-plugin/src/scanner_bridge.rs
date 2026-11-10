@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_SCANNER_CORRECTION: synchronous complete values; remove S4.E.
+//! Scanner host preparation and checked fixture value transport.
 
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
@@ -11,29 +11,50 @@ use crate::cuda::sys::{
     FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjFloatSpan, FjStatus,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_NONE: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_RAW: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_DIRECT_INPUTS: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_DIRECT_REFERENCE: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_DIRECT_SCAN: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_DIRECT_MIDGRAY: u32 = 5;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_DIRECT_LOOKUP: u32 = 6;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PRINT_INPUTS: u32 = 7;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PRINT_REFERENCE_LOOKUP: u32 = 8;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PRINT_SCAN: u32 = 9;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PRINT_MIDGRAY: u32 = 10;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PRINT_LOOKUP: u32 = 11;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_INVALID: u32 = 12;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_IDENTITY: u32 = 13;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_REASON_PANIC: u32 = 14;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_TRACE_NONE: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_TRACE_ACCEPTED: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_TRACE_MIDGRAY: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_TRACE_MALFORMED: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerCorrectionParams {
     pub(crate) route: u32,
     pub(crate) flags: u32,
@@ -42,6 +63,7 @@ pub(crate) struct FjScannerCorrectionParams {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerCorrectionTables {
     pub(crate) eps_c: FjFloatSpan,
     pub(crate) eps_m: FjFloatSpan,
@@ -54,6 +76,7 @@ pub(crate) struct FjScannerCorrectionTables {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerDirectCorrectionInput {
     pub(crate) tables: *const FjScannerCorrectionTables,
     pub(crate) film_base_density: FjFloatSpan,
@@ -68,6 +91,7 @@ pub(crate) struct FjScannerDirectCorrectionInput {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerPrintCorrectionInput {
     pub(crate) tables: *const FjScannerCorrectionTables,
     pub(crate) film_base_density: FjFloatSpan,
@@ -88,6 +112,7 @@ pub(crate) struct FjScannerPrintCorrectionInput {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerColorCorrection {
     pub(crate) route: u32,
     pub(crate) active: u32,
@@ -105,11 +130,13 @@ pub(crate) struct FjScannerColorCorrection {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerCorrectionFailure {
     pub(crate) reason: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerCorrectionTrace {
     pub(crate) outcome: u32,
     pub(crate) reference_black_y: f32,
@@ -122,6 +149,7 @@ pub(crate) struct FjScannerCorrectionTrace {
     pub(crate) exposure_scale: f32,
     pub(crate) hash: u64,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Default for FjScannerCorrectionTrace {
     fn default() -> Self {
         Self {
@@ -207,11 +235,13 @@ impl Write for Diagnostic {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 enum Failure {
     Raw,
     Panic,
     Core(scanner::CorrectionError),
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Failure {
     fn category(&self) -> u32 {
         match self {
@@ -244,6 +274,7 @@ impl Failure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl fmt::Display for Failure {
     fn fmt(&self, writer: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -255,10 +286,12 @@ impl fmt::Display for Failure {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 enum Operation {
     Direct,
     Print,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Operation {
     fn demand(self, params: scanner::Params) -> Result<bool, Failure> {
         match self {
@@ -285,6 +318,7 @@ fn status(category: u32) -> FjStatus {
 
 /// # Safety
 /// Admitted, live initialized Params are borrowed only through this call.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn params(pointer: *const FjScannerCorrectionParams) -> Result<scanner::Params, Failure> {
     if !valid_extent(pointer, 1) {
         return Err(Failure::Raw);
@@ -306,6 +340,7 @@ unsafe fn params(pointer: *const FjScannerCorrectionParams) -> Result<scanner::P
 /// # Safety
 /// Nonempty backing is live initialized immutable f32 storage for this invocation.
 /// This private projection never escapes the checked synchronous operation.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn span<'a>(input: FjFloatSpan) -> Result<&'a [f32], Failure> {
     if input.count == 0 {
         return Ok(&[]);
@@ -318,6 +353,7 @@ unsafe fn span<'a>(input: FjFloatSpan) -> Result<&'a [f32], Failure> {
 }
 /// # Safety
 /// Same invocation-bounded live immutable storage contract as span.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn fixed<'a, const N: usize>(input: FjFloatSpan) -> Result<&'a [f32; N], Failure> {
     if input.count != N {
         return Err(Failure::Raw);
@@ -327,6 +363,7 @@ unsafe fn fixed<'a, const N: usize>(input: FjFloatSpan) -> Result<&'a [f32; N], 
 }
 /// # Safety
 /// Same invocation-bounded live immutable storage contract as span.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn rows<'a>(input: FjFloatSpan) -> Result<&'a [[f32; 3]], Failure> {
     if !input.count.is_multiple_of(3) {
         return Err(Failure::Raw);
@@ -336,6 +373,7 @@ unsafe fn rows<'a>(input: FjFloatSpan) -> Result<&'a [[f32; 3]], Failure> {
 }
 /// # Safety
 /// Same invocation-bounded live immutable storage contract as span.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn fixed_rows<'a>(input: FjFloatSpan) -> Result<&'a [[f32; 3]; 81], Failure> {
     if input.count != 243 {
         return Err(Failure::Raw);
@@ -345,6 +383,7 @@ unsafe fn fixed_rows<'a>(input: FjFloatSpan) -> Result<&'a [[f32; 3]; 81], Failu
 }
 /// # Safety
 /// The optional table and consumed spans are initialized and live through return.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn tables<'a>(
     pointer: *const FjScannerCorrectionTables,
     operation: Operation,
@@ -389,6 +428,7 @@ unsafe fn tables<'a>(
 /// # Safety
 /// Demand has succeeded. Active records/consumed spans satisfy the synchronous
 /// initialized immutable input contract. No projected borrow escapes prepare.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn direct_input<'a>(
     pointer: *const FjScannerDirectCorrectionInput,
 ) -> Result<Option<scanner::DirectInput<'a>>, Failure> {
@@ -421,6 +461,7 @@ unsafe fn direct_input<'a>(
 }
 /// # Safety
 /// Same demand-scoped immutable input/lifetime contract as direct_input.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn print_input<'a>(
     pointer: *const FjScannerPrintCorrectionInput,
 ) -> Result<Option<scanner::PrintInput<'a>>, Failure> {
@@ -458,6 +499,7 @@ unsafe fn print_input<'a>(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn project(value: scanner::Correction) -> FjScannerColorCorrection {
     FjScannerColorCorrection {
         route: u32::from(value.route()),
@@ -475,6 +517,7 @@ fn project(value: scanner::Correction) -> FjScannerColorCorrection {
         hash: value.hash(),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn project_trace(trace: &scanner::Trace) -> FjScannerCorrectionTrace {
     let v = trace.values();
     FjScannerCorrectionTrace {
@@ -499,6 +542,7 @@ fn project_trace(trace: &scanner::Trace) -> FjScannerCorrectionTrace {
 /// # Safety
 /// Valid writable flags establish which independently admitted records may be
 /// written; optional diagnostics were admitted under their exclusive contract.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn reject(
     rejection: Failure,
     failure: *mut FjScannerCorrectionFailure,
@@ -531,6 +575,7 @@ unsafe fn reject(
 /// # Safety
 /// Required/optional records and their initialized storage obey the header's
 /// synchronous, mutually disjoint writable and immutable input contract.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn prepare(
     params_pointer: *const FjScannerCorrectionParams,
     out: *mut FjScannerColorCorrection,
@@ -607,6 +652,7 @@ unsafe fn prepare(
 /// # Safety
 /// The complete header contract: initialized live input/consumed backing,
 /// mutually exclusive/disjoint writable records, no borrow beyond return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_direct(
     params: *const FjScannerCorrectionParams,
     input: *const FjScannerDirectCorrectionInput,
@@ -633,6 +679,7 @@ pub(crate) unsafe fn prepare_direct(
 }
 /// # Safety
 /// Same synchronous header contract as prepare_direct, with print-only borrows.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_print(
     params: *const FjScannerCorrectionParams,
     input: *const FjScannerPrintCorrectionInput,
@@ -661,6 +708,7 @@ pub(crate) unsafe fn prepare_print(
 /// # Safety
 /// Params and required/failure/optional error obey the same live/disjoint header
 /// contract. The query reads no active storage and consumes no fault selector.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn input_demand(
     params_pointer: *const FjScannerCorrectionParams,
     operation: u32,
@@ -720,72 +768,6 @@ pub(crate) unsafe fn input_demand(
         },
     }
 }
-
-/// # Safety
-/// Same synchronous live/disjoint header contract as prepare_direct.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_direct_correction_prepare(
-    params: *const FjScannerCorrectionParams,
-    input: *const FjScannerDirectCorrectionInput,
-    out: *mut FjScannerColorCorrection,
-    failure: *mut FjScannerCorrectionFailure,
-    trace: *mut FjScannerCorrectionTrace,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked operation admits all consumed storage and retains none.
-    unsafe { prepare_direct(params, input, out, failure, trace, error) }
-}
-/// # Safety
-/// Same synchronous live/disjoint header contract as prepare_print.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_print_correction_prepare(
-    params: *const FjScannerCorrectionParams,
-    input: *const FjScannerPrintCorrectionInput,
-    out: *mut FjScannerColorCorrection,
-    failure: *mut FjScannerCorrectionFailure,
-    trace: *mut FjScannerCorrectionTrace,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked operation admits all consumed storage and retains none.
-    unsafe { prepare_print(params, input, out, failure, trace, error) }
-}
-/// # Safety
-/// Same synchronous live/disjoint header contract as input_demand.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_correction_input_demand(
-    params: *const FjScannerCorrectionParams,
-    operation: u32,
-    required: *mut u32,
-    failure: *mut FjScannerCorrectionFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The shared query admits outputs/Params without reading active inputs.
-    unsafe { input_demand(params, operation, required, failure, error) }
-}
-
-const _: unsafe extern "C" fn(
-    *const FjScannerCorrectionParams,
-    *const FjScannerDirectCorrectionInput,
-    *mut FjScannerColorCorrection,
-    *mut FjScannerCorrectionFailure,
-    *mut FjScannerCorrectionTrace,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_direct_correction_prepare;
-const _: unsafe extern "C" fn(
-    *const FjScannerCorrectionParams,
-    *const FjScannerPrintCorrectionInput,
-    *mut FjScannerColorCorrection,
-    *mut FjScannerCorrectionFailure,
-    *mut FjScannerCorrectionTrace,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_print_correction_prepare;
-const _: unsafe extern "C" fn(
-    *const FjScannerCorrectionParams,
-    u32,
-    *mut u32,
-    *mut FjScannerCorrectionFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_correction_input_demand;
 
 #[cfg(feature = "test-support")]
 pub(crate) mod faults {
@@ -1444,9 +1426,9 @@ pub(crate) mod lut_faults {
     }
 }
 
-// SF_TEMP_BRIDGE_SCANNER_COLOR: fixed completed value; remove with native callers in S4.E.
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerColorInput {
     pub(crate) medium: u32,
     pub(crate) output_space: u32,
@@ -1457,6 +1439,7 @@ pub(crate) struct FjScannerColorInput {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerColor {
     pub(crate) cat02: [f32; 9],
     pub(crate) xyz_to_rgb: [f32; 9],
@@ -1469,16 +1452,19 @@ pub(crate) struct FjScannerColor {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerColorFailure {
     pub(crate) reason: u32,
     pub(crate) stage: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 enum ColorFailure {
     Raw,
     Panic,
     Core(scanner::ColorError),
 }
+#[cfg(any(test, feature = "test-support"))]
 impl ColorFailure {
     fn envelope(&self) -> (u32, u32, u32) {
         use scanner::ColorError;
@@ -1494,6 +1480,7 @@ impl ColorFailure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl fmt::Display for ColorFailure {
     fn fmt(&self, writer: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1503,6 +1490,7 @@ impl fmt::Display for ColorFailure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn project_color(value: scanner::Color) -> FjScannerColor {
     let c = value.cctf();
     FjScannerColor {
@@ -1530,6 +1518,7 @@ fn project_color(value: scanner::Color) -> FjScannerColor {
 /// # Safety
 /// Each present record/backing is live, aligned, addressable and disjoint;
 /// outputs/error are exclusive through synchronous return. No pointer is retained.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn color_prepare(
     input: *const FjScannerColorInput,
     out: *mut FjScannerColor,
@@ -1594,24 +1583,7 @@ pub(crate) unsafe fn color_prepare(
         }
     }
 }
-/// # Safety
-/// Same live/readable/exclusive/disjoint contract as `color_prepare`.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_scanner_color_prepare(
-    input: *const FjScannerColorInput,
-    out: *mut FjScannerColor,
-    failure: *mut FjScannerColorFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The foreign caller supplies the complete checked synchronous contract.
-    unsafe { color_prepare(input, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjScannerColorInput,
-    *mut FjScannerColor,
-    *mut FjScannerColorFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_color_prepare;
+#[cfg(any(test, feature = "test-support"))]
 const _: () = {
     use std::mem::offset_of;
     assert!(size_of::<FjScannerColorInput>() == 40 && align_of::<FjScannerColorInput>() == 8);
@@ -1637,9 +1609,9 @@ const _: () = {
     );
 };
 
-// SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR: synchronous values; remove S4.E.
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerLutDescriptorInput {
     pub(crate) mode: u32,
     pub(crate) route: u32,
@@ -1660,6 +1632,7 @@ pub(crate) struct FjScannerLutDescriptorInput {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerLutDescriptor {
     pub(crate) route: u32,
     pub(crate) medium: u32,
@@ -1674,16 +1647,19 @@ pub(crate) struct FjScannerLutDescriptor {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerLutDescriptorFailure {
     pub(crate) reason: u32,
     pub(crate) lane: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 enum DescriptorFailure {
     Raw,
     Core(scanner::LutDescriptorError),
     Panic,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl DescriptorFailure {
     fn envelope(&self) -> (u32, u32, u32) {
         use scanner::LutDescriptorError as E;
@@ -1700,6 +1676,7 @@ impl DescriptorFailure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl fmt::Display for DescriptorFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1713,6 +1690,7 @@ impl fmt::Display for DescriptorFailure {
 /// # Safety
 /// Nonempty bytes are initialized, live, read-only and disjoint from writable
 /// storage for this synchronous operation. No input borrow escapes.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn descriptor_bytes<'a>(
     span: crate::cuda::sys::FjByteSpan,
 ) -> Result<&'a [u8], DescriptorFailure> {
@@ -1731,6 +1709,7 @@ unsafe fn descriptor_bytes<'a>(
 /// record/backing is exclusive and disjoint from every input and other writable
 /// region. All storage stays live until return; address admission does not prove
 /// arbitrary foreign pointer readability.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn describe_lut(
     input: *const FjScannerLutDescriptorInput,
     out: *mut FjScannerLutDescriptor,
@@ -1863,29 +1842,9 @@ pub(crate) unsafe fn describe_lut(
     }
 }
 
-/// # Safety
-/// Same synchronous live/readable/exclusive/disjoint contract as `describe_lut`.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_scanner_lut_describe(
-    input: *const FjScannerLutDescriptorInput,
-    out: *mut FjScannerLutDescriptor,
-    failure: *mut FjScannerLutDescriptorFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The caller satisfies the checked operation's storage contract.
-    unsafe { describe_lut(input, out, failure, error) }
-}
-
-const _: unsafe extern "C" fn(
-    *const FjScannerLutDescriptorInput,
-    *mut FjScannerLutDescriptor,
-    *mut FjScannerLutDescriptorFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_lut_describe;
-
-// SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: fixed synchronous copies; remove S4.E.
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerPostEffectsInput {
     pub(crate) route: u32,
     pub(crate) glare_active: u32,
@@ -1898,6 +1857,7 @@ pub(crate) struct FjScannerPostEffectsInput {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerPostEffectsDescriptor {
     pub(crate) route: u32,
     pub(crate) glare_active: u32,
@@ -1915,12 +1875,14 @@ pub(crate) struct FjScannerPostEffectsDescriptor {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjScannerPostEffectsFailure {
     pub(crate) reason: u32,
     pub(crate) lane: u32,
     pub(crate) rejected: FjScannerPostEffectsDescriptor,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn post_projection(
     fields: &scanner::PostEffectsAttempt,
     hash: u64,
@@ -1943,11 +1905,13 @@ fn post_projection(
         hash,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 enum PostFailure {
     Raw,
     Core(scanner::PostEffectsError),
     Panic,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl PostFailure {
     fn envelope(&self) -> (u32, u32, u32) {
         use scanner::PostEffectsErrorKind as E;
@@ -1966,6 +1930,7 @@ impl PostFailure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl fmt::Display for PostFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1981,6 +1946,7 @@ impl fmt::Display for PostFailure {
 /// diagnostic/backing are exclusive, live and mutually disjoint, including from
 /// input, through return. Extent checks cannot prove arbitrary pointer readability.
 /// No pointer or borrow is retained.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn describe_post(
     input: *const FjScannerPostEffectsInput,
     out: *mut FjScannerPostEffectsDescriptor,
@@ -2064,25 +2030,7 @@ pub(crate) unsafe fn describe_post(
         }
     }
 }
-/// # Safety
-/// Same initialized/live/exclusive/disjoint synchronous contract as `describe_post`.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_scanner_post_describe(
-    input: *const FjScannerPostEffectsInput,
-    out: *mut FjScannerPostEffectsDescriptor,
-    failure: *mut FjScannerPostEffectsFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Caller provides the checked operation's storage obligations.
-    unsafe { describe_post(input, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjScannerPostEffectsInput,
-    *mut FjScannerPostEffectsDescriptor,
-    *mut FjScannerPostEffectsFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_post_describe;
-
+#[cfg(any(test, feature = "test-support"))]
 const _: () = {
     assert!(
         size_of::<FjScannerPostEffectsInput>() == 32

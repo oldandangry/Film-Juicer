@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 
 _Static_assert(_Alignof(float) == 4, "color float alignment");
@@ -113,13 +112,13 @@ static int color_abi_c(const MatrixOperation matrices[2], const ScalarOperation 
 }
 
 int fj_test_color_abi_c(void) {
-    const MatrixOperation matrices[2] = {fj_legacy_cat16_matrix, fj_test_cat16_matrix};
-    const ScalarOperation adapters[2] = {fj_legacy_adapt_cat16, fj_test_adapt_cat16};
+    const MatrixOperation matrices[2] = {fj_test_boundary_cat16_matrix, fj_test_cat16_matrix};
+    const ScalarOperation adapters[2] = {fj_test_boundary_adapt_cat16, fj_test_adapt_cat16};
     return color_abi_c(matrices, adapters, FJ_TEST_CAT16_MATRIX);
 }
 
 int fj_test_cat02_abi_c(void) {
-    const MatrixOperation matrices[2] = {fj_legacy_cat02_matrix, fj_test_cat02_matrix};
+    const MatrixOperation matrices[2] = {fj_test_boundary_cat02_matrix, fj_test_cat02_matrix};
     const ScalarOperation adapters[2] = {fj_test_adapt_cat02, fj_test_adapt_cat02};
     return color_abi_c(matrices, adapters, FJ_TEST_CAT02_MATRIX);
 }
@@ -155,11 +154,11 @@ static int matrices_cleared(const FjInputColorMatrices* output) {
 }
 
 int fj_test_input_color_abi_c(void) {
-    const InputMatricesOperation matrices[2] = {fj_legacy_input_matrices, fj_test_input_matrices};
+    const InputMatricesOperation matrices[2] = {fj_test_boundary_input_matrices, fj_test_input_matrices};
     const InputDwgOperation dwg[2] = {fj_test_input_to_dwg, fj_test_input_to_dwg};
     const InputSrgbOperation srgb[2] = {fj_test_input_to_linear_srgb, fj_test_input_to_linear_srgb};
-    const InputLeafOperation leaves[2][2] = {{fj_legacy_linear_srgb_to_xyz, fj_test_dwg_to_xyz}, {fj_test_linear_srgb_to_xyz, fj_test_dwg_to_xyz}};
-    const InputProjectionOperation projection[2] = {fj_legacy_project_linear_rgb_to_xyz, fj_test_project_linear_rgb_to_xyz};
+    const InputLeafOperation leaves[2][2] = {{fj_test_boundary_linear_srgb_to_xyz, fj_test_dwg_to_xyz}, {fj_test_linear_srgb_to_xyz, fj_test_dwg_to_xyz}};
+    const InputProjectionOperation projection[2] = {fj_test_boundary_project_linear_rgb_to_xyz, fj_test_project_linear_rgb_to_xyz};
     const float rgb[3] = {0.184f, -0.25f, 2.0f};
     const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     FjInputColorConversion input = {FJ_INPUT_DWG, 0, 0, {1, 0, 0, 0, 1, 0, 0, 0, 1}, {1, 0, 0, 0, 1, 0, 0, 0, 1}};

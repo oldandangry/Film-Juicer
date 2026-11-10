@@ -221,7 +221,9 @@ fn read_bytes(
     let reservation = reserve(&mut bytes, count);
     reservation.map_err(|_| ErrorKind::Capacity)?;
     bytes.resize(count, 0);
-    for chunk in bytes.chunks_mut(8192) {
+    // Read into the final buffer in large chunks to limit filesystem calls.
+    const READ_CHUNK_BYTES: usize = 1024 * 1024;
+    for chunk in bytes.chunks_mut(READ_CHUNK_BYTES) {
         reader.read_exact(chunk).map_err(|error| {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 ErrorKind::ShortRead

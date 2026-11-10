@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_FILM_DEVELOPMENT: synchronous completed-family transport; remove S4.E.
+//! Checked fixture access to completed film development holds.
 
 use film_juicer_core::film::{Development, Params};
 use film_juicer_core::profile::Polarity;
@@ -11,10 +11,6 @@ use crate::cuda::sys::{FJ_API_NONE, FJ_STATUS_SUCCESS, FjErrorBuffer, FjFloatSpa
 #[cfg(feature = "test-support")]
 use crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT;
 
-#[repr(C)]
-pub(crate) struct FjFilmProfile {
-    _opaque: [u8; 0],
-}
 #[repr(C)]
 pub(crate) struct FjFilmDevelopmentOwner {
     _opaque: [u8; 0],
@@ -257,63 +253,6 @@ pub(crate) unsafe fn release(
     .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
 }
 
-/// # Safety
-/// Matching live profile; initialized/aligned/disjoint output and diagnostics.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_development_acquire(
-    profile: *const FjFilmProfile,
-    requested_route: u32,
-    gamma_factor: f32,
-    layers_required: u32,
-    out: *mut *mut FjFilmDevelopmentOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export forwards the same raw call contract.
-    unsafe {
-        acquire(
-            profile.cast(),
-            requested_route,
-            gamma_factor,
-            layers_required,
-            out,
-            error,
-        )
-    }
-}
-/// # Safety
-/// Matching live owner; initialized/aligned/disjoint output and diagnostics.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_development_view(
-    owner: *const FjFilmDevelopmentOwner,
-    out: *mut FjFilmDevelopmentView,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export forwards the same raw call contract.
-    unsafe { view(owner, out, error) }
-}
-/// # Safety
-/// Matching owner consumed once (or NULL); exclusive/disjoint diagnostics.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_development_release(
-    owner: *mut FjFilmDevelopmentOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export forwards the same consuming call contract.
-    unsafe { release(owner, error) }
-}
-
-/// # Safety
-/// Live shared owner; authorized initialized/disjoint output and diagnostics.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_development_retain(
-    owner: *const FjFilmDevelopmentOwner,
-    out: *mut *mut FjFilmDevelopmentOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export forwards the same shared-hold contract.
-    unsafe { retain(owner, out, error) }
-}
-
 #[cfg(feature = "test-support")]
 mod faults {
     use std::cell::Cell;
@@ -390,19 +329,3 @@ unsafe extern "C" fn fj_test_film_development_abi_facts(count: *mut usize) -> *c
     }
     ABI_FACTS.as_ptr()
 }
-
-const _: unsafe extern "C" fn(
-    *const FjFilmProfile,
-    u32,
-    f32,
-    u32,
-    *mut *mut FjFilmDevelopmentOwner,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_film_development_acquire;
-const _: unsafe extern "C" fn(
-    *const FjFilmDevelopmentOwner,
-    *mut FjFilmDevelopmentView,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_film_development_view;
-const _: unsafe extern "C" fn(*mut FjFilmDevelopmentOwner, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_film_development_release;

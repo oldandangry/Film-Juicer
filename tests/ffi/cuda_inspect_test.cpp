@@ -9,7 +9,7 @@
 
 #include "gtest_cases.h"
 #include "juicer_cuda_api.h"
-#include "ProcessRuntime.h"
+#include "owner_fixture.h"
 
 namespace {
     FjFrame frame_at() {
@@ -42,7 +42,7 @@ namespace {
             EXPECT_EQ(error.length, text.size() - 1);
             EXPECT_EQ(text.back(), '\0');
         }
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
     };
 
 #if !defined(JUICER_CUDA_INSPECT_GPU_TEST)

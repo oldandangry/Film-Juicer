@@ -1,11 +1,142 @@
 #ifndef FJ_JUICER_TEST_API_H
 #define FJ_JUICER_TEST_API_H
 
-#include "juicer_legacy_api.h"
+#include "juicer_test_values.h"
+#include "juicer_cuda_call_scope.h"
+
+#define FJ_UNAVAILABLE_STATE 0U
+#define FJ_UNAVAILABLE_INSTANCE 1U
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Checked mathematical dependency boundaries preserve the original fault
+ * controls independently of the direct-core numerical fixture calls below.
+ * Inputs/owned holds and exclusive outputs follow the same synchronous,
+ * disjoint, non-retaining facade contract. No legacy export is called. */
+FjStatus fj_test_boundary_cat16_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_test_boundary_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+FjStatus fj_test_boundary_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_test_boundary_input_matrices(uint32_t input_space, FjInputColorMatrices* out);
+FjStatus fj_test_boundary_linear_srgb_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_test_boundary_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_to_xyz[9], const float xyz_adapt[9], float out_xyz[3]);
+FjStatus fj_test_boundary_output_color(uint32_t output_space, FjOutputColorPreparation* out);
+FjStatus fj_test_boundary_reconstruction_tc_lut(const FjFilmTcLutInput* input, FjOwnedFilmTcLut* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_reconstruction_sample_tc_lut(FjFloatSpan lut, const float projected_xyz[3], float out_rgb[3], FjErrorBuffer* error);
+FjStatus fj_test_boundary_reconstruction_release_tc_lut(FjOwnedFilmTcLut* owned);
+FjStatus fj_test_boundary_reconstruction_reference_white(const FjReferenceWhiteInput* input, FjReferenceWhite* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_exposure_sensitivity(const FjSensitivityInput* input, FjSensitivity* out, FjSensitivityFailure* out_failure, FjErrorBuffer* error);
+FjStatus fj_test_boundary_exposure_mallett_midgray(const FjMallettMidgrayInput* input, FjMallettMidgray* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_exposure_tc_midgray(float green, FjMidgrayNormalization* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_exposure_reference_source(float exposure_ev, float* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_exposure_mallett_reference_raw(const FjMallettReferenceInput* input, FjReferenceRaw* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_spectral_tables(const FjSpectralInput* input, FjSpectralTables* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_spectral_white(const FjSpectralWhiteInput* input, FjSpectralWhite* out, FjSpectralWhiteFailure* out_failure, FjErrorBuffer* error);
+FjStatus fj_test_boundary_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralInverse* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_gamut_input_hull(const FjInputHullSource* source, FjInputHull* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_gamut_output_transform(const FjOutputGamutSource* source, FjOutputGamutTransform* out, FjErrorBuffer* error);
+FjStatus fj_test_boundary_gamut_output_boundary(const FjOutputBoundarySource* source, float* cmax, size_t count, FjOutputBoundaryIdentity* identity, FjOutputBoundaryFailure* failure, FjErrorBuffer* error);
+
+/* Fixture-only ownership uses the same checked operations as complete
+ * preparation. Inputs are initialized, aligned and live through synchronous
+ * return. Outputs/error backing are exclusive and disjoint from owners/inputs.
+ * Returned owners are consumed once, excluding readers; views expire on release.
+ * Cache release drops cache holds while separately held results remain live.
+ * Calls run on the calling thread, retain no raw input and contain panics. */
+FjStatus fj_test_assets_create(FjPathView, FjAssets**, FjErrorBuffer*);
+FjStatus fj_test_assets_destroy(FjAssets*, FjErrorBuffer*);
+FjStatus fj_test_assets_release_cached_payloads(const FjAssets*, FjErrorBuffer*);
+FjStatus fj_test_assets_release_derived_payloads(const FjAssets*, FjErrorBuffer*);
+FjStatus fj_test_assets_release_source_payloads(const FjAssets*, FjErrorBuffer*);
+FjStatus fj_test_assets_film_acquire(const FjAssets*, FjStringView, FjFilmProfile**, FjErrorBuffer*);
+FjStatus fj_test_assets_film_view(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*);
+FjStatus fj_test_assets_film_release(FjFilmProfile*, FjErrorBuffer*);
+FjStatus fj_test_assets_film_defaults(const FjAssets*, FjStringView, FjFilmDigest*, FjErrorBuffer*);
+FjStatus fj_test_assets_noise_acquire(const FjAssets*, FjNoise**, FjErrorBuffer*);
+FjStatus fj_test_csv_acquire(const FjAssets*, uint32_t, FjCsvPairs**, FjErrorBuffer*);
+FjStatus fj_test_csv_view(const FjCsvPairs*, FjFloatSpan*, FjErrorBuffer*);
+FjStatus fj_test_csv_release(FjCsvPairs*, FjErrorBuffer*);
+FjStatus fj_test_illuminant_from_samples(FjFloatSpan, FjIlluminant*, FjErrorBuffer*);
+/* A non-null output is one exclusive writable byte; invalid input leaves it unchanged. */
+uint32_t fj_test_resolve_route(uint8_t polarity, uint8_t selection, uint8_t* out_route);
+FjStatus fj_test_catalog_acquire(const FjAssets* assets, FjCatalog** out_catalog, FjCatalogCounts* out_counts, FjErrorBuffer* error);
+FjStatus fj_test_catalog_entry(const FjCatalog* catalog, uint32_t role, size_t index, FjCatalogEntryView* out_entry, FjErrorBuffer* error);
+FjStatus fj_test_catalog_release(FjCatalog* catalog, FjErrorBuffer* error);
+/* One-shot hook runs before the next catalog output publication on this thread,
+ * with no catalog lock held. Callback/user stay live until invocation or explicit
+ * disarm (null callback), contain exceptions and retain no Rust borrow. */
+void fj_test_catalog_publication_hook(void (*callback)(void*), void* user);
+/* Numeric shared-backing identity is observational; it authorizes no dereference
+ * and expires with the held owner. */
+FjStatus fj_test_catalog_backing_identity(const FjCatalog*, uintptr_t*, FjErrorBuffer*);
+FjStatus fj_test_print_profile_acquire(const FjAssets* assets, FjStringView key, FjPrintProfile** out_profile, FjErrorBuffer* error);
+FjStatus fj_test_print_profile_view(const FjPrintProfile* profile,
+                                    FjPrintProfileView* out_view,
+                                    FjErrorBuffer* error);
+FjStatus fj_test_print_profile_release(FjPrintProfile* profile, FjErrorBuffer* error);
+FjStatus fj_test_print_profile_sample_density(const FjPrintProfile* profile,
+                                              double gamma,
+                                              FjPrintDensityCurves** out_curves,
+                                              FjErrorBuffer* error);
+FjStatus fj_test_print_density_view(const FjPrintDensityCurves* curves,
+                                    FjPrintDensityView* out_view,
+                                    FjErrorBuffer* error);
+FjStatus fj_test_print_density_release(FjPrintDensityCurves* curves, FjErrorBuffer* error);
+FjStatus fj_test_hanatos_acquire(const FjAssets* assets, FjSpectraLut** out_lut, FjErrorBuffer* error);
+FjStatus fj_test_arctic_acquire(const FjAssets* assets, FjSpectraLut** out_lut, FjErrorBuffer* error);
+FjStatus fj_test_mallett_acquire(const FjAssets* assets, FjMallettBasis** out_basis, FjErrorBuffer* error);
+FjStatus fj_test_cmf_acquire(const FjAssets* assets, FjCmf** out_cmf, FjErrorBuffer* error);
+FjStatus fj_test_spectra_lut_view(const FjSpectraLut* lut, FjSpectraLutView* out_view, FjErrorBuffer* error);
+FjStatus fj_test_spectra_lut_release(FjSpectraLut* lut, FjErrorBuffer* error);
+FjStatus fj_test_mallett_view(const FjMallettBasis* basis, FjFloatSpan* out_samples_rgb, FjErrorBuffer* error);
+FjStatus fj_test_mallett_release(FjMallettBasis* basis, FjErrorBuffer* error);
+FjStatus fj_test_cmf_view(const FjCmf* cmf, FjFloatSpan* out_rows, FjErrorBuffer* error);
+FjStatus fj_test_cmf_release(FjCmf* cmf, FjErrorBuffer* error);
+FjStatus fj_test_neutral_calibration_lookup(const FjAssets* assets, FjStringView print_stock, FjStringView illuminant, FjStringView film_stock, FjNeutralCalibrationResult* out_result, FjErrorBuffer* error);
+FjStatus fj_test_illuminant_blackbody(float temperature_kelvin, FjIlluminant* out_curve, FjErrorBuffer* error);
+FjStatus fj_test_illuminant_equal_energy(FjIlluminant* out_curve, FjErrorBuffer* error);
+FjStatus fj_test_illuminant_tungsten_kg3(FjFloatSpan rows, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+/* Finish and release take the exclusive lens slot, clear it before validating
+ * other inputs, and consume its matching owner even on failure. No reader may
+ * overlap that consumption. Input rows are borrowed only through return. */
+FjStatus fj_test_illuminant_lens_prepare(FjFloatSpan rows, FjIlluminantLens** out_lens, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+FjStatus fj_test_illuminant_lens_finish(FjIlluminantLens** io_lens, FjFloatSpan lens_rows, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+FjStatus fj_test_illuminant_lens_release(FjIlluminantLens** io_lens, FjErrorBuffer* error);
+FjStatus fj_test_scanner_correction_input_demand(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*);
+
+/* Complete owners and call tables stay live through every synchronous callback;
+ * all callbacks contain exceptions, run serially on the calling thread and
+ * retain nothing. Native staging owns asynchronous reads before return. No
+ * owner is consumed by policy/render. The pointer-free policy belongs to the
+ * same held state/full frame. Unavailable admits only missing-state/null or
+ * missing-instance/held-state pairs. Disjoint diagnostics never alias inputs. */
+FjStatus fj_test_prepared_state_frame_policy(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
+FjCallCompletionResult fj_test_prepared_state_render(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, uint64_t, FjAbortCallback, FjErrorBuffer*);
+FjCallCompletionResult fj_test_prepared_unavailable(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
+
+/* Exact capture/write/snapshot/admission and Runtime protocols. Owners remain
+ * Rust-owned; release consumes once with callback/read exclusion. No host call
+ * holds an exclusive Rust borrow or a publication/UI lock. All outputs and
+ * diagnostics are live, initialized, aligned, exclusive and disjoint. */
+FjStatus fj_test_runtime_create(FjPathView resource_dir, FjRuntime** out, FjErrorBuffer* error);
+FjStatus fj_test_runtime_borrow(const FjRuntime* runtime, FjRuntimeView* out, FjErrorBuffer* error);
+FjStatus fj_test_runtime_check_close(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_test_runtime_shutdown(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_test_runtime_destroy(FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_test_instance_create(FjInstance** out, FjErrorBuffer* error);
+FjStatus fj_test_instance_bind_identity(const FjInstance*, uint64_t session_seed, uint64_t instance_token, FjErrorBuffer* error);
+FjStatus fj_test_instance_identity(const FjInstance*, uint32_t* out_initialized, uint64_t* out_seed, uint64_t* out_token, FjErrorBuffer* error);
+FjStatus fj_test_instance_invalidate_submission(const FjInstance*, int32_t device_id, uintptr_t context, uint32_t* out_cleared, FjErrorBuffer* error);
+FjStatus fj_test_instance_begin_capture(FjInstance*, uint32_t mode, FjCaptureStart* out, FjErrorBuffer* error);
+FjStatus fj_test_instance_capture_is_current(const FjInstance*, uint64_t capture, uint32_t* out_current, FjErrorBuffer* error);
+FjStatus fj_test_instance_begin_host_write(FjInstance*, uint64_t capture, FjHostWrite** out, uint32_t* out_start, FjErrorBuffer* error);
+FjStatus fj_test_host_write_finish(FjHostWrite*, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_refresh, FjErrorBuffer* error);
+FjStatus fj_test_instance_begin_snapshot(FjInstance*, uint64_t capture, FjSnapshotStart* out, FjErrorBuffer* error);
+FjStatus fj_test_instance_install(FjInstance*, uint64_t capture, uint64_t write_revision, const FjPreparationParams*, uint64_t input_identity, uint32_t* out_update, FjErrorBuffer* error);
+FjStatus fj_test_instance_invalidate(FjInstance*, uint64_t capture, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_update, FjErrorBuffer* error);
+FjStatus fj_test_instance_admit(FjInstance*, const FjAssets*, FjAdmission* out, FjErrorBuffer* error);
+FjStatus fj_test_instance_destroy(FjInstance*, FjErrorBuffer* error);
 
 typedef struct FjHostPreparation FjHostPreparation;
 typedef FjStatus (*FjHostPreparationConsumer)(void*, const FjHostPreparation*, FjErrorBuffer*);
@@ -32,6 +163,11 @@ FjStatus fj_test_assets_output_boundary_acquire(const FjAssets*, const FjOutputB
 FjStatus fj_test_output_boundary_view(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
 FjStatus fj_test_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_create(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+/* Copies Rust capture defaults with both key views empty. Output and diagnostic
+ * storage are live, aligned, exclusive, and disjoint through this synchronous
+ * call. No pointer is retained and no foreign callback is invoked. */
+FjStatus fj_test_preparation_defaults(FjPreparationParams* out, FjErrorBuffer* error);
+FjStatus fj_test_capture_gamma(uint32_t route, double film, double print, float*, double*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
 /* Test-only borrowed observation immediately before a complete prepared state
@@ -488,6 +624,10 @@ FjStatus fj_test_film_dir_release(
     FjFilmDirOwner* dir, FjErrorBuffer* error);
 /* Identical fixed spatial-optics contract; forwards to the checked producer. */
 FjStatus fj_test_spatial_optics_prepare(const FjSpatialOpticsParams* params, FjSpatialOpticsRecipe* out_recipe, FjSpatialOpticsFailure* out_failure, FjErrorBuffer* error);
+/* Calls the actual render gate with a completed sigma in micrometers. Optional
+ * initialized diagnostics/backing are exclusive and live until synchronous
+ * return; no pointer is retained and unwind is contained. */
+FjStatus fj_test_camera_lens_blur_preflight(float sigma_um, FjErrorBuffer* error);
 FjStatus fj_test_physical_effects_prepare(
     const FjPhysicalEffectsParams* params,
     FjPhysicalEffectsRecipe* out_recipe,
@@ -646,6 +786,57 @@ FjStatus fj_test_instance_submission(const FjInstance*, uint32_t* out_valid, FjS
 FjStatus fj_test_instance_observation_acquire(const FjInstance*, FjInstanceObservation**, FjErrorBuffer*);
 FjStatus fj_test_instance_observation_view(const FjInstanceObservation*, FjInstanceObservationView*, FjErrorBuffer*);
 FjStatus fj_test_instance_observation_release(FjInstanceObservation*, FjErrorBuffer*);
+/* Real OFX owner observations. The caller retains the live effect/module and
+ * excludes destruction through each synchronous call. Outputs/diagnostics are
+ * initialized, aligned, exclusive and disjoint; Ready transfers one state hold.
+ * No operation fabricates an FjInstance wrapper for the inline OFX owner. */
+struct OfxImageEffectStruct;
+typedef struct FjOfxLifetime FjOfxLifetime;
+FjStatus fj_test_ofx_lifetime_acquire(struct OfxImageEffectStruct*, FjOfxLifetime**, FjErrorBuffer*);
+FjStatus fj_test_ofx_lifetime_live(const FjOfxLifetime*, uint32_t*, FjErrorBuffer*);
+FjStatus fj_test_ofx_lifetime_release(FjOfxLifetime*, FjErrorBuffer*);
+int32_t fj_test_ofx_host_call_active(struct OfxImageEffectStruct*);
+/* Independent read of the actual host controls, without ticket/publication/UI
+ * mutation. Return is the actual OFX status; successful key views borrow the
+ * returned input owner until consuming release. The module/effect and callbacks
+ * remain live during acquisition; output/error storage is exclusive/disjoint. */
+typedef struct FjOfxControlRead FjOfxControlRead;
+int32_t fj_test_ofx_capture_host_input(struct OfxImageEffectStruct*, FjOfxControlRead**, FjErrorBuffer*);
+FjStatus fj_test_ofx_control_input_view(const FjOfxControlRead*, FjPreparationParams*, FjErrorBuffer*);
+FjStatus fj_test_ofx_control_input_release(FjOfxControlRead*, FjErrorBuffer*);
+typedef struct FjOfxRetirementObservation {
+    uint32_t count, identity_live;
+    uint64_t token;
+    FjStatus status;
+} FjOfxRetirementObservation;
+void fj_test_ofx_retirement_reset(void);
+int32_t fj_test_ofx_retirement_observe(FjOfxRetirementObservation*);
+/* The calling fixture owns this image's active standard-discovery session.
+ * Invoke while Loaded retains Runtime; shutdown follows its actual native-
+ * before-host cleanup protocol and retains no caller data. */
+FjStatus fj_test_ofx_runtime_shutdown(void);
+/* Existing render-control tag 7 relays a contained foreign abort-delivery
+ * exception after the real host invocation. Tag 5 remains the terminal Rust
+ * abort panic. Neither allows a C++ exception to unwind through Rust/C. */
+/* Copied observations at the actual full-domain, accepted-policy/scalar and
+ * effects-geometry callback stages. Raw mathematical transport counts detect
+ * unintended facade round trips; the callback uses safe preparation directly. */
+typedef struct FjOfxFrameObservation {
+    uint32_t phases[3], count, full_count, policy_count, effects_count;
+    uint32_t diffusion_transport_calls, halation_transport_calls;
+    FjExtent full_frame;
+    FjPreparedFramePolicy policy;
+    FjEffectsGeometry effects;
+    uint32_t route;
+} FjOfxFrameObservation;
+void fj_test_ofx_frame_reset(void);
+int32_t fj_test_ofx_frame_observe(FjOfxFrameObservation*);
+FjStatus fj_test_ofx_instance_admission(struct OfxImageEffectStruct*, FjAdmission*, FjErrorBuffer*);
+FjStatus fj_test_ofx_instance_submission(struct OfxImageEffectStruct*, uint32_t*, FjSubmission*, FjCudaContext*, FjErrorBuffer*);
+FjStatus fj_test_ofx_capture_is_current(struct OfxImageEffectStruct*, uint64_t, uint32_t*, FjErrorBuffer*);
+/* Same synchronous held-render contract as fj_test_prepared_state_render;
+ * the live OFX effect supplies its actual Instance and retained Runtime. */
+FjCallCompletionResult fj_test_ofx_prepared_state_render(struct OfxImageEffectStruct*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, uint64_t, FjAbortCallback, FjErrorBuffer*);
 /* Thread-local hooks run after input selection / after complete preparation,
  * outside the state lock. Fixture callbacks contain exceptions; their context
  * stays live until cleared. Hooks are never present in a production archive. */

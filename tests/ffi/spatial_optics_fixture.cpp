@@ -1,4 +1,4 @@
-#include "RustEffectsFrameBridge.h"
+#include "effects_fixture.h"
 #include "spatial_optics_fixture.h"
 
 #include <algorithm>
@@ -8,8 +8,8 @@
 
 #include "juicer_test_api.h"
 #include "Cuda/JuicerCudaFailure.h"
-#include "RustHalationBridge.h"
-#include "RustDirBridge.h"
+#include "halation_fixture.h"
+#include "dir_fixture.h"
 
 namespace {
     FjSpatialOpticsParams defaults() {

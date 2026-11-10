@@ -13,7 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ProcessRuntime.h"
+#include "owner_fixture.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "print_illuminant_fixture.h"
@@ -52,7 +52,7 @@ namespace {
         Owned(const Owned&) = delete;
         Owned& operator=(const Owned&) = delete;
         ~Owned() noexcept {
-            (void)fj_legacy_reconstruction_release_tc_lut(&record);
+            (void)fj_test_boundary_reconstruction_release_tc_lut(&record);
         }
     };
     struct Diagnostic {
@@ -79,7 +79,7 @@ namespace {
         }
         return hash;
     }
-    void numerical(JuicerProcess::ProcessRuntime& runtime, const Json& fixture, const std::filesystem::path& tablesPath) {
+    void numerical(JuicerTestSupport::RuntimeFixture& runtime, const Json& fixture, const std::filesystem::path& tablesPath) {
         const JuicerTestSupport::HanatosSource hanatos(runtime.borrow().assets);
         const JuicerTestSupport::ArcticSource arctic(runtime.borrow().assets);
         std::vector<float> procedural(std::size_t{192} * 192u * 81u);
@@ -119,7 +119,7 @@ namespace {
                 JuicerTests::CaseEvent event("tc_lut.raw", std::string(facade ? "facade/" : "legacy/") + std::to_string(id));
                 Owned owned;
                 Diagnostic error;
-                const auto status = facade ? fj_test_reconstruction_tc_lut(&request, &owned.record, &error.buffer) : fj_legacy_reconstruction_tc_lut(&request, &owned.record, &error.buffer);
+                const auto status = facade ? fj_test_reconstruction_tc_lut(&request, &owned.record, &error.buffer) : fj_test_boundary_reconstruction_tc_lut(&request, &owned.record, &error.buffer);
                 error.check();
                 require(status.api == FJ_API_NONE && status.native_code == 0, "TC status fields");
                 require((status.category == FJ_STATUS_SUCCESS) == row["built"].get<bool>(), "frozen build status " + std::to_string(id));
@@ -141,7 +141,7 @@ namespace {
                 for (const auto& sample : row["samples"]) {
                     const auto xyz = values<3>(sample["xyz"]);
                     std::array<float, 4> rgb{9, 9, 9, 77};
-                    const auto sampled = facade ? fj_test_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer) : fj_legacy_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer);
+                    const auto sampled = facade ? fj_test_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer) : fj_test_boundary_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer);
                     require(rgb[3] == 77, "sample output canary");
                     error.check();
                     if (sample["classification"] == "native_defined") {
@@ -184,16 +184,16 @@ namespace {
             if (invalid == 5)
                 malformed.reference_illuminant.data = reinterpret_cast<const float*>(reinterpret_cast<const char*>(spd.data()) + 1);
             Owned owned;
-            require(fj_legacy_reconstruction_tc_lut(&malformed, &owned.record, &error.buffer).category == FJ_STATUS_UNSUPPORTED_INPUT && !owned.record.samples.data, "malformed consumed span/tag");
+            require(fj_test_boundary_reconstruction_tc_lut(&malformed, &owned.record, &error.buffer).category == FJ_STATUS_UNSUPPORTED_INPUT && !owned.record.samples.data, "malformed consumed span/tag");
             row_event.passed();
         }
         // Inactive spans are ignored, even if they cannot be borrowed.
         input.surface_rgb = {nullptr, std::numeric_limits<std::size_t>::max()};
         input.hull_xy = {nullptr, std::numeric_limits<std::size_t>::max()};
         Owned owned;
-        require(fj_legacy_reconstruction_tc_lut(&input, &owned.record, &error.buffer).category == FJ_STATUS_SUCCESS, "inactive spans ignored");
+        require(fj_test_boundary_reconstruction_tc_lut(&input, &owned.record, &error.buffer).category == FJ_STATUS_SUCCESS, "inactive spans ignored");
         std::array<float, 3> rgb{};
-        require(fj_legacy_reconstruction_sample_tc_lut({owned.record.samples.data, 147455}, xyz.data(), rgb.data(), &error.buffer).category == FJ_STATUS_UNSUPPORTED_INPUT, "wrong sample extent");
+        require(fj_test_boundary_reconstruction_sample_tc_lut({owned.record.samples.data, 147455}, xyz.data(), rgb.data(), &error.buffer).category == FJ_STATUS_UNSUPPORTED_INPUT, "wrong sample extent");
         const std::array<std::uint32_t, 4> categories{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
         std::vector<std::string> fault_ids;
         for (std::uint32_t operation = 1; operation <= 2; ++operation)
@@ -205,7 +205,7 @@ namespace {
                 auto row_event = boundary_faults.case_event("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
                 require(fj_test_tc_lut_arm_fault(operation, 1, fault).category == FJ_STATUS_SUCCESS, "arm closed raw fault");
                 Owned failed;
-                auto status = operation == 1 ? fj_legacy_reconstruction_tc_lut(&input, &failed.record, &error.buffer) : fj_legacy_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer);
+                auto status = operation == 1 ? fj_test_boundary_reconstruction_tc_lut(&input, &failed.record, &error.buffer) : fj_test_boundary_reconstruction_sample_tc_lut(owned.record.samples, xyz.data(), rgb.data(), &error.buffer);
                 require(fj_test_tc_lut_fault_consumed(operation, fault) == 1, "same-thread consumption before cleanup");
                 require(status.category == categories[fault - 1] && !failed.record.samples.data, "fault category and empty result");
                 error.check();
@@ -219,17 +219,17 @@ namespace {
         FjErrorBuffer noText{nullptr, 0, 99};
         auto malformed = input;
         malformed.method = 99;
-        require(fj_legacy_reconstruction_tc_lut(&malformed, &failed.record, &noText).category == FJ_STATUS_UNSUPPORTED_INPUT && noText.length == 0, "zero-capacity status");
+        require(fj_test_boundary_reconstruction_tc_lut(&malformed, &failed.record, &noText).category == FJ_STATUS_UNSUPPORTED_INPUT && noText.length == 0, "zero-capacity status");
         std::array<char, 3> tiny{67, 67, 67};
         FjErrorBuffer small{tiny.data(), 2, 0};
-        require(fj_legacy_reconstruction_tc_lut(&malformed, &failed.record, &small).category == FJ_STATUS_UNSUPPORTED_INPUT && small.length == 1 && tiny[1] == 0 && tiny[2] == 67, "diagnostic truncation");
+        require(fj_test_boundary_reconstruction_tc_lut(&malformed, &failed.record, &small).category == FJ_STATUS_UNSUPPORTED_INPUT && small.length == 1 && tiny[1] == 0 && tiny[2] == 67, "diagnostic truncation");
         // Transfer the record, never copy it into a second live owner.
         FjOwnedFilmTcLut transferred = owned.record;
         owned.record = {};
         source.clear();
         source.shrink_to_fit();
         std::thread finalRelease([record = transferred]() mutable {
-            require(fj_legacy_reconstruction_release_tc_lut(&record).category == FJ_STATUS_SUCCESS && !record.samples.data && record.capacity == 0, "cross-thread final release");
+            require(fj_test_boundary_reconstruction_release_tc_lut(&record).category == FJ_STATUS_SUCCESS && !record.samples.data && record.capacity == 0, "cross-thread final release");
         });
         transferred = {};
         finalRelease.join();
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
             boundary();
             event.passed();
         } else {
-            JuicerProcess::ProcessRuntime runtime;
+            JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(argv[2]);
             const std::filesystem::path manifestPath(argv[3]);
             std::ifstream manifestFile(manifestPath);

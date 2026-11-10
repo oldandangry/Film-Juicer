@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 // Frozen native fixtures exercise the checked boundary and actual Scanner callers.
 namespace ScannerCorrectionTest {
     constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
@@ -31,7 +32,7 @@ namespace ScannerCorrectionTest {
     Json project(const FjScannerColorCorrection& value);
 
     Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         const auto* assets = owner.borrow().assets;
         require(assets != nullptr, "scanner correction products have process Rust assets");
@@ -47,11 +48,11 @@ namespace ScannerCorrectionTest {
                 for (unsigned flags = 0; flags < 4; ++flags) {
                     auto case_event = recipe_rows.case_event(std::to_string(route) + "/" + std::to_string(mode) + "/" + std::to_string(flags));
                     auto params = PrintPreflashTest::controls();
-                    params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                    params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                    params.spectralUpsamplingMode = mode;
-                    params.scannerBlackCorrection = (flags & 1u) != 0;
-                    params.scannerWhiteCorrection = (flags & 2u) != 0;
+                    params.values.scan_route = static_cast<std::uint32_t>(route);
+                    params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                    params.values.spectral_upsampling_mode = mode;
+                    params.values.scanner_black_correction = (flags & 1u) != 0;
+                    params.values.scanner_white_correction = (flags & 2u) != 0;
                     auto stateOwner = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                     FjPreparedStateView state{};
                     std::array<char, 2048> errorText{};
@@ -63,15 +64,15 @@ namespace ScannerCorrectionTest {
                     // the complete prepared state supplies resolved execution data.
                     FjFilmProfile* filmOwner = nullptr;
                     FjPrintProfile* printOwner = nullptr;
-                    status(fj_legacy_film_profile_acquire(assets, state.film_profile_key, &filmOwner, &error));
+                    status(fj_test_assets_film_acquire(assets, state.film_profile_key, &filmOwner, &error));
                     FjFilmProfileView film{};
                     FjPrintProfileView paper{};
-                    status(fj_legacy_film_profile_view(filmOwner, &film, &error));
+                    status(fj_test_assets_film_view(filmOwner, &film, &error));
                     require(film.asset_token == state.film_profile_asset_version,
                             "correction product film view matches held-state asset version");
                     if (printRoute) {
-                        status(fj_legacy_print_profile_acquire(assets, state.print_profile_key, &printOwner, &error));
-                        status(fj_legacy_print_profile_view(printOwner, &paper, &error));
+                        status(fj_test_print_profile_acquire(assets, state.print_profile_key, &printOwner, &error));
+                        status(fj_test_print_profile_view(printOwner, &paper, &error));
                         require(paper.asset_token == state.print_profile_asset_version,
                                 "correction product print view matches held-state asset version");
                     }
@@ -128,13 +129,13 @@ namespace ScannerCorrectionTest {
                                    {"print", route % 2 != 0},
                                    {"input", std::move(input)},
                                    {"native", capturedCorrection},
-                                   {"snapshot_hash", hash_params(params)},
+                                   {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)},
                                    {"recipe_hash", state.recipe_hash},
                                    {"scanner_hash", state.scanner_recipe_hash},
                                    {"upload_hash", state.upload_core_hash}});
                     if (printOwner)
-                        status(fj_legacy_print_profile_release(printOwner, &error));
-                    status(fj_legacy_film_profile_release(filmOwner, &error));
+                        status(fj_test_print_profile_release(printOwner, &error));
+                    status(fj_test_assets_film_release(filmOwner, &error));
                     require(out.back() == expectedProducts.at(out.size() - 1), "per-case complete scanner correction product");
                     case_event.passed();
                 }
@@ -244,22 +245,14 @@ namespace ScannerCorrectionTest {
             text.fill('x');
         }
     };
-    using Direct = decltype(&fj_legacy_scanner_direct_correction_prepare);
-    using Print = decltype(&fj_legacy_scanner_print_correction_prepare);
-    Direct direct_entry(bool facade) {
-        return facade ? fj_test_scanner_direct_correction_prepare : fj_legacy_scanner_direct_correction_prepare;
-    }
-    Print print_entry(bool facade) {
-        return facade ? fj_test_scanner_print_correction_prepare : fj_legacy_scanner_print_correction_prepare;
-    }
-    Outcome invoke(const Inputs& source, bool print, bool facade, bool missing = false) {
+    Outcome invoke(const Inputs& source, bool print, bool missing = false) {
         Outcome out;
         const auto tables = source.tables();
         const auto direct = source.direct(tables);
         const auto paper = source.print(tables);
         FjErrorBuffer error{out.text.data(), out.text.size(), 99};
-        out.status = print ? print_entry(facade)(&source.params, missing ? nullptr : &paper, &out.value, &out.failure, &out.trace, &error)
-                           : direct_entry(facade)(&source.params, missing ? nullptr : &direct, &out.value, &out.failure, &out.trace, &error);
+        out.status = print ? fj_test_scanner_print_correction_prepare(&source.params, missing ? nullptr : &paper, &out.value, &out.failure, &out.trace, &error)
+                           : fj_test_scanner_direct_correction_prepare(&source.params, missing ? nullptr : &direct, &out.value, &out.failure, &out.trace, &error);
         out.length = error.length;
         require(error.data == out.text.data() && error.capacity == out.text.size() && out.length < out.text.size() && out.text[out.length] == '\0', "scanner bounded diagnostics");
         return out;
@@ -301,7 +294,7 @@ namespace ScannerCorrectionTest {
                 Inputs source(row.at("input"));
                 const bool print = row.at("spec").at("print");
                 const bool missing = row.at("spec").value("mutation", "none") == "missing";
-                const auto out = invoke(source, print, facade, missing);
+                const auto out = invoke(source, print, missing);
                 const unsigned reason = norm.at("reason");
                 if (reason == 0) {
                     status(out.status);
@@ -333,7 +326,7 @@ namespace ScannerCorrectionTest {
             for (const auto& row : captured.at("products")) {
                 JuicerTests::CaseEvent case_event("cpp", "scanner-correction/product/" + row.at("id").get<std::string>() + (facade ? "/test-facade" : "/legacy-facade"));
                 Inputs source(row.at("input"));
-                const auto out = invoke(source, row.at("print"), facade);
+                const auto out = invoke(source, row.at("print"));
                 status(out.status);
                 require(out.failure.reason == 0 && out.length == 0, "actual scanner inputs accepted");
                 require(project(out.value) == row.at("native").at("descriptor"), "all genuine input corrections exact");
@@ -343,7 +336,7 @@ namespace ScannerCorrectionTest {
         Outcome retained;
         {
             Inputs ephemeral(literal(captured, "direct-none").at("input"));
-            retained = invoke(ephemeral, false, false);
+            retained = invoke(ephemeral, false);
         }
         require(project(retained.value) == literal(captured, "direct-none").at("native").at("descriptor"), "scanner result owns all words after inputs expire");
     }
@@ -369,8 +362,7 @@ namespace ScannerCorrectionTest {
         JuicerTests::Cohort diagnostic_capacities("scanner_correction.diagnostic_capacity", capacity_ids);
         JuicerTests::Cohort malformed_scenarios("scanner_correction.malformed_scenario", scenario_ids);
         JuicerTests::Cohort preparation_faults("scanner_correction.preparation_fault", fault_ids);
-        unsigned facade_index = 0;
-        for (bool facade : {false, true}) {
+        for (unsigned facade_index = 0; facade_index < 2; ++facade_index) {
             for (unsigned route = 0; route < 256; ++route)
                 for (unsigned flags = 0; flags < 4; ++flags)
                     for (bool print : {false, true}) {
@@ -380,14 +372,14 @@ namespace ScannerCorrectionTest {
                         FjScannerCorrectionFailure detail{99};
                         const bool inactive = flags == 0 || (!print && route == 0);
                         const bool active = flags != 0 && (print ? route == 1 || route == 3 : route == 2);
-                        const auto query = fj_legacy_scanner_correction_input_demand(&params, print ? 1u : 0u, &required, &detail, nullptr);
+                        const auto query = fj_test_scanner_correction_input_demand(&params, print ? 1u : 0u, &required, &detail, nullptr);
                         status(query, inactive || active ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                         require(required == unsigned(active) && detail.reason == (inactive || active ? 0u : print ? 7u
                                                                                                                   : 2u),
                                 "single shared demand for every native byte/flag pair");
                         Outcome out;
-                        out.status = print ? print_entry(facade)(&params, reinterpret_cast<const FjScannerPrintCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, nullptr)
-                                           : direct_entry(facade)(&params, reinterpret_cast<const FjScannerDirectCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, nullptr);
+                        out.status = print ? fj_test_scanner_print_correction_prepare(&params, reinterpret_cast<const FjScannerPrintCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, nullptr)
+                                           : fj_test_scanner_direct_correction_prepare(&params, reinterpret_cast<const FjScannerDirectCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, nullptr);
                         if (inactive) {
                             status(out.status);
                             require(out.value.route == route && out.value.active == 0 && out.value.schema_version == 1 && out.value.hash == 0, "inactive raw byte/defaults ignore malformed active pointer");
@@ -436,7 +428,7 @@ namespace ScannerCorrectionTest {
                     trace = reinterpret_cast<FjScannerCorrectionTrace*>(std::uintptr_t{1});
                 if (scenario == 12)
                     malformed.film_log_exposure = {reinterpret_cast<const float*>(std::uintptr_t{4}), SIZE_MAX};
-                out.status = direct_entry(facade)(requested, &malformed, result, detail, trace, &diagnostic);
+                out.status = fj_test_scanner_direct_correction_prepare(requested, &malformed, result, detail, trace, &diagnostic);
                 status(out.status, FJ_STATUS_UNSUPPORTED_INPUT);
                 if (detail)
                     require(out.failure.reason == 1, "independent valid failure record receives RAW");
@@ -452,7 +444,7 @@ namespace ScannerCorrectionTest {
             ignoredTables.baseline_min = {reinterpret_cast<const float*>(std::uintptr_t{1}), SIZE_MAX};
             auto ignored = source.direct(ignoredTables);
             Outcome ignoredOut;
-            ignoredOut.status = direct_entry(facade)(&source.params, &ignored, &ignoredOut.value, &ignoredOut.failure, &ignoredOut.trace, nullptr);
+            ignoredOut.status = fj_test_scanner_direct_correction_prepare(&source.params, &ignored, &ignoredOut.value, &ignoredOut.failure, &ignoredOut.trace, nullptr);
             status(ignoredOut.status);
             require(project(ignoredOut.value) == literal(captured, "direct-none").at("native").at("descriptor"), "disabled baseline backing ignored");
             const std::string message = "ResourceDescriptorMismatch phase=8B print correction inputs";
@@ -463,7 +455,7 @@ namespace ScannerCorrectionTest {
                 FjErrorBuffer error{capacity ? text.data() : reinterpret_cast<char*>(std::uintptr_t{1}), capacity, 99};
                 FjScannerCorrectionParams params{255, 3, 0, 1};
                 Outcome out;
-                out.status = print_entry(facade)(&params, reinterpret_cast<const FjScannerPrintCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, &error);
+                out.status = fj_test_scanner_print_correction_prepare(&params, reinterpret_cast<const FjScannerPrintCorrectionInput*>(std::uintptr_t{1}), &out.value, &out.failure, &out.trace, &error);
                 failure(out, FJ_STATUS_PREPARATION_FAILURE, {7});
                 const auto length = capacity == 0 ? 0 : std::min(capacity - 1, message.size());
                 require(error.length == length && (capacity == 0 || (text[length] == '\0' && std::string(text.data()) == message.substr(0, length))), "capacity zero/one/truncated/full preserves checked envelope");
@@ -475,26 +467,25 @@ namespace ScannerCorrectionTest {
                 status(fj_test_scanner_correction_fault(operation, 1));
                 std::uint32_t demand = 99;
                 FjScannerCorrectionFailure detail{99};
-                status(fj_legacy_scanner_correction_input_demand(&active.params, operation, &demand, &detail, nullptr));
+                status(fj_test_scanner_correction_input_demand(&active.params, operation, &demand, &detail, nullptr));
                 require(demand == 1, "query succeeds without consuming prepare panic");
-                failure(invoke(active, operation != 0, facade), FJ_STATUS_INTERNAL_FAILURE, {14});
-                status(invoke(active, operation != 0, facade).status);
+                failure(invoke(active, operation != 0), FJ_STATUS_INTERNAL_FAILURE, {14});
+                status(invoke(active, operation != 0).status);
                 status(fj_test_scanner_correction_fault(operation, 1));
                 Outcome raw;
-                raw.status = operation == 0 ? direct_entry(facade)(nullptr, nullptr, &raw.value, &raw.failure, &raw.trace, nullptr)
-                                            : print_entry(facade)(nullptr, nullptr, &raw.value, &raw.failure, &raw.trace, nullptr);
+                raw.status = operation == 0 ? fj_test_scanner_direct_correction_prepare(nullptr, nullptr, &raw.value, &raw.failure, &raw.trace, nullptr)
+                                            : fj_test_scanner_print_correction_prepare(nullptr, nullptr, &raw.value, &raw.failure, &raw.trace, nullptr);
                 failure(raw, FJ_STATUS_UNSUPPORTED_INPUT, {1});
-                status(invoke(active, operation != 0, facade).status);
+                status(invoke(active, operation != 0).status);
                 status(fj_test_scanner_correction_fault(operation, 1));
                 std::thread independent([&] {
-                    status(invoke(active, operation != 0, facade).status);
+                    status(invoke(active, operation != 0).status);
                 });
                 independent.join();
-                failure(invoke(active, operation != 0, facade), FJ_STATUS_INTERNAL_FAILURE, {14});
-                status(invoke(active, operation != 0, facade).status);
+                failure(invoke(active, operation != 0), FJ_STATUS_INTERNAL_FAILURE, {14});
+                status(invoke(active, operation != 0).status);
                 row_event.passed();
             }
-            ++facade_index;
         }
         status(fj_test_scanner_correction_fault(2, 1), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_test_scanner_correction_fault(0, 2), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -509,7 +500,7 @@ namespace ScannerCorrectionTest {
                 params.route = 256;
                 params.flags = 0;
             }
-            const auto result = fj_legacy_scanner_correction_input_demand(scenario == 0 ? nullptr : &params, 0, scenario == 1 ? nullptr : &required, scenario == 2 ? nullptr : &detail, scenario == 4 ? &malformed : nullptr);
+            const auto result = fj_test_scanner_correction_input_demand(scenario == 0 ? nullptr : &params, 0, scenario == 1 ? nullptr : &required, scenario == 2 ? nullptr : &detail, scenario == 4 ? &malformed : nullptr);
             status(result, FJ_STATUS_UNSUPPORTED_INPUT);
             if (scenario != 1)
                 require(required == 0, "query independently clears required on invalid peer/Params/all-off width");
@@ -523,14 +514,14 @@ namespace ScannerCorrectionTest {
             tables.eps_y = tables.eps_c;
             const auto input = source.direct(tables);
             Outcome out;
-            out.status = fj_legacy_scanner_direct_correction_prepare(&source.params, &input, &out.value, &out.failure, nullptr, nullptr);
+            out.status = fj_test_scanner_direct_correction_prepare(&source.params, &input, &out.value, &out.failure, nullptr, nullptr);
             status(out.status);
             require(project(out.value) == literal(captured, "direct-none").at("native").at("descriptor"), "immutable scanner input spans may alias and optional trace may be omitted");
         }
         // The accepted film-recipe selector's two stage-13 witnesses stay untouched.
         std::uint32_t required = 99;
         FjScannerCorrectionFailure detail{99};
-        status(fj_legacy_scanner_correction_input_demand(&source.params, 2, &required, &detail, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_scanner_correction_input_demand(&source.params, 2, &required, &detail, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(required == 0 && detail.reason == 1, "unknown query operation clears required");
         boundary_event.passed();
     }

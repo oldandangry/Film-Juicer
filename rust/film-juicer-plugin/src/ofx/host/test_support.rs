@@ -1,5 +1,7 @@
 //! Bounded fixture observations at the actual module boundary.
 
+mod control_read;
+
 use std::cell::Cell;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -73,6 +75,66 @@ pub(super) fn instance_retired() {
     INSTANCES_RETIRED.fetch_add(1, Ordering::Relaxed);
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FjOfxRetirementObservation {
+    count: u32,
+    identity_live: u32,
+    token: u64,
+    status: crate::cuda::sys::FjStatus,
+}
+const EMPTY_RETIREMENT: FjOfxRetirementObservation = FjOfxRetirementObservation {
+    count: 0,
+    identity_live: 0,
+    token: 0,
+    status: crate::cuda::sys::FjStatus {
+        category: 0,
+        api: 0,
+        native_code: 0,
+    },
+};
+thread_local! {
+    static RETIREMENT: Cell<FjOfxRetirementObservation> = const { Cell::new(EMPTY_RETIREMENT) };
+}
+pub(in crate::ofx) fn record_retirement(
+    token: u64,
+    identity_live: bool,
+    status: crate::cuda::sys::FjStatus,
+) {
+    let count = RETIREMENT.get().count.wrapping_add(1);
+    RETIREMENT.set(FjOfxRetirementObservation {
+        count,
+        identity_live: u32::from(identity_live),
+        token,
+        status,
+    });
+}
+#[cfg_attr(not(test), unsafe(no_mangle))]
+extern "C" fn fj_test_ofx_retirement_reset() {
+    RETIREMENT.set(EMPTY_RETIREMENT);
+}
+
+/// # Safety
+/// Out authorizes one live, aligned, exclusive observation record through return.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_retirement_observe(out: *mut FjOfxRetirementObservation) -> i32 {
+    if out.is_null()
+        || !(out as usize).is_multiple_of(std::mem::align_of::<FjOfxRetirementObservation>())
+        || (out as usize)
+            .checked_add(std::mem::size_of::<FjOfxRetirementObservation>())
+            .is_none()
+    {
+        return 0;
+    }
+    // SAFETY: Numeric admission supplements the caller's live exclusive extent;
+    // this pointer-free copy retains neither owner nor output and calls no host.
+    unsafe { out.write(RETIREMENT.get()) };
+    1
+}
+const _: extern "C" fn() = fj_test_ofx_retirement_reset;
+const _: unsafe extern "C" fn(*mut FjOfxRetirementObservation) -> i32 =
+    fj_test_ofx_retirement_observe;
+
 #[cfg_attr(not(test), unsafe(no_mangle))]
 extern "C" fn fj_test_ofx_instance_control(kind: u32) {
     INSTANCE_FAULT.set(kind);
@@ -130,6 +192,185 @@ unsafe extern "C" fn fj_test_ofx_instance_admit(
         }
     })
 }
+
+/// # Safety
+/// Effect is live through the guarded call. Initialized output/error extents are
+/// aligned, exclusive and disjoint; success transfers one weak observation only.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_lifetime_acquire(
+    effect: sys::OfxImageEffectHandle,
+    out: *mut *mut crate::instance_bridge::FjOfxLifetime,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus {
+    observe_or_admit(effect, true, |owner| {
+        // SAFETY: The action guard retains the actual OFX owner while its weak
+        // signal is copied; caller extents obey the common facade contract.
+        unsafe {
+            crate::instance_bridge::ofx_lifetime_create(
+                std::sync::Arc::downgrade(&owner.fixture_lifetime),
+                out,
+                error,
+            )
+        }
+    })
+}
+const _: unsafe extern "C" fn(
+    sys::OfxImageEffectHandle,
+    *mut *mut crate::instance_bridge::FjOfxLifetime,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus = fj_test_ofx_lifetime_acquire;
+
+/// # Safety
+/// Effect is a live instance under the OFX callback exclusion contract.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_host_call_active(effect: sys::OfxImageEffectHandle) -> i32 {
+    let mut observed = None;
+    let _ = observe_or_admit(effect, true, |owner| {
+        observed = Some(owner.host_call_active());
+        crate::cuda::sys::FjStatus {
+            category: 0,
+            api: 0,
+            native_code: 0,
+        }
+    });
+    observed.map_or(-1, i32::from)
+}
+const _: unsafe extern "C" fn(sys::OfxImageEffectHandle) -> i32 = fj_test_ofx_host_call_active;
+
+/// # Safety
+/// Effect is live until this synchronous call returns. Output and diagnostic
+/// extents are initialized, aligned, exclusive and disjoint. A Ready output
+/// transfers one complete state hold; it retains no OFX or host pointer.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_instance_admission(
+    effect: sys::OfxImageEffectHandle,
+    out: *mut crate::instance_bridge::FjAdmission,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus {
+    observe_or_admit(effect, false, |owner| {
+        // SAFETY: Action admission excludes owner destruction; fixture storage
+        // obeys the same checked admission contract as the raw Instance facade.
+        unsafe {
+            crate::instance_bridge::admit_safe_full(
+                &owner.state,
+                owner.loaded.runtime().assets(),
+                out,
+                error,
+            )
+        }
+    })
+}
+
+/// # Safety
+/// Effect remains live; all outputs and diagnostics are aligned, initialized,
+/// exclusive and mutually disjoint through return. No output owns the Instance.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_instance_submission(
+    effect: sys::OfxImageEffectHandle,
+    valid: *mut u32,
+    out: *mut crate::cuda::sys::FjSubmission,
+    context: *mut crate::cuda::sys::FjCudaContext,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus {
+    observe_or_admit(effect, true, |owner| {
+        // SAFETY: The guarded owner and disjoint outputs remain live through the
+        // checked projection; observing its latch does not select a submission.
+        unsafe { crate::instance_bridge::submission_safe(&owner.state, valid, out, context, error) }
+    })
+}
+
+/// # Safety
+/// Effect remains live; output and diagnostics are initialized, aligned,
+/// exclusive and disjoint until synchronous return. No pointer is retained.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_capture_is_current(
+    effect: sys::OfxImageEffectHandle,
+    capture: u64,
+    out: *mut u32,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus {
+    observe_or_admit(effect, true, |owner| {
+        // SAFETY: Guarded immutable Instance and exclusive caller extents obey
+        // the immediate checked observation's borrow/non-retention contract.
+        unsafe { crate::instance_bridge::capture_current_safe(&owner.state, capture, out, error) }
+    })
+}
+
+const _: unsafe extern "C" fn(
+    sys::OfxImageEffectHandle,
+    *mut crate::instance_bridge::FjAdmission,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus = fj_test_ofx_instance_admission;
+const _: unsafe extern "C" fn(
+    sys::OfxImageEffectHandle,
+    *mut u32,
+    *mut crate::cuda::sys::FjSubmission,
+    *mut crate::cuda::sys::FjCudaContext,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus = fj_test_ofx_instance_submission;
+const _: unsafe extern "C" fn(
+    sys::OfxImageEffectHandle,
+    u64,
+    *mut u32,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::sys::FjStatus = fj_test_ofx_capture_is_current;
+
+/// # Safety
+/// Live effect/module, held state and all raw records remain live through the
+/// synchronous call and completion. Output/error backing is exclusive/disjoint.
+/// Callbacks run serially on this thread, contain exceptions and retain nothing;
+/// native staging owns every queued read before return. The effect's real safe
+/// Instance supplies identity/submission; no raw Instance capability escapes.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_prepared_state_render(
+    effect: sys::OfxImageEffectHandle,
+    state: *const crate::preparation::FjPreparedState,
+    access: crate::cuda::edge::FjCudaCallAccess,
+    frame: *const crate::cuda::sys::FjFrame,
+    policy: *const crate::cuda::edge::FjPreparedFramePolicy,
+    frame_token: u64,
+    abort: crate::cuda::sys::FjAbortCallback,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::edge::FjCallCompletionResult {
+    let mut result = None;
+    let status = observe_or_admit(effect, false, |owner| {
+        // SAFETY: The action admission retains the actual OFX owner and Runtime;
+        // the fixture admits every synchronous raw peer/callback under the same
+        // held-render contract. Only immutable backing crosses native callbacks.
+        let completed = unsafe {
+            crate::cuda::edge::prepared_render_for_instance(
+                std::ptr::from_ref(owner.loaded.runtime().assets()).cast(),
+                state,
+                access,
+                crate::cuda::edge::PreparedFrameInput {
+                    frame,
+                    policy,
+                    token: frame_token,
+                },
+                &owner.state,
+                abort,
+                error,
+            )
+        };
+        let status = completed.outcome.status;
+        result = Some(completed);
+        status
+    });
+    result.unwrap_or(crate::cuda::edge::FjCallCompletionResult {
+        outcome: crate::cuda::sys::FjRenderOutcome { status, flags: 0 },
+        fatal: 1,
+    })
+}
+const _: unsafe extern "C" fn(
+    sys::OfxImageEffectHandle,
+    *const crate::preparation::FjPreparedState,
+    crate::cuda::edge::FjCudaCallAccess,
+    *const crate::cuda::sys::FjFrame,
+    *const crate::cuda::edge::FjPreparedFramePolicy,
+    u64,
+    crate::cuda::sys::FjAbortCallback,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> crate::cuda::edge::FjCallCompletionResult = fj_test_ofx_prepared_state_render;
 
 fn observe_or_admit(
     effect: sys::OfxImageEffectHandle,
@@ -296,6 +537,33 @@ extern "C" fn fj_test_ofx_assets() -> *const c_void {
     }))
     .unwrap_or(std::ptr::null())
 }
+
+#[cfg_attr(not(test), unsafe(no_mangle))]
+extern "C" fn fj_test_ofx_runtime_shutdown() -> crate::cuda::sys::FjStatus {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(admission) = super::super::admit_action(true) else {
+            return crate::cuda::sys::FjStatus {
+                category: crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT,
+                api: 0,
+                native_code: 0,
+            };
+        };
+        match admission.runtime().shutdown() {
+            Ok(()) => crate::cuda::sys::FjStatus {
+                category: 0,
+                api: 0,
+                native_code: 0,
+            },
+            Err(failure) => failure.status,
+        }
+    }))
+    .unwrap_or(crate::cuda::sys::FjStatus {
+        category: crate::cuda::sys::FJ_STATUS_INTERNAL_FAILURE,
+        api: 0,
+        native_code: 0,
+    })
+}
+const _: extern "C" fn() -> crate::cuda::sys::FjStatus = fj_test_ofx_runtime_shutdown;
 
 /// # Safety
 /// Facts is an initialized immutable native array of count size_t values.

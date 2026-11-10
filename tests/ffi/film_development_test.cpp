@@ -17,11 +17,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ProcessRuntime.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "NativePath.h"
+#include "native_path.h"
 #include "juicer_test_api.h"
 #include "prepared_product_fixture.h"
 #include "case_results.h"
@@ -30,9 +28,9 @@
 
 extern "C" const std::size_t* fj_test_film_development_abi_c_facts(std::size_t* count);
 static_assert(!std::is_same_v<FjFilmDevelopment, FjFilmDevelopmentOwner>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_development_acquire), FjStatus (*)(const FjFilmProfile*, std::uint32_t, float, std::uint32_t, FjFilmDevelopmentOwner**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_development_view), FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentView*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_development_release), FjStatus (*)(FjFilmDevelopmentOwner*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_development_acquire), FjStatus (*)(const FjFilmProfile*, std::uint32_t, float, std::uint32_t, FjFilmDevelopmentOwner**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_development_view), FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_development_release), FjStatus (*)(FjFilmDevelopmentOwner*, FjErrorBuffer*)>);
 
 namespace {
     using Json = nlohmann::json;
@@ -93,10 +91,10 @@ namespace {
         FjAssets* owner = nullptr;
         explicit Assets(const std::filesystem::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            status(fj_legacy_assets_create(path.view(), &owner, nullptr));
+            status(fj_test_assets_create(path.view(), &owner, nullptr));
         }
         ~Assets() {
-            if (fj_legacy_assets_destroy(owner, nullptr).category != FJ_STATUS_SUCCESS)
+            if (fj_test_assets_destroy(owner, nullptr).category != FJ_STATUS_SUCCESS)
                 std::terminate();
         }
     };
@@ -111,22 +109,24 @@ namespace {
     }
     void raw_cases(const std::filesystem::path& root, const Json& fixture) {
         Assets assets(root);
+        // Preserve both original caller-cohort IDs through the single facade;
+        // both former exports entered these same checked operations.
+        const auto acquire = fj_test_film_development_acquire;
+        const auto view = fj_test_film_development_view;
+        const auto release = fj_test_film_development_release;
         for (bool facade : {false, true}) {
-            const auto acquire = facade ? fj_test_film_development_acquire : fj_legacy_film_development_acquire;
-            const auto view = facade ? fj_test_film_development_view : fj_legacy_film_development_view;
-            const auto release = facade ? fj_test_film_development_release : fj_legacy_film_development_release;
             bool viewFaultWitnessed = false;
             for (const auto& row : fixture.at("cases")) {
                 const std::string key = row.at("key").get<std::string>();
                 const std::string row_id = key + "/route-" + std::to_string(row.at("route").get<unsigned>()) + "/gamma-" + std::to_string(row.at("development").at("gamma")[0].get<std::uint32_t>()) + "/layers-" + (row.at("development").at("layers_required").get<bool>() ? "1" : "0") + "/grain-" + std::to_string(row.at("grain_policy").get<int>());
                 JuicerTests::CaseEvent event("film_development.raw", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjFilmProfile* profile = nullptr;
-                status(fj_legacy_film_profile_acquire(assets.owner, {key.data(), key.size()}, &profile, nullptr));
+                status(fj_test_assets_film_acquire(assets.owner, {key.data(), key.size()}, &profile, nullptr));
                 FjFilmDevelopmentOwner* owner = nullptr;
                 const auto gamma = std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>());
                 status(acquire(profile, row.at("route"), gamma, row.at("development").at("layers_required").get<bool>() ? 1u : 0u, &owner, nullptr));
-                status(fj_legacy_film_profile_release(profile, nullptr));
-                status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr));
+                status(fj_test_assets_film_release(profile, nullptr));
+                status(fj_test_assets_release_cached_payloads(assets.owner, nullptr));
                 FjFilmDevelopmentView result{};
                 status(view(owner, &result, nullptr));
                 compare(result, row, fixture.at("profiles").at(key));
@@ -155,7 +155,7 @@ namespace {
         }
         JuicerTests::CaseEvent failure_event("film_development.raw", "boundary_fault_order_and_consumption");
         FjFilmProfile* profile = nullptr;
-        status(fj_legacy_film_profile_acquire(assets.owner, {"kodak_portra_400", 16}, &profile, nullptr));
+        status(fj_test_assets_film_acquire(assets.owner, {"kodak_portra_400", 16}, &profile, nullptr));
         std::vector<std::string> route_ids;
         std::vector<std::string> gamma_ids;
         std::vector<std::string> acquire_fault_ids;
@@ -171,7 +171,7 @@ namespace {
         JuicerTests::Cohort invalid_gammas("film_development.raw.invalid_gamma", gamma_ids);
         JuicerTests::Cohort acquire_faults("film_development.raw.acquire_fault", acquire_fault_ids);
         std::size_t route_index = 0, gamma_index = 0, acquire_fault_index = 0;
-        for (auto acquire : {fj_legacy_film_development_acquire, fj_test_film_development_acquire}) {
+        for (auto acquire : {fj_test_film_development_acquire, fj_test_film_development_acquire}) {
             for (auto route : {2u, 3u, 4u, UINT32_MAX}) {
                 auto row_event = invalid_routes.case_event(route_ids[route_index++]);
                 auto* output = reinterpret_cast<FjFilmDevelopmentOwner*>(std::uintptr_t{1});
@@ -202,7 +202,7 @@ namespace {
             }
         }
         JuicerTests::Cohort view_callers("film_development.raw.view_caller", {"legacy", "facade"});
-        for (const auto& [caller, view] : {std::pair{"legacy", &fj_legacy_film_development_view}, std::pair{"facade", &fj_test_film_development_view}}) {
+        for (const auto& [caller, view] : {std::pair{"legacy", &fj_test_film_development_view}, std::pair{"facade", &fj_test_film_development_view}}) {
             auto row_event = view_callers.case_event(caller);
             FjFilmDevelopmentView output{};
             output.hash = 99;
@@ -212,12 +212,12 @@ namespace {
             row_event.passed();
         }
         JuicerTests::Cohort release_callers("film_development.raw.release_caller", {"legacy/ordinary", "legacy/malformed", "facade/ordinary", "facade/malformed"});
-        for (const auto& [caller, release] : {std::pair{"legacy", &fj_legacy_film_development_release}, std::pair{"facade", &fj_test_film_development_release}}) {
+        for (const auto& [caller, release] : {std::pair{"legacy", &fj_test_film_development_release}, std::pair{"facade", &fj_test_film_development_release}}) {
             status(release(nullptr, nullptr));
             for (bool malformed : {false, true}) {
                 auto row_event = release_callers.case_event(std::string(caller) + (malformed ? "/malformed" : "/ordinary"));
                 FjFilmDevelopmentOwner* output = nullptr;
-                status(fj_legacy_film_development_acquire(profile, 0, 1, 1, &output, nullptr));
+                status(fj_test_film_development_acquire(profile, 0, 1, 1, &output, nullptr));
                 if (!malformed)
                     status(fj_test_film_development_fault(2, 1));
                 FjErrorBuffer error{nullptr, 1, 99};
@@ -226,33 +226,33 @@ namespace {
                 row_event.passed();
             }
         }
-        status(fj_legacy_film_profile_release(profile, nullptr));
+        status(fj_test_assets_film_release(profile, nullptr));
         failure_event.passed();
     }
     void products(const std::filesystem::path& root, const Json& fixture) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         std::size_t count = 0;
         for (const auto& row : fixture.at("cases")) {
             const std::string row_id = row.at("key").get<std::string>() + "/route-" + std::to_string(row.at("route").get<unsigned>()) + "/grain-" + std::to_string(row.at("grain_policy").get<int>()) + "/gamma-" + std::to_string(row.at("development").at("gamma")[0].get<std::uint32_t>());
             JuicerTests::CaseEvent event("film_development.products", row_id);
-            ParamSnapshot controls;
-            controls.filmProfileKey = row.at("key");
-            controls.printProfileKey = "kodak_portra_endura";
-            controls.scanRoute = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
-            controls.spectralUpsamplingMode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
-            controls.cameraAutoExposureEnabled = 0;
-            controls.inputCompressionEnabled = 0;
-            controls.outputGamutCompressionEnabled = 0;
-            controls.filmGammaFactor = std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>());
-            controls.grainControls.active = row.at("grain_policy") != 0;
-            controls.grainControls.sublayersActive = row.at("grain_policy") != 1;
+            JuicerTestSupport::PreparationInput controls;
+            controls.film_key = row.at("key");
+            controls.print_key = "kodak_portra_endura";
+            controls.values.scan_route = static_cast<std::uint32_t>(row.at("route").get<unsigned>());
+            controls.values.spectral_upsampling_mode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
+            controls.values.camera_auto_exposure_enabled = 0;
+            controls.values.input_compression_enabled = 0;
+            controls.values.output_gamut_compression_enabled = 0;
+            controls.values.film_gamma_factor = std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>());
+            controls.values.grain.active = row.at("grain_policy") != 0;
+            controls.values.grain.sublayers_active = row.at("grain_policy") != 1;
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
             FjPreparedStateView view{};
             status(product.view(view, error));
-            require(hash_params(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "independent complete snapshot/final identity");
+            require(JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "independent complete snapshot/final identity");
             require(view.film_profile_asset_version == row.at("profile_token") && view.film_development.hash == row.at("development").at("hash"), "profile/development identities survive actual consumers");
             require(view.scanner_recipe_hash == row.at("scanner_hash") && view.film_reference.hash == row.at("reference_hash"), "scanner/reference completion precedes success");
             ++count;
@@ -270,16 +270,16 @@ namespace {
         JuicerTests::Cohort product_faults("film_development.products.product_fault", fault_ids);
         for (unsigned route = 0; route < 4; ++route) {
             for (bool layers : {false, true}) {
-                ParamSnapshot controls;
-                controls.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                controls.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                controls.spectralUpsamplingMode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
-                controls.cameraAutoExposureEnabled = 0;
-                controls.inputCompressionEnabled = 0;
-                controls.outputGamutCompressionEnabled = 0;
-                controls.grainControls.active = true;
-                controls.grainControls.sublayersActive = layers;
-                RenderInstance instance;
+                JuicerTestSupport::PreparationInput controls;
+                controls.values.scan_route = static_cast<std::uint32_t>(route);
+                controls.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                controls.values.spectral_upsampling_mode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
+                controls.values.camera_auto_exposure_enabled = 0;
+                controls.values.input_compression_enabled = 0;
+                controls.values.output_gamut_compression_enabled = 0;
+                controls.values.grain.active = true;
+                controls.values.grain.sublayers_active = layers;
+                JuicerTestSupport::InstanceFixture instance;
                 JuicerTestSupport::capture(instance, controls);
                 auto publication = JuicerTestSupport::admit(owner.borrow().assets, instance);
                 require(publication.kind == FJ_ADMISSION_READY && publication.state, "failure baseline complete admission");
@@ -303,15 +303,15 @@ namespace {
                     return result;
                 };
                 Json oldLayerWords = layer_words(oldView);
-                ParamSnapshot committedControls = controls;
+                JuicerTestSupport::PreparationInput committedControls = controls;
                 unsigned attempt = 0;
                 for (const unsigned fault : {1u, 2u, 3u, 4u}) {
                     if (fault == 4 && !layers)
                         continue;
                     auto row_event = product_faults.case_event("route-" + std::to_string(route) + "/layers-" + (layers ? "1" : "0") + "/fault-" + std::to_string(fault));
                     auto changed = controls;
-                    changed.filmGammaFactor = 1.1f + 0.1f * static_cast<float>(attempt++);
-                    const std::uint64_t changedHash = hash_params(changed);
+                    changed.values.film_gamma_factor = 1.1f + 0.1f * static_cast<float>(attempt++);
+                    const std::uint64_t changedHash = JuicerTestSupport::hash_input_identity(changed);
                     JuicerTestSupport::capture(instance, changed);
                     const std::string_view expectedDiagnostic = fault == 1
                                                                     ? "film development normalized table reservation failed"
@@ -319,10 +319,10 @@ namespace {
                                                                     ? "MalformedRequiredProfileData phase=9A field=visual_grain"
                                                                     : "MalformedRequiredProfileData phase=3A field=data.density_curves hash";
                     status(fj_test_development_construction_fault(fault));
-                    std::optional<PreparedState> failedOwner;
+                    std::optional<JuicerTestSupport::PreparedStateHold> failedOwner;
                     std::array<char, 4096> constructionText{};
                     FjErrorBuffer constructionError{constructionText.data(), constructionText.size(), 0};
-                    status(prepare_state(owner.borrow().assets, changed, failedOwner, constructionError),
+                    status(JuicerTestSupport::prepare_state(owner.borrow().assets, changed, failedOwner, constructionError),
                            fault == 1 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_PREPARATION_FAILURE);
                     require(!failedOwner && std::string_view(constructionText.data(), constructionError.length) == expectedDiagnostic,
                             "complete constructor reports the real leaf category/diagnostic and returns no partial owner");

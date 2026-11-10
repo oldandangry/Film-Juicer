@@ -944,8 +944,6 @@ pub(crate) mod gaussian_faults {
     }
 }
 
-// SF_TEMP_BRIDGE_HALATION_FRAME: remove at the final native frame-preparation
-// caller, no later than S6.D. State integration remains S4.E's responsibility.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjHalationFrameInput {
@@ -962,6 +960,7 @@ pub(crate) struct FjHalationFrameFailure {
     pub(crate) sigma_px: f64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn halation_frame_none() -> FjHalationFrameFailure {
     FjHalationFrameFailure {
         reason: 0,
@@ -971,6 +970,7 @@ fn halation_frame_none() -> FjHalationFrameFailure {
         sigma_px: 0.0,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 const HALATION_IDENTITY: crate::cuda::sys::FjHalationGaussian =
     crate::cuda::sys::FjHalationGaussian {
         kind: 0,
@@ -979,6 +979,7 @@ const HALATION_IDENTITY: crate::cuda::sys::FjHalationGaussian =
         feedforward: 0.0,
         feedback: [0.0; 3],
     };
+#[cfg(any(test, feature = "test-support"))]
 fn empty_halation_frame() -> crate::cuda::sys::FjScatterHalation {
     crate::cuda::sys::FjScatterHalation {
         recipe_hash: 0,
@@ -991,6 +992,7 @@ fn empty_halation_frame() -> crate::cuda::sys::FjScatterHalation {
         }; 3],
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn halation_gaussian(v: &optics::HalationGaussian) -> crate::cuda::sys::FjHalationGaussian {
     crate::cuda::sys::FjHalationGaussian {
         kind: match v.kind() {
@@ -1004,6 +1006,7 @@ fn halation_gaussian(v: &optics::HalationGaussian) -> crate::cuda::sys::FjHalati
         feedback: [v.yvv()[1], v.yvv()[2], v.yvv()[3]],
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn halation_frame_projection(v: &optics::HalationFrame) -> crate::cuda::sys::FjScatterHalation {
     crate::cuda::sys::FjScatterHalation {
         recipe_hash: v.recipe_hash(),
@@ -1020,11 +1023,13 @@ fn halation_frame_projection(v: &optics::HalationFrame) -> crate::cuda::sys::FjS
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 enum HalationFrameRejection {
     Raw,
     Core(optics::HalationFrameError),
     Panic,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl HalationFrameRejection {
     fn fields(&self) -> (u32, FjHalationFrameFailure, &'static str) {
         let mut failure = halation_frame_none();
@@ -1086,6 +1091,7 @@ impl HalationFrameRejection {
 /// # Safety
 /// Independently numerically valid writable records authorize initialized/live,
 /// aligned exclusive storage disjoint from all other records and backing.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear_halation_frame(
     out: *mut crate::cuda::sys::FjScatterHalation,
     failure: *mut FjHalationFrameFailure,
@@ -1103,6 +1109,7 @@ unsafe fn clear_halation_frame(
 
 /// # Safety
 /// Same initialized/live/exclusive/disjoint obligations as halation_frame_prepare.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn halation_frame_body(
     input: *const FjHalationFrameInput,
     out: *mut crate::cuda::sys::FjScatterHalation,
@@ -1202,12 +1209,15 @@ pub(crate) fn checked_halation_frame(
 /// Required records are initialized/aligned/live. Writable records and optional
 /// diagnostic backing are exclusive, mutually disjoint and disjoint from input.
 /// Numeric checks do not prove arbitrary pointer provenance. No borrow escapes.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn halation_frame_prepare(
     input: *const FjHalationFrameInput,
     out: *mut crate::cuda::sys::FjScatterHalation,
     failure: *mut FjHalationFrameFailure,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    crate::frame_observer::record_halation_transport();
     let result = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: The checked body shares the full synchronous foreign storage contract.
         unsafe { halation_frame_body(input, out, failure, error) }
@@ -1229,19 +1239,6 @@ pub(crate) unsafe fn halation_frame_prepare(
             status(category)
         }
     }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same initialized/live/aligned, exclusive/disjoint obligations as halation_frame_prepare.
-unsafe extern "C" fn fj_legacy_scatter_halation_frame_prepare(
-    input: *const FjHalationFrameInput,
-    out: *mut crate::cuda::sys::FjScatterHalation,
-    failure: *mut FjHalationFrameFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The export delegates to the single whole-operation checked body.
-    unsafe { halation_frame_prepare(input, out, failure, error) }
 }
 
 #[cfg(feature = "test-support")]
@@ -1287,12 +1284,6 @@ const _: () = {
     assert!(std::mem::offset_of!(FjHalationFrameFailure, index) == 12);
     assert!(std::mem::offset_of!(FjHalationFrameFailure, sigma_px) == 16);
 };
-const _: unsafe extern "C" fn(
-    *const FjHalationFrameInput,
-    *mut crate::cuda::sys::FjScatterHalation,
-    *mut FjHalationFrameFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scatter_halation_frame_prepare;
 const _: fn(FjHalationFrameInput, FjHalationFrameFailure) = |input, failure| {
     let _: FjHalationRecipe = input.recipe;
     let _: f32 = input.pixel_size_um;

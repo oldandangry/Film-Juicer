@@ -1,12 +1,14 @@
-//! SF_TEMP_BRIDGE_GRAIN_FRAME: fixed synchronous mathematical transport.
-//! Remove at its last native model caller by S6.D; S4.E narrows execution inputs.
+//! Shared completed frame math and checked fixture transport.
 
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use film_juicer_core::film::grain::frame::{self, Field, Gaussian, LayerAccessError, Plan};
 use film_juicer_core::frame::Domain;
 use film_juicer_core::profile::Polarity;
-use crate::cuda::sys::{FjErrorBuffer, FjExtent, FjFloatSpan, FjGrainGaussian, FjStatus};
+#[cfg(any(test, feature = "test-support"))]
+use crate::cuda::sys::{FjErrorBuffer, FjStatus};
+use crate::cuda::sys::{FjExtent, FjFloatSpan, FjGrainGaussian};
 
 /// The shared checked grain-plan operation. The layer reader stays lazy: the
 /// injected layer panic occurs only when the consumer requests a real cell.
@@ -309,6 +311,7 @@ const EMPTY_MATH: FjGrainFrameMath = FjGrainFrameMath {
     recipe_hash: 0,
     density_layers_hash: 0,
 };
+#[cfg(any(test, feature = "test-support"))]
 const EMPTY_FAILURE: FjGrainFrameFailure = FjGrainFrameFailure {
     reason: 0,
     field: 0,
@@ -316,18 +319,21 @@ const EMPTY_FAILURE: FjGrainFrameFailure = FjGrainFrameFailure {
     channel: 3,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 fn valid<T>(pointer: *const T) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
         && size_of::<T>() <= isize::MAX as usize
         && (pointer as usize).checked_add(size_of::<T>()).is_some()
 }
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
     capacity: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// Optional initialized record and nonempty backing are live/exclusive/disjoint.
@@ -378,6 +384,7 @@ impl Diagnostic {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn domain(v: FjExtent) -> Domain {
     Domain {
         x: v.x,
@@ -394,6 +401,7 @@ fn extent(v: Domain) -> FjExtent {
         height: v.height,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn polarity(tag: u32) -> Option<Polarity> {
     match tag {
         0 => Some(Polarity::Negative),
@@ -477,6 +485,7 @@ pub(crate) fn failure_diagnostic(field: Field) -> &'static str {
 pub(crate) fn empty_math() -> FjGrainFrameMath {
     EMPTY_MATH
 }
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -487,6 +496,7 @@ fn status(category: u32) -> FjStatus {
 
 /// # Safety
 /// Authorized nonnull peers are aligned, initialized, live, exclusive and disjoint.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear(out: *mut FjGrainFrameMath, failure: *mut FjGrainFrameFailure) {
     if valid(out) {
         // SAFETY: Independent numeric admission and the caller authorize this complete write.
@@ -505,6 +515,7 @@ unsafe fn clear(out: *mut FjGrainFrameMath, failure: *mut FjGrainFrameFailure) {
 /// # Safety
 /// Nonempty span backing is initialized, aligned, live and immutable for `'a`.
 /// The caller confines the borrow to synchronous preparation; it cannot escape.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn layer<'a>(span: FjFloatSpan) -> Result<&'a [f32], LayerAccessError> {
     if span.count == 0 {
         return Ok(&[]);
@@ -527,6 +538,7 @@ unsafe fn layer<'a>(span: FjFloatSpan) -> Result<&'a [f32], LayerAccessError> {
 /// Fixed input is initialized/live/aligned; all consumed nonempty curve spans are
 /// initialized/live/immutable for this call. Outputs and optional diagnostics are
 /// exclusive and disjoint from inputs and each other. No pointer survives return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare(
     input: *const FjGrainFrameInput,
     out: *mut FjGrainFrameMath,
@@ -686,23 +698,11 @@ pub(crate) unsafe fn prepare(
     }
 }
 
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same initialized/live/disjoint and synchronous borrowing contract as prepare.
-unsafe extern "C" fn fj_legacy_grain_frame_prepare(
-    input: *const FjGrainFrameInput,
-    out: *mut FjGrainFrameMath,
-    failure: *mut FjGrainFrameFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The single checked implementation contains admission and whole-operation unwind.
-    unsafe { prepare(input, out, failure, error) }
-}
-
 #[cfg(feature = "test-support")]
 pub(crate) mod faults {
+    use crate::cuda::sys::FjStatus;
     use std::cell::Cell;
-    use super::{FjGrainFrameMath, FjStatus, status};
+    use super::{FjGrainFrameMath, status};
     thread_local! { static PENDING: Cell<u32> = const { Cell::new(0) }; }
     pub(crate) fn arm(fault: u32) -> FjStatus {
         if fault > 6 {

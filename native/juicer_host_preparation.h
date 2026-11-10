@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "juicer_legacy_api.h"
+#include "juicer_cuda_frame_values.h"
 
 struct FjHostPreparation;
 namespace Scanner {

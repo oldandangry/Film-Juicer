@@ -15,8 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Cuda/JuicerCudaExecutor.h"
-#include "NativePath.h"
-#include "JuicerState.h"
+#include "native_path.h"
 #include "ProcessRoot.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
@@ -118,7 +117,7 @@ namespace {
                 JuicerTests::CaseEvent event("spectral.tables", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSpectralTables out{};
                 Diagnostic d;
-                status(facade ? fj_test_spectral_tables(&in.view, &out, &d.error) : fj_legacy_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
+                status(facade ? fj_test_spectral_tables(&in.view, &out, &d.error) : fj_test_boundary_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
                 compare_tables(out, row.at("expected"));
                 require(d.error.length == 0, "success clears diagnostic");
                 event.passed();
@@ -127,12 +126,12 @@ namespace {
         Input reference(fixture.at("leaf").at("tables")[0].at("input"));
         FjSpectralTables baseline{};
         Diagnostic d;
-        status(fj_legacy_spectral_tables(&reference.view, &baseline, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_spectral_tables(&reference.view, &baseline, &d.error), FJ_STATUS_SUCCESS);
         for (const auto& row : fixture.at("dependencies")) {
             JuicerTests::CaseEvent event("spectral.dependencies", std::to_string(row.at("input").at("id").get<int>()));
             Input in(row.at("input"));
             FjSpectralTables out{};
-            status(fj_legacy_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
+            status(fj_test_boundary_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
             compare_tables(out, row.at("expected"));
             require(out.illuminant_hash == baseline.illuminant_hash && out.tables_hash != baseline.tables_hash, "isolated source dependency changes table family identity with supplied identity preserved");
             event.passed();
@@ -150,7 +149,7 @@ namespace {
                 FjSpectralWhiteFailure failure{};
                 Diagnostic d;
                 const bool built = row.at("white").at("built");
-                status(facade ? fj_test_spectral_white(&input, &out, &failure, &d.error) : fj_legacy_spectral_white(&input, &out, &failure, &d.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+                status(facade ? fj_test_spectral_white(&input, &out, &failure, &d.error) : fj_test_boundary_spectral_white(&input, &out, &failure, &d.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                 if (built) {
                     const auto& w = row.at("white");
                     exact(bits(std::array{out.normalization}), w.at("normalization"), "white normalization");
@@ -175,7 +174,7 @@ namespace {
                 JuicerTests::CaseEvent event("spectral.inverse", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSpectralInverse out{};
                 Diagnostic d;
-                status(facade ? fj_test_spectral_s_inverse(&input, &out, &d.error) : fj_legacy_spectral_s_inverse(&input, &out, &d.error), FJ_STATUS_SUCCESS);
+                status(facade ? fj_test_spectral_s_inverse(&input, &out, &d.error) : fj_test_boundary_spectral_s_inverse(&input, &out, &d.error), FJ_STATUS_SUCCESS);
                 exact(bits(out.matrix), row.at("expected"), "S inverse " + std::to_string(row.at("id").get<int>()));
                 event.passed();
             }
@@ -192,7 +191,7 @@ namespace {
             auto event = raw_input_rows.case_event("illuminant-count-" + std::to_string(count));
             malformed.illuminant.count = count;
             out.tables_hash = 123;
-            status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(out.tables_hash == 0 && out.lambda_nm[0] == 0 && d.error.length > 0, "malformed tables cleared");
             event.passed();
         }
@@ -200,31 +199,31 @@ namespace {
         malformed.baseline_min = {nullptr, 0};
         malformed.baseline_mid = span(in.midpoint);
         auto baseline_event = raw_input_rows.case_event("missing-baseline-min");
-        status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         baseline_event.passed();
         malformed = in.view;
         malformed.dyes_cmy.data = reinterpret_cast<const float*>(reinterpret_cast<const char*>(in.dyes.data()) + 1);
         auto dyes_event = raw_input_rows.case_event("misaligned-dyes");
-        status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         dyes_event.passed();
         malformed = in.view;
         malformed.illuminant.count = std::numeric_limits<std::size_t>::max();
         auto overflow_count_event = raw_input_rows.case_event("illuminant-count-overflow");
-        status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         overflow_count_event.passed();
         malformed = in.view;
         malformed.illuminant.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3);
         auto overflow_address_event = raw_input_rows.case_event("illuminant-address-overflow");
-        status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         overflow_address_event.passed();
         auto null_input_event = raw_input_rows.case_event("null-input");
-        status(fj_legacy_spectral_tables(nullptr, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(nullptr, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         null_input_event.passed();
         auto null_output_event = raw_input_rows.case_event("null-output");
-        status(fj_legacy_spectral_tables(&in.view, nullptr, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&in.view, nullptr, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         null_output_event.passed();
         auto null_diagnostic_event = raw_input_rows.case_event("null-diagnostic");
-        status(fj_legacy_spectral_tables(&in.view, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(&in.view, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         null_diagnostic_event.passed();
         const FjSpectralWhiteInput w{in.view.observer, in.view.illuminant};
         FjSpectralWhite white{};
@@ -234,11 +233,11 @@ namespace {
         const auto call = [&](std::uint32_t op) {
             switch (op) {
                 case 1:
-                    return fj_legacy_spectral_tables(&in.view, &out, &d.error);
+                    return fj_test_boundary_spectral_tables(&in.view, &out, &d.error);
                 case 2:
-                    return fj_legacy_spectral_white(&w, &white, &failure, &d.error);
+                    return fj_test_boundary_spectral_white(&w, &white, &failure, &d.error);
                 default:
-                    return fj_legacy_spectral_s_inverse(&s, &inverse, &d.error);
+                    return fj_test_boundary_spectral_s_inverse(&s, &inverse, &d.error);
             }
         };
         std::vector<std::string> operation_fault_ids;
@@ -271,27 +270,27 @@ namespace {
         std::thread other([&] {
             FjSpectralTables result{};
             Diagnostic diag;
-            status(fj_legacy_spectral_tables(&in.view, &result, &diag.error), FJ_STATUS_SUCCESS);
+            status(fj_test_boundary_spectral_tables(&in.view, &result, &diag.error), FJ_STATUS_SUCCESS);
         });
         other.join();
         status(call(1), FJ_STATUS_UNSUPPORTED_INPUT);
         status(call(1), FJ_STATUS_SUCCESS);
         status(fj_test_spectral_arm_fault(1, 1, 1), FJ_STATUS_SUCCESS);
-        status(fj_legacy_spectral_tables(nullptr, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_spectral_tables(nullptr, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
         status(call(1), FJ_STATUS_UNSUPPORTED_INPUT);
         status(call(1), FJ_STATUS_SUCCESS);
         struct CsvOwners {
             FjAssets* assets = nullptr;
             FjCsvPairs* pairs = nullptr;
             ~CsvOwners() {
-                if (pairs && fj_legacy_csv_release(pairs, nullptr).category != FJ_STATUS_SUCCESS)
+                if (pairs && fj_test_csv_release(pairs, nullptr).category != FJ_STATUS_SUCCESS)
                     std::abort();
-                if (assets && fj_legacy_assets_destroy(assets, nullptr).category != FJ_STATUS_SUCCESS)
+                if (assets && fj_test_assets_destroy(assets, nullptr).category != FJ_STATUS_SUCCESS)
                     std::abort();
             }
         } owners;
         const JuicerAssets::NativePathArgument path(resources);
-        status(fj_legacy_assets_create(path.view(), &owners.assets, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_assets_create(path.view(), &owners.assets, &d.error), FJ_STATUS_SUCCESS);
         status(fj_test_spectral_arm_fault(1, 1, 1), FJ_STATUS_SUCCESS);
         status(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
         status(fj_test_illuminant_arm_fault(FJ_TEST_ILLUMINANT_EQUAL_ENERGY, 1, 1), FJ_STATUS_SUCCESS);
@@ -299,14 +298,14 @@ namespace {
         status(call(1), FJ_STATUS_UNSUPPORTED_INPUT);
         const std::array<float, 3> nominal{1.0f, 1.0f, 1.0f};
         std::array<float, 9> matrix{};
-        status(fj_legacy_cat02_matrix(nominal.data(), nominal.data(), matrix.data()), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_cat02_matrix(nominal.data(), nominal.data(), matrix.data()), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_cat02_matrix(nominal.data(), nominal.data(), matrix.data()), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_cat02_matrix(nominal.data(), nominal.data(), matrix.data()), FJ_STATUS_SUCCESS);
         FjIlluminant light{};
-        status(fj_legacy_illuminant_equal_energy(&light, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_illuminant_equal_energy(&light, &d.error), FJ_STATUS_SUCCESS);
-        status(fj_legacy_csv_acquire(owners.assets, FJ_CSV_D65, &owners.pairs, &d.error), FJ_STATUS_INTERNAL_FAILURE);
+        status(fj_test_illuminant_equal_energy(&light, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_illuminant_equal_energy(&light, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_csv_acquire(owners.assets, FJ_CSV_D65, &owners.pairs, &d.error), FJ_STATUS_INTERNAL_FAILURE);
         require(owners.pairs == nullptr, "CSV fault publishes no owner independently of spectral math");
-        status(fj_legacy_csv_acquire(owners.assets, FJ_CSV_D65, &owners.pairs, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_csv_acquire(owners.assets, FJ_CSV_D65, &owners.pairs, &d.error), FJ_STATUS_SUCCESS);
         status(call(1), FJ_STATUS_SUCCESS);
         fj_test_spectral_clear_fault();
     }

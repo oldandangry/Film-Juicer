@@ -1,3 +1,4 @@
+#include "../route/route_fixture.h"
 #include "integration_test.h"
 
 #include "../ffi/case_results.h"
@@ -1361,7 +1362,7 @@ namespace ScatterHalationValidation {
         if (group == "route-boundaries") {
             Results listing(true);
             run_scanner_post_effect_cuda_rows(listing);
-            for (int index = 0; index < Spektrafilm::scan_route_option_count(); ++index) {
+            for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
                 const auto route = static_cast<Spektrafilm::ScanRoute>(index);
                 JuicerTests::list_case(
                     "scatter_halation.route_boundaries",
@@ -1513,7 +1514,7 @@ namespace {
     }
 
     void run_captured_route(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const nlohmann::json& fixture,
         const std::vector<std::uint8_t>& binary,

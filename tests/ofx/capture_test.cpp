@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -15,13 +16,15 @@
 #include <utility>
 #include <vector>
 
+
 #include "instance_host.h"
 #include "Hash.h"
 #include "juicer_ofx_api.h"
 #include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/print_illuminant_fixture.h"
-#include "../ffi/prepared_product_fixture.h"
+#include "../ffi/preparation_fixture.h"
+#include "../ffi/capture_identity.h"
 
 extern "C" std::uint64_t fj_test_ofx_clock_conversion(std::int64_t, std::int64_t);
 extern "C" void fj_test_ofx_clock_token(std::uint64_t);
@@ -323,14 +326,113 @@ namespace {
         require(row == ids.size(), "grain edit membership");
     }
 
-    void identity_comparison(OfxImageEffectHandle effect) {
+    class IdentityReference final {
+    public:
+        IdentityReference(std::string preset, std::filesystem::path path)
+            : preset_(std::move(preset)), path_(std::move(path)) {
+            require(preset_ == "windows-clang-debug" || preset_ == "windows-clang-release" ||
+                        preset_ == "linux-debug" || preset_ == "linux-release",
+                    "identity reference preset");
+            {
+                std::ifstream input(path_, std::ios::binary);
+                require(static_cast<bool>(input), "identity reference unavailable");
+                Json record;
+                input >> record;
+                input >> std::ws;
+                require(input.eof(), "identity reference trailing data");
+                expected_ = decode(record);
+                auto altered = record;
+                altered[3][0][0] = "altered-label";
+                bool rejected = false;
+                try {
+                    (void)decode(altered);
+                } catch (const std::exception&) {
+                    rejected = true;
+                }
+                require(rejected, "identity reference altered label accepted");
+                altered = record;
+                std::swap(altered[3][0], altered[3][1]);
+                rejected = false;
+                try {
+                    (void)decode(altered);
+                } catch (const std::exception&) {
+                    rejected = true;
+                }
+                require(rejected, "identity reference reordered rows accepted");
+                require(!matches(expected_.front(), expected_.front() ^ UINT64_C(1)), "identity reference altered value accepted");
+            }
+        }
+        void observe(std::string_view label, std::uint64_t value) {
+            const auto sites = membership();
+            require(actual_.size() < sites.size(), "extra identity reference observation");
+            const auto& expectedSite = sites[actual_.size()];
+            require(expectedSite.first == label, "identity reference call order");
+            {
+                require(actual_.size() < expected_.size() && matches(expected_[actual_.size()], value),
+                        "captured identity differs from frozen native reference");
+                if (actual_.empty())
+                    require(!matches(expected_[0] ^ UINT64_C(1), value), "candidate accepted altered identity reference");
+            }
+            actual_.push_back(value);
+        }
+        void finish() const {
+            require(actual_.size() == membership().size(), "missing identity reference observation");
+            require(actual_.size() == expected_.size(), "identity reference unconsumed rows");
+        }
+
+    private:
+        using Json = nlohmann::json;
+        using Site = std::pair<std::string, std::size_t>;
+        static bool matches(std::uint64_t expected, std::uint64_t actual) noexcept {
+            return expected == actual;
+        }
+        static std::vector<Site> membership() {
+            constexpr std::array<std::pair<std::string_view, std::size_t>, 17> groups{{{"ordinary/profiles", 4}, {"ordinary/exposure", 4}, {"ordinary/identity", 3}, {"profiles/route", 4}, {"profiles/empty", 1}, {"gamma/print-direct-ignored", 1}, {"optics/diffusion-nan", 1}, {"optics/signed-zero", 1}, {"print/finite", 1}, {"print/glare-inactive", 1}, {"effects/all-off", 1}, {"effects/weave-double", 1}, {"identity/native-default", 1}, {"identity/mode", 3}, {"identity/effects-off", 1}, {"identity/signed-zero", 1}, {"identity/changed-exposure", 1}}};
+            std::vector<Site> result;
+            result.reserve(30);
+            for (const auto& [label, count] : groups)
+                for (std::size_t occurrence = 0; occurrence < count; ++occurrence)
+                    result.emplace_back(label, occurrence);
+            require(result.size() == 30, "identity reference declared membership");
+            return result;
+        }
+        std::vector<std::uint64_t> decode(const Json& record) const {
+            const auto presets = Json::array({"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"});
+            require(record.is_array() && record.size() == 4 &&
+                        ((record[0] == "film-juicer-capture-identity-v1" && record[2] == preset_) ||
+                         (record[0] == "film-juicer-capture-identity-v2" && record[2] == presets &&
+                          std::find(presets.begin(), presets.end(), preset_) != presets.end())) &&
+                        record[1] == "d4bc2135d02ed88c91403040c4429a4fdb802a2b" && record[3].is_array(),
+                    "identity reference schema or provenance");
+            const auto sites = membership();
+            require(record[3].size() == sites.size(), "identity reference membership count");
+            std::vector<std::uint64_t> result;
+            result.reserve(sites.size());
+            for (std::size_t i = 0; i < sites.size(); ++i) {
+                const auto& row = record[3][i];
+                require(row.is_array() && row.size() == 3 && row[0] == sites[i].first &&
+                            row[1].is_number_unsigned() && row[1].get<std::uint64_t>() == sites[i].second &&
+                            row[2].is_number_unsigned(),
+                        "identity reference row or order");
+                result.push_back(row[2].get<std::uint64_t>());
+            }
+            return result;
+        }
+        std::string preset_;
+        std::filesystem::path path_;
+        std::vector<std::uint64_t> expected_;
+        std::vector<std::uint64_t> actual_;
+    };
+
+    void identity_comparison(OfxImageEffectHandle effect, IdentityReference& reference, std::string_view label) {
         Observation observed(effect);
         require(observed.view.pending_kind == 4, "identity capture valid");
-        const auto native = JuicerTestSupport::captured_snapshot(observed.view.captured);
-        require(observed.view.input_identity == hash_params(native), "captured input identity differs from native producer");
+        const JuicerTestSupport::PreparationInput input(observed.view.captured);
+        require(JuicerTestSupport::hash_input_identity(input) == observed.view.input_identity, "captured input identity differs from independent record oracle");
+        reference.observe(label, observed.view.input_identity);
     }
 
-    void ordinary_cases(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect) {
+    void ordinary_cases(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, IdentityReference& reference) {
         const auto set_double = [&](const char* name, double value) {
             host.set_value(effect, name, {value});
         };
@@ -360,7 +462,7 @@ namespace {
                     capture();
                     Observation observed(effect);
                     require(observed.view.pending_kind == 4 && observed.view.captured.scan_route == unsigned(2 * positive + print), "polarity preserves route selection");
-                    identity_comparison(effect);
+                    identity_comparison(effect, reference, "ordinary/profiles");
                 }
             }
             host.set_value(effect, "FilmProfileKey", {std::string("kodak_portra_400")});
@@ -453,7 +555,7 @@ namespace {
             for (double exposure : {-0.0, 0.0, -1.25, 1.234567890123}) {
                 set_double("Exposure", exposure);
                 capture();
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "ordinary/exposure");
             }
             host.set_value(effect, "ScanRoute", {std::string("NegativeDirectScan")});
             set_int("GrainActive", 0);
@@ -461,7 +563,7 @@ namespace {
             capture();
             const auto identity = [&] {
                 Observation observed(effect);
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "ordinary/identity");
                 return observed.view.input_identity;
             };
             const auto baseline = identity();
@@ -492,7 +594,7 @@ namespace {
         body();
         event.passed();
     }
-    void branch_matrix(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect) {
+    void branch_matrix(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, IdentityReference& reference) {
         const auto real = [&](const char* n, double v) {
             host.set_value(effect, n, {v});
         };
@@ -572,7 +674,7 @@ namespace {
                         capture();
                         Observation o(effect);
                         require(o.view.pending_kind == 4 && o.view.captured.scan_route == unsigned(2 * positive + print), "route resolution");
-                        identity_comparison(effect);
+                        identity_comparison(effect, reference, "profiles/route");
                     });
                 }
             row(rows, "empty", [&] {
@@ -582,7 +684,7 @@ namespace {
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.scan_route == 1, "empty profile defaults");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "profiles/empty");
             });
             row(rows, "unknown", [&] {
                 text("FilmProfileKey", "unknown");
@@ -633,7 +735,7 @@ namespace {
                 real("PrintGammaFactor", nan);
                 capture();
                 require(status() == 4, "unused print gamma");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "gamma/print-direct-ignored");
             });
             row(rows, "print-route-invalid", [&] {
                 text("ScanRoute", "NegativePrintScan");
@@ -675,7 +777,7 @@ namespace {
                 real("CameraDiffusionStrength", nan);
                 capture();
                 require(status() == 4, "authored diffusion retains nan");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "optics/diffusion-nan");
             });
             row(rows, "signed-zero", [&] {
                 real("CameraDiffusionStrength", -0.0);
@@ -686,7 +788,7 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first == b.view.input_identity, "diffusion canonical zero");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "optics/signed-zero");
             });
         }
         {
@@ -697,7 +799,7 @@ namespace {
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.print_exposure == 1.25, "print finite");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "print/finite");
             });
             row(rows, "nonfinite", [&] {
                 real("PrintExposure", nan);
@@ -724,7 +826,7 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first != b.view.input_identity, "inactive glare retained in identity");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "print/glare-inactive");
             });
         }
         {
@@ -815,7 +917,7 @@ namespace {
                 for (const char* n : {"FilmDustAmount", "GateDustAmount", "FilmScratchAmount", "GateScratchAmount", "GateWeaveAmount"})
                     real(n, 0);
                 capture();
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "effects/all-off");
             });
             row(rows, "clamp", [&] {
                 real("FilmDustAmount", 11);
@@ -843,7 +945,7 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first != b.view.input_identity, "weave exact double identity");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "effects/weave-double");
             });
         }
         {
@@ -852,7 +954,7 @@ namespace {
                 auto* fresh = host.create_effect();
                 require(action(plugin, kOfxActionCreateInstance, fresh) == kOfxStatOK, "default instance create");
                 change(plugin, host, fresh, "Exposure", kOfxChangeTime);
-                identity_comparison(fresh);
+                identity_comparison(fresh, reference, "identity/native-default");
                 require(action(plugin, kOfxActionDestroyInstance, fresh) == kOfxStatOK, "default instance destroy");
             });
             row(rows, "print-only", [&] {
@@ -895,7 +997,7 @@ namespace {
                     capture();
                     Observation d(effect);
                     require((before_window != d.view.input_identity) == (mode == 0), "adaptation mode identity");
-                    identity_comparison(effect);
+                    identity_comparison(effect, reference, "identity/mode");
                 });
             }
             row(rows, "grain-inactive", [&] {
@@ -913,7 +1015,7 @@ namespace {
                 for (const char* n : {"FilmDustAmount", "GateDustAmount", "FilmScratchAmount", "GateScratchAmount", "GateWeaveAmount"})
                     real(n, 0);
                 capture();
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "identity/effects-off");
             });
             row(rows, "signed-zero", [&] {
                 real("Exposure", -0.0);
@@ -938,7 +1040,7 @@ namespace {
                             std::bit_cast<std::uint32_t>(controls.chroma_shared_weight) == std::bit_cast<std::uint32_t>(native_shared) &&
                             std::bit_cast<std::uint32_t>(controls.chroma_independent_weight) == std::bit_cast<std::uint32_t>(native_independent),
                         "negative zero grain primitive words");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "identity/signed-zero");
                 integer("GrainActive", 0);
             });
             row(rows, "changed-exposure", [&] {
@@ -950,7 +1052,7 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first != b.view.input_identity, "exposure identity");
-                identity_comparison(effect);
+                identity_comparison(effect, reference, "identity/changed-exposure");
             });
         }
     }
@@ -1022,10 +1124,11 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case("ofx.capture", name);
         return 0;
     }
-    require(argc == 3, "usage: capture_test <grain manifest> <preset>");
+    require(argc == 5 && std::string_view(argv[3]) == "--identity-reference", "usage: capture_test <grain manifest> <preset> --identity-reference path");
+    IdentityReference reference(argv[2], argv[4]);
     JuicerTests::CaseLog log;
     ofx_test::InstanceHost host;
-    auto* plugin = fj_ofx_plugin(0);
+    auto* plugin = OfxGetPlugin(0);
     require(plugin != nullptr, "candidate plugin");
     plugin->setHost(host.binding());
     require(action(plugin, kOfxActionLoad) == kOfxStatOK, "plugin load");
@@ -1040,8 +1143,8 @@ int main(int argc, char** argv) try {
             require(initial.view.pending_kind == 0, "create leaves pending controls uninitialized");
         });
     }
-    ordinary_cases(plugin, host, effect);
-    branch_matrix(plugin, host, effect);
+    ordinary_cases(plugin, host, effect, reference);
+    branch_matrix(plugin, host, effect, reference);
     require(action(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "destroy instance");
     effect = host.create_effect();
     require(action(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "create grain instance");
@@ -1062,6 +1165,7 @@ int main(int argc, char** argv) try {
     require(action(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "destroy grain instance");
     identity_lifetime(plugin, host);
     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "plugin unload");
+    reference.finish();
     log.finish();
     return 0;
 } catch (const std::exception& error) {
