@@ -1,12 +1,7 @@
-<h1 align="center">Film-Juicer</h1>
-
 <p align="center">
-  <img src="Resources/banner.jpg" alt="Film-Juicer" width="1280">
+  <img src="docs/film-juicer-banner.png" alt="Film-Juicer" width="1280">
 </p>
 
-<p align="center">
-  <strong>Spectral film emulation for DaVinci Resolve</strong>
-</p>
 
 > [!IMPORTANT]
 > Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Its photographic model, profile data, and reference implementation are the foundation of this plug-in. Film-Juicer would not exist without that work. Please consider adding your support to this project.
