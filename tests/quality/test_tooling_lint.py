@@ -59,7 +59,7 @@ class ToolingLintTests(unittest.TestCase):
         if self.mutation:
             mutation, self.mutation = self.mutation, None
             mutation()
-        if self.failure:
+        if self.failure is True or (callable(self.failure) and self.failure(argv)):
             raise subprocess.CalledProcessError(1, argv)
         return subprocess.CompletedProcess(argv, 0)
 
@@ -112,6 +112,10 @@ class ToolingLintTests(unittest.TestCase):
         self.assertIn("scripts/space name.py", ruff)
         self.assertIn("--no-cache", ruff)
         self.assertNotIn("--fix", ruff)
+        ruff_format = next(c for c in self.commands if c[1] == "format")
+        self.assertEqual(ruff_format[2], "--check")
+        self.assertIn("scripts/space name.py", ruff_format)
+        self.assertIn("--no-cache", ruff_format)
         shell = next(c for c in self.commands if "--external-sources" in c)
         self.assertIn("--source-path=SCRIPTDIR", shell)
         workflow = next(c for c in self.commands if "-shellcheck" in c)
@@ -142,6 +146,12 @@ class ToolingLintTests(unittest.TestCase):
         self.failure = True
         with self.assertRaises(subprocess.CalledProcessError):
             self.check()
+
+    def test_unformatted_python_fails_the_gate(self) -> None:
+        self.failure = lambda argv: argv[1] == "format"
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.check()
+        self.assertEqual(raised.exception.cmd[1], "format")
 
     def test_source_edit_during_lint_fails(self) -> None:
         self.mutation = lambda: self.write("scripts/space name.py", "value = 2\n")

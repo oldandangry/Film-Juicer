@@ -82,6 +82,12 @@ def check_python(root: Path, files: list[str], ruff: Path, config: Path) -> None
             check=True,
             timeout=None,
         )
+        subprocess.run(
+            [str(ruff), "format", "--check", "--no-cache", "--config", str(config), "--", *files],
+            cwd=root,
+            check=True,
+            timeout=None,
+        )
 
 
 def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, int]:
