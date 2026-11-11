@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Resources/banner.jpg" alt="Film-Juicer" width="1280">
+  <img src="docs/film-juicer-banner.png" alt="Film-Juicer" width="1280">
 </p>
 
 
