@@ -38,9 +38,7 @@ class CudaConvolutionFixtureContractTests(unittest.TestCase):
         cls.hashes = json.loads(HASHES.read_text(encoding="utf-8"))
 
     def test_closed_identity_and_reference_authority(self) -> None:
-        self.assertEqual(
-            self.data["schema"], "film-juicer.diffusion-cuda-convolution.v1"
-        )
+        self.assertEqual(self.data["schema"], "film-juicer.diffusion-cuda-convolution.v1")
         self.assertEqual(self.data["semantic_channel_order"], ["R", "G", "B"])
         self.assertEqual(
             self.data["family_order"],
@@ -62,24 +60,16 @@ class CudaConvolutionFixtureContractTests(unittest.TestCase):
         )
         self.assertEqual(_sha256(source), self.data["reference_source"]["sha256"])
         self.assertTrue(
-            Path(self.data["reference_source"]["import_origin"]).resolve().is_relative_to(
-                (ROOT / "external/spektrafilm").resolve()
-            )
+            Path(self.data["reference_source"]["import_origin"])
+            .resolve()
+            .is_relative_to((ROOT / "external/spektrafilm").resolve())
         )
 
     def test_stage_family_control_and_extent_coverage(self) -> None:
-        stages = {
-            stage["label"]
-            for case in self.data["cases"]
-            for stage in case["stages"]
-        }
+        stages = {stage["label"] for case in self.data["cases"] for stage in case["stages"]}
         self.assertEqual(stages, {"camera", "enlarger"})
         self.assertTrue(
-            any(
-                [stage["label"] for stage in case["stages"]]
-                == ["camera", "enlarger"]
-                for case in self.data["cases"]
-            )
+            any([stage["label"] for stage in case["stages"]] == ["camera", "enlarger"] for case in self.data["cases"])
         )
         self.assertEqual(
             {stage["params"]["filter_family"] for case in self.data["cases"] for stage in case["stages"]},

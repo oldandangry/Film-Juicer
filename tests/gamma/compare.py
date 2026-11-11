@@ -19,9 +19,7 @@ LEGACY_DIRECT_FUSED_CASE_IDS = {
 }
 
 
-def fused_observation(
-    record: dict[str, Any], label: str, historical: bool
-) -> tuple[str, bool, float | None]:
+def fused_observation(record: dict[str, Any], label: str, historical: bool) -> tuple[str, bool, float | None]:
     if not isinstance(record, dict):
         raise RuntimeError(f"{label}: fused capture is not an object")
     case_id = record.get("case")
@@ -39,20 +37,14 @@ def fused_observation(
     difference = record.get("fused_maximum_absolute_difference")
     if not applicable:
         if not historical and difference is not None:
-            raise RuntimeError(
-                f"{label}: non-applicable fused difference must be null"
-            )
+            raise RuntimeError(f"{label}: non-applicable fused difference must be null")
         if historical and difference is not None:
             try:
                 historical_difference = float(difference)
             except (TypeError, ValueError) as error:
-                raise RuntimeError(
-                    f"{label}: malformed historical non-applicable difference"
-                ) from error
+                raise RuntimeError(f"{label}: malformed historical non-applicable difference") from error
             if not math.isfinite(historical_difference):
-                raise RuntimeError(
-                    f"{label}: historical non-applicable difference is nonfinite"
-                )
+                raise RuntimeError(f"{label}: historical non-applicable difference is nonfinite")
         return case_id, False, None
 
     if difference is None:
@@ -64,9 +56,7 @@ def fused_observation(
     except (TypeError, ValueError) as error:
         raise RuntimeError(f"{label}: malformed fused maximum difference") from error
     if not math.isfinite(measured) or measured < 0.0:
-        raise RuntimeError(
-            f"{label}: fused maximum difference must be finite and nonnegative"
-        )
+        raise RuntimeError(f"{label}: fused maximum difference must be finite and nonnegative")
     return case_id, True, measured
 
 
@@ -83,25 +73,16 @@ def compare_fused_case(
     }
     failures: list[str] = []
     try:
-        candidate_case, candidate_applicable, candidate_difference = (
-            fused_observation(candidate, f"{label}.candidate", False)
+        candidate_case, candidate_applicable, candidate_difference = fused_observation(
+            candidate, f"{label}.candidate", False
         )
-        frozen_case, frozen_applicable, frozen_difference = fused_observation(
-            frozen, f"{label}.frozen", True
-        )
+        frozen_case, frozen_applicable, frozen_difference = fused_observation(frozen, f"{label}.frozen", True)
         if candidate_case != expected_case:
-            failures.append(
-                f"{label}: candidate case {candidate_case!r}, expected {expected_case!r}"
-            )
+            failures.append(f"{label}: candidate case {candidate_case!r}, expected {expected_case!r}")
         if frozen_case != expected_case:
-            failures.append(
-                f"{label}: frozen case {frozen_case!r}, expected {expected_case!r}"
-            )
+            failures.append(f"{label}: frozen case {frozen_case!r}, expected {expected_case!r}")
         if candidate_applicable != frozen_applicable:
-            failures.append(
-                f"{label}: fused applicability changed from {frozen_applicable} "
-                f"to {candidate_applicable}"
-            )
+            failures.append(f"{label}: fused applicability changed from {frozen_applicable} to {candidate_applicable}")
         result["candidate_applicable"] = candidate_applicable
         result["frozen_applicable"] = frozen_applicable
         if candidate_applicable and frozen_applicable:
@@ -109,8 +90,7 @@ def compare_fused_case(
             result["frozen_bound"] = frozen_difference
             if candidate_difference > frozen_difference:
                 failures.append(
-                    f"{label}: fused difference {candidate_difference:.17g}, "
-                    f"frozen bound {frozen_difference:.17g}"
+                    f"{label}: fused difference {candidate_difference:.17g}, frozen bound {frozen_difference:.17g}"
                 )
             result["status"] = "passed" if not failures else "failed"
         elif not candidate_applicable and not frozen_applicable:

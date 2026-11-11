@@ -25,7 +25,10 @@ class ToolingLintTests(unittest.TestCase):
         self.write("ruff.toml", (ROOT / "ruff.toml").read_text(encoding="utf-8"))
         self.write("scripts/space name.py", "value = 1\n")
         self.write("scripts/check.sh", "#!/usr/bin/env bash\nprintf '%s\\n' hello\n")
-        self.write(".github/workflows/check.yaml", "name: Test\non: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hello\n")
+        self.write(
+            ".github/workflows/check.yaml",
+            "name: Test\non: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hello\n",
+        )
         self.tools = {}
         for name in ("ruff", "shellcheck", "actionlint"):
             path = self.write("executables/" + name + (".exe" if sys.platform == "win32" else ""), "tool")
@@ -47,12 +50,16 @@ class ToolingLintTests(unittest.TestCase):
             return self.real_run(argv, **kwargs)
         self.commands.append(argv)
         if argv[1] in {"--version", "-version"}:
-            versions = {"ruff": "ruff 0.15.22\n", "shellcheck": "ShellCheck\nversion: 0.11.0\n", "actionlint": "1.7.12\n"}
+            versions = {
+                "ruff": "ruff 0.15.22\n",
+                "shellcheck": "ShellCheck\nversion: 0.11.0\n",
+                "actionlint": "1.7.12\n",
+            }
             return subprocess.CompletedProcess(argv, 0, versions[Path(argv[0]).stem], "")
         if self.mutation:
             mutation, self.mutation = self.mutation, None
             mutation()
-        if self.failure:
+        if self.failure is True or (callable(self.failure) and self.failure(argv)):
             raise subprocess.CalledProcessError(1, argv)
         return subprocess.CompletedProcess(argv, 0)
 
@@ -63,9 +70,17 @@ class ToolingLintTests(unittest.TestCase):
     def test_tracked_untracked_and_excluded_scope(self) -> None:
         subprocess.run(["git", "add", "scripts/space name.py"], cwd=self.root, check=True)
         self.write("tests/new.py", "pass\n")
-        excluded = ("tests/fixtures/bad.py", "tests/generated/bad.py", "tests/vendor/bad.py",
-                    "scripts/vendored/bad.sh", ".juicer-local/private.py", "out/bad.py",
-                    "external/bad.py", "Resources/bad.py", "src/bad.py")
+        excluded = (
+            "tests/fixtures/bad.py",
+            "tests/generated/bad.py",
+            "tests/vendor/bad.py",
+            "scripts/vendored/bad.sh",
+            ".juicer-local/private.py",
+            "out/bad.py",
+            "external/bad.py",
+            "Resources/bad.py",
+            "src/bad.py",
+        )
         self.subtest_cases = excluded
         for name in self.subtest_cases:
             with self.subTest(case=name):
@@ -73,7 +88,14 @@ class ToolingLintTests(unittest.TestCase):
         self.write(".gitignore", "scripts/ignored.py\n")
         self.write("scripts/ignored.py", "invalid !")
         files = tooling.source_files(self.root)
-        self.assertEqual(files, {"python": ["scripts/space name.py", "tests/new.py"], "shell": ["scripts/check.sh"], "workflow": [".github/workflows/check.yaml"]})
+        self.assertEqual(
+            files,
+            {
+                "python": ["scripts/space name.py", "tests/new.py"],
+                "shell": ["scripts/check.sh"],
+                "workflow": [".github/workflows/check.yaml"],
+            },
+        )
 
     def test_deleted_tracked_file_is_outside_current_membership(self) -> None:
         path = self.root / "scripts/space name.py"
@@ -83,17 +105,21 @@ class ToolingLintTests(unittest.TestCase):
         self.assertEqual(self.check()["python"], 0)
 
     def test_valid_inputs_pass_unchanged_with_argument_arrays(self) -> None:
-        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
         self.assertEqual(self.check(), {"python": 1, "shell": 1, "workflow": 1})
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         ruff = next(c for c in self.commands if c[1] == "check")
         self.assertIn("scripts/space name.py", ruff)
         self.assertIn("--no-cache", ruff)
         self.assertNotIn("--fix", ruff)
+        ruff_format = next(c for c in self.commands if c[1] == "format")
+        self.assertEqual(ruff_format[2], "--check")
+        self.assertIn("scripts/space name.py", ruff_format)
+        self.assertIn("--no-cache", ruff_format)
         shell = next(c for c in self.commands if "--external-sources" in c)
         self.assertIn("--source-path=SCRIPTDIR", shell)
         workflow = next(c for c in self.commands if "-shellcheck" in c)
-        self.assertEqual(workflow[workflow.index("-shellcheck") + 1], str(Path(self.tools['shellcheck']).resolve()))
+        self.assertEqual(workflow[workflow.index("-shellcheck") + 1], str(Path(self.tools["shellcheck"]).resolve()))
         self.assertEqual(workflow[workflow.index("-pyflakes") + 1], "")
 
     def test_missing_tools_fail(self) -> None:
@@ -107,13 +133,25 @@ class ToolingLintTests(unittest.TestCase):
         tools = tuple(self.tools)
         self.subtest_cases = tuple(f"wrong-version-{name}" for name in tools)
         for case_id, name in zip(self.subtest_cases, tools):
-            with self.subTest(case=case_id), mock.patch.object(tooling.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "wrong 99", "")), self.assertRaisesRegex(tooling.ToolingError, "wrong"):
+            with (
+                self.subTest(case=case_id),
+                mock.patch.object(
+                    tooling.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "wrong 99", "")
+                ),
+                self.assertRaisesRegex(tooling.ToolingError, "wrong"),
+            ):
                 tooling.require_tool(name, self.tools[name], "--version", r"^expected$")
 
     def test_tool_failures_fail_the_gate(self) -> None:
         self.failure = True
         with self.assertRaises(subprocess.CalledProcessError):
             self.check()
+
+    def test_unformatted_python_fails_the_gate(self) -> None:
+        self.failure = lambda argv: argv[1] == "format"
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.check()
+        self.assertEqual(raised.exception.cmd[1], "format")
 
     def test_source_edit_during_lint_fails(self) -> None:
         self.mutation = lambda: self.write("scripts/space name.py", "value = 2\n")
@@ -133,9 +171,11 @@ class ToolingLintTests(unittest.TestCase):
     def test_installed_tool_bytes_are_not_admission_inputs(self) -> None:
         original = tooling.digest
         tools = {Path(value) for value in self.tools.values()}
+
         def source_digest(path):
             self.assertNotIn(path, tools, "qualified tools must not be hashed")
             return original(path)
+
         with mock.patch.object(tooling, "digest", side_effect=source_digest):
             self.assertEqual(self.check()["python"], 1)
 
@@ -150,6 +190,7 @@ class ToolingLintTests(unittest.TestCase):
         digest, resolve = tooling.digest, Path.resolve
         reads = 0
         retargeted = False
+
         def read(path):
             nonlocal reads, retargeted
             checksum = digest(path)
@@ -157,16 +198,24 @@ class ToolingLintTests(unittest.TestCase):
                 reads += 1
                 retargeted = reads == 2
             return checksum
+
         def identity(path, *args, **kwargs):
             return target if path == source and retargeted else resolve(path, *args, **kwargs)
-        with mock.patch.object(tooling, "digest", read), mock.patch.object(Path, "resolve", identity), self.assertRaisesRegex(tooling.ToolingError, "changed"):
+
+        with (
+            mock.patch.object(tooling, "digest", read),
+            mock.patch.object(Path, "resolve", identity),
+            self.assertRaisesRegex(tooling.ToolingError, "changed"),
+        ):
             self.check()
 
     def test_outside_repository_input_fails(self) -> None:
         resolve = Path.resolve
         outside = self.root.parent / "outside.py"
+
         def redirect(path, *args, **kwargs):
             return outside if path == self.root / "scripts/space name.py" else resolve(path, *args, **kwargs)
+
         with mock.patch.object(Path, "resolve", redirect), self.assertRaisesRegex(tooling.ToolingError, "outside"):
             tooling.source_files(self.root)
 
@@ -179,17 +228,23 @@ class ToolingLintTests(unittest.TestCase):
 
 ToolingLintTests.test_tracked_untracked_and_excluded_scope.required_subtests = True
 ToolingLintTests.test_tracked_untracked_and_excluded_scope.subtest_cases = (
-    "tests/fixtures/bad.py", "tests/generated/bad.py", "tests/vendor/bad.py",
-    "scripts/vendored/bad.sh", ".juicer-local/private.py", "out/bad.py",
-    "external/bad.py", "Resources/bad.py", "src/bad.py",
+    "tests/fixtures/bad.py",
+    "tests/generated/bad.py",
+    "tests/vendor/bad.py",
+    "scripts/vendored/bad.sh",
+    ".juicer-local/private.py",
+    "out/bad.py",
+    "external/bad.py",
+    "Resources/bad.py",
+    "src/bad.py",
 )
 ToolingLintTests.test_missing_tools_fail.required_subtests = True
-ToolingLintTests.test_missing_tools_fail.subtest_cases = (
-    "missing-ruff", "missing-shellcheck", "missing-actionlint"
-)
+ToolingLintTests.test_missing_tools_fail.subtest_cases = ("missing-ruff", "missing-shellcheck", "missing-actionlint")
 ToolingLintTests.test_wrong_versions_fail.required_subtests = True
 ToolingLintTests.test_wrong_versions_fail.subtest_cases = (
-    "wrong-version-ruff", "wrong-version-shellcheck", "wrong-version-actionlint"
+    "wrong-version-ruff",
+    "wrong-version-shellcheck",
+    "wrong-version-actionlint",
 )
 
 

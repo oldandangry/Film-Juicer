@@ -232,9 +232,7 @@ def make_pattern(name: str, height: int, width: int) -> np.ndarray:
     elif name == "corner":
         image[0, 0] = asymmetric
     elif name == "random":
-        image = np.random.default_rng(0xD1FF0510).random(
-            (height, width, 3), dtype=np.float32
-        )
+        image = np.random.default_rng(0xD1FF0510).random((height, width, 3), dtype=np.float32)
     elif name == "hdr_epsilon":
         image = np.linspace(0.0, 16.0, image.size, dtype=np.float32).reshape(image.shape)
         image.reshape(-1)[:7] = np.array(
@@ -274,17 +272,12 @@ def build_reference_bundle(
     if sys.version_info[:2] != (3, 13):
         raise RuntimeError(f"reference generation requires Python 3.13, got {sys.version}")
     if Path(sys.executable).resolve() != expected_interpreter:
-        raise RuntimeError(
-            f"reference generation requires {expected_interpreter}, got {sys.executable}"
-        )
+        raise RuntimeError(f"reference generation requires {expected_interpreter}, got {sys.executable}")
     if Path(sys.prefix).resolve() != environment_dir.resolve():
-        raise RuntimeError(
-            f"reference generation requires environment prefix {environment_dir}, got {sys.prefix}"
-        )
+        raise RuntimeError(f"reference generation requires environment prefix {environment_dir}, got {sys.prefix}")
     if tuple(diffusion.DIFFUSION_FILTER_FAMILIES) != FAMILIES:
         raise RuntimeError(
-            "spektrafilm family order changed: "
-            f"expected {FAMILIES}, got {diffusion.DIFFUSION_FILTER_FAMILIES}"
+            f"spektrafilm family order changed: expected {FAMILIES}, got {diffusion.DIFFUSION_FILTER_FAMILIES}"
         )
 
     reference_status = _git_output(reference_root, "status", "--porcelain")
@@ -300,10 +293,7 @@ def build_reference_bundle(
     expected_editable = f"-e {reference_root.as_uri()}"
     freeze_lines = freeze_path.read_text(encoding="utf-8").splitlines()
     if expected_editable not in freeze_lines:
-        raise RuntimeError(
-            "freeze does not contain the editable reference checkout: "
-            f"{expected_editable}"
-        )
+        raise RuntimeError(f"freeze does not contain the editable reference checkout: {expected_editable}")
 
     arrays: dict[str, np.ndarray] = {}
     strength_cases: list[dict[str, object]] = []
@@ -379,9 +369,7 @@ def build_reference_bundle(
                     halo_warmth=warmth,
                     overrides=overrides,
                 )
-                array_name = (
-                    f"psf__{family}__advanced_{advanced_case['name']}__warmth_{warmth_index}"
-                )
+                array_name = f"psf__{family}__advanced_{advanced_case['name']}__warmth_{warmth_index}"
                 _store_array(arrays, array_name, psf)
                 psf_cases.append(
                     {
@@ -398,8 +386,7 @@ def build_reference_bundle(
                 )
 
     normalized_inputs = {
-        pattern: _store_array(arrays, f"input__17x19__{pattern}", make_pattern(pattern, 17, 19))
-        for pattern in PATTERNS
+        pattern: _store_array(arrays, f"input__17x19__{pattern}", make_pattern(pattern, 17, 19)) for pattern in PATTERNS
     }
     for family in FAMILIES:
         for stage in ("camera", "enlarger"):
@@ -411,9 +398,7 @@ def build_reference_bundle(
                     spatial_scale=1.0,
                 )
                 input_name = normalized_inputs[pattern]
-                output, radius = _apply_with_radius(
-                    arrays[input_name].copy(), params, NORMAL_PIXEL_SIZE_UM
-                )
+                output, radius = _apply_with_radius(arrays[input_name].copy(), params, NORMAL_PIXEL_SIZE_UM)
                 output_name = f"output__{stage}__{family}__{pattern}"
                 image_cases.append(
                     _image_row(
@@ -448,9 +433,7 @@ def build_reference_bundle(
                 spatial_scale=1.0,
             )
             input_name = radius_inputs[(height, width)]
-            output, radius = _apply_with_radius(
-                arrays[input_name].copy(), params, NORMAL_PIXEL_SIZE_UM
-            )
+            output, radius = _apply_with_radius(arrays[input_name].copy(), params, NORMAL_PIXEL_SIZE_UM)
             output_name = f"output__radius_{extent_name}__{family}__{height}x{width}"
             row = _image_row(
                 arrays=arrays,
@@ -483,9 +466,7 @@ def build_reference_bundle(
                 strength=0.5,
                 spatial_scale=1.0,
             )
-            output, radius = _apply_with_radius(
-                arrays[hdr_input].copy(), params, NORMAL_PIXEL_SIZE_UM
-            )
+            output, radius = _apply_with_radius(arrays[hdr_input].copy(), params, NORMAL_PIXEL_SIZE_UM)
             output_name = f"output__{stage}__{family}__hdr_epsilon"
             hdr_cases.append(
                 _image_row(
@@ -561,9 +542,7 @@ def write_bundle(
     if set(records) != set(arrays):
         raise ValueError("manifest array inventory does not match payload")
 
-    with tempfile.TemporaryDirectory(
-        prefix=".diffusion-reference-", dir=output_dir.parent
-    ) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".diffusion-reference-", dir=output_dir.parent) as temporary:
         temporary_dir = Path(temporary)
         temporary_manifest = temporary_dir / "diffusion_reference_v1.json"
         temporary_arrays = temporary_dir / "diffusion_reference_v1.npz"
@@ -618,13 +597,12 @@ def main() -> int:
     if evidence_dir is not None and not evidence_dir.is_absolute():
         evidence_dir = repo_root / evidence_dir
     manifest, arrays = build_reference_bundle(
-        repo_root, environment_dir=environment_dir, evidence_dir=evidence_dir,
+        repo_root,
+        environment_dir=environment_dir,
+        evidence_dir=evidence_dir,
     )
     write_bundle(output_dir, manifest, arrays)
-    print(
-        "reference_bundle=PASS "
-        f"arrays={len(arrays)} output={output_dir.resolve()}"
-    )
+    print(f"reference_bundle=PASS arrays={len(arrays)} output={output_dir.resolve()}")
     return 0
 
 

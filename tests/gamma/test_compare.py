@@ -45,9 +45,7 @@ class FusedEquivalenceTests(unittest.TestCase):
         self.assertEqual("passed", result["status"])
 
         failing = dict(passing)
-        failing["fused_maximum_absolute_difference"] = math.nextafter(
-            0.5, math.inf
-        )
+        failing["fused_maximum_absolute_difference"] = math.nextafter(0.5, math.inf)
         result, failures = self.compare(failing)
         self.assertTrue(failures)
         self.assertEqual("failed", result["status"])
@@ -136,8 +134,10 @@ class FusedEquivalenceTests(unittest.TestCase):
         }
         malformed_cases = []
         for case_id, value in (
-            ("nan", math.nan), ("positive-infinity", math.inf),
-            ("negative-infinity", -math.inf), ("negative-bound", -0.25),
+            ("nan", math.nan),
+            ("positive-infinity", math.inf),
+            ("negative-infinity", -math.inf),
+            ("negative-bound", -0.25),
         ):
             row = dict(valid)
             row["fused_maximum_absolute_difference"] = value
@@ -157,8 +157,14 @@ class FusedEquivalenceTests(unittest.TestCase):
         malformed_cases.append(("changed-applicability", changed_applicability))
 
         self.subtest_cases = (
-            "nan", "positive-infinity", "negative-infinity", "negative-bound",
-            "missing-difference", "missing-applicability", "wrong-case", "changed-applicability",
+            "nan",
+            "positive-infinity",
+            "negative-infinity",
+            "negative-bound",
+            "missing-difference",
+            "missing-applicability",
+            "wrong-case",
+            "changed-applicability",
         )
         for case_id, (_, candidate) in zip(self.subtest_cases, malformed_cases):
             with self.subTest(case=case_id):
@@ -266,9 +272,7 @@ class CommandLineFailureTests(unittest.TestCase):
                     records[side]["fused_maximum_absolute_difference"] = measurement
                     candidate.write_text(json.dumps(records["candidate"]), encoding="utf-8")
                     frozen.write_text(json.dumps(records["frozen"]), encoding="utf-8")
-                    result = self.run_compare(
-                        "--candidate", str(candidate), "--frozen", str(frozen), "--case", "x"
-                    )
+                    result = self.run_compare("--candidate", str(candidate), "--frozen", str(frozen), "--case", "x")
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     report = json.loads(result.stdout)
                     self.assertEqual("failed", report["status"])
@@ -320,18 +324,30 @@ FusedEquivalenceTests.test_numeric_zero_bound_passes.required_subtests = True
 FusedEquivalenceTests.test_numeric_zero_bound_passes.subtest_cases = ("integer-zero", "float-zero")
 FusedEquivalenceTests.test_boolean_applicable_measurements_fail.required_subtests = True
 FusedEquivalenceTests.test_boolean_applicable_measurements_fail.subtest_cases = (
-    "candidate-boolean-false", "candidate-boolean-true", "frozen-boolean-false", "frozen-boolean-true"
+    "candidate-boolean-false",
+    "candidate-boolean-true",
+    "frozen-boolean-false",
+    "frozen-boolean-true",
 )
 FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.required_subtests = True
 FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.subtest_cases = ("false", "true")
 FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.required_subtests = True
 FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.subtest_cases = (
-    "nan", "positive-infinity", "negative-infinity", "negative-bound", "missing-difference",
-    "missing-applicability", "wrong-case", "changed-applicability"
+    "nan",
+    "positive-infinity",
+    "negative-infinity",
+    "negative-bound",
+    "missing-difference",
+    "missing-applicability",
+    "wrong-case",
+    "changed-applicability",
 )
 CommandLineFailureTests.test_boolean_measurements_exit_failed.required_subtests = True
 CommandLineFailureTests.test_boolean_measurements_exit_failed.subtest_cases = (
-    "candidate-boolean-false", "candidate-boolean-true", "frozen-boolean-false", "frozen-boolean-true"
+    "candidate-boolean-false",
+    "candidate-boolean-true",
+    "frozen-boolean-false",
+    "frozen-boolean-true",
 )
 
 

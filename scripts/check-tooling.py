@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check maintained Python, shell and workflow source without changing it."""
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,9 @@ class ToolingError(RuntimeError):
 def source_files(root: Path) -> dict[str, list[str]]:
     result = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=root, check=True, capture_output=True,
+        cwd=root,
+        check=True,
+        capture_output=True,
     )
     files: dict[str, list[str]] = {"python": [], "shell": [], "workflow": []}
     for name in sorted({os.fsdecode(p) for p in result.stdout.split(b"\0") if p}):
@@ -73,8 +76,18 @@ def file_identities(paths: list[Path]) -> dict[Path, tuple[str, str]]:
 
 def check_python(root: Path, files: list[str], ruff: Path, config: Path) -> None:
     if files:
-        subprocess.run([str(ruff), "check", "--no-cache", "--config", str(config), "--", *files],
-                       cwd=root, check=True, timeout=None)
+        subprocess.run(
+            [str(ruff), "check", "--no-cache", "--config", str(config), "--", *files],
+            cwd=root,
+            check=True,
+            timeout=None,
+        )
+        subprocess.run(
+            [str(ruff), "format", "--check", "--no-cache", "--config", str(config), "--", *files],
+            cwd=root,
+            check=True,
+            timeout=None,
+        )
 
 
 def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, int]:
@@ -91,11 +104,27 @@ def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, 
     before = file_identities(inputs)
     check_python(root, files["python"], tools["ruff"], config)
     if files["shell"]:
-        subprocess.run([str(tools["shellcheck"]), "--external-sources", "--source-path=SCRIPTDIR", "--", *files["shell"]],
-                       cwd=root, check=True, timeout=None)
+        subprocess.run(
+            [str(tools["shellcheck"]), "--external-sources", "--source-path=SCRIPTDIR", "--", *files["shell"]],
+            cwd=root,
+            check=True,
+            timeout=None,
+        )
     if files["workflow"]:
-        subprocess.run([str(tools["actionlint"]), "-shellcheck", str(tools["shellcheck"]), "-pyflakes", "", "--", *files["workflow"]],
-                       cwd=root, check=True, timeout=None)
+        subprocess.run(
+            [
+                str(tools["actionlint"]),
+                "-shellcheck",
+                str(tools["shellcheck"]),
+                "-pyflakes",
+                "",
+                "--",
+                *files["workflow"],
+            ],
+            cwd=root,
+            check=True,
+            timeout=None,
+        )
     after = file_identities(inputs)
     if before != after or files != source_files(root):
         raise ToolingError("tooling inputs changed during checks")

@@ -29,16 +29,35 @@ ROOT = Path(__file__).resolve().parents[2]
 # Independently declared registration membership. Keep synchronized with the
 # owning CMake contract when a quality command is added or removed.
 TOOLING_TESTS = (
-    "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults",
-    "Quality.Dispatcher", "Quality.ToolingLint", "Quality.Execution", "Quality.BuildEvidence",
-    "Quality.BuildRegistration", "Quality.Verify", "Quality.Checkpoint",
-    "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild", "Ofx.Host.MeasurementReport",
+    "Quality.NativeResults",
+    "Quality.HostResults",
+    "Quality.GpuResults",
+    "Quality.Dispatcher",
+    "Quality.ToolingLint",
+    "Quality.Execution",
+    "Quality.BuildEvidence",
+    "Quality.BuildRegistration",
+    "Quality.Verify",
+    "Quality.Checkpoint",
+    "Ctest.Host.Report",
+    "Ctest.Host.Repetition",
+    "Ffi.Host.RustBuild",
+    "Ofx.Host.MeasurementReport",
 )
 WINDOWS_TOOLING_SHARDS = {
     "core": {
-        "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults", "Quality.Dispatcher",
-        "Quality.ToolingLint", "Quality.Execution", "Quality.BuildRegistration", "Quality.Verify",
-        "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild", "Ofx.Host.MeasurementReport",
+        "Quality.NativeResults",
+        "Quality.HostResults",
+        "Quality.GpuResults",
+        "Quality.Dispatcher",
+        "Quality.ToolingLint",
+        "Quality.Execution",
+        "Quality.BuildRegistration",
+        "Quality.Verify",
+        "Ctest.Host.Report",
+        "Ctest.Host.Repetition",
+        "Ffi.Host.RustBuild",
+        "Ofx.Host.MeasurementReport",
     },
     "BuildEvidence": {"Quality.BuildEvidence"},
     "Checkpoint": {"Quality.Checkpoint"},
@@ -48,7 +67,10 @@ WINDOWS_TOOLING_SHARDS = {
 class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)) / "registration-controls"
+        parent = (
+            Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset))
+            / "registration-controls"
+        )
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(prefix="registration controls ü ", dir=parent, delete=False)
         self.root = Path(self.temporary.name).resolve()
@@ -100,21 +122,36 @@ class RegistrationTests(unittest.TestCase):
         cargo = shutil.which("cargo")
         ninja = shutil.which("ninja")
         compiler = shutil.which("clang-cl" if os.name == "nt" else "gcc-13")
-        self.assertTrue(self.cmake and self.ctest and cargo and ninja and compiler,
-                        "shared tooling configure requires CMake, CTest, Cargo, Ninja and the native C compiler")
+        self.assertTrue(
+            self.cmake and self.ctest and cargo and ninja and compiler,
+            "shared tooling configure requires CMake, CTest, Cargo, Ninja and the native C compiler",
+        )
         environment = dict(os.environ)
-        self.native_run.command("configure", [
-            self.cmake, "-S", str(source), "-B", str(build), "-G", "Ninja",
-            "-DCMAKE_BUILD_TYPE=Debug", "-DPython3_EXECUTABLE=" + str(python),
-            "-DJUICER_TOOLING_CARGO=" + cargo,
-            "-DJUICER_TOOLING_ROOT=" + str(self.checkout),
-            "-DJUICER_TOOLING_ARTIFACT_ROOT=" + str(artifacts),
-            "-DCMAKE_C_COMPILER=" + compiler,
-        ], env=environment, timeout=120,
-            vctip_executable=execution.windows_vctip(environment))
+        self.native_run.command(
+            "configure",
+            [
+                self.cmake,
+                "-S",
+                str(source),
+                "-B",
+                str(build),
+                "-G",
+                "Ninja",
+                "-DCMAKE_BUILD_TYPE=Debug",
+                "-DPython3_EXECUTABLE=" + str(python),
+                "-DJUICER_TOOLING_CARGO=" + cargo,
+                "-DJUICER_TOOLING_ROOT=" + str(self.checkout),
+                "-DJUICER_TOOLING_ARTIFACT_ROOT=" + str(artifacts),
+                "-DCMAKE_C_COMPILER=" + compiler,
+            ],
+            env=environment,
+            timeout=120,
+            vctip_executable=execution.windows_vctip(environment),
+        )
         listing = self.directory / "registration.json"
-        self.native_run.command("discovery", [self.ctest, "--test-dir", str(build), "--show-only=json-v1"],
-                         timeout=30, stdout_only=True)
+        self.native_run.command(
+            "discovery", [self.ctest, "--test-dir", str(build), "--show-only=json-v1"], timeout=30, stdout_only=True
+        )
         # CTest's JSON is also retained as the direct stdout of the discovery command.
         log = self.directory / "discovery.log"
         listing.write_bytes(log.read_bytes())
@@ -146,22 +183,27 @@ class RegistrationTests(unittest.TestCase):
             self.assertEqual(len(tooling_labels), 1, test["name"])
             if test["name"].startswith("Quality."):
                 environment = properties.get("ENVIRONMENT", [])
-                artifact_values = [value.partition("=")[2] for value in environment
-                                   if value.startswith("JUICER_TEST_ARTIFACT_DIR=")]
+                artifact_values = [
+                    value.partition("=")[2] for value in environment if value.startswith("JUICER_TEST_ARTIFACT_DIR=")
+                ]
                 if artifact_values:
                     self.assertEqual(len(artifact_values), 1, test["name"])
                     self.assertTrue(Path(artifact_values[0]).is_relative_to(self.artifacts), test["name"])
         rust_build = next(test for test in tests if test["name"] == "Ffi.Host.RustBuild")
-        self.assertEqual(Path(rust_build["command"][rust_build["command"].index("--artifacts") + 1]),
-                         self.artifacts / "ffi/rust-build")
+        self.assertEqual(
+            Path(rust_build["command"][rust_build["command"].index("--artifacts") + 1]),
+            self.artifacts / "ffi/rust-build",
+        )
 
         for shard, expected_names in WINDOWS_TOOLING_SHARDS.items():
             selected = sorted(name for name in names if f"tooling-{shard}" in labels_by_name[name])
             self.assertCountEqual(selected, expected_names, f"Windows tooling shard {shard}")
 
-        self.native_run.command("selected-discovery", [self.ctest, "--test-dir", str(self.build),
-                           "--show-only=json-v1", "-R", "^Quality.BuildRegistration$"],
-                         stdout_only=True)
+        self.native_run.command(
+            "selected-discovery",
+            [self.ctest, "--test-dir", str(self.build), "--show-only=json-v1", "-R", "^Quality.BuildRegistration$"],
+            stdout_only=True,
+        )
         selected = json.loads((self.directory / "selected-discovery.log").read_text())
         self.assertEqual([test["name"] for test in selected["tests"]], ["Quality.BuildRegistration"])
         self.native_run.publish({"schema": "native-run-v1", "registration": names})
@@ -171,7 +213,9 @@ class RegistrationTests(unittest.TestCase):
         original = source.read_text(encoding="utf-8")
         omission = re.sub(
             r"(?ms)^\s*juicer_add_python_test\(NAME Ctest\.Host\.Report\b.*?^\s*list\(APPEND tooling_tests Ctest\.Host\.Report\)\s*$",
-            "", original, count=1,
+            "",
+            original,
+            count=1,
         )
         self.assertNotEqual(omission, original, "the expected Python test wrapper must have one owning definition")
         source.write_text(omission, encoding="utf-8")
@@ -198,9 +242,9 @@ class RegistrationTests(unittest.TestCase):
         membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
         stage = self.build / "Resources"
         (source / "CMakeLists.txt").write_text(
-            'cmake_minimum_required(VERSION 4.3)\nproject(ResourceStaging NONE)\n'
+            "cmake_minimum_required(VERSION 4.3)\nproject(ResourceStaging NONE)\n"
             f'include("{(ROOT / "tests/ResourceStaging.cmake").as_posix()}")\n'
-            'set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS '
+            "set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "
             '"${CMAKE_CURRENT_SOURCE_DIR}/membership.txt")\n'
             'file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/membership.txt" JUICER_RUNTIME_RESOURCES ENCODING UTF-8)\n'
             'juicer_stage_test_resources("${CMAKE_CURRENT_SOURCE_DIR}/inputs" '
@@ -209,19 +253,25 @@ class RegistrationTests(unittest.TestCase):
         )
         ninja = shutil.which("ninja")
         self.assertTrue(self.cmake and ninja, "resource staging requires CMake and Ninja")
-        self.native_run.command("resource-configure", [self.cmake, "-S", source, "-B", self.build,
-                                "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + ninja], timeout=60)
+        self.native_run.command(
+            "resource-configure",
+            [self.cmake, "-S", source, "-B", self.build, "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + ninja],
+            timeout=60,
+        )
         return source, inputs, membership, stage, payloads
 
     def resource_snapshot(self, stage):
-        return {path.relative_to(stage).as_posix():
-                (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
-                for path in stage.rglob("*") if path.is_file()}
+        return {
+            path.relative_to(stage).as_posix(): (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+            for path in stage.rglob("*")
+            if path.is_file()
+        }
 
     def resource_build(self, name):
         started = time.perf_counter()
-        log = self.native_run.command(name, [self.cmake, "--build", self.build,
-                                      "--target", "juicer_test_resources"], timeout=60)
+        log = self.native_run.command(
+            name, [self.cmake, "--build", self.build, "--target", "juicer_test_resources"], timeout=60
+        )
         return log.read_text(encoding="utf-8"), time.perf_counter() - started
 
     def test_resource_staging_updates_only_selected_members(self):
@@ -232,9 +282,11 @@ class RegistrationTests(unittest.TestCase):
             _, seconds = self.resource_build("resource-initial")
             before = self.resource_snapshot(stage)
             self.assertEqual({name: data[0] for name, data in before.items()}, payloads)
-            observations["initial"] = {"payload_files": len(before),
-                                       "payload_bytes": sum(len(data) for data in payloads.values()),
-                                       "seconds": seconds}
+            observations["initial"] = {
+                "payload_files": len(before),
+                "payload_bytes": sum(len(data) for data in payloads.values()),
+                "seconds": seconds,
+            }
         with self.subTest(case="noop"):
             log, seconds = self.resource_build("resource-noop")
             self.assertEqual(self.resource_snapshot(stage), before)
@@ -243,15 +295,17 @@ class RegistrationTests(unittest.TestCase):
         with self.subTest(case="changed"):
             payloads["profiles/film.json"] = b'{"film": "changed"}\n'
             (inputs / "profiles/film.json").write_bytes(payloads["profiles/film.json"])
-            self.assertGreater((inputs / "profiles/film.json").stat().st_mtime_ns,
-                               before["profiles/film.json"][2])
+            self.assertGreater((inputs / "profiles/film.json").stat().st_mtime_ns, before["profiles/film.json"][2])
             log, seconds = self.resource_build("resource-changed")
             after = self.resource_snapshot(stage)
             self.assertEqual([name for name in before if before[name] != after[name]], ["profiles/film.json"])
             self.assertEqual(after["profiles/film.json"][0], payloads["profiles/film.json"])
             self.assertEqual(log.count("Copying runtime test resource"), 1)
-            observations["changed"] = {"payload_files": 1, "payload_bytes": len(payloads["profiles/film.json"]),
-                                       "seconds": seconds}
+            observations["changed"] = {
+                "payload_files": 1,
+                "payload_bytes": len(payloads["profiles/film.json"]),
+                "seconds": seconds,
+            }
             before = after
         with self.subTest(case="removed"):
             (inputs / "obsolete.txt").unlink()
@@ -273,8 +327,11 @@ class RegistrationTests(unittest.TestCase):
             self.assertEqual({name: after[name] for name in before}, before)
             self.assertEqual(after["filters/new.bin"][0], payloads["filters/new.bin"])
             self.assertEqual(log.count("Copying runtime test resource"), 1)
-            observations["added"] = {"payload_files": 1, "payload_bytes": len(payloads["filters/new.bin"]),
-                                     "seconds": seconds}
+            observations["added"] = {
+                "payload_files": 1,
+                "payload_bytes": len(payloads["filters/new.bin"]),
+                "seconds": seconds,
+            }
             before = after
         with self.subTest(case="configuration"):
             with (source / "CMakeLists.txt").open("a", encoding="utf-8") as stream:
@@ -294,8 +351,10 @@ class RegistrationTests(unittest.TestCase):
             log, seconds = self.resource_build("resource-recreate")
             after = self.resource_snapshot(stage)
             self.assertEqual({name: value[0] for name, value in after.items()}, payloads)
-            self.assertEqual({name: after[name] for name in before if name != "profiles/film.json"},
-                             {name: value for name, value in before.items() if name != "profiles/film.json"})
+            self.assertEqual(
+                {name: after[name] for name in before if name != "profiles/film.json"},
+                {name: value for name, value in before.items() if name != "profiles/film.json"},
+            )
             self.assertEqual(log.count("Copying runtime test resource"), 1)
             observations["missing-output"] = {"payload_files": 1, "payload_bytes": len(original), "seconds": seconds}
         print("Resource staging observations (logical payload changes):", json.dumps(observations, sort_keys=True))
@@ -312,7 +371,14 @@ class RegistrationTests(unittest.TestCase):
 
 RegistrationTests.test_resource_staging_updates_only_selected_members.required_subtests = True
 RegistrationTests.test_resource_staging_updates_only_selected_members.subtest_cases = (
-    "initial", "noop", "changed", "removed", "added", "configuration", "mutation", "missing-output"
+    "initial",
+    "noop",
+    "changed",
+    "removed",
+    "added",
+    "configuration",
+    "mutation",
+    "missing-output",
 )
 
 
@@ -322,8 +388,7 @@ class WorkflowResultTests(unittest.TestCase):
     PLATFORMS = ("linux", "windows")
     ROLES = ("product-debug", "product-release", "tooling")
     CASES = ("layout", "success", "unexpected", "malformed") + tuple(
-        role + ":" + outcome for role in ROLES
-        for outcome in ("failure", "cancelled", "skipped", "missing")
+        role + ":" + outcome for role in ROLES for outcome in ("failure", "cancelled", "skipped", "missing")
     )
 
     def guard(self, platform):
@@ -363,8 +428,11 @@ class WorkflowResultTests(unittest.TestCase):
                             results[f"{platform}-{role}"]["result"] = outcome
                     value = "{" if case == "malformed" else json.dumps(results)
                     status = 0
-                    with patch.dict(os.environ, {"REQUIRED_RESULTS": value}), \
-                            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    with (
+                        patch.dict(os.environ, {"REQUIRED_RESULTS": value}),
+                        contextlib.redirect_stdout(io.StringIO()),
+                        contextlib.redirect_stderr(io.StringIO()),
+                    ):
                         try:
                             exec(code, {"__name__": "__main__"})
                         except SystemExit as error:
@@ -380,14 +448,25 @@ WorkflowResultTests.test_required_host_status_propagates_every_child_outcome.sub
 
 class MembershipRecordTests(unittest.TestCase):
     def test_required_group_and_runtime_membership_are_checked_as_values(self):
-        inventory = {"tests": [
-            {"name": "product.case", "command": ["python", "--scratch-root", "/tmp/product"],
-             "properties": [{"name": "LABELS", "value": ["host", "product"]}]},
-            {"name": "tool.case", "command": ["python"],
-             "properties": [{"name": "LABELS", "value": ["host", "tooling"]}]},
-            {"name": "device.case", "command": ["python"],
-             "properties": [{"name": "LABELS", "value": ["gpu", "product"]}]},
-        ]}
+        inventory = {
+            "tests": [
+                {
+                    "name": "product.case",
+                    "command": ["python", "--scratch-root", "/tmp/product"],
+                    "properties": [{"name": "LABELS", "value": ["host", "product"]}],
+                },
+                {
+                    "name": "tool.case",
+                    "command": ["python"],
+                    "properties": [{"name": "LABELS", "value": ["host", "tooling"]}],
+                },
+                {
+                    "name": "device.case",
+                    "command": ["python"],
+                    "properties": [{"name": "LABELS", "value": ["gpu", "product"]}],
+                },
+            ]
+        }
         host = qualification.membership(inventory, ["product"], "host")
         all_runtime = qualification.membership(inventory, ["product"], "all")
         self.assertEqual(host, {"product": ["product.case"]})
@@ -403,8 +482,10 @@ class MembershipRecordTests(unittest.TestCase):
         cases = (
             [row("same", ["python"]), row("same", ["python"])],
             [row("disabled", ["python"], disabled=True)],
-            [row("first", ["python", "--scratch-root", "/tmp/shared"]),
-             row("second", ["python", "--scratch-root", "/tmp/shared"], labels=("host", "boundary"))],
+            [
+                row("first", ["python", "--scratch-root", "/tmp/shared"]),
+                row("second", ["python", "--scratch-root", "/tmp/shared"], labels=("host", "boundary")),
+            ],
         )
         self.subtest_cases = ("duplicate", "disabled", "scratch-collision")
         for case_id, inventory in zip(self.subtest_cases, cases):
@@ -414,23 +495,35 @@ class MembershipRecordTests(unittest.TestCase):
 
 MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registrations_reject.required_subtests = True
 MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registrations_reject.subtest_cases = (
-    "duplicate", "disabled", "scratch-collision"
+    "duplicate",
+    "disabled",
+    "scratch-collision",
 )
 
 
-@unittest.skipUnless(os.environ.get("JUICER_CUDA_FREE_BUILD"),
-                     "requires the configured preset CUDA-free host test tree")
+@unittest.skipUnless(
+    os.environ.get("JUICER_CUDA_FREE_BUILD"), "requires the configured preset CUDA-free host test tree"
+)
 class CudaFreeBuildRegistrationTests(unittest.TestCase):
     """Actual selected closures and owner guards for the shared preset Cargo tree."""
 
     CUDA_FREE_TARGETS = ("JuicerHashContractTests", "JuicerRenderAssertionTests")
     PRODUCT_RUST_TARGETS = (
-        "JuicerCudaAbiTests", "JuicerProfileOwnerTests", "JuicerSpectralOwnerTests",
-        "JuicerRouteBridgeTests", "JuicerCudaInspectTests",
+        "JuicerCudaAbiTests",
+        "JuicerProfileOwnerTests",
+        "JuicerSpectralOwnerTests",
+        "JuicerRouteBridgeTests",
+        "JuicerCudaInspectTests",
     )
     PRODUCT_RUST_SOURCES = (
-        "cuda_abi_c.c", "cuda_abi_test.cpp", "profile_abi_c.c", "profile_owner_test.cpp",
-        "spectral_abi_c.c", "spectral_owner_test.cpp", "route_bridge_test.cpp", "ScanRoute.cpp",
+        "cuda_abi_c.c",
+        "cuda_abi_test.cpp",
+        "profile_abi_c.c",
+        "profile_owner_test.cpp",
+        "spectral_abi_c.c",
+        "spectral_owner_test.cpp",
+        "route_bridge_test.cpp",
+        "ScanRoute.cpp",
         "cuda_inspect_test.cpp",
     )
     PRODUCT_RUST_VARIANTS = {
@@ -441,14 +534,25 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         "JuicerCudaInspectTests": ("cuda_inspect_test.cpp", "test-support"),
     }
     GPU_ONLY_TARGETS = (
-        "JuicerPinnedUploadTests", "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests",
-        "JuicerDeferredDestroyTests", "JuicerCudaInspectGpuTests", "JuicerProfileCudaSafetyTests",
-        "JuicerScatterHalationGpuTests", "JuicerGrainDeltaTests", "JuicerScannerOutputTests",
+        "JuicerPinnedUploadTests",
+        "JuicerGaussianKernelTests",
+        "JuicerScannerLutResourceTests",
+        "JuicerDeferredDestroyTests",
+        "JuicerCudaInspectGpuTests",
+        "JuicerProfileCudaSafetyTests",
+        "JuicerScatterHalationGpuTests",
+        "JuicerGrainDeltaTests",
+        "JuicerScannerOutputTests",
     )
     CARGO_FILES = (
-        "production/features.txt", "production/build.stamp", "production/CACHEDIR.TAG",
-        "test-support/features.txt", "test-support/build.stamp", "test-support/CACHEDIR.TAG",
-        "test-support/metadata/binaries.json", "test-support/metadata/cargo.json",
+        "production/features.txt",
+        "production/build.stamp",
+        "production/CACHEDIR.TAG",
+        "test-support/features.txt",
+        "test-support/build.stamp",
+        "test-support/CACHEDIR.TAG",
+        "test-support/metadata/binaries.json",
+        "test-support/metadata/cargo.json",
         "test-support/metadata/preparation-timings.json",
     )
 
@@ -463,11 +567,13 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.lease = execution.OutputLease(ROOT, self.preset_build, timeout=0)
         self.lease.__enter__()
         self.addCleanup(self.lease.__exit__, None, None, None)
-        self.assertIn(self.lease.role, ("delegated", "nested"),
-                      "the verifier must already hold this preset's canonical owner")
-        artifact_root = Path(os.environ.get(
-            "JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset
-        )).resolve() / "cuda-free-build-controls"
+        self.assertIn(
+            self.lease.role, ("delegated", "nested"), "the verifier must already hold this preset's canonical owner"
+        )
+        artifact_root = (
+            Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)).resolve()
+            / "cuda-free-build-controls"
+        )
         artifact_root.mkdir(parents=True, exist_ok=True)
         self.scratch = Path(tempfile.mkdtemp(prefix="selected closures ", dir=artifact_root))
         self.addCleanup(self.finish_scratch)
@@ -496,9 +602,9 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
     def assert_inventory_timeouts(self, build, expected_names, expected_labels):
         ctest = shutil.which("ctest")
         self.assertTrue(ctest, "CTest is required for registration discovery")
-        self.native_run.command("inventory-discovery", [
-            ctest, "--test-dir", str(build), "--show-only=json-v1"
-        ], stdout_only=True)
+        self.native_run.command(
+            "inventory-discovery", [ctest, "--test-dir", str(build), "--show-only=json-v1"], stdout_only=True
+        )
         inventory = json.loads((self.logs / "inventory-discovery.log").read_text(encoding="utf-8"))
         tests = inventory["tests"]
         self.assertTrue(tests, "configured inventory must not be empty")
@@ -516,22 +622,28 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                 self.assertIn("juicer_gpu", properties.get("RESOURCE_LOCK", []), test["name"])
         self.assertTrue(set(expected_labels).issubset(observed_labels), observed_labels)
 
-    @unittest.skipIf(os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"),
-                     "CUDA-free inventory is checked in its own configured consumer")
+    @unittest.skipIf(
+        os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"),
+        "CUDA-free inventory is checked in its own configured consumer",
+    )
     def test_cuda_free_inventory_has_zero_timeouts(self):
         self.assert_inventory_timeouts(
             self.host_build, ("Quality.BuildRegistration", "Ofx.Host.RenderAssertions"), ("host",)
         )
 
-    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"),
-                         "requires the configured product consumer")
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"), "requires the configured product consumer")
     def test_product_inventory_has_zero_timeouts(self):
         self.assertEqual(Path(os.environ["JUICER_PRODUCT_INVENTORY_BUILD"]).resolve(), self.preset_build)
         self.assert_inventory_timeouts(
             self.preset_build,
-            ("Quality.BuildRegistration", "Ofx.Host.RenderAssertions", "Resource.Gpu.ScannerLut",
-             "Ffi.Gpu.CudaInspect.MultiDevice", "Ffi.Gpu.ProductionPreparedRender",
-             "ScatterHalation.Gpu.HostContracts"),
+            (
+                "Quality.BuildRegistration",
+                "Ofx.Host.RenderAssertions",
+                "Resource.Gpu.ScannerLut",
+                "Ffi.Gpu.CudaInspect.MultiDevice",
+                "Ffi.Gpu.ProductionPreparedRender",
+                "ScatterHalation.Gpu.HostContracts",
+            ),
             ("host", "gpu"),
         )
 
@@ -550,8 +662,7 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         snapshot = {}
         for relative in files:
             path = cargo / relative
-            snapshot[relative] = ((path.stat().st_size, path.stat().st_mtime_ns)
-                                  if path.is_file() else None)
+            snapshot[relative] = (path.stat().st_size, path.stat().st_mtime_ns) if path.is_file() else None
         return snapshot
 
     def query_commands(self, name, build, *targets):
@@ -560,10 +671,16 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(configured, "the configuration must select Ninja")
         ninja = configured.group(1)
         self.assertTrue(Path(ninja).is_file())
-        return self.native_run.command(
-            name, [ninja, "-C", str(build), "-t", "commands", *targets],
-            timeout=60, cwd=ROOT,
-        ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
+        return (
+            self.native_run.command(
+                name,
+                [ninja, "-C", str(build), "-t", "commands", *targets],
+                timeout=60,
+                cwd=ROOT,
+            )
+            .read_text(encoding="utf-8", errors="replace")
+            .replace("\\", "/")
+        )
 
     def query_targets(self, name, build):
         cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
@@ -571,17 +688,27 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(configured, "the configuration must select Ninja")
         ninja = configured.group(1)
         self.assertTrue(Path(ninja).is_file())
-        return self.native_run.command(
-            name, [ninja, "-C", str(build), "-t", "targets", "all"],
-            timeout=60, cwd=ROOT,
-        ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
+        return (
+            self.native_run.command(
+                name,
+                [ninja, "-C", str(build), "-t", "targets", "all"],
+                timeout=60,
+                cwd=ROOT,
+            )
+            .read_text(encoding="utf-8", errors="replace")
+            .replace("\\", "/")
+        )
 
     def assert_no_test_metadata(self, commands):
         lower = commands.casefold().replace("\\", "/")
-        for forbidden in ("nextest list", "--workspace --tests", "metadata/binaries.json",
-                          "metadata/cargo.json", "preparation-timings.json"):
+        for forbidden in (
+            "nextest list",
+            "--workspace --tests",
+            "metadata/binaries.json",
+            "metadata/cargo.json",
+            "preparation-timings.json",
+        ):
             self.assertNotIn(forbidden, lower)
-
 
     def test_check_owner_borrows_only_the_inherited_canonical_preset_token(self):
         before = self.cargo_snapshot()
@@ -591,25 +718,34 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         key = hashlib.sha256(os.path.normcase(str(lease.path)).encode()).hexdigest()
         self.assertIn(key, inherited, "this test must run under the canonical preset owner")
 
-        self.native_run.command("owner-delegated", [self.python, "-B", self.verify,
-                                "check-owner", "--preset", self.preset],
-                                env=environment, timeout=10)
+        self.native_run.command(
+            "owner-delegated",
+            [self.python, "-B", self.verify, "check-owner", "--preset", self.preset],
+            env=environment,
+            timeout=10,
+        )
 
         missing = dict(environment)
         missing.pop("JUICER_OUTPUT_LEASES", None)
         with self.assertRaises(subprocess.CalledProcessError):
-            self.native_run.command("owner-missing-token", [self.python, "-B", self.verify,
-                                         "check-owner", "--preset", self.preset],
-                                         env=missing, timeout=10)
+            self.native_run.command(
+                "owner-missing-token",
+                [self.python, "-B", self.verify, "check-owner", "--preset", self.preset],
+                env=missing,
+                timeout=10,
+            )
 
         wrong = dict(environment)
         wrong_tokens = dict(inherited)
         wrong_tokens[key] = "wrong-owner-token"
         wrong["JUICER_OUTPUT_LEASES"] = json.dumps(wrong_tokens, sort_keys=True)
         with self.assertRaises(subprocess.CalledProcessError):
-            self.native_run.command("owner-wrong-token", [self.python, "-B", self.verify,
-                                       "check-owner", "--preset", self.preset],
-                                       env=wrong, timeout=10)
+            self.native_run.command(
+                "owner-wrong-token",
+                [self.python, "-B", self.verify, "check-owner", "--preset", self.preset],
+                env=wrong,
+                timeout=10,
+            )
         self.assertEqual(self.cargo_snapshot(), before)
 
     def test_unowned_rust_test_target_fails_before_touching_shared_cargo(self):
@@ -617,9 +753,13 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         environment = dict(os.environ)
         environment.pop("JUICER_OUTPUT_LEASES", None)
         with self.assertRaises(subprocess.CalledProcessError) as failure:
-            self.native_run.command("unowned-rust-tests", [self.cmake, "--build", str(self.host_build),
-                                        "--target", "juicer_rust_tests"],
-                                        env=environment, timeout=30, cwd=ROOT)
+            self.native_run.command(
+                "unowned-rust-tests",
+                [self.cmake, "--build", str(self.host_build), "--target", "juicer_rust_tests"],
+                env=environment,
+                timeout=30,
+                cwd=ROOT,
+            )
         self.assertNotEqual(failure.exception.returncode, 0)
         self.assertEqual(self.cargo_snapshot(), before)
         log = (self.logs / "unowned-rust-tests.log").read_text(encoding="utf-8", errors="replace")
@@ -631,13 +771,17 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         environment.pop("JUICER_OUTPUT_LEASES", None)
         try:
             with self.assertRaises(subprocess.CalledProcessError):
-                self.native_run.command("unowned-configuration",
+                self.native_run.command(
+                    "unowned-configuration",
                     [self.cmake, "-S", str(ROOT / "tests/host"), "-B", str(self.host_build)],
-                    env=environment, timeout=30)
+                    env=environment,
+                    timeout=30,
+                )
             self.assertEqual(self.cargo_snapshot(), before)
         finally:
-            self.native_run.command("restore-configuration",
-                [self.cmake, "--build", str(self.host_build), "--target", "help"], timeout=60)
+            self.native_run.command(
+                "restore-configuration", [self.cmake, "--build", str(self.host_build), "--target", "help"], timeout=60
+            )
 
     def test_shared_resource_stage_requires_owner_and_preserves_a_noop(self):
         command = [self.cmake, "--build", str(self.host_build), "--target", "juicer_test_resources"]
@@ -645,12 +789,16 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         stage = self.preset_build / "tests/Resources"
         stamp = self.preset_build / "tests/resources.stamp"
         members = (self.host_build / "tests/resource-members.txt").read_text(encoding="utf-8").splitlines()
-        self.assertCountEqual([path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()],
-                              members)
+        self.assertCountEqual(
+            [path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()], members
+        )
 
         def identities():
-            return {str(path): (path.stat().st_size, path.stat().st_mtime_ns)
-                    for path in (stamp, *stage.rglob("*")) if path.is_file()}
+            return {
+                str(path): (path.stat().st_size, path.stat().st_mtime_ns)
+                for path in (stamp, *stage.rglob("*"))
+                if path.is_file()
+            }
 
         before = identities()
         environment = dict(os.environ)
@@ -665,8 +813,9 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                 self.native_run.command("resource-stage-unowned", command, env=environment, timeout=30)
             self.assertFalse(missing.exists())
             self.assertFalse(stamp.exists())
-            self.assertEqual(identities(), {name: value for name, value in before.items()
-                                           if name not in {str(missing), str(stamp)}})
+            self.assertEqual(
+                identities(), {name: value for name, value in before.items() if name not in {str(missing), str(stamp)}}
+            )
         finally:
             self.native_run.command("resource-stage-restore", command, timeout=60)
         self.assertEqual(missing.read_bytes(), (ROOT / "Resources/illuminants/D50.csv").read_bytes())
@@ -682,8 +831,9 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         cache_path = self.host_build / "CMakeCache.txt"
         self.assertTrue(cache_path.is_file())
         cache = cache_path.read_text(encoding="utf-8", errors="replace")
-        cache_rows = {match.group(1): match.group(2) for match in
-                      re.finditer(r"^([^#/:]+):[^=]*=(.*)$", cache, re.MULTILINE)}
+        cache_rows = {
+            match.group(1): match.group(2) for match in re.finditer(r"^([^#/:]+):[^=]*=(.*)$", cache, re.MULTILINE)
+        }
         self.assertEqual(cache_rows.get("BUILD_TESTING"), "ON")
         self.assertEqual(cache_rows.get("CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit"), "TRUE")
         self.assertIn(cache_rows.get("CMAKE_CUDA_COMPILER"), (None, "", "CMAKE_CUDA_COMPILER-NOTFOUND"))
@@ -706,8 +856,11 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertNotIn("nvcc", selected.casefold())
         self.assertNotIn("cufft", selected.casefold())
         self.assertNotIn("/src/Cuda/", selected)
-        self.assertNotIn("ResourceStaging.cmake", selected,
-                         "immutable explicit-root consumers must not prepare the staged package tree")
+        self.assertNotIn(
+            "ResourceStaging.cmake",
+            selected,
+            "immutable explicit-root consumers must not prepare the staged package tree",
+        )
         self.assert_no_test_metadata(selected)
 
         targets = self.query_targets("host-target-inventory", self.host_build)
@@ -720,8 +873,9 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
             self.assertNotIn(source, all_commands)
         self.assert_no_test_metadata(all_commands)
 
-    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
-                         "requires an explicitly configured testing-ON product graph")
+    @unittest.skipUnless(
+        os.environ.get("JUICER_PRODUCT_BUILD"), "requires an explicitly configured testing-ON product graph"
+    )
     def test_product_analysis_inputs_have_their_ordinary_producers(self):
         commands = self.query_commands("product-analysis-commands", self.preset_build, "juicer_analysis_inputs")
         for source in ("JuicerCudaResources.cpp", "JuicerCudaFilmPipeline.cu"):
@@ -736,14 +890,14 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertNotIn("profile_owner_test.cpp", commands)
         self.assert_no_test_metadata(commands)
 
-    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
-                         "requires an explicitly configured testing-ON product graph")
+    @unittest.skipUnless(
+        os.environ.get("JUICER_PRODUCT_BUILD"), "requires an explicitly configured testing-ON product graph"
+    )
     def test_product_failure_consumer_and_default_all_have_separate_closures(self):
         self.assertEqual(Path(os.environ["JUICER_PRODUCT_BUILD"]).resolve(), self.preset_build)
         cache = (self.preset_build / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace")
         self.assertIn("BUILD_TESTING:BOOL=ON", cache)
-        selected = self.query_commands("product-failure-commands", self.preset_build,
-                                       "JuicerCudaFailureTests")
+        selected = self.query_commands("product-failure-commands", self.preset_build, "JuicerCudaFailureTests")
         self.assertIn("cuda_failure_test.cpp", selected)
         self.assertIn("JuicerCudaExecutor.cpp", selected)
         self.assertIn("JuicerCudaFilmPipeline.cu", selected)
@@ -762,8 +916,14 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
             self.assert_no_test_metadata(commands)
 
         all_commands = self.query_commands("product-all-commands", self.preset_build)
-        for source in ("cuda_failure_test.cpp", "film_recipe_test.cpp", "pinned_upload_test.cpp",
-                       *test_sources, "hash_contract_test.cpp", "render_assertions_test.cpp"):
+        for source in (
+            "cuda_failure_test.cpp",
+            "film_recipe_test.cpp",
+            "pinned_upload_test.cpp",
+            *test_sources,
+            "hash_contract_test.cpp",
+            "render_assertions_test.cpp",
+        ):
             self.assertNotIn(source, all_commands)
         lower = all_commands.casefold().replace("\\", "/")
         self.assertIn("/cargo/production", lower)

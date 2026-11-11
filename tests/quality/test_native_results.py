@@ -1,4 +1,5 @@
 """Step 1 completeness is checked as data; OS ownership gets small real witnesses."""
+
 from __future__ import annotations
 
 import copy
@@ -19,7 +20,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import execution
 from qualification import (
-    OPTICS_FUNCTION, OPTICS_TESTS, read_native_result, validate_build_result, validate_native_result,
+    OPTICS_FUNCTION,
+    OPTICS_TESTS,
+    read_native_result,
+    validate_build_result,
+    validate_native_result,
 )
 
 
@@ -29,7 +34,9 @@ class NativeResultTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        print(f"Reader mutation I/O: {cls.read_bytes} logical bundle bytes read; {cls.written_bytes} bytes written (Python/OS I/O excluded).")
+        print(
+            f"Reader mutation I/O: {cls.read_bytes} logical bundle bytes read; {cls.written_bytes} bytes written (Python/OS I/O excluded)."
+        )
 
     @classmethod
     def setUpClass(cls):
@@ -37,29 +44,69 @@ class NativeResultTests(unittest.TestCase):
         cls.rows = [f"row-{i}" for i in range(553)]
         cls.operations = [{"caller": "cpp", "id": "layout"}, {"caller": "c11", "id": "raw:null"}]
         native = [{"caller": c, "id": r} for c in ("c11", "cpp") for r in cls.rows] + cls.operations
+
         def events(cases):
-            return b"".join((json.dumps({**r, "event": event, **({"outcome": "passed"} if event == "terminal" else {})}) + "\n").encode()
-                            for r in cases for event in ("start", "terminal"))
-        candidate = {"head": "source-baseline", "preset": "linux-debug", "configuration": {"CMAKE_BUILD_TYPE": "Debug", "BUILD_TESTING": "ON"}, "inputs": {"source.cpp": "identity"},
-                     "fixtures": {"rows": cls.rows}, "original_source": "/unavailable/source", "original_build": "/unavailable/build"}
+            return b"".join(
+                (
+                    json.dumps({**r, "event": event, **({"outcome": "passed"} if event == "terminal" else {})}) + "\n"
+                ).encode()
+                for r in cases
+                for event in ("start", "terminal")
+            )
+
+        candidate = {
+            "head": "source-baseline",
+            "preset": "linux-debug",
+            "configuration": {"CMAKE_BUILD_TYPE": "Debug", "BUILD_TESTING": "ON"},
+            "inputs": {"source.cpp": "identity"},
+            "fixtures": {"rows": cls.rows},
+            "original_source": "/unavailable/source",
+            "original_build": "/unavailable/build",
+        }
         cls.payloads = {
-            "candidate.json": json.dumps(candidate).encode(), "candidate.patch": b"a reconstructible patch\n",
+            "candidate.json": json.dumps(candidate).encode(),
+            "candidate.patch": b"a reconstructible patch\n",
             "native-list.jsonl": b"".join((json.dumps(r) + "\n").encode() for r in native),
-            "discovery.json": json.dumps({"rust-suites": {"film-juicer-core": {"testcases": {
-                OPTICS_FUNCTION: {"ignored": False, "filter-match": {"status": "matches"}},
-                "outside_selection": {"ignored": False, "filter-match": {"status": "mismatch"}}}}}}).encode(),
-            "rust.jsonl": events([{"caller": "rust", "id": r} for r in cls.rows]), "native.jsonl": events(native),
-            "nextest.xml": ('<testsuites><testsuite name="film-juicer-core"><testcase name="' + OPTICS_FUNCTION + '"/>'
-                            '<testcase name="outside_selection"><skipped/></testcase></testsuite></testsuites>').encode(),
-            "ctest.xml": ('<testsuite>' + ''.join(f'<testcase name="{n}" status="run"/>' for n in OPTICS_TESTS) + '</testsuite>').encode(),
+            "discovery.json": json.dumps(
+                {
+                    "rust-suites": {
+                        "film-juicer-core": {
+                            "testcases": {
+                                OPTICS_FUNCTION: {"ignored": False, "filter-match": {"status": "matches"}},
+                                "outside_selection": {"ignored": False, "filter-match": {"status": "mismatch"}},
+                            }
+                        }
+                    }
+                }
+            ).encode(),
+            "rust.jsonl": events([{"caller": "rust", "id": r} for r in cls.rows]),
+            "native.jsonl": events(native),
+            "nextest.xml": (
+                '<testsuites><testsuite name="film-juicer-core"><testcase name="' + OPTICS_FUNCTION + '"/>'
+                '<testcase name="outside_selection"><skipped/></testcase></testsuite></testsuites>'
+            ).encode(),
+            "ctest.xml": (
+                "<testsuite>" + "".join(f'<testcase name="{n}" status="run"/>' for n in OPTICS_TESTS) + "</testsuite>"
+            ).encode(),
             "nextest.toml": b'nextest-version = "0.9.143"\n',
             "rust-execution.json": b'{"commands":[{"returncode":0},{"returncode":0}]}',
         }
-        cls.result = {"schema": "native-spatial-optics-v1", "preset": "linux-debug", "status": "passed",
-                       "candidate_head": "source-baseline", "shipping_isolation": False, "candidate_unchanged": True,
-                       "membership": {"rows": cls.rows, "native_operations": cls.operations,
-                                      "ctest": OPTICS_TESTS, "rust_function": OPTICS_FUNCTION},
-                       "commands": [{"returncode": 0, "drained": True, "process_status": "completed"}], "members": {}}
+        cls.result = {
+            "schema": "native-spatial-optics-v1",
+            "preset": "linux-debug",
+            "status": "passed",
+            "candidate_head": "source-baseline",
+            "shipping_isolation": False,
+            "candidate_unchanged": True,
+            "membership": {
+                "rows": cls.rows,
+                "native_operations": cls.operations,
+                "ctest": OPTICS_TESTS,
+                "rust_function": OPTICS_FUNCTION,
+            },
+            "commands": [{"returncode": 0, "drained": True, "process_status": "completed"}],
+            "members": {},
+        }
 
         actual = os.environ.get("FJ_OPTICS_COMPLETED_BUNDLE")
         if actual:
@@ -79,14 +126,17 @@ class NativeResultTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         original_read = Path.read_bytes
         original_write = Path.write_bytes
+
         def read(path):
             data = original_read(path)
             type(self).read_bytes += len(data)
             return data
+
         def write(path, data):
             size = original_write(path, data)
             type(self).written_bytes += size
             return size
+
         for method, replacement in (("read_bytes", read), ("write_bytes", write)):
             patcher = patch.object(Path, method, replacement)
             patcher.start()
@@ -109,60 +159,112 @@ class NativeResultTests(unittest.TestCase):
         commands = [
             {"name": name, "returncode": 0}
             for name in (
-                "native-symbols", "rust-symbols", "module-exports", "film-compile", "film-values",
-                "accepted-output-color-compile", "accepted-output-color-values", "prepared-render",
+                "native-symbols",
+                "rust-symbols",
+                "module-exports",
+                "film-compile",
+                "film-values",
+                "accepted-output-color-compile",
+                "accepted-output-color-values",
+                "prepared-render",
                 "module-symbols" if preset == "linux-release" else "pdb-symbols",
             )
         ]
         commands_data = json.dumps(commands).encode()
         rows = [
-            {"case_id": case_id, "accepted_fixture_match": True, "diagnostic": "",
-             "status": 0, "api": 0, "native_code": 0}
+            {
+                "case_id": case_id,
+                "accepted_fixture_match": True,
+                "diagnostic": "",
+                "status": 0,
+                "api": 0,
+                "native_code": 0,
+            }
             for case_id in (
-                "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm",
+                "negative-direct/cold",
+                "negative-direct/warm",
+                "negative-print/cold",
+                "negative-print/warm",
             )
         ]
         report = {
-            "schema": "production-contract-v1", "preset": preset,
-            "build_testing": "OFF", "test_support": "OFF",
-            "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"], "hidden_device_load": True,
+            "schema": "production-contract-v1",
+            "preset": preset,
+            "build_testing": "OFF",
+            "test_support": "OFF",
+            "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"],
+            "hidden_device_load": True,
             "commands": {"sha256": hashlib.sha256(commands_data).hexdigest()},
             "scanned": [{"symbols_and_fault_strings_absent": True} for _ in range(4)],
             "probes": [
                 {"name": name, "linked_sha256": "linked", "before_run_sha256": "linked", "after_run_sha256": "linked"}
                 for name in ("film", "accepted-output-color")
             ],
-            "prepared_render": {"executable_sha256_before": "prepared", "executable_sha256_after": "prepared", "rows": rows},
-            "original_source": "/unavailable/source", "original_build": "/unavailable/build",
-        }
-        candidate = {
-            "head": "source-baseline", "preset": preset, "configuration": {"BUILD_TESTING": "OFF"},
-            "inputs": {"CMakeLists.txt": "identity"}, "original_source": "/unavailable/source",
+            "prepared_render": {
+                "executable_sha256_before": "prepared",
+                "executable_sha256_after": "prepared",
+                "rows": rows,
+            },
+            "original_source": "/unavailable/source",
             "original_build": "/unavailable/build",
         }
-        payloads = {"candidate.json": json.dumps(candidate).encode(), "candidate.patch": b"patch",
-                    "production-contract.json": json.dumps(report).encode(),
-                    "production-commands.json": commands_data}
+        candidate = {
+            "head": "source-baseline",
+            "preset": preset,
+            "configuration": {"BUILD_TESTING": "OFF"},
+            "inputs": {"CMakeLists.txt": "identity"},
+            "original_source": "/unavailable/source",
+            "original_build": "/unavailable/build",
+        }
+        payloads = {
+            "candidate.json": json.dumps(candidate).encode(),
+            "candidate.patch": b"patch",
+            "production-contract.json": json.dumps(report).encode(),
+            "production-commands.json": commands_data,
+        }
         result = {
-            "schema": "native-build-v1", "preset": preset, "status": "passed",
-            "candidate_head": "source-baseline", "candidate_unchanged": True, "shipping_isolation": False,
+            "schema": "native-build-v1",
+            "preset": preset,
+            "status": "passed",
+            "candidate_head": "source-baseline",
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
             "production_contract": True,
-            "commands": [{"name": "production-contract", "returncode": 0, "drained": True,
-                          "process_status": "completed"}],
+            "commands": [
+                {"name": "production-contract", "returncode": 0, "drained": True, "process_status": "completed"}
+            ],
             "members": {},
         }
         return result, payloads
 
     def production_v2_fixture(self, preset="linux-release"):
         result, payloads = self.production_fixture(preset)
-        names = ("native-symbols", "rust-symbols", "module-exports", "module-symbols",
-                 "ofx-probe-build", "ofx-probe", "cuda-abi-probe-build", "cuda-abi-probe",
-                 "module-probe", "prepared-render")
+        names = (
+            "native-symbols",
+            "rust-symbols",
+            "module-exports",
+            "module-symbols",
+            "ofx-probe-build",
+            "ofx-probe",
+            "cuda-abi-probe-build",
+            "cuda-abi-probe",
+            "module-probe",
+            "prepared-render",
+        )
         empty = hashlib.sha256(b"").hexdigest()
         module, ofx, cuda, render, fixture = (str(index) * 64 for index in range(1, 6))
-        commands = [{"name": name, "returncode": 0, "process_status": "completed", "drained": True,
-                     "command": [name], "stdout_sha256": empty, "stderr_sha256": empty}
-                    for name in names]
+        commands = [
+            {
+                "name": name,
+                "returncode": 0,
+                "process_status": "completed",
+                "drained": True,
+                "command": [name],
+                "stdout_sha256": empty,
+                "stderr_sha256": empty,
+            }
+            for name in names
+        ]
         by_name = {command["name"]: command for command in commands}
         by_name["module-exports"]["command"] = ["scan", "module"]
         symbol_file = "pdb" if preset.startswith("windows") else "module"
@@ -176,42 +278,100 @@ class NativeResultTests(unittest.TestCase):
         for route in ("negative-direct", "negative-print"):
             channels = 3 if route == "negative-direct" else 4
             for render_pass in ("cold", "warm"):
-                rows.append({"case_id": f"{route}/{render_pass}", "route": route, "pass": render_pass,
-                             "input_shape": [5, 7, channels], "output_shape": [5, 7, channels],
-                             "ofx_status": 0, "messages": [], "input_sha256": empty,
-                             "output_f32_words_sha256": empty, "samples_compared": 35 * channels,
-                             "accepted_fixture_match": True, "finite_output": True,
-                             "alpha_preserved": True, "padding_preserved": True,
-                             "stream_completed": True, "readback_complete": True,
-                             "context_preserved": True, "context_restored": True,
-                             "source_image_releases": 1, "output_image_releases": 1})
+                rows.append(
+                    {
+                        "case_id": f"{route}/{render_pass}",
+                        "route": route,
+                        "pass": render_pass,
+                        "input_shape": [5, 7, channels],
+                        "output_shape": [5, 7, channels],
+                        "ofx_status": 0,
+                        "messages": [],
+                        "input_sha256": empty,
+                        "output_f32_words_sha256": empty,
+                        "samples_compared": 35 * channels,
+                        "accepted_fixture_match": True,
+                        "finite_output": True,
+                        "alpha_preserved": True,
+                        "padding_preserved": True,
+                        "stream_completed": True,
+                        "readback_complete": True,
+                        "context_preserved": True,
+                        "context_restored": True,
+                        "source_image_releases": 1,
+                        "output_image_releases": 1,
+                    }
+                )
+
         def identity(value):
             return {"sha256_before": value, "sha256_after": value}
-        report = {"schema": "production-contract-v2", "preset": preset,
-                  "build_testing": "OFF", "test_support": "OFF", "hidden_device_load": True,
-                  "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"],
-                  "commands": {"sha256": hashlib.sha256(commands_data).hexdigest()},
-                  "scanned": [{"name": name,
-                               "file": symbol_file if name == "module-symbols" else "module" if name == "module-exports" else name,
-                               "sha256": empty if name == "module-symbols" and symbol_file == "pdb" else module if name.startswith("module-") else empty,
-                               "symbols_and_fault_strings_absent": True, "legacy_symbols_absent": True}
-                              for name in names[:4]],
-                  "build_inputs": {"module": identity(module), "build-module": identity(module), "pdb": identity(empty), "native-symbols": identity(empty),
-                                   "rust-symbols": identity(empty), "ofx": identity(ofx),
-                                   "cuda": identity(cuda), "render": identity(render)},
-                  "consumed_inputs": {"fixture": identity(fixture)},
-                  "loaded_module": {"file": "module", "build_file": "build-module", "sha256": module},
-                  "probes": [{"name": name, "executable": path, "linked_sha256": value,
-                              "before_run_sha256": value, "after_run_sha256": value}
-                             for name, path, value in (("ofx", "ofx", ofx), ("cuda-abi", "cuda", cuda))],
-                  "prepared_render": {"module": "module", "module_sha256": module,
-                                      "executable": "render", "executable_sha256_before": render,
-                                      "executable_sha256_after": render, "fixture": "fixture",
-                                      "fixture_sha256": fixture, "command": by_name["prepared-render"]["command"],
-                                      "stdout_sha256": empty, "stderr_sha256": empty, "rows": rows,
-                                      "lifecycle": {"module_load_status": 0, "effects_created": 2,
-                                                    "effects_destroyed": 2, "destroy_statuses": [0, 0],
-                                                    "module_unload_status": 0, "context_restored": True}}}
+
+        report = {
+            "schema": "production-contract-v2",
+            "preset": preset,
+            "build_testing": "OFF",
+            "test_support": "OFF",
+            "hidden_device_load": True,
+            "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"],
+            "commands": {"sha256": hashlib.sha256(commands_data).hexdigest()},
+            "scanned": [
+                {
+                    "name": name,
+                    "file": symbol_file if name == "module-symbols" else "module" if name == "module-exports" else name,
+                    "sha256": empty
+                    if name == "module-symbols" and symbol_file == "pdb"
+                    else module
+                    if name.startswith("module-")
+                    else empty,
+                    "symbols_and_fault_strings_absent": True,
+                    "legacy_symbols_absent": True,
+                }
+                for name in names[:4]
+            ],
+            "build_inputs": {
+                "module": identity(module),
+                "build-module": identity(module),
+                "pdb": identity(empty),
+                "native-symbols": identity(empty),
+                "rust-symbols": identity(empty),
+                "ofx": identity(ofx),
+                "cuda": identity(cuda),
+                "render": identity(render),
+            },
+            "consumed_inputs": {"fixture": identity(fixture)},
+            "loaded_module": {"file": "module", "build_file": "build-module", "sha256": module},
+            "probes": [
+                {
+                    "name": name,
+                    "executable": path,
+                    "linked_sha256": value,
+                    "before_run_sha256": value,
+                    "after_run_sha256": value,
+                }
+                for name, path, value in (("ofx", "ofx", ofx), ("cuda-abi", "cuda", cuda))
+            ],
+            "prepared_render": {
+                "module": "module",
+                "module_sha256": module,
+                "executable": "render",
+                "executable_sha256_before": render,
+                "executable_sha256_after": render,
+                "fixture": "fixture",
+                "fixture_sha256": fixture,
+                "command": by_name["prepared-render"]["command"],
+                "stdout_sha256": empty,
+                "stderr_sha256": empty,
+                "rows": rows,
+                "lifecycle": {
+                    "module_load_status": 0,
+                    "effects_created": 2,
+                    "effects_destroyed": 2,
+                    "destroy_statuses": [0, 0],
+                    "module_unload_status": 0,
+                    "context_restored": True,
+                },
+            },
+        }
         payloads["production-contract.json"] = json.dumps(report).encode()
         payloads["production-commands.json"] = commands_data
         return result, payloads
@@ -238,8 +398,10 @@ class NativeResultTests(unittest.TestCase):
     def reject(self):
         # Semantic mutations exercise the same pure validator as publication and
         # the reader, without rewriting an entire fixture bundle for every row.
-        self.result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                  for name, data in self.payloads.items()}
+        self.result["members"] = {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in self.payloads.items()
+        }
         with self.assertRaises((ValueError, KeyError, OSError)):
             validate_native_result(self.result, self.payloads)
 
@@ -259,15 +421,29 @@ class NativeResultTests(unittest.TestCase):
 
     def test_gpu_witness_cannot_pass_without_shared_exclusion(self):
         from qualification import GPU_WITNESS_TEST
-        self.result["gpu_witness"] = {"test": GPU_WITNESS_TEST, "scope": "containment-and-shared-lock-only",
-                                      "status": "passed", "contender_excluded": False, "drained_while_locked": True}
-        self.payloads["gpu-witness.xml"] = ('<testsuite><testcase name="' + GPU_WITNESS_TEST + '" status="run"/></testsuite>').encode()
+
+        self.result["gpu_witness"] = {
+            "test": GPU_WITNESS_TEST,
+            "scope": "containment-and-shared-lock-only",
+            "status": "passed",
+            "contender_excluded": False,
+            "drained_while_locked": True,
+        }
+        self.payloads["gpu-witness.xml"] = (
+            '<testsuite><testcase name="' + GPU_WITNESS_TEST + '" status="run"/></testsuite>'
+        ).encode()
         self.reject()
 
     def test_gpu_witness_requires_its_case_results(self):
         from qualification import GPU_WITNESS_TEST
-        self.result["gpu_witness"] = {"test": GPU_WITNESS_TEST, "scope": "containment-and-shared-lock-only",
-                                      "status": "passed", "contender_excluded": True, "drained_while_locked": True}
+
+        self.result["gpu_witness"] = {
+            "test": GPU_WITNESS_TEST,
+            "scope": "containment-and-shared-lock-only",
+            "status": "passed",
+            "contender_excluded": True,
+            "drained_while_locked": True,
+        }
         self.payloads.pop("gpu-witness.xml", None)
         self.reject()
 
@@ -276,31 +452,36 @@ class NativeResultTests(unittest.TestCase):
         self.reject()
 
     def test_missing_rust_row(self):
-        self.payloads["rust.jsonl"] = b'\n'.join(self.payloads["rust.jsonl"].splitlines()[:-2]) + b'\n'
+        self.payloads["rust.jsonl"] = b"\n".join(self.payloads["rust.jsonl"].splitlines()[:-2]) + b"\n"
         self.reject()
 
     def test_missing_native_caller(self):
-        self.payloads["native.jsonl"] = b'\n'.join(line for line in self.payloads["native.jsonl"].splitlines() if json.loads(line)["caller"] != "c11") + b'\n'
+        self.payloads["native.jsonl"] = (
+            b"\n".join(
+                line for line in self.payloads["native.jsonl"].splitlines() if json.loads(line)["caller"] != "c11"
+            )
+            + b"\n"
+        )
         self.reject()
 
     def test_missing_native_row(self):
-        self.payloads["native.jsonl"] = b'\n'.join(self.payloads["native.jsonl"].splitlines()[2:]) + b'\n'
+        self.payloads["native.jsonl"] = b"\n".join(self.payloads["native.jsonl"].splitlines()[2:]) + b"\n"
         self.reject()
 
     def test_missing_named_operation(self):
-        self.payloads["native.jsonl"] = b'\n'.join(self.payloads["native.jsonl"].splitlines()[:-2]) + b'\n'
+        self.payloads["native.jsonl"] = b"\n".join(self.payloads["native.jsonl"].splitlines()[:-2]) + b"\n"
         self.reject()
 
     def test_native_listing_omits_row(self):
-        self.payloads["native-list.jsonl"] = b'\n'.join(self.payloads["native-list.jsonl"].splitlines()[1:]) + b'\n'
+        self.payloads["native-list.jsonl"] = b"\n".join(self.payloads["native-list.jsonl"].splitlines()[1:]) + b"\n"
         self.reject()
 
     def test_duplicate_terminal(self):
-        self.payloads["rust.jsonl"] += self.payloads["rust.jsonl"].splitlines()[-1] + b'\n'
+        self.payloads["rust.jsonl"] += self.payloads["rust.jsonl"].splitlines()[-1] + b"\n"
         self.reject()
 
     def test_crash_before_terminal(self):
-        self.payloads["rust.jsonl"] = b'\n'.join(self.payloads["rust.jsonl"].splitlines()[:-1]) + b'\n'
+        self.payloads["rust.jsonl"] = b"\n".join(self.payloads["rust.jsonl"].splitlines()[:-1]) + b"\n"
         self.reject()
 
     def test_truncated_output(self):
@@ -320,6 +501,7 @@ class NativeResultTests(unittest.TestCase):
 
     def test_unexpected_skip(self):
         import xml.etree.ElementTree as ET
+
         tree = ET.fromstring(self.payloads["nextest.xml"])
         for case in tree.iter("testcase"):
             if case.get("name") == OPTICS_FUNCTION:
@@ -347,10 +529,13 @@ class NativeResultTests(unittest.TestCase):
 
     def test_failed_bundle_collection_exits_nonzero(self):
         import verify
+
         self.result["status"] = "failed"
         self.save()
         output = self.root / "report.json"
-        with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--bundles", str(self.bundle), "--output", str(output)]):
+        with patch.object(
+            sys, "argv", ["verify.py", "collect-qualification", "--bundles", str(self.bundle), "--output", str(output)]
+        ):
             self.assertEqual(verify.main(), 1)
         self.assertEqual(json.loads(output.read_bytes())["status"], "failed")
 
@@ -398,18 +583,67 @@ class NativeResultTests(unittest.TestCase):
 
     def test_production_v2_rejects_invalid_observations(self):
         cases = (
-            "missing-row", "duplicate-row", "reordered-rows", "route", "pass", "input-shape",
-            "output-shape", "shape-boolean", "count", "count-boolean", "status", "status-boolean",
-            "messages", "input-digest", "output-digest", "warm-output", "fixture-match", "finite",
-            "alpha", "padding", "stream", "readback", "context", "restored", "source-release-zero",
-            "source-release-two", "output-release-zero", "output-release-two", "release-boolean",
-            "lifecycle-load", "lifecycle-created", "lifecycle-destroyed", "destroy-status",
-            "destroy-boolean", "lifecycle-unload", "lifecycle-restored", "module-hash", "probe-hash",
-            "render-hash", "input-hash", "fixture-hash", "scan-hash", "missing-field", "legacy-field",
-            "legacy-submitted", "legacy-state-release", "legacy-view-release",
-            "legacy-status", "legacy-api", "legacy-native-code", "forbidden-symbol", "legacy-symbol",
-            "hidden-export", "missing-command", "duplicate-command", "failed-command", "boolean-command",
-            "undrained-command", "unfinished-command", "changed-command", "changed-stdout",
+            "missing-row",
+            "duplicate-row",
+            "reordered-rows",
+            "route",
+            "pass",
+            "input-shape",
+            "output-shape",
+            "shape-boolean",
+            "count",
+            "count-boolean",
+            "status",
+            "status-boolean",
+            "messages",
+            "input-digest",
+            "output-digest",
+            "warm-output",
+            "fixture-match",
+            "finite",
+            "alpha",
+            "padding",
+            "stream",
+            "readback",
+            "context",
+            "restored",
+            "source-release-zero",
+            "source-release-two",
+            "output-release-zero",
+            "output-release-two",
+            "release-boolean",
+            "lifecycle-load",
+            "lifecycle-created",
+            "lifecycle-destroyed",
+            "destroy-status",
+            "destroy-boolean",
+            "lifecycle-unload",
+            "lifecycle-restored",
+            "module-hash",
+            "probe-hash",
+            "render-hash",
+            "input-hash",
+            "fixture-hash",
+            "scan-hash",
+            "missing-field",
+            "legacy-field",
+            "legacy-submitted",
+            "legacy-state-release",
+            "legacy-view-release",
+            "legacy-status",
+            "legacy-api",
+            "legacy-native-code",
+            "forbidden-symbol",
+            "legacy-symbol",
+            "hidden-export",
+            "missing-command",
+            "duplicate-command",
+            "failed-command",
+            "boolean-command",
+            "undrained-command",
+            "unfinished-command",
+            "changed-command",
+            "changed-stdout",
         )
         self.subtest_cases = cases
         for case in cases:
@@ -452,11 +686,26 @@ class NativeResultTests(unittest.TestCase):
                     row["output_f32_words_sha256"] = "invalid"
                 elif case == "warm-output":
                     prepared["rows"][1]["output_f32_words_sha256"] = "a" * 64
-                elif case in {"fixture-match", "finite", "alpha", "padding", "stream", "readback", "context", "restored"}:
-                    key = {"fixture-match": "accepted_fixture_match", "finite": "finite_output",
-                           "alpha": "alpha_preserved", "padding": "padding_preserved",
-                           "stream": "stream_completed", "readback": "readback_complete",
-                           "context": "context_preserved", "restored": "context_restored"}[case]
+                elif case in {
+                    "fixture-match",
+                    "finite",
+                    "alpha",
+                    "padding",
+                    "stream",
+                    "readback",
+                    "context",
+                    "restored",
+                }:
+                    key = {
+                        "fixture-match": "accepted_fixture_match",
+                        "finite": "finite_output",
+                        "alpha": "alpha_preserved",
+                        "padding": "padding_preserved",
+                        "stream": "stream_completed",
+                        "readback": "readback_complete",
+                        "context": "context_preserved",
+                        "restored": "context_restored",
+                    }[case]
                     row[key] = False
                 elif case.startswith("source-release-"):
                     row["source_image_releases"] = int(case.rsplit("-", 1)[1] == "two") * 2
@@ -531,8 +780,10 @@ class NativeResultTests(unittest.TestCase):
                 payloads["production-commands.json"] = json.dumps(commands).encode()
                 report["commands"]["sha256"] = hashlib.sha256(payloads["production-commands.json"]).hexdigest()
                 self.update_production_report(payloads, report)
-                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                     for name, data in payloads.items()}
+                result["members"] = {
+                    name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, data in payloads.items()
+                }
                 with self.assertRaises((ValueError, KeyError)):
                     validate_build_result(result, payloads)
 
@@ -552,8 +803,10 @@ class NativeResultTests(unittest.TestCase):
                 report = self.production_report(payloads)
                 report["commands"]["sha256"] = hashlib.sha256(payloads["production-commands.json"]).hexdigest()
                 self.update_production_report(payloads, report)
-                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                     for name, data in payloads.items()}
+                result["members"] = {
+                    name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, data in payloads.items()
+                }
                 with self.assertRaisesRegex(ValueError, message):
                     validate_build_result(result, payloads)
 
@@ -562,8 +815,9 @@ class NativeResultTests(unittest.TestCase):
         report = self.production_report(payloads)
         report["probes"][0]["after_run_sha256"] = "changed"
         self.update_production_report(payloads, report)
-        result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                             for name, data in payloads.items()}
+        result["members"] = {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in payloads.items()
+        }
         with self.assertRaisesRegex(ValueError, "changed or missing production C11 probe"):
             validate_build_result(result, payloads)
 
@@ -578,8 +832,10 @@ class NativeResultTests(unittest.TestCase):
                 else:
                     report["prepared_render"]["rows"].pop()
                 self.update_production_report(payloads, report)
-                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                     for name, data in payloads.items()}
+                result["members"] = {
+                    name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, data in payloads.items()
+                }
                 with self.assertRaisesRegex(ValueError, "incomplete or failed production prepared rendering"):
                     validate_build_result(result, payloads)
 
@@ -598,8 +854,10 @@ class NativeResultTests(unittest.TestCase):
                     report["preset"] = "linux-debug"
                     self.update_production_report(payloads, report)
                     message = "incomplete production OFF assertions"
-                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                     for name, data in payloads.items()}
+                result["members"] = {
+                    name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, data in payloads.items()
+                }
                 with self.assertRaisesRegex(ValueError, message):
                     validate_build_result(result, payloads)
 
@@ -627,7 +885,7 @@ class NativeResultTests(unittest.TestCase):
         self.save()
         reader = self.root / "reader.py"
         shutil.copyfile(Path(__file__).resolve().parents[2] / "scripts/qualification.py", reader)
-        code = r'''
+        code = r"""
 import sys, os, runpy
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
@@ -652,9 +910,10 @@ except SystemExit as exc:
         raise
 for p in (root / 'relocated bundle ü').iterdir():
     assert opens.count(str(p)) == 1, (p, opens.count(str(p)))
-'''
-        completed = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(self.root)],
-                                   capture_output=True, text=True, timeout=20)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", code, str(self.root)], capture_output=True, text=True, timeout=20
+        )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         type(self).read_bytes += json.loads(completed.stdout)["bookkeeping_read_bytes"]
 
@@ -663,13 +922,18 @@ class VersionProbeTests(unittest.TestCase):
     def test_failure_and_success_are_both_recorded_with_exact_arguments(self):
         import argparse
         import verify
+
         output = io.StringIO()
         commands = []
+
         def probe(command, **kwargs):
             commands.append(command)
             return subprocess.CompletedProcess(command, 7 if command[0] == "failed tool" else 0, "version output")
+
         with patch.object(verify.subprocess, "run", side_effect=probe), patch.object(sys, "stdout", output):
-            status = verify.tool_versions(argparse.Namespace(tool=[("cargo", "failed tool"), ("rustc", "proxy path/rustc")]))
+            status = verify.tool_versions(
+                argparse.Namespace(tool=[("cargo", "failed tool"), ("rustc", "proxy path/rustc")])
+            )
         records = json.loads(output.getvalue())
         self.assertEqual(status, 1)
         self.assertEqual([r["returncode"] for r in records], [7, 0])
@@ -679,11 +943,14 @@ class VersionProbeTests(unittest.TestCase):
     def test_missing_tool_is_a_failed_probe_and_keeps_other_results(self):
         import argparse
         import verify
+
         output = io.StringIO()
+
         def probe(command, **kwargs):
             if command[0] == "missing":
                 raise FileNotFoundError("missing tool")
             return subprocess.CompletedProcess(command, 0, "version output")
+
         with patch.object(verify.subprocess, "run", side_effect=probe), patch.object(sys, "stdout", output):
             status = verify.tool_versions(argparse.Namespace(tool=[("cargo", "missing"), ("cmake", "present")]))
         records = json.loads(output.getvalue())
@@ -702,8 +969,14 @@ class OpticsSourceTests(unittest.TestCase):
         policy = Path(__file__).resolve().parents[2] / "scripts/source_file_policy.json"
         (self.root / "scripts").mkdir()
         (self.root / "scripts/source_file_policy.json").write_bytes(policy.read_bytes())
-        for name in ("src/producer.h", "rust/producer.rs", "tests/ffi/consumer.inc", self.literal,
-                     "tests/route/development.json", "tests/quality/test_native_results.py"):
+        for name in (
+            "src/producer.h",
+            "rust/producer.rs",
+            "tests/ffi/consumer.inc",
+            self.literal,
+            "tests/route/development.json",
+            "tests/quality/test_native_results.py",
+        ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("baseline\n")
@@ -715,6 +988,7 @@ class OpticsSourceTests(unittest.TestCase):
 
     def capture(self):
         from verify import capture_native_source
+
         return capture_native_source(self.root, self.literal)
 
     @unittest.skipUnless(os.name == "posix", "POSIX executable mode control")
@@ -734,10 +1008,12 @@ class OpticsSourceTests(unittest.TestCase):
     def test_tracked_inputs_use_git_without_reopening_each_source(self):
         policy = self.root / "scripts/source_file_policy.json"
         data = policy.read_bytes()
+
         def read(path):
             if path == policy:
                 return data
             raise AssertionError("tracked source reread")
+
         with patch.object(Path, "read_bytes", read):
             first = self.capture()
             second = self.capture()
@@ -755,6 +1031,7 @@ class OpticsSourceTests(unittest.TestCase):
 
     def test_preparation_retains_new_host_entry_and_preset_bytes(self):
         import base64
+
         paths = ("tests/host/CMakeLists.txt", "tests/host/CMakePresets.json")
         before = self.capture()
         for name in paths:
@@ -768,15 +1045,21 @@ class OpticsSourceTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(source["new_files_base64"][name]), b"new host configuration\n")
 
     def test_preparation_nested_cmake_edits_are_reconstructible(self):
-        paths = ("tests/host/CMakeLists.txt", "tests/host/CMakePresets.json",
-                 "tests/host/nested/CMakeLists.txt")
+        paths = ("tests/host/CMakeLists.txt", "tests/host/CMakePresets.json", "tests/host/nested/CMakeLists.txt")
         for name in paths:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"baseline host configuration\n")
         self.git("add", "tests/host")
-        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                 "commit", "-qm", "host configuration baseline")
+        self.git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "host configuration baseline",
+        )
         before = self.capture()
         self.subtest_cases = paths
         for name in paths:
@@ -785,8 +1068,7 @@ class OpticsSourceTests(unittest.TestCase):
                 after = self.capture()
                 self.assertNotEqual(before[1], after[1])
                 self.assertIn(("diff --git a/" + name + " b/" + name).encode(), after[1])
-                subprocess.run(["git", "apply", "--reverse", "--check"],
-                               cwd=self.root, input=after[1], check=True)
+                subprocess.run(["git", "apply", "--reverse", "--check"], cwd=self.root, input=after[1], check=True)
                 (self.root / name).write_bytes(b"baseline host configuration\n")
 
     test_preparation_nested_cmake_edits_are_reconstructible.required_subtests = True
@@ -806,6 +1088,7 @@ class OpticsSourceTests(unittest.TestCase):
 
     def test_new_input_bytes_and_deletion_change_candidate(self):
         import base64
+
         before = self.capture()
         path = self.root / "rust/new.rs"
         path.write_bytes(b"new source\n")
@@ -845,6 +1128,7 @@ class OpticsSourceTests(unittest.TestCase):
 
     def test_supported_untracked_headers_are_preserved_and_compared(self):
         import base64
+
         self.subtest_cases = tuple(f"extension/{extension}" for extension in (".cuh", ".hh", ".hxx", ".inl", ".ixx"))
         for extension in (".cuh", ".hh", ".hxx", ".inl", ".ixx"):
             with self.subTest(case=f"extension/{extension}", extension=extension):
@@ -892,12 +1176,17 @@ class OpticsSourceTests(unittest.TestCase):
         outside.mkdir()
         (outside / "producer.h").write_text("outside bytes\n")
         shutil.rmtree(self.root / "src")
-        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(self.root / "src"), str(outside)], check=True, capture_output=True)
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(self.root / "src"), str(outside)],
+            check=True,
+            capture_output=True,
+        )
         with self.assertRaisesRegex(ValueError, "worktree source must be a regular file"):
             self.capture()
 
     def test_gpu_witness_records_resource_inputs_without_copying_arrays(self):
         from verify import capture_native_source
+
         path = self.root / "Resources/profiles/selected.json"
         path.parent.mkdir(parents=True)
         path.write_bytes(b"resource bytes\n")
@@ -949,7 +1238,10 @@ class NativeOwnerTests(unittest.TestCase):
             self.assertNotIn("vctip_cleanup", run.commands[1])
 
     def test_failure_records_exit_and_drains_without_legacy_admission(self):
-        with execution.OutputLease(self.root, self.root / "build"), patch.object(execution, "digest", side_effect=AssertionError("tool hashing")):
+        with (
+            execution.OutputLease(self.root, self.root / "build"),
+            patch.object(execution, "digest", side_effect=AssertionError("tool hashing")),
+        ):
             run = execution.NativeRun(self.root, self.directory)
             with self.assertRaises(subprocess.CalledProcessError):
                 run.command("failure", self.command("raise SystemExit(7)"))
@@ -970,31 +1262,43 @@ class NativeOwnerTests(unittest.TestCase):
         with execution.OutputLease(self.root, self.root / "build"):
             run = execution.NativeRun(self.root, self.directory)
             with self.assertRaises(subprocess.TimeoutExpired):
-                run.command("cancel", self.command("import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);time.sleep(30)"), timeout=.2)
+                run.command(
+                    "cancel",
+                    self.command(
+                        "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);time.sleep(30)"
+                    ),
+                    timeout=0.2,
+                )
             self.assertTrue(run.commands[0]["drained"])
             self.assertFalse((self.directory / "result.json").exists())
 
     def test_owner_cancellation_drains_started_descendant_on_both_hosts(self):
         marker = self.root / "descendant started"
         child = "import pathlib,time;pathlib.Path(" + repr(str(marker)) + ").write_text('ready');time.sleep(30)"
-        command = "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);time.sleep(30)"
+        command = (
+            "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);time.sleep(30)"
+        )
         original = execution.subprocess.Popen
+
         def launch(*args, **kwargs):
             process = original(*args, **kwargs)
             wait = process.wait
             first = True
+
             def cancel(timeout=None):
                 nonlocal first
                 if first:
                     first = False
                     deadline = time.monotonic() + 10
                     while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
-                        time.sleep(.02)
+                        time.sleep(0.02)
                     self.assertTrue(marker.exists(), "real descendant did not start")
                     raise KeyboardInterrupt
                 return wait(timeout=timeout)
+
             process.wait = cancel
             return process
+
         with execution.OutputLease(self.root, self.root / "build"):
             run = execution.NativeRun(self.root, self.directory)
             with patch.object(execution.subprocess, "Popen", side_effect=launch):
@@ -1022,12 +1326,15 @@ with OutputLease(root,root/'build'):
         pass
     (root/'observed.json').write_text(json.dumps(run.commands))
 """
-        process = subprocess.Popen([sys.executable, "-B", "-c", owner, str(Path(execution.__file__).parent), str(self.root), child],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", owner, str(Path(execution.__file__).parent), str(self.root), child],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         try:
             deadline = time.monotonic() + 10
             while not started.exists() and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(.02)
+                time.sleep(0.02)
             self.assertTrue(started.exists(), "contained child did not start")
             process.send_signal(signal.SIGINT)
             _, error = process.communicate(timeout=25)
@@ -1056,9 +1363,11 @@ with OutputLease(root,root/'build'):
         lease = execution.OutputLease(self.root, self.root / "build")
         with lease:
             run = execution.NativeRun(self.root, self.directory)
+
             def uncertain(*args):
                 args[-1]["drained"] = False
                 raise RuntimeError("uncertain child")
+
             with patch.object(execution, "run_process_tree", side_effect=uncertain):
                 with self.assertRaises(RuntimeError):
                     run.command("uncertain", self.command("pass"))
@@ -1083,7 +1392,13 @@ with OutputLease(root,root/'build'):
             with execution.OutputLease(self.root) as gpu_owner:
                 run = execution.NativeRun(self.root, self.directory)
                 with self.assertRaises(subprocess.TimeoutExpired):
-                    run.command("gpu-cancel", self.command("import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);time.sleep(30)"), timeout=.2)
+                    run.command(
+                        "gpu-cancel",
+                        self.command(
+                            "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);time.sleep(30)"
+                        ),
+                        timeout=0.2,
+                    )
                 self.assertTrue(run.commands[0]["drained"])
                 self.assertTrue((gpu_owner.path / "owner.json").exists())
                 self.assertTrue((build_owner.path / "owner.json").exists())
@@ -1095,9 +1410,11 @@ with OutputLease(root,root/'build'):
         with execution.OutputLease(self.root, self.root / "build") as build_owner:
             with execution.OutputLease(self.root) as gpu_owner:
                 run = execution.NativeRun(self.root, self.directory)
+
                 def uncertain(*args):
                     args[-1]["drained"] = False
                     raise RuntimeError("uncertain GPU child")
+
                 with patch.object(execution, "run_process_tree", side_effect=uncertain):
                     with self.assertRaisesRegex(RuntimeError, "uncertain"):
                         run.command("gpu-uncertain", self.command("pass"))
@@ -1106,7 +1423,6 @@ with OutputLease(root,root/'build'):
                     run.publish({"status": "passed"})
         for owner in (build_owner, gpu_owner):
             self.assertEqual(json.loads((owner.path / "owner.json").read_text())["status"], "blocked")
-
 
 
 NativeResultTests.test_production_report_rejects_missing_or_failed_command.required_subtests = True

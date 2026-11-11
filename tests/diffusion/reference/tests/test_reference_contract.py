@@ -37,10 +37,14 @@ class BootstrapContractTests(unittest.TestCase):
 class PromotedFixtureIntegrityTests(unittest.TestCase):
     def test_committed_bytes(self) -> None:
         # Accepted public relocation; historical capture identities stay unchanged.
-        self.assertEqual(hashlib.sha256(MANIFEST.read_bytes()).hexdigest(),
-                         "588f993e41fc03c4f00e112c53501fc4058e62c253a676b39ea71cc0e624ca23")
-        self.assertEqual(hashlib.sha256(ARRAYS.read_bytes()).hexdigest(),
-                         "963c7de75e513cfd503e48d52fe072380e4272468fc69cfede5bf4ccea914b4b")
+        self.assertEqual(
+            hashlib.sha256(MANIFEST.read_bytes()).hexdigest(),
+            "588f993e41fc03c4f00e112c53501fc4058e62c253a676b39ea71cc0e624ca23",
+        )
+        self.assertEqual(
+            hashlib.sha256(ARRAYS.read_bytes()).hexdigest(),
+            "963c7de75e513cfd503e48d52fe072380e4272468fc69cfede5bf4ccea914b4b",
+        )
 
 
 class ReferenceContractTests(unittest.TestCase):
@@ -145,11 +149,7 @@ class ReferenceContractTests(unittest.TestCase):
                 self.assertEqual(len(group["expanded_weights"]), group["n_components"])
                 self.assertAlmostEqual(sum(group["expanded_weights"]), 1.0, places=14)
 
-        expected_warmth = {
-            (family, value)
-            for family in families
-            for value in (-3.0, -1.5, 0.0, 1.5, 3.0)
-        }
+        expected_warmth = {(family, value) for family in families for value in (-3.0, -1.5, 0.0, 1.5, 3.0)}
         self.assertEqual(
             {(row["family"], row["halo_warmth"]) for row in data["warmth_cases"]},
             expected_warmth,
@@ -227,9 +227,7 @@ class ReferenceContractTests(unittest.TestCase):
                 self.assertAlmostEqual(sum(row[kind]["expanded_weights"]), 1.0, places=14)
 
         base_by_family = {row["family"]: row for row in data["family_cases"]}
-        advanced_by_key = {
-            (row["family"], row["name"]): row for row in data["advanced_cases"]
-        }
+        advanced_by_key = {(row["family"], row["name"]): row for row in data["advanced_cases"]}
         for family in families:
             base = base_by_family[family]
             for fallback_name in ("default", "all_zero_nondefault_sizes"):
@@ -286,10 +284,7 @@ class ReferenceContractTests(unittest.TestCase):
         )
         self.assertEqual({row["stage"] for row in data["hdr_cases"]}, {"camera", "enlarger"})
         self.assertEqual(
-            {
-                (row["family"], row["halo_warmth"], row["advanced_case"])
-                for row in data["psf_cases"]
-            },
+            {(row["family"], row["halo_warmth"], row["advanced_case"]) for row in data["psf_cases"]},
             {
                 (family, warmth, advanced)
                 for family in data["family_order"]
@@ -398,9 +393,7 @@ class ReferenceContractTests(unittest.TestCase):
                     }[tuple(row["extent"])]
                     self.assertEqual(row["extent_class"], expected_extent_class)
             even_odd_radii = {
-                row["psf_radius"]
-                for row in data["radius_cases"]
-                if tuple(row["extent"]) in {(16, 18), (17, 19)}
+                row["psf_radius"] for row in data["radius_cases"] if tuple(row["extent"]) in {(16, 18), (17, 19)}
             }
             self.assertEqual(even_odd_radii, {6, 7})
             for row in data["radius_cases"]:
@@ -428,10 +421,12 @@ class ReferenceContractTests(unittest.TestCase):
         data = json.loads(self.manifest.read_text(encoding="utf-8"))
         source_paths = {row["path"] for row in data["source_files"]}
         self.assertIn(
-            "external/spektrafilm/src/spektrafilm/model/diffusion.py", source_paths,
+            "external/spektrafilm/src/spektrafilm/model/diffusion.py",
+            source_paths,
         )
         self.assertIn(
-            "external/spektrafilm/src/spektrafilm/runtime/params_schema.py", source_paths,
+            "external/spektrafilm/src/spektrafilm/runtime/params_schema.py",
+            source_paths,
         )
         modules = [row["module"] for row in data["source_files"]]
         self.assertEqual(len(modules), len(set(modules)))
@@ -467,6 +462,7 @@ class ReferenceContractTests(unittest.TestCase):
 
 def capture_suite(directory: Path) -> unittest.TestSuite:
     """Check an explicit candidate in its generating environment, never on discovery."""
+
     class CapturedReferenceContractTests(ReferenceContractTests):
         manifest = directory / "diffusion_reference_v1.json"
         arrays = directory / "diffusion_reference_v1.npz"
@@ -479,8 +475,9 @@ def capture_suite(directory: Path) -> unittest.TestSuite:
             self.assertEqual(data["python"]["machine"], platform.machine())
             self.assertEqual((ROOT / data["python"]["executable"]).resolve(), Path(sys.executable).resolve())
             interpreter = ROOT / data["python"]["executable"]
-            self.assertEqual(interpreter.parent.parent.resolve(), Path(sys.prefix).resolve(),
-                             "capture environment prefix")
+            self.assertEqual(
+                interpreter.parent.parent.resolve(), Path(sys.prefix).resolve(), "capture environment prefix"
+            )
             for key in ("uv", "dependency_lock", "python_freeze"):
                 row = data[key]
                 path = ROOT / row["evidence_path" if key == "uv" else "path"]
@@ -496,13 +493,19 @@ def capture_suite(directory: Path) -> unittest.TestSuite:
             self.assertIn(f"-e {(ROOT / 'external/spektrafilm').as_uri()}", freeze)
             for key, cwd in (("repository_git", ROOT), ("reference_git", ROOT / "external/spektrafilm")):
                 commit = subprocess.run(
-                    ("git", "rev-parse", "HEAD"), cwd=cwd, check=True,
-                    capture_output=True, text=True,
+                    ("git", "rev-parse", "HEAD"),
+                    cwd=cwd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 ).stdout.strip()
                 self.assertEqual(data[key]["commit"], commit)
             status = subprocess.run(
-                ("git", "status", "--porcelain"), cwd=ROOT / "external/spektrafilm",
-                check=True, capture_output=True, text=True,
+                ("git", "status", "--porcelain"),
+                cwd=ROOT / "external/spektrafilm",
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             self.assertEqual(data["reference_git"]["status_porcelain"], status)
             self.assertEqual(status, "")

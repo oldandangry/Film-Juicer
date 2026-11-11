@@ -71,8 +71,9 @@ def resource_inputs(manifest: dict) -> tuple[Path, Path, tuple[str, ...]]:
 
 
 def inspect(tool: str, *arguments: str) -> str:
-    result = subprocess.run([tool, *arguments], capture_output=True, text=True,
-                            env={**os.environ, "LC_ALL": "C"}, check=False)
+    result = subprocess.run(
+        [tool, *arguments], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}, check=False
+    )
     if result.returncode:
         raise ValueError(f"{tool} failed for {arguments[-1]} (exit={result.returncode}): {result.stderr.strip()}")
     return result.stdout
@@ -122,35 +123,47 @@ def cufft_binary_paths(manifest: dict) -> tuple[tuple[str, str], ...]:
     return tuple(binaries)
 
 
-def check_cufft_binary(group: str, name: str, soname: str, provider: Path,
-                       tools: dict[str, str]) -> tuple[Path, os.stat_result]:
+def check_cufft_binary(
+    group: str, name: str, soname: str, provider: Path, tools: dict[str, str]
+) -> tuple[Path, os.stat_result]:
     binary = Path(name)
     if not binary.is_absolute() or not binary.is_file():
         raise ValueError(f"{group} binary is missing or not absolute: {binary}")
     before = binary.stat()
     symbols = inspect(tools["nm"], "--defined-only", str(binary))
-    defines_cufft = any(line.split() and line.split()[-1].split("@", 1)[0] == "cufftCreate"
-                        for line in symbols.splitlines())
+    defines_cufft = any(
+        line.split() and line.split()[-1].split("@", 1)[0] == "cufftCreate" for line in symbols.splitlines()
+    )
     dynamic = inspect(tools["readelf"], "--dynamic", "--wide", str(binary))
     needed = re.findall(r"\(NEEDED\).*\[([^\]]+)\]", dynamic)
     cufft_needed = [dependency for dependency in needed if dependency.startswith("libcufft")]
     if group == "static":
         if not defines_cufft or cufft_needed:
-            raise ValueError(f"production static cuFFT closure differs: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}")
+            raise ValueError(
+                f"production static cuFFT closure differs: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}"
+            )
     elif group == "without_cufft":
         if defines_cufft or cufft_needed:
-            raise ValueError(f"unneeded cuFFT closure is present: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}")
+            raise ValueError(
+                f"unneeded cuFFT closure is present: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}"
+            )
     else:
         if defines_cufft or cufft_needed != [soname]:
-            raise ValueError(f"shared cuFFT closure differs: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}, expected={soname}")
+            raise ValueError(
+                f"shared cuFFT closure differs: {binary}; defines cufftCreate={defines_cufft}, NEEDED={cufft_needed}, expected={soname}"
+            )
         # Only the selected cuFFT provider is required here. GPU driver
         # dependencies of other objects may be absent in a host lane.
-        result = subprocess.run([tools["ldd"], str(binary)], capture_output=True, text=True,
-                                env={**os.environ, "LC_ALL": "C"}, check=False)
-        resolved = re.findall(r"^\s*" + re.escape(soname) + r"\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$",
-                              result.stdout, re.MULTILINE)
+        result = subprocess.run(
+            [tools["ldd"], str(binary)], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}, check=False
+        )
+        resolved = re.findall(
+            r"^\s*" + re.escape(soname) + r"\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$", result.stdout, re.MULTILINE
+        )
         if len(resolved) != 1 or Path(resolved[0]).resolve(strict=True) != provider:
-            raise ValueError(f"cuFFT provider resolution differs for {binary}: expected={provider}; ldd exit={result.returncode}\n{result.stdout}{result.stderr}")
+            raise ValueError(
+                f"cuFFT provider resolution differs for {binary}: expected={provider}; ldd exit={result.returncode}\n{result.stdout}{result.stderr}"
+            )
     return binary, before
 
 
@@ -165,8 +178,9 @@ def cmake_cache_values(path: Path) -> dict[str, str]:
 
 
 def target_link_commands(ninja: str, build: Path, consumers: dict[str, Path]) -> dict[str, str]:
-    result = subprocess.run([ninja, "-C", str(build), "-t", "commands", *consumers],
-                            capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [ninja, "-C", str(build), "-t", "commands", *consumers], capture_output=True, text=True, check=False
+    )
     if result.returncode:
         raise ValueError(f"Ninja command inspection failed for Rust consumers: {result.stderr.strip()}")
 
@@ -205,10 +219,7 @@ def target_link_commands(ninja: str, build: Path, consumers: dict[str, Path]) ->
             full_command,
             re.IGNORECASE,
         )
-        outputs = {
-            normalize_link_output(next(value for value in row if value))
-            for row in output_arguments
-        }
+        outputs = {normalize_link_output(next(value for value in row if value)) for row in output_arguments}
         for output in outputs:
             commands_by_output.setdefault(output, set()).add(full_command)
 
@@ -261,8 +272,11 @@ class BuildArtifactContractTests(unittest.TestCase):
         manifest_bytes = OPTIONS.manifest.read_bytes()
         manifest = json.loads(manifest_bytes)
         manifest_resources = manifest.get("resources", ())
-        resource_names = (tuple(name for name in manifest_resources if isinstance(name, str))
-                          if isinstance(manifest_resources, list) else ())
+        resource_names = (
+            tuple(name for name in manifest_resources if isinstance(name, str))
+            if isinstance(manifest_resources, list)
+            else ()
+        )
         self.subtest_cases = (
             "resource-manifest",
             "resource-membership-initial",
@@ -280,15 +294,15 @@ class BuildArtifactContractTests(unittest.TestCase):
                 set(manifest),
                 {"resource_source", "resource_stage", "resources", "platform"}
                 | {"rust_artifacts"}
-                | ({"cufft", "static", "shared", "without_cufft"}
-                   if manifest["platform"] == "Linux" else set()),
+                | ({"cufft", "static", "shared", "without_cufft"} if manifest["platform"] == "Linux" else set()),
             )
 
         expected_resources = set(resources)
         with self.subTest(case="resource-membership-initial"):
             actual_resources = resource_paths(stage)
             self.assertEqual(
-                actual_resources, expected_resources,
+                actual_resources,
+                expected_resources,
                 f"missing={sorted(expected_resources - actual_resources)} "
                 f"extra={sorted(actual_resources - expected_resources)}",
             )
@@ -301,8 +315,9 @@ class BuildArtifactContractTests(unittest.TestCase):
                 staged = stage / name
                 original_hash = digest(original)
                 staged_hash = digest(staged)
-                self.assertEqual(staged_hash, original_hash,
-                                 f"staged resource differs from source: {staged} versus {original}")
+                self.assertEqual(
+                    staged_hash, original_hash, f"staged resource differs from source: {staged} versus {original}"
+                )
                 identities[name + ":source"] = (original, original_hash)
                 identities[name + ":stage"] = (staged, staged_hash)
                 staged_bytes += staged.stat().st_size
@@ -311,8 +326,9 @@ class BuildArtifactContractTests(unittest.TestCase):
             with self.subTest(case=f"resource-final:{index}:{name}"):
                 for suffix in ("source", "stage"):
                     path, expected_hash = identities[name + ":" + suffix]
-                    self.assertEqual(digest(path), expected_hash,
-                                     f"resource changed during artifact validation: {path}")
+                    self.assertEqual(
+                        digest(path), expected_hash, f"resource changed during artifact validation: {path}"
+                    )
 
         with self.subTest(case="resource-membership-final"):
             self.assertEqual(resource_paths(stage), expected_resources)
@@ -352,8 +368,9 @@ class BuildArtifactContractTests(unittest.TestCase):
         with self.subTest(case="cufft-provider"):
             try:
                 tools = cufft_tools()
-                (provider, provider_hash, provider_soname,
-                 provider_version, provider_before) = check_cufft_provider(manifest, tools)
+                (provider, provider_hash, provider_soname, provider_version, provider_before) = check_cufft_provider(
+                    manifest, tools
+                )
             except Exception as error:
                 provider_error = error
                 raise
@@ -376,8 +393,13 @@ class BuildArtifactContractTests(unittest.TestCase):
             after = provider.stat()
             self.assertEqual(
                 (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
-                (provider_before.st_dev, provider_before.st_ino, provider_before.st_size,
-                 provider_before.st_mtime_ns, provider_before.st_ctime_ns),
+                (
+                    provider_before.st_dev,
+                    provider_before.st_ino,
+                    provider_before.st_size,
+                    provider_before.st_mtime_ns,
+                    provider_before.st_ctime_ns,
+                ),
             )
 
         for index, (group, _) in enumerate(binary_cases):
@@ -394,7 +416,9 @@ class BuildArtifactContractTests(unittest.TestCase):
         with self.subTest(case="cufft-manifest-final"):
             self.assertEqual(OPTIONS.manifest.read_bytes(), manifest_bytes)
         print(f"cuFFT provider={provider} sha256={provider_hash} version={provider_version}")
-        print(f"cuFFT closures: static={counts['static']} shared={counts['shared']} without_cufft={counts['without_cufft']}")
+        print(
+            f"cuFFT closures: static={counts['static']} shared={counts['shared']} without_cufft={counts['without_cufft']}"
+        )
         print(f"PASS native cuFFT contract: binaries={len(binary_cases)}")
 
     def test_rust_artifacts_are_separate_at_final_links(self):
@@ -420,11 +444,21 @@ class BuildArtifactContractTests(unittest.TestCase):
             "rust-production-symbols:prepared-probe",
             "rust-production-exports:module",
             "rust-neutral-native-archive",
-            *(f"rust-artifact-final:{name}" for name in dict.fromkeys((
-                "production.archive", "production.feature_input", "production.stamp",
-                "test-support.archive", "test-support.feature_input", "test-support.stamp",
-                "native_archive", *consumer_names,
-            ))),
+            *(
+                f"rust-artifact-final:{name}"
+                for name in dict.fromkeys(
+                    (
+                        "production.archive",
+                        "production.feature_input",
+                        "production.stamp",
+                        "test-support.archive",
+                        "test-support.feature_input",
+                        "test-support.stamp",
+                        "native_archive",
+                        *consumer_names,
+                    )
+                )
+            ),
             "rust-artifact-manifest-final",
         )
 
@@ -446,8 +480,7 @@ class BuildArtifactContractTests(unittest.TestCase):
                 self.assertIn(target, consumers)
                 self.assertEqual(consumers[target].get("variant"), variant)
 
-        build = next((parent for parent in rust_manifest_path.parents
-                      if (parent / "CMakeCache.txt").is_file()), None)
+        build = next((parent for parent in rust_manifest_path.parents if (parent / "CMakeCache.txt").is_file()), None)
         self.assertIsNotNone(build, f"Rust artifact manifest is outside a configured CMake tree: {rust_manifest_path}")
         self.assertEqual(Path(rust_manifest["build"]), build)
         cache = cmake_cache_values(build / "CMakeCache.txt")
@@ -482,8 +515,7 @@ class BuildArtifactContractTests(unittest.TestCase):
                 for field in ("archive", "feature_input", "stamp"):
                     self.assertTrue(paths[field].is_file(), f"missing {key} {field}: {paths[field]}")
                 feature_lines = dict(
-                    line.split("=", 1) for line in paths["feature_input"].read_text().splitlines()
-                    if "=" in line
+                    line.split("=", 1) for line in paths["feature_input"].read_text().splitlines() if "=" in line
                 )
                 self.assertEqual(feature_lines.get("features"), "none" if not expected_features else "test-support")
                 self.assertIn("target", feature_lines)
@@ -531,10 +563,14 @@ class BuildArtifactContractTests(unittest.TestCase):
                     self.fail(f"no inspected final link command for {target}")
                 command = link_commands[target]
                 production_count = archive_occurrences(
-                    command, artifact_paths["production"]["archive"], build,
+                    command,
+                    artifact_paths["production"]["archive"],
+                    build,
                 )
                 test_count = archive_occurrences(
-                    command, artifact_paths["test-support"]["archive"], build,
+                    command,
+                    artifact_paths["test-support"]["archive"],
+                    build,
                 )
                 if variant == "production":
                     self.assertEqual((production_count, test_count), (1, 0), command)
@@ -565,7 +601,11 @@ class BuildArtifactContractTests(unittest.TestCase):
         for name, path in frozen_paths.items():
             before = path.stat()
             frozen_identities[name] = (
-                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns,
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
             )
         for case, path in production_paths:
             with self.subTest(case=f"rust-production-symbols:{case}"):
@@ -595,16 +635,25 @@ class BuildArtifactContractTests(unittest.TestCase):
             support_exports = defined_symbols(nm, artifact_paths["test-support"]["archive"])
             native_exports = defined_symbols(nm, native_archive)
             legacy_boundary = {symbol for symbol in production_exports if symbol.startswith("fj_legacy_")}
-            self.assertFalse(legacy_boundary, f"production archive defines retired legacy boundaries: {sorted(legacy_boundary)}")
+            self.assertFalse(
+                legacy_boundary, f"production archive defines retired legacy boundaries: {sorted(legacy_boundary)}"
+            )
             production_boundary = {
-                "fj_ofx_plugin", "fj_ofx_plugin_count", "fj_diffusion_components_prepare",
-                "fj_dir_boundary_describe", "fj_dir_boundary_acquire",
-                "fj_dir_boundary_view", "fj_dir_boundary_release",
+                "fj_ofx_plugin",
+                "fj_ofx_plugin_count",
+                "fj_diffusion_components_prepare",
+                "fj_dir_boundary_describe",
+                "fj_dir_boundary_acquire",
+                "fj_dir_boundary_view",
+                "fj_dir_boundary_release",
             }
             actual_boundary = {symbol for symbol in production_exports if symbol.startswith("fj_")}
-            self.assertEqual(actual_boundary, production_boundary,
-                             f"production boundary mismatch: missing={sorted(production_boundary - actual_boundary)} "
-                             f"unexpected={sorted(actual_boundary - production_boundary)}")
+            self.assertEqual(
+                actual_boundary,
+                production_boundary,
+                f"production boundary mismatch: missing={sorted(production_boundary - actual_boundary)} "
+                f"unexpected={sorted(actual_boundary - production_boundary)}",
+            )
             support_boundary = {symbol for symbol in support_exports if symbol.startswith("fj_test_")}
             self.assertTrue(support_boundary, "test-support archive has no defined fj_test_ boundary symbols")
             embedded_production = native_exports & production_boundary

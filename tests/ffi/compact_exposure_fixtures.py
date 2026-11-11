@@ -13,7 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = "tests/ffi/fixtures/exposure/"
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
-INPUT_FIELDS = frozenset("id linear illuminant reference window uv ir method apply_window reference_valid active".split())
+INPUT_FIELDS = frozenset(
+    "id linear illuminant reference window uv ir method apply_window reference_valid active".split()
+)
 EXPECTED_FIELDS = frozenset("built expected scale hash hash_failure_index failure".split())
 REFERENCE_FIELDS = frozenset("source source_index source_value white blur built expected diagnostic".split())
 BLOCK_FIELDS = ("scanner_tables", "exposure_tables", "sensitivity", "final_sensitivity")
@@ -72,10 +74,13 @@ def numerical_fixture(fixture: dict) -> dict:
         "parent": fixture["parent"],
         "contract": fixture["contract"],
         "reference": [{k: v for k, v in row.items() if k in REFERENCE_FIELDS} for row in fixture["reference"]],
-        "sensitivity": [{
-            "input": {k: v for k, v in row["input"].items() if k in INPUT_FIELDS},
-            "expected": {k: v for k, v in row["expected"].items() if k in EXPECTED_FIELDS},
-        } for row in fixture["sensitivity"]],
+        "sensitivity": [
+            {
+                "input": {k: v for k, v in row["input"].items() if k in INPUT_FIELDS},
+                "expected": {k: v for k, v in row["expected"].items() if k in EXPECTED_FIELDS},
+            }
+            for row in fixture["sensitivity"]
+        ],
     }
 
 
@@ -140,7 +145,10 @@ def main() -> None:
                     raise ValueError(f"public numerical inputs/expectations differ: {preset}")
                 numerical = projected
     products, records = compact_products(originals)
-    files = {"numerical.json": encode(numerical), "product-values.json": encode({"schema_version": 1, "expected_records": records})}
+    files = {
+        "numerical.json": encode(numerical),
+        "product-values.json": encode({"schema_version": 1, "expected_records": records}),
+    }
     files.update({f"products-{preset}.json": encode(value) for preset, value in products.items()})
     for preset in PRESETS:
         del manifest["files"][f"{preset}.json"]
@@ -156,7 +164,9 @@ def main() -> None:
     for name, data in files.items():
         (output / name).write_bytes(data)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(f"Verified four numerical cohorts and {sum(len(v['products']) for v in products.values())} complete-product cases; {len(records)} shared result records.")
+    print(
+        f"Verified four numerical cohorts and {sum(len(v['products']) for v in products.values())} complete-product cases; {len(records)} shared result records."
+    )
 
 
 if __name__ == "__main__":

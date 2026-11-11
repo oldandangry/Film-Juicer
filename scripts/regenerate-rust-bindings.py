@@ -20,9 +20,20 @@ TARGETS = {"linux": "x86_64-unknown-linux-gnu", "win32": "x86_64-pc-windows-msvc
 # Exact declarations used by the current native OFX descriptor, dispatch,
 # image, parameter and message paths. Complete suites bring their handle types.
 OFX_TYPES = (
-    "OfxHost", "OfxPlugin", "OfxPluginEntryPoint", "OfxStatus", "OfxTime",
-    "OfxPropertySuiteV1", "OfxParameterSuiteV1", "OfxImageEffectSuiteV1",
-    "OfxMessageSuiteV1", "OfxRectI", "OfxRectD", "OfxPointI", "OfxPointD", "OfxRangeD",
+    "OfxHost",
+    "OfxPlugin",
+    "OfxPluginEntryPoint",
+    "OfxStatus",
+    "OfxTime",
+    "OfxPropertySuiteV1",
+    "OfxParameterSuiteV1",
+    "OfxImageEffectSuiteV1",
+    "OfxMessageSuiteV1",
+    "OfxRectI",
+    "OfxRectD",
+    "OfxPointI",
+    "OfxPointD",
+    "OfxRangeD",
 )
 OFX_CONSTANTS = (
     "kOfxImageComponentRGB",
@@ -31,7 +42,6 @@ OFX_CONSTANTS = (
     "kOfxImageUnPreMultiplied",
     "kOfxImageFieldNone",
     "kOfxImageEffectPluginApiVersion",
-
     "kOfxStatOK",
     "kOfxStatFailed",
     "kOfxStatErrFatal",
@@ -254,8 +264,13 @@ def main() -> int:
             environment.pop(name)
     if arguments.api == "cuda":
         selection = [
-            "native/juicer_cuda_api.h", "--allowlist-type", "Fj.*",
-            "--allowlist-function", "fj_cuda_.*", "--allowlist-var", "FJ_.*",
+            "native/juicer_cuda_api.h",
+            "--allowlist-type",
+            "Fj.*",
+            "--allowlist-function",
+            "fj_cuda_.*",
+            "--allowlist-var",
+            "FJ_.*",
         ]
         destination = root / "rust/film-juicer-plugin/src/cuda/sys.rs"
         includes = []
@@ -268,11 +283,27 @@ def main() -> int:
         destination = root / "rust/film-juicer-plugin/src/ofx/sys.rs"
         includes = ["-I", "third_party/ofxs/OpenFX-1.4/include"]
     command = [
-        bindgen, *selection, "--no-doc-comments", "--no-derive-debug",
-        "--use-core", "--rust-target", "1.85", "--rust-edition", "2024",
-        "--no-include-path-detection", "--formatter", "none", "--",
-        "-x", "c", "-std=c11", f"--target={TARGETS[sys.platform]}",
-        "-ffreestanding", "-nostdinc", "-isystem", str(Path(resource_dir) / "include"),
+        bindgen,
+        *selection,
+        "--no-doc-comments",
+        "--no-derive-debug",
+        "--use-core",
+        "--rust-target",
+        "1.85",
+        "--rust-edition",
+        "2024",
+        "--no-include-path-detection",
+        "--formatter",
+        "none",
+        "--",
+        "-x",
+        "c",
+        "-std=c11",
+        f"--target={TARGETS[sys.platform]}",
+        "-ffreestanding",
+        "-nostdinc",
+        "-isystem",
+        str(Path(resource_dir) / "include"),
         *includes,
     ]
     if arguments.api == "ofx":
@@ -281,10 +312,15 @@ def main() -> int:
         for path in inputs:
             print(f"INPUT SHA256: {hashlib.sha256(path.read_bytes()).hexdigest()} {path.relative_to(root)}")
     generated = run(command, cwd=root, env=environment)
-    formatted = run(
-        [rustfmt, "--edition", "2024", "--config-path", str(root / "rustfmt.toml")],
-        cwd=root, input=generated,
-    ).replace("\r\n", "\n").encode("utf-8")
+    formatted = (
+        run(
+            [rustfmt, "--edition", "2024", "--config-path", str(root / "rustfmt.toml")],
+            cwd=root,
+            input=generated,
+        )
+        .replace("\r\n", "\n")
+        .encode("utf-8")
+    )
     if arguments.check:
         if destination.read_bytes() != formatted:
             raise RuntimeError(f"{arguments.api.upper()} bindings differ; regenerate and review the change")

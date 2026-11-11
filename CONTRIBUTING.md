@@ -162,10 +162,14 @@ python scripts/check-tooling.py
 
 The command checks maintained Python and shell under `scripts/` and `tests/`,
 plus GitHub workflows. It includes eligible untracked files and excludes fixture,
-generated, vendor, private and output trees. Ruff uses `E4,E7,E9,F`; ShellCheck
-resolves sourced scripts; actionlint uses the selected ShellCheck with Pyflakes
-disabled. It neither modifies source nor installs tools, and missing/wrong tools,
-lint failures or input changes fail the command. The independent Linux lint job
+generated, vendor, private and output trees. Ruff lints with `E4,E7,E9,F` and
+checks formatting with `ruff format --check` (`ruff.toml`: 120 columns, LF);
+ShellCheck resolves sourced scripts; actionlint uses the selected ShellCheck with
+Pyflakes disabled. It neither modifies source nor installs tools, and missing/wrong
+tools, lint or format failures or input changes fail the command. To apply Python
+formatting, run the pinned `ruff format` from the repository root; `ruff.toml`
+limits its discovery to the same maintained scope, so it never rewrites the
+hash-checked Python resources under `Resources/`. The independent Linux lint job
 requires no CUDA setup. Its unit tests also run as `Quality.ToolingLint` in CTest;
 ordinary CTest does not require the lint executables. Private workbench checks
 are separate and are never inputs to public CI. Lints complement contextual review.
@@ -174,6 +178,8 @@ Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
 components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
+`scripts/format_touched_files.sh [file ...]` applies that clang-format to changed
+C++/CUDA files from Git Bash or WSL; `--check` verifies without modifying them.
 Preserve `.clang-format`, pinned rustfmt, configured Clippy/tidy and compiler
 warnings-as-errors; do not weaken checks or language standards to land a change.
 Use the shared verifier for native preparation, focused development checks and

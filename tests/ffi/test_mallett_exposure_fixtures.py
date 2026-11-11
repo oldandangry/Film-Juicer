@@ -19,14 +19,26 @@ class MallettFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"preset/{preset}" for preset in manifest["presets"]]
             + [f"file/{name}" for name in manifest["files"]]
-            + [f"focused/{name}/{index}-{row['id']}" for name in sorted(numerical_names)
-               for index, row in enumerate(payloads[name]["focused"])]
-            + [f"product/{name}/{index}" for name in sorted(product_names)
-               for index, _ in enumerate(payloads[name]["products"])]
+            + [
+                f"focused/{name}/{index}-{row['id']}"
+                for name in sorted(numerical_names)
+                for index, row in enumerate(payloads[name]["focused"])
+            ]
+            + [
+                f"product/{name}/{index}"
+                for name in sorted(product_names)
+                for index, _ in enumerate(payloads[name]["products"])
+            ]
         )
-        self.assertEqual(set(manifest["presets"]), {
-            "linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release",
-        })
+        self.assertEqual(
+            set(manifest["presets"]),
+            {
+                "linux-debug",
+                "linux-release",
+                "windows-clang-debug",
+                "windows-clang-release",
+            },
+        )
         referenced = set()
         for preset, selected in manifest["presets"].items():
             with self.subTest(case=f"preset/{preset}", preset=preset):
@@ -61,8 +73,13 @@ class MallettFixtureTests(unittest.TestCase):
 
     def test_corrected_failure_retains_native_provenance(self) -> None:
         contract = json.loads((FIXTURES / "mallett-failure-contract.json").read_bytes())
-        self.assertEqual(contract["native_outcome_manifest_sha256"], hashlib.sha256((FIXTURES / "mallett-manifest.json").read_bytes()).hexdigest())
-        self.assertEqual(contract["diagnostic"], "MissingRequiredResource component=mallett_midgray requirement=81x3_basis")
+        self.assertEqual(
+            contract["native_outcome_manifest_sha256"],
+            hashlib.sha256((FIXTURES / "mallett-manifest.json").read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            contract["diagnostic"], "MissingRequiredResource component=mallett_midgray requirement=81x3_basis"
+        )
         self.assertEqual(contract["selected_basis"], {"available": True, "rows": 81, "cols": 3, "values": 243})
         self.assertIn("shape/data-only", contract["synthetic_reference"])
 

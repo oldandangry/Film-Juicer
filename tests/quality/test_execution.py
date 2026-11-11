@@ -34,10 +34,12 @@ class ReceiptPublicationTests(unittest.TestCase):
         self.assertFalse(self.receipt.with_suffix(".tmp").exists())
 
     def test_write_failure_cannot_publish_or_retry(self):
-        with patch.object(Path, "write_text", side_effect=PermissionError("write denied")), \
-             patch.object(Path, "replace") as replace, \
-             patch.object(process_tree.time, "sleep") as sleep, \
-             self.assertRaises(PermissionError):
+        with (
+            patch.object(Path, "write_text", side_effect=PermissionError("write denied")),
+            patch.object(Path, "replace") as replace,
+            patch.object(process_tree.time, "sleep") as sleep,
+            self.assertRaises(PermissionError),
+        ):
             process_tree.save_receipt(self.receipt, self.record)
         replace.assert_not_called()
         sleep.assert_not_called()
@@ -46,9 +48,11 @@ class ReceiptPublicationTests(unittest.TestCase):
     def test_unrelated_replacement_error_propagates_without_retry(self):
         error = OSError("invalid handle")
         error.winerror = 6
-        with patch.object(Path, "replace", side_effect=error) as replace, \
-             patch.object(process_tree.time, "sleep") as sleep, \
-             self.assertRaises(OSError) as failure:
+        with (
+            patch.object(Path, "replace", side_effect=error) as replace,
+            patch.object(process_tree.time, "sleep") as sleep,
+            self.assertRaises(OSError) as failure,
+        ):
             process_tree.save_receipt(self.receipt, self.record)
         self.assertIs(failure.exception, error)
         replace.assert_called_once()
@@ -60,9 +64,11 @@ class ReceiptPublicationTests(unittest.TestCase):
     def test_non_windows_denial_is_not_retried(self):
         error = PermissionError("denied")
         error.winerror = 5
-        with patch.object(Path, "replace", side_effect=error) as replace, \
-             patch.object(process_tree.time, "sleep") as sleep, \
-             self.assertRaises(PermissionError):
+        with (
+            patch.object(Path, "replace", side_effect=error) as replace,
+            patch.object(process_tree.time, "sleep") as sleep,
+            self.assertRaises(PermissionError),
+        ):
             process_tree.save_receipt(self.receipt, self.record)
         replace.assert_called_once()
         sleep.assert_not_called()
@@ -71,8 +77,15 @@ class ReceiptPublicationTests(unittest.TestCase):
         from ctypes import wintypes
 
         api = ctypes.WinDLL("kernel32", use_last_error=True)
-        api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        api.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
         api.CreateFileW.restype = wintypes.HANDLE
         api.CloseHandle.argtypes = [wintypes.HANDLE]
         api.CloseHandle.restype = wintypes.BOOL
@@ -143,9 +156,7 @@ class NativeRunTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="native run ü ")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
-        self.build = self.root / "out/build" / (
-            "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        )
+        self.build = self.root / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
         self.build.mkdir(parents=True)
         self.directory = self.root / "out/validation" / self.build.name / "results/run-one"
         self.directory.mkdir(parents=True)
@@ -157,8 +168,12 @@ class NativeRunTests(unittest.TestCase):
 
     def test_parent_exit_waits_for_descendant_output_before_publication(self):
         child = "import time;time.sleep(.25);print('last descendant output',flush=True)"
-        command = [self.python, "-B", "-c",
-                   "import subprocess,sys;subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "])"]
+        command = [
+            self.python,
+            "-B",
+            "-c",
+            "import subprocess,sys;subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "])",
+        ]
         log = self.native_run.command("build", command, timeout=10)
         process = json.loads((self.directory / "build.process.json").read_text())
         self.assertTrue(process["drained"])
@@ -208,9 +223,11 @@ class NativeRunTests(unittest.TestCase):
         self.assertEqual(output.stat().st_size, payload_bytes)
 
     def test_nonzero_parent_drains_descendant_and_keeps_failure_visible(self):
-        code = ("import subprocess,sys;"
-                "subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(20)']);"
-                "sys.exit(7)")
+        code = (
+            "import subprocess,sys;"
+            "subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(20)']);"
+            "sys.exit(7)"
+        )
         with self.assertRaises(subprocess.CalledProcessError) as failure:
             self.native_run.command("test", [self.python, "-B", "-c", code], timeout=10)
         self.assertEqual(failure.exception.returncode, 7)
@@ -222,24 +239,30 @@ class NativeRunTests(unittest.TestCase):
 
     def test_timeout_cancels_and_drains_descendant_writers(self):
         marker = self.root / "writer.txt"
-        child = ("import time;from pathlib import Path;p=Path(" + repr(str(marker)) + ");"
-                 "\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)")
+        child = (
+            "import time;from pathlib import Path;p=Path(" + repr(str(marker)) + ");"
+            "\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        )
         code = "import subprocess,sys;subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "]);time.sleep(20)"
         with self.assertRaises(subprocess.TimeoutExpired):
-            self.native_run.command("test", [self.python, "-B", "-c", "import time;" + code], timeout=.4)
+            self.native_run.command("test", [self.python, "-B", "-c", "import time;" + code], timeout=0.4)
         process = json.loads((self.directory / "test.process.json").read_text())
         self.assertTrue(process["drained"])
         self.assertEqual(process["status"], "timeout")
         final = marker.read_bytes()
-        time.sleep(.05)
+        time.sleep(0.05)
         self.assertEqual(marker.read_bytes(), final)
         self.assertFalse((self.directory / "running.lock").exists())
 
     def test_keyboard_interrupt_drains_real_descendant_before_returning(self):
         marker = self.root / "interrupt-writer.txt"
-        child = ("import time;from pathlib import Path;p=Path(" + repr(str(marker)) + ");"
-                 "\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)")
-        code = "import subprocess,sys,time;subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "]);time.sleep(20)"
+        child = (
+            "import time;from pathlib import Path;p=Path(" + repr(str(marker)) + ");"
+            "\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        )
+        code = (
+            "import subprocess,sys,time;subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "]);time.sleep(20)"
+        )
         original_wait = subprocess.Popen.wait
         interrupted = False
 
@@ -248,7 +271,7 @@ class NativeRunTests(unittest.TestCase):
             if not interrupted:
                 deadline = time.monotonic() + 5
                 while not marker.exists() and time.monotonic() < deadline:
-                    time.sleep(.01)
+                    time.sleep(0.01)
                 self.assertTrue(marker.exists())
                 interrupted = True
                 raise KeyboardInterrupt()
@@ -260,7 +283,7 @@ class NativeRunTests(unittest.TestCase):
         self.assertTrue(process["drained"])
         self.assertEqual(process["status"], "interrupted")
         final = marker.read_bytes()
-        time.sleep(.05)
+        time.sleep(0.05)
         self.assertEqual(marker.read_bytes(), final)
         self.assertFalse((self.directory / "running.lock").exists())
         self.assertFalse((self.directory / "result.json").exists())
@@ -305,8 +328,7 @@ class NativeCloseoutTests(unittest.TestCase):
         if self.lease is not None and self.lease.path in execution.OutputLease.held:
             self.lease.__exit__(None, None, None)
 
-    def create_run(self, run_id, *, status="passed", candidate_unchanged=True,
-                   commands=None, diagnostics=True):
+    def create_run(self, run_id, *, status="passed", candidate_unchanged=True, commands=None, diagnostics=True):
         directory = self.runs / run_id
         directory.mkdir()
         members = {}
@@ -320,9 +342,9 @@ class NativeCloseoutTests(unittest.TestCase):
             "status": status,
             "preset": self.preset,
             "candidate_unchanged": candidate_unchanged,
-            "commands": commands if commands is not None else [
-                {"returncode": 0, "process_status": "completed", "drained": True}
-            ],
+            "commands": commands
+            if commands is not None
+            else [{"returncode": 0, "process_status": "completed", "drained": True}],
             "members": members,
             "diagnostics": {"path": "diagnostics.gz", "optional": True},
         }
@@ -330,13 +352,12 @@ class NativeCloseoutTests(unittest.TestCase):
         return directory
 
     def accept(self, run_id, *, now=1_000_000):
-        return execution.closeout_run(
-            self.root, self.preset, run_id, accept=True, review="closed", now=now
-        )
+        return execution.closeout_run(self.root, self.preset, run_id, accept=True, review="closed", now=now)
 
     def expire(self, *, now=None):
         return execution.expire_diagnostics(
-            self.root, self.preset, now=1_000_000 + self.retention_seconds if now is None else now)
+            self.root, self.preset, now=1_000_000 + self.retention_seconds if now is None else now
+        )
 
     def test_closeout_time_controls_expiry_independently_of_file_timestamps(self):
         directory = self.create_run("run-clock")
@@ -453,8 +474,11 @@ class NativeCloseoutTests(unittest.TestCase):
                     directory.rename(outside)
                     link = self.runs / run_id
                     if os.name == "nt":
-                        created = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
-                                                 capture_output=True, text=True)
+                        created = subprocess.run(
+                            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
+                            capture_output=True,
+                            text=True,
+                        )
                         self.assertEqual(created.returncode, 0, created.stderr)
                     else:
                         link.symlink_to(outside, target_is_directory=True)
@@ -538,14 +562,14 @@ class NativeCloseoutTests(unittest.TestCase):
 
         def fail_final_write(path, target, *args, **kwargs):
             nonlocal failed_once
-            if (path.name == "closeout.tmp" and Path(target).name == "closeout.json"
-                    and not failed_once):
+            if path.name == "closeout.tmp" and Path(target).name == "closeout.json" and not failed_once:
                 failed_once = True
                 raise OSError("interrupted closeout disposition")
             return original_replace(path, target, *args, **kwargs)
 
         closeout_path = directory / "closeout.json"
         replace_count = 0
+
         def fail_after_pending(path, target, *args, **kwargs):
             nonlocal replace_count
             if Path(target) == closeout_path:
@@ -598,8 +622,9 @@ class NativeCloseoutTests(unittest.TestCase):
             "\nexcept TimeoutError: print('excluded')"
         )
         environment = {key: value for key, value in os.environ.items() if key != "JUICER_OUTPUT_LEASES"}
-        contender = subprocess.run([sys.executable, "-B", "-c", script], env=environment,
-                                   capture_output=True, text=True, timeout=10)
+        contender = subprocess.run(
+            [sys.executable, "-B", "-c", script], env=environment, capture_output=True, text=True, timeout=10
+        )
         self.assertEqual(contender.returncode, 0, contender.stderr)
         self.assertEqual(contender.stdout.strip(), "excluded")
         execution.closeout_run(self.root, self.preset, run_id, hold=("reproduction",))
@@ -672,13 +697,16 @@ class WindowsVctipTests(unittest.TestCase):
         directory.mkdir(parents=True)
         lease = execution.OutputLease(self.root, build)
         child = "import time;time.sleep(1.5);print('other child done',flush=True)"
-        code = ("import subprocess,sys;"
-                f"subprocess.Popen([{str(vctip)!r},'-n','30','127.0.0.1']);"
-                f"subprocess.Popen([sys.executable,'-B','-c',{child!r}])")
+        code = (
+            "import subprocess,sys;"
+            f"subprocess.Popen([{str(vctip)!r},'-n','30','127.0.0.1']);"
+            f"subprocess.Popen([sys.executable,'-B','-c',{child!r}])"
+        )
         with lease:
             run = execution.NativeRun(self.root, directory)
-            log = run.command("cmake", [str(Path(sys.executable)), "-B", "-c", code],
-                              timeout=10, vctip_executable=str(vctip))
+            log = run.command(
+                "cmake", [str(Path(sys.executable)), "-B", "-c", code], timeout=10, vctip_executable=str(vctip)
+            )
         process = json.loads((directory / "cmake.process.json").read_text())
         self.assertTrue(process["drained"])
         self.assertEqual(len(process["vctip_terminated"]), 1)
@@ -702,8 +730,7 @@ class WindowsVctipTests(unittest.TestCase):
             run = execution.NativeRun(self.root, directory)
             code = f"import subprocess;subprocess.Popen([{str(other)!r},'-n','30','127.0.0.1'])"
             with self.assertRaises(subprocess.TimeoutExpired):
-                run.command("test", [sys.executable, "-B", "-c", code], timeout=.7,
-                            vctip_executable=str(expected))
+                run.command("test", [sys.executable, "-B", "-c", code], timeout=0.7, vctip_executable=str(expected))
         process = json.loads((directory / "test.process.json").read_text())
         self.assertEqual(process["vctip_terminated"], [])
         self.assertTrue(process["drained"])
@@ -736,11 +763,13 @@ class WindowsJobTests(unittest.TestCase):
                     return True
 
                 self.job.api.AssignProcessToJobObject.side_effect = assigned
-                with patch.object(Path, "read_text", side_effect=[error, "43"]) as read, \
-                     patch.object(process_tree.time, "sleep") as sleep:
+                with (
+                    patch.object(Path, "read_text", side_effect=[error, "43"]) as read,
+                    patch.object(process_tree.time, "sleep") as sleep,
+                ):
                     self.job.start(["command"], Path("gate.json"))
                 self.assertEqual(read.call_count, 2)
-                sleep.assert_called_once_with(.01)
+                sleep.assert_called_once_with(0.01)
                 self.popen.assert_called_once()
                 self.job.api.AssignProcessToJobObject.assert_any_call(9, 7)
                 self.job.api.AssignProcessToJobObject.assert_any_call(9, 99)
@@ -755,9 +784,11 @@ class WindowsJobTests(unittest.TestCase):
             with self.subTest(case=case_id):
                 self.popen.reset_mock()
                 self.process.reset_mock()
-                with patch.object(Path, "read_text", return_value="43"), \
-                     patch.object(process_tree.time, "monotonic", side_effect=times), \
-                     self.assertRaisesRegex(RuntimeError, "readable process identity"):
+                with (
+                    patch.object(Path, "read_text", return_value="43"),
+                    patch.object(process_tree.time, "monotonic", side_effect=times),
+                    self.assertRaisesRegex(RuntimeError, "readable process identity"),
+                ):
                     self.job.start(["command"], Path("gate.json"))
                 self.popen.assert_called_once()
                 self.process.stdin.write.assert_not_called()
@@ -765,10 +796,12 @@ class WindowsJobTests(unittest.TestCase):
                 self.process.wait.assert_called_once()
 
     def test_expired_gate_does_not_attempt_another_pid_read(self):
-        with patch.object(Path, "read_text", side_effect=[PermissionError("not ready"), "43"]) as read, \
-             patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]), \
-             patch.object(process_tree.time, "sleep"), \
-             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+        with (
+            patch.object(Path, "read_text", side_effect=[PermissionError("not ready"), "43"]) as read,
+            patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]),
+            patch.object(process_tree.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "readable process identity"),
+        ):
             self.job.start(["command"], Path("gate.json"))
         read.assert_called_once()
         self.popen.assert_called_once()
@@ -778,8 +811,10 @@ class WindowsJobTests(unittest.TestCase):
 
     def test_exit_during_pid_read_cannot_release_gate(self):
         self.process.poll.side_effect = [None, 7]
-        with patch.object(Path, "read_text", return_value="43"), \
-             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+        with (
+            patch.object(Path, "read_text", return_value="43"),
+            self.assertRaisesRegex(RuntimeError, "readable process identity"),
+        ):
             self.job.start(["command"], Path("gate.json"))
         self.popen.assert_called_once()
         self.process.stdin.write.assert_not_called()
@@ -787,10 +822,12 @@ class WindowsJobTests(unittest.TestCase):
         self.process.wait.assert_called_once()
 
     def test_unreadable_pid_expires_without_releasing_or_relaunching(self):
-        with patch.object(Path, "read_text", side_effect=PermissionError("still unreadable")), \
-             patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]), \
-             patch.object(process_tree.time, "sleep"), \
-             self.assertRaisesRegex(RuntimeError, "readable process identity.*still unreadable"):
+        with (
+            patch.object(Path, "read_text", side_effect=PermissionError("still unreadable")),
+            patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]),
+            patch.object(process_tree.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "readable process identity.*still unreadable"),
+        ):
             self.job.start(["command"], Path("gate.json"))
         self.popen.assert_called_once()
         self.process.stdin.write.assert_not_called()
@@ -798,8 +835,11 @@ class WindowsJobTests(unittest.TestCase):
         self.process.wait.assert_called_once()
 
     def test_malformed_pid_fails_without_releasing_or_relaunching(self):
-        with patch.object(Path, "read_text", return_value="invalid"), \
-             patch.object(process_tree.time, "sleep") as sleep, self.assertRaises(ValueError):
+        with (
+            patch.object(Path, "read_text", return_value="invalid"),
+            patch.object(process_tree.time, "sleep") as sleep,
+            self.assertRaises(ValueError),
+        ):
             self.job.start(["command"], Path("gate.json"))
         self.popen.assert_called_once()
         self.process.stdin.write.assert_not_called()
@@ -809,9 +849,11 @@ class WindowsJobTests(unittest.TestCase):
 
     def test_exited_gate_fails_without_releasing_or_relaunching(self):
         self.process.poll.return_value = 7
-        with patch.object(Path, "read_text", side_effect=FileNotFoundError("not published")), \
-             patch.object(process_tree.time, "sleep") as sleep, \
-             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+        with (
+            patch.object(Path, "read_text", side_effect=FileNotFoundError("not published")),
+            patch.object(process_tree.time, "sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "readable process identity"),
+        ):
             self.job.start(["command"], Path("gate.json"))
         self.popen.assert_called_once()
         self.process.stdin.write.assert_not_called()
@@ -886,12 +928,11 @@ class WindowsJobTests(unittest.TestCase):
 
 WindowsJobTests.test_readable_pid_is_assigned_before_one_gate_release.required_subtests = True
 WindowsJobTests.test_readable_pid_is_assigned_before_one_gate_release.subtest_cases = (
-    "pid-file-not-published", "pid-file-not-readable"
+    "pid-file-not-published",
+    "pid-file-not-readable",
 )
 WindowsJobTests.test_late_pid_or_job_assignment_cannot_release_gate.required_subtests = True
-WindowsJobTests.test_late_pid_or_job_assignment_cannot_release_gate.subtest_cases = (
-    "timing-0", "timing-1"
-)
+WindowsJobTests.test_late_pid_or_job_assignment_cannot_release_gate.subtest_cases = ("timing-0", "timing-1")
 
 
 if __name__ == "__main__":
