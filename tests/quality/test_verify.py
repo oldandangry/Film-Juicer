@@ -31,33 +31,39 @@ class DevelopmentSelectionTests(unittest.TestCase):
         self.assertEqual(selection["compiler_consumers"], ["src/ScanRoute.cpp"])
 
     def test_route_header_selection_uses_the_supplied_compile_consumers(self):
-        with patch.object(verify, "header_consumers", return_value=(
-                ["CMakeFiles/JuicerRouteBridgeTests.dir/ScanRoute.cpp.o"], ["src/ScanRoute.cpp"])) as consumers:
+        with patch.object(
+            verify,
+            "header_consumers",
+            return_value=(["CMakeFiles/JuicerRouteBridgeTests.dir/ScanRoute.cpp.o"], ["src/ScanRoute.cpp"]),
+        ) as consumers:
             selection = verify.select_consumers(ROOT, ROOT / "absent-tree", ["src/ScanRoute.h"])
         consumers.assert_called_once()
-        self.assertEqual(selection["targets"], ["CMakeFiles/JuicerRouteBridgeTests.dir/ScanRoute.cpp.o", "JuicerRouteBridgeTests"])
+        self.assertEqual(
+            selection["targets"], ["CMakeFiles/JuicerRouteBridgeTests.dir/ScanRoute.cpp.o", "JuicerRouteBridgeTests"]
+        )
         self.assertEqual(selection["tests"], ["Route.Host.Bridge"])
         self.assertEqual(selection["compiler_consumers"], ["src/ScanRoute.cpp"])
 
     def test_route_rust_owner_selects_route_fixture_and_boundary_checks(self):
-        selection = verify.select_consumers(ROOT, ROOT / "absent-tree",
-                                            ["rust/film-juicer-core/src/route.rs"])
+        selection = verify.select_consumers(ROOT, ROOT / "absent-tree", ["rust/film-juicer-core/src/route.rs"])
         self.assertEqual(selection["targets"], ["JuicerRouteBridgeTests"])
         self.assertEqual(selection["tests"], ["Quality.RustBoundaries", "Route.Host.Bridge"])
         self.assertIn("film-juicer-core", selection["rust_packages"])
 
     def test_output_color_rust_owner_selects_its_native_and_boundary_consumers(self):
-        selection = verify.select_consumers(ROOT, ROOT / "absent-tree",
-                                            ["rust/film-juicer-core/src/color/output.rs"])
+        selection = verify.select_consumers(ROOT, ROOT / "absent-tree", ["rust/film-juicer-core/src/color/output.rs"])
         self.assertEqual(selection["targets"], ["JuicerOutputColorTests"])
         self.assertEqual(selection["tests"], ["Ffi.Host.OutputColor", "Quality.RustBoundaries"])
         self.assertIn("film-juicer-core", selection["rust_packages"])
         self.assertNotIn("Route.Host.Bridge", selection["tests"])
 
     def test_quality_command_does_not_forward_removed_rust_test_filters(self):
-        selection = {"files": ["rust/film-juicer-core/src/route.rs"],
-                     "compiler_consumers": [], "rust_packages": ["film-juicer-core"],
-                     "rust_test_filters": ["route::"]}
+        selection = {
+            "files": ["rust/film-juicer-core/src/route.rs"],
+            "compiler_consumers": [],
+            "rust_packages": ["film-juicer-core"],
+            "rust_test_filters": ["route::"],
+        }
         command = verify.quality_command("linux-debug", selection)
         self.assertNotIn("--rust-test-filters", command)
 
@@ -66,10 +72,25 @@ class PublicCliTests(unittest.TestCase):
     """The CLI delegates to fresh operation owners without reading old receipts."""
 
     def test_prepare_dispatches_targets_and_explicit_testing_mode(self):
-        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
-                                        "--targets", "JuicerRouteBridgeTests", "--testing", "ON",
-                                        "--run-id", "prepare-one"]), \
-                patch.object(verify, "fresh_prepare", return_value=0) as prepare:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "prepare",
+                    "--preset",
+                    "linux-debug",
+                    "--targets",
+                    "JuicerRouteBridgeTests",
+                    "--testing",
+                    "ON",
+                    "--run-id",
+                    "prepare-one",
+                ],
+            ),
+            patch.object(verify, "fresh_prepare", return_value=0) as prepare,
+        ):
             self.assertEqual(verify.main(), 0)
         args = prepare.call_args.args[0]
         self.assertEqual(args.preset, "linux-debug")
@@ -78,22 +99,44 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.run_id, "prepare-one")
 
     def test_release_off_closure_uses_the_native_prepare_owner(self):
-        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-release",
-                                        "--targets", "juicer", "JuicerProductionPreparedRenderProbe",
-                                        "--testing", "OFF", "--production-contract", "--clean-first"]), \
-                patch.object(verify, "fresh_prepare", return_value=0) as prepare:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "prepare",
+                    "--preset",
+                    "linux-release",
+                    "--targets",
+                    "juicer",
+                    "JuicerProductionPreparedRenderProbe",
+                    "--testing",
+                    "OFF",
+                    "--production-contract",
+                    "--clean-first",
+                ],
+            ),
+            patch.object(verify, "fresh_prepare", return_value=0) as prepare,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertTrue(prepare.call_args.args[0].production_contract)
         self.assertTrue(prepare.call_args.args[0].clean_first)
 
     def test_production_contract_rejects_an_on_or_partial_build_before_mutation(self):
         self.subtest_cases = ("testing-on", "debug", "missing-probe")
-        for case_id, (testing, preset, targets) in zip(self.subtest_cases, (("ON", "linux-release", ["juicer", "JuicerProductionPreparedRenderProbe"]),
-                                         ("OFF", "linux-debug", ["juicer", "JuicerProductionPreparedRenderProbe"]),
-                                         ("OFF", "linux-release", ["juicer"]))):
+        for case_id, (testing, preset, targets) in zip(
+            self.subtest_cases,
+            (
+                ("ON", "linux-release", ["juicer", "JuicerProductionPreparedRenderProbe"]),
+                ("OFF", "linux-debug", ["juicer", "JuicerProductionPreparedRenderProbe"]),
+                ("OFF", "linux-release", ["juicer"]),
+            ),
+        ):
             with self.subTest(case=case_id):
-                native = SimpleNamespace(production_contract=True, testing=testing, preset=preset,
-                                         targets=targets, cuda_free=False)
+                native = SimpleNamespace(
+                    production_contract=True, testing=testing, preset=preset, targets=targets, cuda_free=False
+                )
                 with patch.object(verify.os, "name", "posix"), patch.object(verify, "OutputLease") as owner:
                     with self.assertRaisesRegex(ValueError, "native Release OFF"):
                         verify.fresh_prepare(native)
@@ -102,76 +145,147 @@ class PublicCliTests(unittest.TestCase):
     test_production_contract_rejects_an_on_or_partial_build_before_mutation.required_subtests = True
 
     def test_prepare_dispatches_cuda_free_mode(self):
-        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
-                                        "--targets", "JuicerHashContractTests", "--cuda-free"]), \
-                patch.object(verify, "fresh_prepare", return_value=0) as prepare:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "prepare",
+                    "--preset",
+                    "linux-debug",
+                    "--targets",
+                    "JuicerHashContractTests",
+                    "--cuda-free",
+                ],
+            ),
+            patch.object(verify, "fresh_prepare", return_value=0) as prepare,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertTrue(prepare.call_args.args[0].cuda_free)
 
     def test_development_dispatches_an_explicit_file_selection(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--files", "src/ScanRoute.cpp"]), \
-                patch.object(verify, "development", return_value=0) as development:
+        with (
+            patch.object(
+                sys, "argv", ["verify.py", "development", "--preset", "linux-debug", "--files", "src/ScanRoute.cpp"]
+            ),
+            patch.object(verify, "development", return_value=0) as development,
+        ):
             self.assertEqual(verify.main(), 0)
         args = development.call_args.args[0]
         self.assertEqual(args.files, ["src/ScanRoute.cpp"])
         self.assertFalse(hasattr(args, "previous"))
 
     def test_development_dispatches_explicit_test_selection(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--tests", "Route.Host.Bridge"]), \
-                patch.object(verify, "development", return_value=0) as development:
+        with (
+            patch.object(
+                sys, "argv", ["verify.py", "development", "--preset", "linux-debug", "--tests", "Route.Host.Bridge"]
+            ),
+            patch.object(verify, "development", return_value=0) as development,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertEqual(development.call_args.args[0].tests, ["Route.Host.Bridge"])
 
     def test_development_dispatches_explicit_target_selection(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--targets", "JuicerRouteBridgeTests"]), \
-                patch.object(verify, "development", return_value=0) as development:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["verify.py", "development", "--preset", "linux-debug", "--targets", "JuicerRouteBridgeTests"],
+            ),
+            patch.object(verify, "development", return_value=0) as development,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertEqual(development.call_args.args[0].targets, ["JuicerRouteBridgeTests"])
 
     def test_development_dispatches_cuda_free_test_selection(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--tests", "Route.Host.Bridge", "--cuda-free"]), \
-                patch.object(verify, "development", return_value=0) as development:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["verify.py", "development", "--preset", "linux-debug", "--tests", "Route.Host.Bridge", "--cuda-free"],
+            ),
+            patch.object(verify, "development", return_value=0) as development,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertTrue(development.call_args.args[0].cuda_free)
 
     def test_cuda_free_rejects_file_and_build_directory_selections(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--files", "src/ScanRoute.cpp", "--cuda-free"]):
+        with patch.object(
+            sys,
+            "argv",
+            ["verify.py", "development", "--preset", "linux-debug", "--files", "src/ScanRoute.cpp", "--cuda-free"],
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--tests", "Route.Host.Bridge", "--build-dir", "out/build/linux-debug",
-                                        "--cuda-free"]):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "verify.py",
+                "development",
+                "--preset",
+                "linux-debug",
+                "--tests",
+                "Route.Host.Bridge",
+                "--build-dir",
+                "out/build/linux-debug",
+                "--cuda-free",
+            ],
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
-        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
-                                        "--files", "src/ScanRoute.cpp", "--cuda-free"]):
+        with patch.object(
+            sys,
+            "argv",
+            ["verify.py", "prepare", "--preset", "linux-debug", "--files", "src/ScanRoute.cpp", "--cuda-free"],
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
 
     def test_check_owner_dispatches_canonical_preset(self):
-        with patch.object(sys, "argv", ["verify.py", "check-owner", "--preset", "linux-debug"]), \
-                patch.object(verify, "check_owner", return_value=0) as check_owner:
+        with (
+            patch.object(sys, "argv", ["verify.py", "check-owner", "--preset", "linux-debug"]),
+            patch.object(verify, "check_owner", return_value=0) as check_owner,
+        ):
             self.assertEqual(verify.main(), 0)
         self.assertEqual(check_owner.call_args.args[0].preset, "linux-debug")
 
     def test_check_owner_requires_an_already_held_preset_lease(self):
         from execution import OutputLease
+
         args = type("Args", (), {"preset": "linux-debug"})()
         with patch.object(OutputLease, "check_held", side_effect=RuntimeError("no existing preset owner")):
             with self.assertRaisesRegex(RuntimeError, "no existing preset owner"):
                 verify.check_owner(args)
 
     def test_qualification_dispatches_named_groups_and_runtime(self):
-        with patch.object(sys, "argv", ["verify.py", "qualification", "--preset", "linux-debug",
-                                        "--reason", "focused contract", "--selection", "boundary", "tooling",
-                                        "--runtime", "all", "--build-dir", "out/build/linux-debug",
-                                        "--label", "test-label", "--run-id", "run-one"]), \
-                patch.object(verify, "native_tests", return_value=0) as native_tests:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "qualification",
+                    "--preset",
+                    "linux-debug",
+                    "--reason",
+                    "focused contract",
+                    "--selection",
+                    "boundary",
+                    "tooling",
+                    "--runtime",
+                    "all",
+                    "--build-dir",
+                    "out/build/linux-debug",
+                    "--label",
+                    "test-label",
+                    "--run-id",
+                    "run-one",
+                ],
+            ),
+            patch.object(verify, "native_tests", return_value=0) as native_tests,
+        ):
             self.assertEqual(verify.main(), 0)
         args = native_tests.call_args.args[0]
         self.assertEqual(args.selection, ["boundary", "tooling"])
@@ -181,20 +295,54 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.run_id, "run-one")
 
     def test_offline_collection_preserves_bundles_and_output_interface(self):
-        with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--bundles", "bundle-a", "bundle-b",
-                                        "--output", "aggregate.json"]), \
-                patch.object(verify, "collect_bundles", return_value=0) as collect:
-            with patch.object(verify, "expire_diagnostics", side_effect=AssertionError("offline reader swept native outputs")):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "collect-qualification",
+                    "--bundles",
+                    "bundle-a",
+                    "bundle-b",
+                    "--output",
+                    "aggregate.json",
+                ],
+            ),
+            patch.object(verify, "collect_bundles", return_value=0) as collect,
+        ):
+            with patch.object(
+                verify, "expire_diagnostics", side_effect=AssertionError("offline reader swept native outputs")
+            ):
                 self.assertEqual(verify.main(), 0)
         args = collect.call_args.args[0]
         self.assertEqual(args.bundles, [Path("bundle-a"), Path("bundle-b")])
         self.assertEqual(args.output, Path("aggregate.json"))
 
     def test_closeout_dispatch_preserves_explicit_review_and_holds(self):
-        with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--run", "run-one",
-                                        "--accept", "--review", "closed", "--hold", "review", "reproduction",
-                                        "--release-hold", "failure"]), \
-                patch.object(verify, "closeout", return_value=0) as close:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "closeout",
+                    "--preset",
+                    "linux-debug",
+                    "--run",
+                    "run-one",
+                    "--accept",
+                    "--review",
+                    "closed",
+                    "--hold",
+                    "review",
+                    "reproduction",
+                    "--release-hold",
+                    "failure",
+                ],
+            ),
+            patch.object(verify, "closeout", return_value=0) as close,
+        ):
             self.assertEqual(verify.main(), 0)
         args = close.call_args.args[0]
         self.assertEqual((args.run_id, args.accept, args.review), ("run-one", True, "closed"))
@@ -202,8 +350,10 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.release_hold, ["failure"])
 
     def test_closeout_changes_require_a_named_run(self):
-        with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--accept"]), \
-                self.assertRaises(SystemExit):
+        with (
+            patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--accept"]),
+            self.assertRaises(SystemExit),
+        ):
             verify.main()
 
 
@@ -221,29 +371,68 @@ class CtestDispatchTests(unittest.TestCase):
             name = runtime.title() + ".Fixture"
             target = runtime.title() + "Target"
             executable = str(self.build / target)
-            contract = {"schema": f"native-{runtime}-contracts-v1", "required": [name],
-                        "targets": {target: {"protocol": "custom", "registrations": 1}}}
+            contract = {
+                "schema": f"native-{runtime}-contracts-v1",
+                "required": [name],
+                "targets": {target: {"protocol": "custom", "registrations": 1}},
+            }
             (self.root / "tests" / (runtime + "-contracts.json")).write_text(json.dumps(contract))
             (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps({target: executable}))
             properties = [{"name": "LABELS", "value": [runtime]}, {"name": "TIMEOUT", "value": 0}]
             if runtime == "gpu":
                 properties.append({"name": "RESOURCE_LOCK", "value": ["juicer_gpu"]})
-            self.tests[name] = {"name": name, "properties": properties, "command": [
-                "python", "verify.py", "native-case", "--runtime", runtime, "--protocol", "custom", "--", executable]}
+            self.tests[name] = {
+                "name": name,
+                "properties": properties,
+                "command": [
+                    "python",
+                    "verify.py",
+                    "native-case",
+                    "--runtime",
+                    runtime,
+                    "--protocol",
+                    "custom",
+                    "--",
+                    executable,
+                ],
+            }
         for name in ("Rust.Core", "Rust.Bridge"):
-            self.tests[name] = {"name": name, "properties": [
-                {"name": "LABELS", "value": ["host"]}, {"name": "TIMEOUT", "value": 0}]}
-        (self.root / "tests/python-contracts.json").write_text(json.dumps({
-            "schema": "python-contracts-v1", "registrations": {}}))
+            self.tests[name] = {
+                "name": name,
+                "properties": [{"name": "LABELS", "value": ["host"]}, {"name": "TIMEOUT", "value": 0}],
+            }
+        (self.root / "tests/python-contracts.json").write_text(
+            json.dumps({"schema": "python-contracts-v1", "registrations": {}})
+        )
         (self.build / "tests/python-targets.json").write_text("{}")
         (self.build / "tests/rust-artifacts.json").write_text("{}")
         cargo, nextest = str(self.root / "cargo"), str(self.root / "cargo-nextest")
-        cache = {"CMAKE_HOME_DIRECTORY": str(self.root), "BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug",
-                 "JUICER_CARGO_EXECUTABLE": cargo, "JUICER_NEXTEST_EXECUTABLE": nextest,
-                 "Python3_EXECUTABLE": sys.executable, "CMAKE_CXX_COMPILER": "compiler", "CMAKE_CUDA_COMPILER": "nvcc"}
-        self.args = SimpleNamespace(preset=self.preset, run_id="dispatch", cuda_free=False, build_dir=None,
-                                    mode="development", selection=None, runtime="all", reason=None, files=None,
-                                    tests=["Host.Fixture", "Gpu.Fixture"], targets=None, label=None, cargo=None, nextest=None)
+        cache = {
+            "CMAKE_HOME_DIRECTORY": str(self.root),
+            "BUILD_TESTING": "ON",
+            "CMAKE_BUILD_TYPE": "Debug",
+            "JUICER_CARGO_EXECUTABLE": cargo,
+            "JUICER_NEXTEST_EXECUTABLE": nextest,
+            "Python3_EXECUTABLE": sys.executable,
+            "CMAKE_CXX_COMPILER": "compiler",
+            "CMAKE_CUDA_COMPILER": "nvcc",
+        }
+        self.args = SimpleNamespace(
+            preset=self.preset,
+            run_id="dispatch",
+            cuda_free=False,
+            build_dir=None,
+            mode="development",
+            selection=None,
+            runtime="all",
+            reason=None,
+            files=None,
+            tests=["Host.Fixture", "Gpu.Fixture"],
+            targets=None,
+            label=None,
+            cargo=None,
+            nextest=None,
+        )
         self.native = Mock(commands=[])
         self.native.command.side_effect = self.command
         self.enterContext(patch.object(verify, "ROOT", self.root))
@@ -260,9 +449,18 @@ class CtestDispatchTests(unittest.TestCase):
         if name == "registration":
             path.write_text(json.dumps({"tests": list(self.tests.values())}))
         elif name == "versions":
-            path.write_text(json.dumps([{"name": name, "output": version} for name, version in (
-                ("cargo", "cargo 1.98.1 fixture"), ("rustc", "rustc 1.98.1 fixture"),
-                ("nextest", "cargo-nextest 0.9.143 fixture"))]))
+            path.write_text(
+                json.dumps(
+                    [
+                        {"name": name, "output": version}
+                        for name, version in (
+                            ("cargo", "cargo 1.98.1 fixture"),
+                            ("rustc", "rustc 1.98.1 fixture"),
+                            ("nextest", "cargo-nextest 0.9.143 fixture"),
+                        )
+                    ]
+                )
+            )
         elif name == "gpu-exclusion":
             self.assertTrue((self.root / "out/verification-locks/gpu/owner.json").is_file())
             self.assertNotIn("JUICER_OUTPUT_LEASES", kwargs["env"])
@@ -274,15 +472,19 @@ class CtestDispatchTests(unittest.TestCase):
             self.assertEqual((self.root / "out/verification-locks/gpu/owner.json").exists(), name == "ctest-gpu")
             runtime = name.removeprefix("ctest-")
             self.assertEqual(command[command.index("-R") + 1], "^(" + runtime.title() + r"\.Fixture)$")
-            Path(command[command.index("--output-junit") + 1]).write_text('<testsuite><testcase status="run"/></testsuite>')
+            Path(command[command.index("--output-junit") + 1]).write_text(
+                '<testsuite><testcase status="run"/></testsuite>'
+            )
         return path
 
     def test_zero_inventory_dispatches_host_and_gpu_without_deadlines(self):
         verify.native_tests(self.args)
         result = self.finish.call_args.args[1]
         self.assertEqual(result["status"], "passed", result.get("error"))
-        self.assertEqual([call.args[0] for call in self.native.command.call_args_list if call.args[0].startswith("ctest-")],
-                         ["ctest-host", "ctest-gpu"])
+        self.assertEqual(
+            [call.args[0] for call in self.native.command.call_args_list if call.args[0].startswith("ctest-")],
+            ["ctest-host", "ctest-gpu"],
+        )
         self.assertEqual(result["physical_gpu"], {"contender_excluded": True, "drained_while_locked": True})
         self.assertFalse(list((self.root / "out/verification-locks").glob("*/owner.json")))
 
@@ -298,9 +500,18 @@ class CtestDispatchTests(unittest.TestCase):
         self.assertNotIn("physical_gpu", result)
 
     def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):
-        timeouts = {"finite": 600, "missing": None, "null": None, "false": False, "true": True,
-                    "negative": -1, "string": "0", "nan": float("nan"),
-                    "infinity": float("inf"), "negative-infinity": -float("inf")}
+        timeouts = {
+            "finite": 600,
+            "missing": None,
+            "null": None,
+            "false": False,
+            "true": True,
+            "negative": -1,
+            "string": "0",
+            "nan": float("nan"),
+            "infinity": float("inf"),
+            "negative-infinity": -float("inf"),
+        }
         self.subtest_cases = tuple(runtime + "/" + case for runtime in ("host", "gpu") for case in timeouts)
         for runtime in ("host", "gpu"):
             test = self.tests[runtime.title() + ".Fixture"]
@@ -316,9 +527,16 @@ class CtestDispatchTests(unittest.TestCase):
                     verify.native_tests(self.args)
                     result = self.finish.call_args.args[1]
                     self.assertEqual(result["status"], "failed")
-                    self.assertIn("ordinary CTest registration " + test["name"] + " requires explicit numeric TIMEOUT 0", result["error"])
-                    self.assertFalse(any(call.args[0] in {"build", "ctest-host", "ctest-gpu", "gpu-exclusion"}
-                                         for call in self.native.command.call_args_list))
+                    self.assertIn(
+                        "ordinary CTest registration " + test["name"] + " requires explicit numeric TIMEOUT 0",
+                        result["error"],
+                    )
+                    self.assertFalse(
+                        any(
+                            call.args[0] in {"build", "ctest-host", "ctest-gpu", "gpu-exclusion"}
+                            for call in self.native.command.call_args_list
+                        )
+                    )
             test["properties"] = properties
 
     test_live_inventory_rejects_finite_missing_and_malformed_timeouts.required_subtests = True
@@ -327,6 +545,7 @@ class CtestDispatchTests(unittest.TestCase):
 class PublicationScratchTests(unittest.TestCase):
     def test_success_disposes_scratch_and_failed_completion_preserves_it(self):
         from qualification import validate_build_result
+
         self.subtest_cases = ("success", "changed-source", "failed-command", "cleanup-error")
         for case in self.subtest_cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="publication scratch ü ") as temporary:
@@ -341,17 +560,35 @@ class PublicationScratchTests(unittest.TestCase):
                 (directory / "candidate.patch").write_bytes(b"patch")
                 candidate = {"head": "fixture", "preset": preset, "inputs": {"source": "fixture"}}
                 native = execution.NativeRun(root, directory)
-                native.commands.append({"name": "fixture", "returncode": 1 if case == "failed-command" else 0,
-                                        "drained": True, "process_status": "completed"})
-                result = {"schema": "native-build-v1", "preset": preset, "status": "passed", "scope": "build",
-                          "shipping_isolation": False, "candidate_head": "fixture", "candidate_unchanged": case != "changed-source",
-                          "commands": native.commands, "members": {}}
+                native.commands.append(
+                    {
+                        "name": "fixture",
+                        "returncode": 1 if case == "failed-command" else 0,
+                        "drained": True,
+                        "process_status": "completed",
+                    }
+                )
+                result = {
+                    "schema": "native-build-v1",
+                    "preset": preset,
+                    "status": "passed",
+                    "scope": "build",
+                    "shipping_isolation": False,
+                    "candidate_head": "fixture",
+                    "candidate_unchanged": case != "changed-source",
+                    "commands": native.commands,
+                    "members": {},
+                }
                 costs = {"report_read_bytes": 0}
                 with execution.OutputLease(root, build), contextlib.ExitStack() as stack:
                     if case == "cleanup-error":
-                        stack.enter_context(patch.object(verify.shutil, "rmtree", side_effect=OSError("controlled cleanup failure")))
+                        stack.enter_context(
+                            patch.object(verify.shutil, "rmtree", side_effect=OSError("controlled cleanup failure"))
+                        )
                     with contextlib.redirect_stdout(io.StringIO()):
-                        returned = verify.finish_native_run(native, result, candidate, costs, validate_build_result, scratch=scratch)
+                        returned = verify.finish_native_run(
+                            native, result, candidate, costs, validate_build_result, scratch=scratch
+                        )
                 published = json.loads((directory / "result.json").read_text())
                 self.assertEqual(returned, 0 if case == "success" else 1)
                 self.assertEqual(published["status"], "passed" if case == "success" else "failed")
@@ -374,12 +611,21 @@ class CloseoutCliTests(unittest.TestCase):
         payloads = {"candidate.json": candidate, "candidate.patch": b"scoped fixture patch\n"}
         for name, data in payloads.items():
             (self.directory / name).write_bytes(data)
-        self.result = {"schema": "native-build-v1", "preset": self.preset, "status": "passed", "scope": "build",
-                       "shipping_isolation": False, "candidate_head": "fixture", "candidate_unchanged": True,
-                       "commands": [{"name": "fixture", "returncode": 0, "drained": True, "process_status": "completed"}],
-                       "members": {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                                   for name, data in payloads.items()},
-                       "diagnostics": {"path": "diagnostics.gz", "optional": True}}
+        self.result = {
+            "schema": "native-build-v1",
+            "preset": self.preset,
+            "status": "passed",
+            "scope": "build",
+            "shipping_isolation": False,
+            "candidate_head": "fixture",
+            "candidate_unchanged": True,
+            "commands": [{"name": "fixture", "returncode": 0, "drained": True, "process_status": "completed"}],
+            "members": {
+                name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in payloads.items()
+            },
+            "diagnostics": {"path": "diagnostics.gz", "optional": True},
+        }
         self.raw = json.dumps(self.result).encode()
         (self.directory / "result.json").write_bytes(self.raw)
         (self.directory / "diagnostics.gz").write_bytes(b"optional diagnostic fixture")
@@ -391,9 +637,13 @@ class CloseoutCliTests(unittest.TestCase):
             return verify.main()
 
     def test_accept_hold_release_and_expiry_use_no_tools_and_preserve_required_bytes(self):
-        with patch.object(execution.time, "time", return_value=100), \
-                patch.object(subprocess, "Popen", side_effect=AssertionError("closeout launched a tool")):
-            self.assertEqual(self.cli("--run", "run-one", "--accept", "--review", "closed", "--hold", "reproduction"), 0)
+        with (
+            patch.object(execution.time, "time", return_value=100),
+            patch.object(subprocess, "Popen", side_effect=AssertionError("closeout launched a tool")),
+        ):
+            self.assertEqual(
+                self.cli("--run", "run-one", "--accept", "--review", "closed", "--hold", "reproduction"), 0
+            )
         with patch.object(execution.time, "time", return_value=100 + 7 * 86400):
             self.assertEqual(self.cli(), 0)
             self.assertTrue((self.directory / "diagnostics.gz").exists())
@@ -401,70 +651,144 @@ class CloseoutCliTests(unittest.TestCase):
         self.assertFalse((self.directory / "diagnostics.gz").exists())
         self.assertEqual((self.directory / "result.json").read_bytes(), self.raw)
         from qualification import read_native_result
+
         self.assertEqual(read_native_result(self.directory)["status"], "passed")
 
     def test_deletion_error_is_reported_by_cli_and_keeps_the_diagnostic(self):
         with patch.object(execution.time, "time", return_value=100):
             self.assertEqual(self.cli("--run", "run-one", "--accept", "--review", "closed"), 0)
         unlink = Path.unlink
+
         def fail_diagnostic(path, *args, **kwargs):
             if path.name == "diagnostics.gz":
                 raise PermissionError("controlled locked diagnostic")
             return unlink(path, *args, **kwargs)
-        with patch.object(execution.time, "time", return_value=100 + 7 * 86400), \
-                patch.object(Path, "unlink", fail_diagnostic):
+
+        with (
+            patch.object(execution.time, "time", return_value=100 + 7 * 86400),
+            patch.object(Path, "unlink", fail_diagnostic),
+        ):
             self.assertEqual(self.cli(), 1)
         self.assertTrue((self.directory / "diagnostics.gz").exists())
 
     def test_prepare_expires_after_owner_acquisition_before_any_native_command(self):
         events = []
+
         def expired(root, preset):
             self.assertEqual((root, preset), (self.root, self.preset))
             execution._preset_owner(root, preset)
             events.append("expiry")
             return {"read_bytes": 17}
+
         native = Mock()
         native.commands = []
+
         def command(*args, **kwargs):
             events.append(args[0])
             raise ValueError("controlled stop before native execution")
+
         native.command.side_effect = command
-        args = SimpleNamespace(preset=self.preset, run_id="prepare-order", targets=["fixture"],
-                               files=None, testing="ON", cuda_free=False)
+        args = SimpleNamespace(
+            preset=self.preset, run_id="prepare-order", targets=["fixture"], files=None, testing="ON", cuda_free=False
+        )
         environment = dict(os.environ)
         environment.pop("FJ_HOST_BUNDLE", None)
-        with patch.dict(os.environ, environment, clear=True), \
-                patch.object(verify, "expire_diagnostics", side_effect=expired), \
-                patch.object(execution, "NativeRun", return_value=native), \
-                patch.object(verify, "capture_native_source", side_effect=lambda *args, **kwargs: (
-                    {"head": "fixture"}, b"", {"source_read_bytes": 0})), \
-                patch.object(verify.shutil, "which", return_value="fixture-cmake"), \
-                patch.object(verify, "windows_vctip", return_value=None), \
-                patch.object(verify, "finish_native_run", return_value=1) as finish:
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(verify, "expire_diagnostics", side_effect=expired),
+            patch.object(execution, "NativeRun", return_value=native),
+            patch.object(
+                verify,
+                "capture_native_source",
+                side_effect=lambda *args, **kwargs: ({"head": "fixture"}, b"", {"source_read_bytes": 0}),
+            ),
+            patch.object(verify.shutil, "which", return_value="fixture-cmake"),
+            patch.object(verify, "windows_vctip", return_value=None),
+            patch.object(verify, "finish_native_run", return_value=1) as finish,
+        ):
             self.assertEqual(verify.fresh_prepare(args), 1)
         self.assertEqual(events, ["expiry", "configure"])
         self.assertEqual(finish.call_args.args[3]["report_read_bytes"], 17)
 
     def test_removed_receipt_and_recovery_options_are_rejected(self):
-        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
-                                        "--files", "src/ScanRoute.cpp", "--previous", "old.json"]):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "verify.py",
+                "development",
+                "--preset",
+                "linux-debug",
+                "--files",
+                "src/ScanRoute.cpp",
+                "--previous",
+                "old.json",
+            ],
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
-        with patch.object(sys, "argv", ["verify.py", "qualification", "--preset", "linux-debug",
-                                        "--reason", "focused", "--selection", "boundary", "--runtime", "host",
-                                        "--receipts", "old.json"]), \
-                patch.object(verify, "native_tests", side_effect=AssertionError("invalid CLI dispatched")):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "qualification",
+                    "--preset",
+                    "linux-debug",
+                    "--reason",
+                    "focused",
+                    "--selection",
+                    "boundary",
+                    "--runtime",
+                    "host",
+                    "--receipts",
+                    "old.json",
+                ],
+            ),
+            patch.object(verify, "native_tests", side_effect=AssertionError("invalid CLI dispatched")),
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
-        with patch.object(sys, "argv", ["verify.py", "qualification", "--preset", "linux-debug",
-                                        "--reason", "focused", "--selection", "boundary", "--runtime", "host",
-                                        "--prepare"]), \
-                patch.object(verify, "native_tests", side_effect=AssertionError("legacy build option dispatched")):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "qualification",
+                    "--preset",
+                    "linux-debug",
+                    "--reason",
+                    "focused",
+                    "--selection",
+                    "boundary",
+                    "--runtime",
+                    "host",
+                    "--prepare",
+                ],
+            ),
+            patch.object(verify, "native_tests", side_effect=AssertionError("legacy build option dispatched")),
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
-        with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--bundles", "bundle-a",
-                                        "--output", "report.json", "--windows-python", "python.exe"]), \
-                patch.object(verify, "collect_bundles", side_effect=AssertionError("legacy interpreter option dispatched")):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "verify.py",
+                    "collect-qualification",
+                    "--bundles",
+                    "bundle-a",
+                    "--output",
+                    "report.json",
+                    "--windows-python",
+                    "python.exe",
+                ],
+            ),
+            patch.object(verify, "collect_bundles", side_effect=AssertionError("legacy interpreter option dispatched")),
+        ):
             with self.assertRaises(SystemExit):
                 verify.main()
 

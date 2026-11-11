@@ -61,42 +61,51 @@ class RustBuild(unittest.TestCase):
         (core / "src").mkdir(parents=True)
         (plugin / "src").mkdir(parents=True)
         (source / "Cargo.toml").write_text(
-            '[workspace]\nmembers=["rust/film-juicer-core","rust/film-juicer-plugin"]\nresolver="3"\n')
+            '[workspace]\nmembers=["rust/film-juicer-core","rust/film-juicer-plugin"]\nresolver="3"\n'
+        )
         (source / "Cargo.lock").write_text(
             'version = 4\n[[package]]\nname="film-juicer-core"\nversion="0.1.0"\n'
-            '[[package]]\nname="film-juicer-plugin"\nversion="0.1.0"\ndependencies=["film-juicer-core"]\n')
+            '[[package]]\nname="film-juicer-plugin"\nversion="0.1.0"\ndependencies=["film-juicer-core"]\n'
+        )
         for name in ("clippy.toml", "rustfmt.toml"):
             (source / name).write_text("")
         (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.98.1"\nprofile="minimal"\n')
         (core / "Cargo.toml").write_text(
-            '[package]\nname="film-juicer-core"\nversion="0.1.0"\nedition="2024"\n'
-            '[features]\ntest-support=[]\n')
+            '[package]\nname="film-juicer-core"\nversion="0.1.0"\nedition="2024"\n[features]\ntest-support=[]\n'
+        )
         (plugin / "Cargo.toml").write_text(
             '[package]\nname="film-juicer-plugin"\nversion="0.1.0"\nedition="2024"\n'
             '[lib]\ncrate-type=["staticlib"]\n[features]\ntest-support=["film-juicer-core/test-support"]\n'
-            '[dependencies]\nfilm-juicer-core={path="../film-juicer-core"}\n')
-        original = '#[cfg(test)] mod unit;\npub fn value() -> u32 { 7 }\n'
+            '[dependencies]\nfilm-juicer-core={path="../film-juicer-core"}\n'
+        )
+        original = "#[cfg(test)] mod unit;\npub fn value() -> u32 { 7 }\n"
         (core / "src/lib.rs").write_text(original)
         unit = core / "src/unit.rs"
-        unit.write_text('#[test] fn value() { assert_eq!(super::value(), 7); }\n')
+        unit.write_text("#[test] fn value() { assert_eq!(super::value(), 7); }\n")
         (plugin / "src/lib.rs").write_text(
             '#[unsafe(no_mangle)] pub extern "C" fn fj_fixture_value() -> u32 { film_juicer_core::value() }\n'
-            '#[cfg(feature="test-support")] #[unsafe(no_mangle)] pub extern "C" fn fj_fixture_test() -> u32 { 1 }\n')
+            '#[cfg(feature="test-support")] #[unsafe(no_mangle)] pub extern "C" fn fj_fixture_test() -> u32 { 1 }\n'
+        )
         (source / "fixture.h").write_text(
             "#ifndef FIXTURE_H\n#define FIXTURE_H\n#include <stdint.h>\n"
             "uint32_t fj_fixture_value(void);\nuint32_t fj_fixture_test(void);\n"
-            "uint32_t fixture_native_value(void);\n#endif\n")
+            "uint32_t fixture_native_value(void);\n#endif\n"
+        )
         (source / "native_shared.c").write_text(
-            '#include "fixture.h"\nuint32_t fixture_native_value(void) { return fj_fixture_value(); }\n')
+            '#include "fixture.h"\nuint32_t fixture_native_value(void) { return fj_fixture_value(); }\n'
+        )
         (source / "consumer.c").write_text(
             '#include <stdio.h>\n#include "fixture.h"\n'
-            'int main(void) { printf("%u\\n", (unsigned)fixture_native_value()); return 0; }\n')
+            'int main(void) { printf("%u\\n", (unsigned)fixture_native_value()); return 0; }\n'
+        )
         (source / "test_consumer.c").write_text(
             '#include <stdio.h>\n#include "fixture.h"\n'
             'int main(void) { printf("%u %u\\n", (unsigned)fixture_native_value(), '
-            '(unsigned)fj_fixture_test()); return 0; }\n')
+            "(unsigned)fj_fixture_test()); return 0; }\n"
+        )
         (source / "forbidden_consumer.c").write_text(
-            '#include "fixture.h"\nint main(void) { return (int)fj_fixture_test(); }\n')
+            '#include "fixture.h"\nint main(void) { return (int)fj_fixture_test(); }\n'
+        )
 
         def write_cmake(path, mixed=False):
             lines = [
@@ -116,19 +125,23 @@ class RustBuild(unittest.TestCase):
                 "target_link_libraries(production_facade_rejection PRIVATE film_juicer_rust)",
             ]
             if mixed:
-                lines.extend((
-                    "add_executable(mixed_consumer consumer.c)",
-                    "target_link_libraries(mixed_consumer PRIVATE film_juicer_rust film_juicer_rust_test_support)",
-                ))
+                lines.extend(
+                    (
+                        "add_executable(mixed_consumer consumer.c)",
+                        "target_link_libraries(mixed_consumer PRIVATE film_juicer_rust film_juicer_rust_test_support)",
+                    )
+                )
             else:
-                lines.extend((
-                    "if(BUILD_TESTING)",
-                    "  add_executable(test_consumer test_consumer.c $<TARGET_OBJECTS:native_shared>)",
-                    "  target_include_directories(test_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})",
-                    "  set_target_properties(test_consumer PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)",
-                    "  target_link_libraries(test_consumer PRIVATE film_juicer_rust_test_support)",
-                    "endif()",
-                ))
+                lines.extend(
+                    (
+                        "if(BUILD_TESTING)",
+                        "  add_executable(test_consumer test_consumer.c $<TARGET_OBJECTS:native_shared>)",
+                        "  target_include_directories(test_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})",
+                        "  set_target_properties(test_consumer PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)",
+                        "  target_link_libraries(test_consumer PRIVATE film_juicer_rust_test_support)",
+                        "endif()",
+                    )
+                )
             (path / "CMakeLists.txt").write_text("\n".join(lines) + "\n")
 
         write_cmake(source)
@@ -149,14 +162,26 @@ class RustBuild(unittest.TestCase):
             return output
 
         def configure(source_dir, build_dir, enabled):
-            run([options.cmake, "-S", str(source_dir), "-B", str(build_dir), "-G", "Ninja",
-                 "-DCMAKE_BUILD_TYPE=" + configuration, "-DBUILD_TESTING=" + enabled,
-                 "-DCMAKE_MAKE_PROGRAM=" + options.ninja, "-DCMAKE_C_COMPILER=" + options.cc,
-                 "-DJUICER_CARGO_EXECUTABLE=" + options.cargo], build_dir=build_dir)
+            run(
+                [
+                    options.cmake,
+                    "-S",
+                    str(source_dir),
+                    "-B",
+                    str(build_dir),
+                    "-G",
+                    "Ninja",
+                    "-DCMAKE_BUILD_TYPE=" + configuration,
+                    "-DBUILD_TESTING=" + enabled,
+                    "-DCMAKE_MAKE_PROGRAM=" + options.ninja,
+                    "-DCMAKE_C_COMPILER=" + options.cc,
+                    "-DJUICER_CARGO_EXECUTABLE=" + options.cargo,
+                ],
+                build_dir=build_dir,
+            )
 
         def build_target(target, *, success=True):
-            return run([options.cmake, "--build", str(build), "--target", target, "--parallel", "2"],
-                       success=success)
+            return run([options.cmake, "--build", str(build), "--target", target, "--parallel", "2"], success=success)
 
         target = "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
         archive_name = "film_juicer_plugin.lib" if os.name == "nt" else "libfilm_juicer_plugin.a"
@@ -201,12 +226,10 @@ class RustBuild(unittest.TestCase):
 
         def native_state():
             obj = native_object()
-            return {"digest": digest(obj), "mtime": obj.stat().st_mtime_ns,
-                    "compile": latest_row(build, obj.name)}
+            return {"digest": digest(obj), "mtime": obj.stat().st_mtime_ns, "compile": latest_row(build, obj.name)}
 
         def feature_value(path):
-            values = [line.partition("=")[2] for line in path.read_text().splitlines()
-                      if line.startswith("features=")]
+            values = [line.partition("=")[2] for line in path.read_text().splitlines() if line.startswith("features=")]
             self.assertEqual(len(values), 1, f"{path} must declare one feature selection")
             return values[0]
 
@@ -215,8 +238,7 @@ class RustBuild(unittest.TestCase):
 
         with subcase("configure/off-production-only"):
             configure(source, build, "OFF")
-            self.assertEqual(production_tag.read_text(),
-                             "Signature: 8a477f597d28d172789f06886806bc55\n")
+            self.assertEqual(production_tag.read_text(), "Signature: 8a477f597d28d172789f06886806bc55\n")
             self.assertFalse(support_dir.exists(), "OFF configure must not create test-support output")
 
         with subcase("build/off-production-consumer"):
@@ -229,15 +251,16 @@ class RustBuild(unittest.TestCase):
 
         with subcase("configure/on-add-test-support"):
             configure(source, build, "ON")
-            self.assertEqual(production_tag.read_text(),
-                             "Signature: 8a477f597d28d172789f06886806bc55\n")
-            self.assertEqual(support_tag.read_text(),
-                             "Signature: 8a477f597d28d172789f06886806bc55\n")
+            self.assertEqual(production_tag.read_text(), "Signature: 8a477f597d28d172789f06886806bc55\n")
+            self.assertEqual(support_tag.read_text(), "Signature: 8a477f597d28d172789f06886806bc55\n")
             self.assertEqual(feature_value(production_features), "none")
             self.assertEqual(feature_value(support_features), "test-support")
             build_target("production_consumer")
-            self.assertEqual(variant_state("production"), production_before_on,
-                             "enabling tests must not replace or relink production")
+            self.assertEqual(
+                variant_state("production"),
+                production_before_on,
+                "enabling tests must not replace or relink production",
+            )
 
         with subcase("build/on-preserves-production"):
             build_target("juicer_rust_production_build")
@@ -266,18 +289,24 @@ class RustBuild(unittest.TestCase):
             support_stamp_before = support_before["stamp_mtime"]
             support_features.write_bytes(support_features.read_bytes())
             build_target("test_consumer")
-            self.assertEqual(variant_state("production"), production_before,
-                             "a test-support input change must not touch production")
-            self.assertGreater(variant_state("test-support")["stamp_mtime"], support_stamp_before,
-                               "a test-support input change must rebuild only its variant")
+            self.assertEqual(
+                variant_state("production"), production_before, "a test-support input change must not touch production"
+            )
+            self.assertGreater(
+                variant_state("test-support")["stamp_mtime"],
+                support_stamp_before,
+                "a test-support input change must rebuild only its variant",
+            )
             self.assertEqual(variant_state("test-support")["archive"], support_before["archive"])
-            self.assertEqual(variant_state("test-support")["link"], support_before["link"],
-                             "unchanged test-support archive must not relink its consumer")
+            self.assertEqual(
+                variant_state("test-support")["link"],
+                support_before["link"],
+                "unchanged test-support archive must not relink its consumer",
+            )
 
         with subcase("link/production-facade-absent"):
             output = build_target("production_facade_rejection", success=False)
-            self.assertIn("fj_fixture_test", output,
-                          "production archive unexpectedly supplied the facade-only symbol")
+            self.assertIn("fj_fixture_test", output, "production archive unexpectedly supplied the facade-only symbol")
 
         with subcase("configure/mixed-variants-rejected"):
             mixed_source = artifact / "mixed-source"
@@ -289,10 +318,23 @@ class RustBuild(unittest.TestCase):
             for path in ("consumer.c", "native_shared.c", "fixture.h", "forbidden_consumer.c"):
                 shutil.copy2(source / path, mixed_source / path)
             write_cmake(mixed_source, mixed=True)
-            output = run([options.cmake, "-S", str(mixed_source), "-B", str(mixed_build), "-G", "Ninja",
-                          "-DCMAKE_BUILD_TYPE=" + configuration, "-DBUILD_TESTING=ON",
-                          "-DCMAKE_MAKE_PROGRAM=" + options.ninja, "-DCMAKE_C_COMPILER=" + options.cc,
-                          "-DJUICER_CARGO_EXECUTABLE=" + options.cargo], success=False)
+            output = run(
+                [
+                    options.cmake,
+                    "-S",
+                    str(mixed_source),
+                    "-B",
+                    str(mixed_build),
+                    "-G",
+                    "Ninja",
+                    "-DCMAKE_BUILD_TYPE=" + configuration,
+                    "-DBUILD_TESTING=ON",
+                    "-DCMAKE_MAKE_PROGRAM=" + options.ninja,
+                    "-DCMAKE_C_COMPILER=" + options.cc,
+                    "-DJUICER_CARGO_EXECUTABLE=" + options.cargo,
+                ],
+                success=False,
+            )
             self.assertIn("JUICER_RUST_VARIANT", output)
 
         with subcase("recover/production-stamp-and-byproduct"):
@@ -384,8 +426,11 @@ class RustBuild(unittest.TestCase):
             shutil.copyfile(core / "src/lib.rs", artifact / "failed-production-input.rs")
             output = build_target("juicer_rust_production_build", success=False)
             self.assertIn("production Cargo failure", output)
-            self.assertEqual(production_stamp.stat().st_mtime_ns, before["stamp_mtime"],
-                             "failed production Cargo must not complete its variant stamp")
+            self.assertEqual(
+                production_stamp.stat().st_mtime_ns,
+                before["stamp_mtime"],
+                "failed production Cargo must not complete its variant stamp",
+            )
             (core / "src/lib.rs").write_text(valid)
 
         with subcase("recover/production-cargo"):
@@ -402,8 +447,11 @@ class RustBuild(unittest.TestCase):
             shutil.copyfile(core / "src/lib.rs", artifact / "failed-test-support-input.rs")
             output = build_target("juicer_rust_test_support_build", success=False)
             self.assertIn("test-support Cargo failure", output)
-            self.assertEqual(support_stamp.stat().st_mtime_ns, before["stamp_mtime"],
-                             "failed test-support Cargo must not complete its variant stamp")
+            self.assertEqual(
+                support_stamp.stat().st_mtime_ns,
+                before["stamp_mtime"],
+                "failed test-support Cargo must not complete its variant stamp",
+            )
             (core / "src/lib.rs").write_text(valid)
 
         with subcase("recover/test-support-cargo"):
@@ -412,14 +460,20 @@ class RustBuild(unittest.TestCase):
             self.assertGreater(support_stamp.stat().st_mtime_ns, before)
             self.assertEqual(run([str(test_consumer)]).strip(), "9 1")
 
-        (artifact / "result.json").write_text(json.dumps({
-            "configuration": configuration,
-            "passed": True,
-            "required_cases": self.subtest_cases,
-            "production": variant_state("production"),
-            "test_support": variant_state("test-support"),
-            "native": native_state(),
-        }, indent=2) + "\n")
+        (artifact / "result.json").write_text(
+            json.dumps(
+                {
+                    "configuration": configuration,
+                    "passed": True,
+                    "required_cases": self.subtest_cases,
+                    "production": variant_state("production"),
+                    "test_support": variant_state("test-support"),
+                    "native": native_state(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
         # Keep commands and failed source snapshots; successful fixture trees are disposable.
         shutil.rmtree(build)
         shutil.rmtree(source)

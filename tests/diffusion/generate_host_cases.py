@@ -101,15 +101,11 @@ def _authored_from_params(params: dict[str, Any]) -> list[str]:
 
 def _validate_manifest(data: dict[str, Any]) -> None:
     if data.get("schema") != EXPECTED_SCHEMA:
-        raise ValueError(
-            f"wrong fixture schema: {data.get('schema')!r}; expected {EXPECTED_SCHEMA!r}"
-        )
+        raise ValueError(f"wrong fixture schema: {data.get('schema')!r}; expected {EXPECTED_SCHEMA!r}")
     if tuple(data.get("family_order", ())) != EXPECTED_FAMILIES:
         raise ValueError(f"wrong family order: {data.get('family_order')!r}")
     if tuple(data.get("semantic_channel_order", ())) != EXPECTED_CHANNELS:
-        raise ValueError(
-            f"wrong semantic channel order: {data.get('semantic_channel_order')!r}"
-        )
+        raise ValueError(f"wrong semantic channel order: {data.get('semantic_channel_order')!r}")
     for key, expected in EXPECTED_COUNTS.items():
         actual = len(data.get(key, ()))
         if actual != expected:
@@ -135,8 +131,8 @@ def _emit_prelude(
         f'inline constexpr char kArraysSha256[] = "{arrays_sha}";',
         f'inline constexpr char kSchema[] = "{EXPECTED_SCHEMA}";',
         "inline constexpr std::array<std::string_view, 4> kFamilyNames{{",
-        "    \"glimmerglass\", \"black_pro_mist\", \"pro_mist\", \"cinebloom\"}};",
-        "inline constexpr std::array<std::string_view, 3> kSemanticChannels{{\"R\", \"G\", \"B\"}};",
+        '    "glimmerglass", "black_pro_mist", "pro_mist", "cinebloom"}};',
+        'inline constexpr std::array<std::string_view, 3> kSemanticChannels{{"R", "G", "B"}};',
         "",
         "struct AuthoredInput {",
         "    bool active;",
@@ -214,21 +210,21 @@ def _emit_prelude(
 
 def _emit_strength_cases(data: dict[str, Any]) -> list[str]:
     rows = data["strength_cases"]
-    out = [
-        f"inline constexpr std::array<StrengthCase, {len(rows)}> kStrengthCases{{{{"
-    ]
+    out = [f"inline constexpr std::array<StrengthCase, {len(rows)}> kStrengthCases{{{{"]
     for row in rows:
         family = str(row["family"])
         name = f"{family}:strength={_cpp_float(row['strength'])}"
         authored = _authored_values(family=family, strength=row["strength"])
         out.append(
-            "    StrengthCase{" + ", ".join(
+            "    StrengthCase{"
+            + ", ".join(
                 [
                     _cpp_string(name),
                     "AuthoredInput{" + ", ".join(authored) + "}",
                     _cpp_float(row["scatter_fraction"]),
                 ]
-            ) + "},"
+            )
+            + "},"
         )
     out.extend(["}};", ""])
     return out
@@ -242,7 +238,8 @@ def _emit_family_cases(data: dict[str, Any]) -> list[str]:
         halo = row["halo"]
         bloom = row["bloom"]
         out.append(
-            "    FamilyCase{" + ", ".join(
+            "    FamilyCase{"
+            + ", ".join(
                 [
                     _cpp_string(str(row["family"])),
                     str(_family_index(str(row["family"]))),
@@ -256,7 +253,8 @@ def _emit_family_cases(data: dict[str, Any]) -> list[str]:
                     _cpp_array(bloom["expanded_lambdas_um"]),
                     _cpp_array(bloom["expanded_weights"]),
                 ]
-            ) + "},"
+            )
+            + "},"
         )
     out.extend(["}};", ""])
     return out
@@ -271,18 +269,18 @@ def _emit_warmth_cases(data: dict[str, Any]) -> list[str]:
             family=family,
             halo_warmth=row["halo_warmth"],
         )
-        channel_rows = ", ".join(
-            _cpp_array(channel) for channel in row["channel_weights_rgb"]
-        )
+        channel_rows = ", ".join(_cpp_array(channel) for channel in row["channel_weights_rgb"])
         out.append(
-            "    WarmthCase{" + ", ".join(
+            "    WarmthCase{"
+            + ", ".join(
                 [
                     _cpp_string(f"{index}:{family}:warmth={_cpp_float(row['halo_warmth'])}"),
                     "AuthoredInput{" + ", ".join(authored) + "}",
                     _cpp_float(row["effective_clamped"]),
                     "{{" + channel_rows + "}}",
                 ]
-            ) + "},"
+            )
+            + "},"
         )
     out.extend(["}};", ""])
     return out
@@ -290,13 +288,8 @@ def _emit_warmth_cases(data: dict[str, Any]) -> list[str]:
 
 def _emit_advanced_cases(data: dict[str, Any]) -> list[str]:
     rows = data["advanced_cases"]
-    base_warmth = {
-        str(row["family"]): float(row["halo_warmth_base"])
-        for row in data["family_cases"]
-    }
-    out = [
-        f"inline constexpr std::array<AdvancedCase, {len(rows)}> kAdvancedCases{{{{"
-    ]
+    base_warmth = {str(row["family"]): float(row["halo_warmth_base"]) for row in data["family_cases"]}
+    out = [f"inline constexpr std::array<AdvancedCase, {len(rows)}> kAdvancedCases{{{{"]
     for index, row in enumerate(rows):
         family = str(row["family"])
         overrides = dict(row["overrides"])
@@ -305,12 +298,11 @@ def _emit_advanced_cases(data: dict[str, Any]) -> list[str]:
         halo = row["halo"]
         bloom = row["bloom"]
         lambdas = (
-            list(core["expanded_lambdas_um"])
-            + list(halo["expanded_lambdas_um"])
-            + list(bloom["expanded_lambdas_um"])
+            list(core["expanded_lambdas_um"]) + list(halo["expanded_lambdas_um"]) + list(bloom["expanded_lambdas_um"])
         )
         out.append(
-            "    AdvancedCase{" + ", ".join(
+            "    AdvancedCase{"
+            + ", ".join(
                 [
                     _cpp_string(f"{index}:{family}:{row['name']}"),
                     "AuthoredInput{" + ", ".join(authored) + "}",
@@ -322,7 +314,8 @@ def _emit_advanced_cases(data: dict[str, Any]) -> list[str]:
                     _cpp_array(halo["expanded_weights"]),
                     _cpp_array(bloom["expanded_weights"]),
                 ]
-            ) + "},"
+            )
+            + "},"
         )
     out.extend(["}};", ""])
     return out
@@ -335,7 +328,8 @@ def _emit_radius_cases(data: dict[str, Any]) -> list[str]:
         height, width = (int(value) for value in row["extent"])
         authored = _authored_from_params(dict(row["params"]))
         out.append(
-            "    RadiusCase{" + ", ".join(
+            "    RadiusCase{"
+            + ", ".join(
                 [
                     _cpp_string(f"{index}:{row['extent_class']}:{row['family']}"),
                     "AuthoredInput{" + ", ".join(authored) + "}",
@@ -344,7 +338,8 @@ def _emit_radius_cases(data: dict[str, Any]) -> list[str]:
                     _cpp_float(row["pixel_size_um"]),
                     str(int(row["psf_radius"])),
                 ]
-            ) + "},"
+            )
+            + "},"
         )
     out.extend(["}};", ""])
     return out
@@ -380,7 +375,8 @@ def _emit_psf_cases(
             overrides=dict(row["overrides"]),
         )
         cases.append(
-            "    PsfCase{" + ", ".join(
+            "    PsfCase{"
+            + ", ".join(
                 [
                     _cpp_string(f"{index}:{name}"),
                     "AuthoredInput{" + ", ".join(authored) + "}",
@@ -389,29 +385,21 @@ def _emit_psf_cases(
                     _cpp_float(row["pixel_size_um"]),
                     str(offset),
                 ]
-            ) + "},"
+            )
+            + "},"
         )
 
-    expected_value_count = sum(
-        int(row["extent"][0]) * int(row["extent"][1]) * 3 for row in rows
-    )
+    expected_value_count = sum(int(row["extent"][0]) * int(row["extent"][1]) * 3 for row in rows)
     if len(flattened) != expected_value_count:
-        raise ValueError(
-            f"wrong flattened PSF value count: {len(flattened)}; "
-            f"expected {expected_value_count}"
-        )
+        raise ValueError(f"wrong flattened PSF value count: {len(flattened)}; expected {expected_value_count}")
 
     out = [f"inline constexpr std::array<PsfCase, {len(rows)}> kPsfCases{{{{"]
     out.extend(cases)
     out.extend(["}};", ""])
-    out.append(
-        f"inline constexpr std::array<double, {len(flattened)}> kPsfValues{{{{"
-    )
+    out.append(f"inline constexpr std::array<double, {len(flattened)}> kPsfValues{{{{")
     values_per_line = 6
     for start in range(0, len(flattened), values_per_line):
-        rendered = ", ".join(
-            _cpp_float(value) for value in flattened[start : start + values_per_line]
-        )
+        rendered = ", ".join(_cpp_float(value) for value in flattened[start : start + values_per_line])
         out.append(f"    {rendered},")
     out.extend(["}};", ""])
     return out
@@ -434,9 +422,7 @@ def generate(manifest_path: Path, arrays_path: Path, output_path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Generate local C++ host-behavior cases from the accepted fixture."
-    )
+    parser = argparse.ArgumentParser(description="Generate local C++ host-behavior cases from the accepted fixture.")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--arrays", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

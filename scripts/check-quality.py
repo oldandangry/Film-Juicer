@@ -102,8 +102,7 @@ class AnalysisCommand:
 
 
 class Runner:
-    def __init__(self, root: Path, log_dir: Path, jobs: int = 1, native_run=None,
-                 name_prefix: str = "") -> None:
+    def __init__(self, root: Path, log_dir: Path, jobs: int = 1, native_run=None, name_prefix: str = "") -> None:
         if jobs < 1:
             raise QualityError("analysis jobs must be at least 1")
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -169,13 +168,21 @@ class Runner:
             print("+", subprocess.list2cmdline(command))
         try:
             output_path = self.native_run.command(
-                command_name, command, cwd=cwd or self.root, env=env, timeout=None,
+                command_name,
+                command,
+                cwd=cwd or self.root,
+                env=env,
+                timeout=None,
                 stdout_only=stdout_only,
             )
         except subprocess.CalledProcessError as exc:
-            raise QualityError(f"{label} failed with exit code {exc.returncode}; see {self.log_dir / (command_name + '.log')}") from exc
+            raise QualityError(
+                f"{label} failed with exit code {exc.returncode}; see {self.log_dir / (command_name + '.log')}"
+            ) from exc
         except Exception as exc:
-            raise QualityError(f"{label} could not start command: {exc}; see {self.log_dir / (command_name + '.log')}") from exc
+            raise QualityError(
+                f"{label} could not start command: {exc}; see {self.log_dir / (command_name + '.log')}"
+            ) from exc
         if stdout_only:
             stdout_path = output_path
             stderr_path = self.log_dir / f"{command_name}.stderr.log"
@@ -194,7 +201,6 @@ class Runner:
             with self.output_lock:
                 print(output, end="" if str(output).endswith("\n") else "\n")
         return stdout.strip()
-
 
     def run_analysis(self, commands: Sequence[AnalysisCommand]) -> None:
         failures: list[str] = []
@@ -226,23 +232,34 @@ def parse_arguments() -> argparse.Namespace:
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--base", help="accepted parent or merge-base")
     selection.add_argument("--files", nargs="+", help="explicit changed paths")
-    selection.add_argument(
-        "--all-owned", action="store_true", help="audit every tracked owned source"
+    selection.add_argument("--all-owned", action="store_true", help="audit every tracked owned source")
+    parser.add_argument(
+        "--qualification", action="store_true", help="include representative native/CUDA and complete Rust gates"
     )
-    parser.add_argument("--qualification", action="store_true", help="include representative native/CUDA and complete Rust gates")
-    parser.add_argument("--compiler-consumers", nargs="+", help="actual compiler dependency consumers supplied by development verification")
+    parser.add_argument(
+        "--compiler-consumers",
+        nargs="+",
+        help="actual compiler dependency consumers supplied by development verification",
+    )
     parser.add_argument("--rust-packages", nargs="+", choices=("film-juicer-core", "film-juicer-plugin"))
-    parser.add_argument("--development", action="store_true", help="development checks only; never publishes qualification probes")
+    parser.add_argument(
+        "--development", action="store_true", help="development checks only; never publishes qualification probes"
+    )
     parser.add_argument("--preset", required=True, choices=sorted(PRESET_TARGETS))
-    parser.add_argument("--verifier-scope-output", type=Path,
-                        help="report-only verifier classification; no build or analysis")
+    parser.add_argument(
+        "--verifier-scope-output", type=Path, help="report-only verifier classification; no build or analysis"
+    )
     parser.add_argument("--candidate", default="HEAD", help="commit classified by --verifier-scope-output")
     parser.add_argument("--cargo", help="Cargo executable override")
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
     parser.add_argument("--clang-tidy", dest="clang_tidy")
-    parser.add_argument("--jobs", type=int, default=min(os.process_cpu_count() or 1, 4),
-                        help="maximum concurrent native/CUDA analysis commands (default: up to 4 available CPUs)")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=min(os.process_cpu_count() or 1, 4),
+        help="maximum concurrent native/CUDA analysis commands (default: up to 4 available CPUs)",
+    )
     arguments = parser.parse_args()
     if arguments.rust_packages and not arguments.development:
         parser.error("named Rust checks require development verification")
@@ -351,8 +368,7 @@ def load_policy(root: Path) -> SourcePolicy:
 def verifier_scope(root: Path, base: str | None, candidate: str, policy: SourcePolicy) -> dict:
     """Classify cumulative committed scope. Uncertainty always requires integration."""
     head = run_git(root, ["rev-parse", "--verify", candidate + "^{commit}"]).decode().strip()
-    report = {"candidate": head, "mode": "report-only", "complete": True,
-              "required": True, "base": None, "reasons": []}
+    report = {"candidate": head, "mode": "report-only", "complete": True, "required": True, "base": None, "reasons": []}
     try:
         if not base:
             raise QualityError("missing base; complete integration required")
@@ -363,13 +379,16 @@ def verifier_scope(root: Path, base: str | None, candidate: str, policy: SourceP
         # Renames/deletions and every status other than modification stay broad.
         statuses = run_git(root, ["diff", "--name-only", "-z", "--diff-filter=ACDRTUXB", ancestor, head, "--"])
         reasons = list(uncertain)
-        reasons.extend("non-modification: " + path.decode("utf-8", errors="strict")
-                       for path in statuses.split(b"\0") if path)
+        reasons.extend(
+            "non-modification: " + path.decode("utf-8", errors="strict") for path in statuses.split(b"\0") if path
+        )
         for name in paths:
             path = normalize_path(root, name)
-            independent = (path.startswith(policy.verifier_independent_prefixes)
-                           and PurePosixPath(path).suffix in policy.verifier_independent_extensions
-                           and path not in policy.generated_paths | policy.verifier_required_paths)
+            independent = (
+                path.startswith(policy.verifier_independent_prefixes)
+                and PurePosixPath(path).suffix in policy.verifier_independent_extensions
+                and path not in policy.generated_paths | policy.verifier_required_paths
+            )
             if not independent:
                 reasons.append("verifier dependency or unknown input: " + path)
         report.update(required=bool(reasons), reasons=sorted(set(reasons)))
@@ -411,9 +430,7 @@ def is_rust(path: str) -> bool:
     return path.endswith(".rs") or path in RUST_POLICY_FILES or path.endswith("/Cargo.toml")
 
 
-def check_source_hygiene(
-    root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path
-) -> None:
+def check_source_hygiene(root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path) -> None:
     # Preserve the existing source-text gates, including matches in comments.
     rules = (
         (re.compile(r"[ \t]+$"), "trailing whitespace"),
@@ -447,12 +464,12 @@ def check_source_hygiene(
             for pattern, message in path_rules:
                 match = pattern.search(line)
                 if match is not None:
-                    diagnostics.append(
-                        f"{path}:{line_number}:{match.start() + 1}: {message}"
-                    )
+                    diagnostics.append(f"{path}:{line_number}:{match.start() + 1}: {message}")
 
-    report = "\n".join(diagnostics) if diagnostics else (
-        f"Source hygiene checks passed for {checked} native source file(s)."
+    report = (
+        "\n".join(diagnostics)
+        if diagnostics
+        else (f"Source hygiene checks passed for {checked} native source file(s).")
     )
     log_path.write_text(report + "\n", encoding="utf-8")
     print(report)
@@ -460,9 +477,7 @@ def check_source_hygiene(
         raise QualityError(f"source hygiene checks failed; see {log_path}")
 
 
-def select_paths(
-    root: Path, arguments: argparse.Namespace, policy: SourcePolicy
-) -> tuple[list[str], list[str]]:
+def select_paths(root: Path, arguments: argparse.Namespace, policy: SourcePolicy) -> tuple[list[str], list[str]]:
     excluded: list[str] = []
     if arguments.base:
         payload = run_git(
@@ -471,20 +486,12 @@ def select_paths(
         )
         raw_paths, excluded = parse_name_status(payload)
         untracked = run_git(root, ["ls-files", "--others", "--exclude-standard", "-z"])
-        raw_paths.extend(
-            token.decode("utf-8", errors="surrogateescape")
-            for token in untracked.split(b"\0")
-            if token
-        )
+        raw_paths.extend(token.decode("utf-8", errors="surrogateescape") for token in untracked.split(b"\0") if token)
     elif arguments.files:
         raw_paths = list(arguments.files)
     else:
         tracked = run_git(root, ["ls-files", "-z"])
-        raw_paths = [
-            token.decode("utf-8", errors="surrogateescape")
-            for token in tracked.split(b"\0")
-            if token
-        ]
+        raw_paths = [token.decode("utf-8", errors="surrogateescape") for token in tracked.split(b"\0") if token]
 
     selected: set[str] = set()
     for raw_path in raw_paths:
@@ -504,9 +511,7 @@ def select_paths(
     return sorted(selected), sorted(set(excluded))
 
 
-def resolve_tool(
-    requested: str | None, environment_name: str, candidates: Sequence[str]
-) -> str:
+def resolve_tool(requested: str | None, environment_name: str, candidates: Sequence[str]) -> str:
     environment_value = os.environ.get(environment_name)
     if requested:
         choices = [requested]
@@ -535,6 +540,7 @@ def cargo_environment() -> dict[str, str]:
 
 def check_probe_configuration(root: Path, workspace: Path) -> None:
     """Disposable probe sources must inherit the repository Cargo configuration."""
+
     def configurations(directory):
         result = []
         for parent in (directory, *directory.parents):
@@ -545,6 +551,7 @@ def check_probe_configuration(root: Path, workspace: Path) -> None:
                         raise QualityError("Cargo configuration is not a file: " + str(path))
                     result.append(path.resolve())
         return result
+
     if configurations(workspace) != configurations(root):
         raise QualityError("probe output directory has different Cargo configuration")
 
@@ -576,9 +583,7 @@ def check_dependency_contract(root: Path, metadata: dict) -> None:
         manifest = root / "rust" / name / "Cargo.toml"
         if Path(member["manifest_path"]).resolve() != manifest.resolve():
             raise QualityError(f"unexpected workspace member location: {name}")
-        if member.get("links") or any(
-            "custom-build" in target["kind"] for target in member["targets"]
-        ):
+        if member.get("links") or any("custom-build" in target["kind"] for target in member["targets"]):
             raise QualityError(f"{name}: native link declarations/build scripts belong to CMake")
         dependencies = member["dependencies"]
         if {dependency["name"] for dependency in dependencies} != RUST_DEPENDENCIES[name]:
@@ -591,7 +596,10 @@ def check_dependency_contract(root: Path, metadata: dict) -> None:
                 expected = root / "rust/film-juicer-core"
                 if not dependency.get("path") or Path(dependency["path"]).resolve() != expected.resolve():
                     raise QualityError("plugin must depend on the workspace core by path")
-            elif dependency.get("path") or dependency.get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+            elif (
+                dependency.get("path")
+                or dependency.get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+            ):
                 raise QualityError(f"{name}: {identity} must retain its crates.io source")
         # Inspect actual direct resolutions too: a workspace patch can replace
         # a crates.io declaration with a local/native implementation.
@@ -619,15 +627,9 @@ def check_rust(
     environment = cargo_environment()
     environment["CLIPPY_CONF_DIR"] = str(root)
     cargo_version = runner.run([cargo, "--version"], env=environment, label="cargo-version")
-    rustc_version = runner.run(
-        [rustc, "--version", "--verbose"], env=environment, label="rustc-version"
-    )
-    rustfmt_version = runner.run(
-        [cargo, "fmt", "--version"], env=environment, label="rustfmt-version"
-    )
-    clippy_version = runner.run(
-        [cargo, "clippy", "--version"], env=environment, label="clippy-version"
-    )
+    rustc_version = runner.run([rustc, "--version", "--verbose"], env=environment, label="rustc-version")
+    rustfmt_version = runner.run([cargo, "fmt", "--version"], env=environment, label="rustfmt-version")
+    clippy_version = runner.run([cargo, "clippy", "--version"], env=environment, label="clippy-version")
     if not cargo_version.startswith(f"cargo {RUST_VERSION} "):
         raise QualityError(f"Cargo {RUST_VERSION} is required; got {cargo_version}")
     if not rustc_version.startswith(f"rustc {RUST_VERSION} "):
@@ -637,9 +639,18 @@ def check_rust(
     if not clippy_version.startswith("clippy 0.1.98 "):
         raise QualityError(f"qualified Clippy 0.1.98 is required; got {clippy_version}")
 
-    runner.consume([root / "Cargo.toml", root / "Cargo.lock", root / "rust-toolchain.toml",
-                    root / "rustfmt.toml", root / "clippy.toml", root / "rust/film-juicer-core/Cargo.toml",
-                    root / "rust/film-juicer-plugin/Cargo.toml", root / "rust/film-juicer-core/src/lib.rs"])
+    runner.consume(
+        [
+            root / "Cargo.toml",
+            root / "Cargo.lock",
+            root / "rust-toolchain.toml",
+            root / "rustfmt.toml",
+            root / "clippy.toml",
+            root / "rust/film-juicer-core/Cargo.toml",
+            root / "rust/film-juicer-plugin/Cargo.toml",
+            root / "rust/film-juicer-core/src/lib.rs",
+        ]
+    )
     check_workspace_contract(root)
     metadata = runner.run(
         [cargo, "metadata", "--locked", "--offline", "--format-version", "1"],
@@ -672,7 +683,9 @@ def check_rust(
     profile_args = ["--release"] if profile == "release" else []
     selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
     development = getattr(arguments, "development", False)
-    format_packages = [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
+    format_packages = (
+        [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
+    )
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
     for package in selected_packages:
         features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
@@ -683,11 +696,11 @@ def check_rust(
         )
         if features:
             runner.run(
-                [*common, "-p", package, "--all-targets", *features, *profile_args,
-                 "--", "-D", "warnings"],
+                [*common, "-p", package, "--all-targets", *features, *profile_args, "--", "-D", "warnings"],
                 env=environment,
                 label=f"clippy-{package}-test-support-{profile}",
             )
+
 
 def split_compiler_command(command: str) -> tuple[str, ...]:
     if os.name != "nt":
@@ -752,10 +765,19 @@ def include_search(root: Path, entry: CompilationEntry, *, resolve=None) -> Incl
     directory = entry.directory if entry.directory.is_absolute() else root / entry.directory
     arguments = list(entry.arguments or split_compiler_command(entry.command))
     quoted, ordinary, system, after, forced = [], [], [], [], []
-    options = (("--include-path", ordinary), ("--system-include", system),
-               ("--pre-include", forced), ("-isystem", system), ("-iquote", quoted),
-               ("-idirafter", after), ("-include", forced), ("/external:I", system),
-               ("/FI", forced), ("/I", ordinary), ("-I", ordinary))
+    options = (
+        ("--include-path", ordinary),
+        ("--system-include", system),
+        ("--pre-include", forced),
+        ("-isystem", system),
+        ("-iquote", quoted),
+        ("-idirafter", after),
+        ("-include", forced),
+        ("/external:I", system),
+        ("/FI", forced),
+        ("/I", ordinary),
+        ("-I", ordinary),
+    )
     index = 1
     while index < len(arguments):
         argument = arguments[index]
@@ -768,14 +790,22 @@ def include_search(root: Path, entry: CompilationEntry, *, resolve=None) -> Incl
                     raise QualityError(f"missing compiler include argument: {option}")
                 destination.append(arguments[index])
                 break
-            if argument.startswith(option) and (option in {"-I", "/I", "/FI", "/external:I"}
-                                                or argument.startswith(option + "=")):
-                destination.extend(argument[len(option):].lstrip("=").split(",")
-                                   if option.startswith("--") else [argument[len(option):].lstrip("=")])
+            if argument.startswith(option) and (
+                option in {"-I", "/I", "/FI", "/external:I"} or argument.startswith(option + "=")
+            ):
+                destination.extend(
+                    argument[len(option) :].lstrip("=").split(",")
+                    if option.startswith("--")
+                    else [argument[len(option) :].lstrip("=")]
+                )
                 break
         index += 1
     ordinary.extend(value for value in os.environ.get("CPATH", "").split(os.pathsep) if value)
-    system.extend(value for value in os.environ.get("INCLUDE" if os.name == "nt" else "CPLUS_INCLUDE_PATH", "").split(os.pathsep) if value)
+    system.extend(
+        value
+        for value in os.environ.get("INCLUDE" if os.name == "nt" else "CPLUS_INCLUDE_PATH", "").split(os.pathsep)
+        if value
+    )
 
     def paths(values):
         return tuple(resolve(directory / value) if resolve else (directory / value).resolve() for value in values)
@@ -783,10 +813,16 @@ def include_search(root: Path, entry: CompilationEntry, *, resolve=None) -> Incl
     return IncludeSearch(paths(quoted), paths([*ordinary, *system, *after]), tuple(forced))
 
 
-def included_paths(root: Path, entry: CompilationEntry,
-                   includes: dict[str, tuple[tuple[str, str], ...]],
-                   edges: dict[tuple[str, IncludeSearch], tuple[str, ...]], *,
-                   search=None, resolve=None, is_file=None) -> set[str]:
+def included_paths(
+    root: Path,
+    entry: CompilationEntry,
+    includes: dict[str, tuple[tuple[str, str], ...]],
+    edges: dict[tuple[str, IncludeSearch], tuple[str, ...]],
+    *,
+    search=None,
+    resolve=None,
+    is_file=None,
+) -> set[str]:
     """Share parsed text; resolve edges separately for each ordered search context."""
     search = include_search(root, entry) if search is None else search
     pending = [entry.path]
@@ -827,10 +863,15 @@ def included_paths(root: Path, entry: CompilationEntry,
     return visited
 
 
-def validate_translation_units(selected_native: Sequence[str], entries: Sequence[CompilationEntry], policy: SourcePolicy) -> None:
+def validate_translation_units(
+    selected_native: Sequence[str], entries: Sequence[CompilationEntry], policy: SourcePolicy
+) -> None:
     available = {entry.path for entry in entries}
-    missing = [path for path in selected_native
-               if PurePosixPath(path).suffix.lower() in policy.translation_extensions and path not in available]
+    missing = [
+        path
+        for path in selected_native
+        if PurePosixPath(path).suffix.lower() in policy.translation_extensions and path not in available
+    ]
     if missing:
         raise QualityError("selected translation unit is absent from the compilation database: " + ", ".join(missing))
 
@@ -915,7 +956,9 @@ def cuda_frontend_arguments(root: Path, entry: CompilationEntry) -> tuple[Path, 
                         runtime = True
                     elif option in {"O2", "Od"}:
                         frontend.append("-O2" if option == "O2" else "-O0")
-                    elif option in {"Ob0", "Ob2", "Oi", "Gy", "Gw", "GF", "RTC1", "Z7", "FS"} or option.startswith("Fd"):
+                    elif option in {"Ob0", "Ob2", "Oi", "Gy", "Gw", "GF", "RTC1", "Z7", "FS"} or option.startswith(
+                        "Fd"
+                    ):
                         # Inlining, object layout, runtime instrumentation and PDB output only.
                         continue
                     else:
@@ -952,8 +995,11 @@ def cuda_frontend_arguments(root: Path, entry: CompilationEntry) -> tuple[Path, 
         frontend.extend(["-fms-extensions", "-fms-compatibility", "-fdelayed-template-parsing"])
     elif not re.fullmatch(r"(?:[\w-]+-)?g\+\+-13", host.name):
         raise QualityError(f"CUDA Linux entry requires the GCC 13 host compiler: {entry.path}")
-    return nvcc, host, ["-xcuda", f"--cuda-path={nvcc.parent.parent}",
-                        "--cuda-gpu-arch=sm_75", "-fexceptions", *frontend]
+    return (
+        nvcc,
+        host,
+        ["-xcuda", f"--cuda-path={nvcc.parent.parent}", "--cuda-gpu-arch=sm_75", "-fexceptions", *frontend],
+    )
 
 
 def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
@@ -961,8 +1007,8 @@ def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
     overlay = log_dir / "cuda-include"
     (overlay / "openrand").mkdir(parents=True, exist_ok=True)
     (overlay / "texture_fetch_functions.h").write_text(
-        "// CUDA 13 removed this header; Clang 22's runtime wrapper still includes it.\n"
-        "#pragma once\n", encoding="utf-8",
+        "// CUDA 13 removed this header; Clang 22's runtime wrapper still includes it.\n#pragma once\n",
+        encoding="utf-8",
     )
     vendor = root / "third_party/openrand/util.h"
     try:
@@ -975,13 +1021,17 @@ def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
     # Clang parses both host/device callables in the same pass. Retain the vendor's
     # entire implementation and license; only make its attributes visible in both passes.
     (overlay / "openrand/util.h").write_text(
-        text.replace(condition, "#if defined(__CUDACC__)\n"), encoding="utf-8",
+        text.replace(condition, "#if defined(__CUDACC__)\n"),
+        encoding="utf-8",
     )
     return overlay
 
 
 def prepare_cuda_analysis(
-    root: Path, runner: Runner, clang_tidy: str, entries: Sequence[CompilationEntry],
+    root: Path,
+    runner: Runner,
+    clang_tidy: str,
+    entries: Sequence[CompilationEntry],
 ) -> list[AnalysisCommand]:
     overlay = prepare_cuda_overlay(root, runner.log_dir)
     runner.consume([root / "third_party/openrand/util.h"])
@@ -1014,12 +1064,22 @@ def prepare_cuda_analysis(
         # _NV_RSQRT_SPECIFIER must exist before Clang's forced runtime wrapper
         # includes CUDA's math declarations. No diagnostics are disabled.
         frontend = [*qualified[key], "-D_NV_RSQRT_SPECIFIER=", "-I", str(overlay), *frontend]
-        command = [clang_tidy, "--warnings-as-errors=*", f"--config-file={root / '.clang-tidy'}",
-                   str(root / entry.path), "--", *frontend]
-        commands.append(AnalysisCommand(
-            command, entry.directory, f"clang-tidy-cuda-{index}-{Path(entry.path).name}",
-            entry.path,
-        ))
+        command = [
+            clang_tidy,
+            "--warnings-as-errors=*",
+            f"--config-file={root / '.clang-tidy'}",
+            str(root / entry.path),
+            "--",
+            *frontend,
+        ]
+        commands.append(
+            AnalysisCommand(
+                command,
+                entry.directory,
+                f"clang-tidy-cuda-{index}-{Path(entry.path).name}",
+                entry.path,
+            )
+        )
     return commands
 
 
@@ -1031,8 +1091,9 @@ def prepare_native_analysis(
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
     entries = compilation_entries(root, arguments.preset)
-    runner.consume([root / "out/build" / arguments.preset / "compile_commands.json",
-                    root / ".clang-format", root / ".clang-tidy"])
+    runner.consume(
+        [root / "out/build" / arguments.preset / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"]
+    )
     validate_translation_units(selected_native, entries, policy)
     format_candidates = (
         arguments.clang_format,
@@ -1078,22 +1139,27 @@ def prepare_native_analysis(
     for index, translation_unit in enumerate(translation_units, start=1):
         if PurePosixPath(translation_unit).suffix.lower() == ".cu":
             continue
-        commands.append(AnalysisCommand(
-            [
-                clang_tidy,
-                "-p",
-                str(build_dir),
-                "--warnings-as-errors=*",
+        commands.append(
+            AnalysisCommand(
+                [
+                    clang_tidy,
+                    "-p",
+                    str(build_dir),
+                    "--warnings-as-errors=*",
+                    translation_unit,
+                ],
+                root,
+                f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
                 translation_unit,
-            ],
-            root,
-            f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
-            translation_unit,
-        ))
-    cuda_entries = list(dict.fromkeys(
-        entry for entry in entries
-        if entry.path in translation_units and PurePosixPath(entry.path).suffix.lower() == ".cu"
-    ))
+            )
+        )
+    cuda_entries = list(
+        dict.fromkeys(
+            entry
+            for entry in entries
+            if entry.path in translation_units and PurePosixPath(entry.path).suffix.lower() == ".cu"
+        )
+    )
     if cuda_entries:
         commands.extend(prepare_cuda_analysis(root, runner, clang_tidy, cuda_entries))
     return commands
@@ -1107,7 +1173,9 @@ def check_build_path(root: Path, preset: str) -> None:
         if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="):
             configured = Path(line.split("=", 1)[1])
             if str(configured) != str(root):
-                raise QualityError(f"use the configured checkout path {configured}; current path {root} changes build arguments")
+                raise QualityError(
+                    f"use the configured checkout path {configured}; current path {root} changes build arguments"
+                )
             return
 
 
@@ -1119,13 +1187,12 @@ def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str],
         or any(path.startswith(".github/workflows/") for path in selected)
     )
     rust_required = (
-        runner_changed
-        or any(path in RUST_BUILD_FILES for path in selected)
-        or any(is_rust(path) for path in selected)
+        runner_changed or any(path in RUST_BUILD_FILES for path in selected) or any(is_rust(path) for path in selected)
     )
-    native_required = bool(getattr(arguments, "compiler_consumers", None)) or runner_changed or any(
-        path in {".clang-format", ".clang-tidy"} or is_native(path, policy)
-        for path in selected
+    native_required = (
+        bool(getattr(arguments, "compiler_consumers", None))
+        or runner_changed
+        or any(path in {".clang-format", ".clang-tidy"} or is_native(path, policy) for path in selected)
     )
     expected = ["source-hygiene", "git-diff-check", "native-boundary-enforcement"]
     if rust_required:
@@ -1141,8 +1208,14 @@ def complete_check(runner: Runner, name: str) -> None:
     runner.complete(name)
 
 
-def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
-               selected: Sequence[str], excluded: Sequence[str], runner: Runner) -> int:
+def run_checks(
+    root: Path,
+    arguments: argparse.Namespace,
+    policy: SourcePolicy,
+    selected: Sequence[str],
+    excluded: Sequence[str],
+    runner: Runner,
+) -> int:
     target = PRESET_TARGETS[arguments.preset]
     log_dir = runner.log_dir
     expected_checks, rust_required, native_required = quality_requirements(arguments, selected, policy)
@@ -1170,14 +1243,22 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     print(f"Python: {sys.version.split()[0]}")
     print(f"Rust target: {target}")
 
-    runner.consume([root / "scripts/check-quality.py", root / "scripts/source_file_policy.json",
-                    root / "scripts/verify.py", root / "scripts/qualification.py",
-                    root / "scripts/execution.py", root / "scripts/process_tree.py",
-                    root / "scripts/build_dependencies.py",
-                    root / ".clang-format", root / ".clang-tidy", root / "tests/ffi/test_native_boundary.py",
-                    *(root / path for path in selected)])
-    check_source_hygiene(root, selected, policy,
-                         log_dir / (getattr(runner, "name_prefix", "") + "source-hygiene.log"))
+    runner.consume(
+        [
+            root / "scripts/check-quality.py",
+            root / "scripts/source_file_policy.json",
+            root / "scripts/verify.py",
+            root / "scripts/qualification.py",
+            root / "scripts/execution.py",
+            root / "scripts/process_tree.py",
+            root / "scripts/build_dependencies.py",
+            root / ".clang-format",
+            root / ".clang-tidy",
+            root / "tests/ffi/test_native_boundary.py",
+            *(root / path for path in selected),
+        ]
+    )
+    check_source_hygiene(root, selected, policy, log_dir / (getattr(runner, "name_prefix", "") + "source-hygiene.log"))
     complete_check(runner, "source-hygiene")
 
     if arguments.base:
@@ -1192,11 +1273,32 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     # These inexpensive guards inspect their complete boundary, even for a
     # documentation-only selection or a newly introduced native helper/header.
     runner.run(
-        [sys.executable, "-B", "scripts/verify.py", "python-tests", "--preset", arguments.preset,
-         "--key", "quality-boundary", "--", sys.executable, "-m", "unittest", "discover", "-s", "tests/ffi",
-         "-p", "test_native_boundary.py", "-v"],
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "FJ_HOST_BUNDLE": str(log_dir),
-             "JUICER_PRODUCT_BUILD": str(root / "out/build" / arguments.preset)},
+        [
+            sys.executable,
+            "-B",
+            "scripts/verify.py",
+            "python-tests",
+            "--preset",
+            arguments.preset,
+            "--key",
+            "quality-boundary",
+            "--",
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests/ffi",
+            "-p",
+            "test_native_boundary.py",
+            "-v",
+        ],
+        env={
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FJ_HOST_BUNDLE": str(log_dir),
+            "JUICER_PRODUCT_BUILD": str(root / "out/build" / arguments.preset),
+        },
         label="native-boundary-enforcement",
     )
     complete_check(runner, "native-boundary-enforcement")
@@ -1205,9 +1307,7 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
         if runner_changed or any(path in {".clang-format", ".clang-tidy"} for path in selected):
-            native_files.extend(
-                path for path in REPRESENTATIVE_NATIVE_FILES if (root / path).is_file()
-            )
+            native_files.extend(path for path in REPRESENTATIVE_NATIVE_FILES if (root / path).is_file())
         native_files = sorted(set(native_files))
         if not native_files:
             raise QualityError("native policy changed without a representative native selection")
@@ -1265,6 +1365,7 @@ def main() -> int:
         return 0
     sys.path.insert(0, str(root / "scripts"))
     from execution import OutputLease
+
     with OutputLease(root, root / "out/build" / arguments.preset):
         return quality_main(root, arguments)
 
@@ -1276,16 +1377,20 @@ def quality_main(root, arguments):
     bundle = os.environ.get("FJ_HOST_BUNDLE")
     in_bundle = bundle is not None
     from execution import expire_diagnostics
+
     expiry = None if in_bundle else expire_diagnostics(root, arguments.preset)
     log_dir = Path(bundle) if in_bundle else create_run_directory(root, arguments.preset)
     log_dir.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(root / "scripts"))
     from execution import NativeRun, write_json
+
     native_run = NativeRun(root, log_dir)
-    runner = Runner(root, log_dir, jobs=arguments.jobs, native_run=native_run,
-                    name_prefix="quality-" if in_bundle else "")
-    runner.consume([root / "out/build" / arguments.preset / "CMakeCache.txt",
-                    root / ".cargo/config", root / ".cargo/config.toml"])
+    runner = Runner(
+        root, log_dir, jobs=arguments.jobs, native_run=native_run, name_prefix="quality-" if in_bundle else ""
+    )
+    runner.consume(
+        [root / "out/build" / arguments.preset / "CMakeCache.txt", root / ".cargo/config", root / ".cargo/config.toml"]
+    )
     expected_checks, _, _ = quality_requirements(arguments, selected, policy)
     runner.expected_checks = expected_checks
     runner.python_cases = ["quality-boundary"]
@@ -1343,8 +1448,9 @@ def quality_main(root, arguments):
     costs = {
         **source_costs,
         "seconds": time.perf_counter() - start,
-        "command_output_bytes": sum(command.get("output_bytes", 0) + command.get("stderr_bytes", 0)
-                                     for command in commands),
+        "command_output_bytes": sum(
+            command.get("output_bytes", 0) + command.get("stderr_bytes", 0) for command in commands
+        ),
         "command_output_read_bytes": command_output_read_bytes,
         "bookkeeping_read_bytes": 0,
         "report_read_bytes": 0,
@@ -1402,7 +1508,6 @@ def quality_main(root, arguments):
     if failure is not None:
         raise failure
     return 0
-
 
 
 if __name__ == "__main__":

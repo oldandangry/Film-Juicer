@@ -26,8 +26,11 @@ class ExposureFixtureTests(unittest.TestCase):
             [f"file/{name}" for name in manifest["files"]]
             + [f"sensitivity/{index}-{row['input']['id']}" for index, row in enumerate(numerical["sensitivity"])]
             + [f"cohort/{cohort['preset']}" for cohort in manifest["records"]]
-            + [f"product/{preset}/{index}" for preset, rows in products_by_preset.items()
-               for index, _ in enumerate(rows)]
+            + [
+                f"product/{preset}/{index}"
+                for preset, rows in products_by_preset.items()
+                for index, _ in enumerate(rows)
+            ]
         )
         self.assertEqual(manifest["schema_version"], 2)
         for name, expected in manifest["files"].items():
@@ -61,8 +64,18 @@ class ExposureFixtureTests(unittest.TestCase):
     def test_result_sharing_preserves_bits_controls_and_failures(self) -> None:
         expected = {"bits": [0, 0x80000000, 0x7FC00123], "hash": 0xFFFFFFFFFFFFFFFF}
         originals = {
-            "debug": {"products": [{"built": True, "controls": {"amount": 0}, "expected": expected}, {"built": False, "diagnostic": "debug failure"}]},
-            "release": {"products": [{"built": True, "controls": {"amount": 1}, "expected": expected}, {"built": False, "diagnostic": "release failure"}]},
+            "debug": {
+                "products": [
+                    {"built": True, "controls": {"amount": 0}, "expected": expected},
+                    {"built": False, "diagnostic": "debug failure"},
+                ]
+            },
+            "release": {
+                "products": [
+                    {"built": True, "controls": {"amount": 1}, "expected": expected},
+                    {"built": False, "diagnostic": "release failure"},
+                ]
+            },
         }
         self.subtest_cases = tuple(
             f"{preset}/product/{index}"

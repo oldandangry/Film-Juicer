@@ -34,14 +34,18 @@ class CtestRepetitionTests(unittest.TestCase):
                     self.doCleanups()
                 except BaseException:
                     import traceback
+
                     traceback.print_exc(file=sys.stderr)
             raise
 
     def setUp(self):
         self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
         artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
-        parent = (Path(artifact_root) if artifact_root else
-                  ROOT / "out/validation" / self.preset / "ctest-repetition-controls")
+        parent = (
+            Path(artifact_root)
+            if artifact_root
+            else ROOT / "out/validation" / self.preset / "ctest-repetition-controls"
+        )
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(prefix="repeat control ü ", dir=parent, delete=False)
         self.directory = Path(self.temporary.name).resolve()
@@ -101,10 +105,25 @@ class CtestRepetitionTests(unittest.TestCase):
 
     def run_control(self, mode="success", selection="^RepeatControl$"):
         self.registration_file.write_text(self.registration().replace("@MODE@", mode), encoding="utf-8")
-        command = [self.ctest, "--test-dir", str(self.build), "--parallel", "1", "--no-tests=error",
-                   "-R", selection, "--repeat", "until-fail:5", "--verbose", "--output-on-failure",
-                   "--stop-on-failure", "--output-log", str(self.directory / "ctest.log"),
-                   "--output-junit", str(self.directory / "junit.xml")]
+        command = [
+            self.ctest,
+            "--test-dir",
+            str(self.build),
+            "--parallel",
+            "1",
+            "--no-tests=error",
+            "-R",
+            selection,
+            "--repeat",
+            "until-fail:5",
+            "--verbose",
+            "--output-on-failure",
+            "--stop-on-failure",
+            "--output-log",
+            str(self.directory / "ctest.log"),
+            "--output-junit",
+            str(self.directory / "junit.xml"),
+        ]
         try:
             self.native.command("ctest", command, timeout=20, stdout_only=True)
         except subprocess.CalledProcessError:
@@ -113,8 +132,13 @@ class CtestRepetitionTests(unittest.TestCase):
             pass
         process = json.loads((self.result_directory / "ctest.process.json").read_text(encoding="utf-8"))
         completed = self.native.commands[-1]
-        self.native.publish({"schema": "native-run-v1", "status": "passed" if completed["returncode"] == 0 else "failed",
-                             "commands": self.native.commands})
+        self.native.publish(
+            {
+                "schema": "native-run-v1",
+                "status": "passed" if completed["returncode"] == 0 else "failed",
+                "commands": self.native.commands,
+            }
+        )
         stdout = (self.result_directory / "ctest.log").read_bytes()
         stderr_path = self.result_directory / "ctest.stderr.log"
         stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
@@ -131,8 +155,7 @@ class CtestRepetitionTests(unittest.TestCase):
         rows = self.rows()
         self.assertEqual(tuple(row["attempt"] for row in rows), expected_attempts)
         self.assertEqual(len({(row["pid"], row["started"]) for row in rows}), 5)
-        self.assertTrue(all(row["local_count"] == 1 and row["operands"] == ["fixed operands", "W1-W7"]
-                            for row in rows))
+        self.assertTrue(all(row["local_count"] == 1 and row["operands"] == ["fixed operands", "W1-W7"] for row in rows))
         self.assertEqual(len(list(ET.parse(self.directory / "junit.xml").iter("testcase"))), 1)
 
     def test_first_failure_stops_repetition_and_keeps_failed_attempt(self):
@@ -198,7 +221,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             if not interrupted:
                 deadline = time.monotonic() + 10
                 while not case.events.exists() and time.monotonic() < deadline:
-                    time.sleep(.01)
+                    time.sleep(0.01)
                 self.assertTrue(case.events.exists())
                 interrupted = True
                 raise KeyboardInterrupt()
@@ -262,10 +285,14 @@ class ArtifactSelectionTests(unittest.TestCase):
         unrelated.write_text('{"status":"failed"}')
 
         expected_rows = (
-            ("failed-marker", failed, True), ("interrupted-marker", interrupted, True),
-            ("missing-marker", missing, True), ("malformed-marker", malformed, True),
-            ("passed-marker", passed, False), ("passed-blocked-owner", passed_blocked, True),
-            ("npy-sample", sample, True), ("build-cache", unrelated, False),
+            ("failed-marker", failed, True),
+            ("interrupted-marker", interrupted, True),
+            ("missing-marker", missing, True),
+            ("malformed-marker", malformed, True),
+            ("passed-marker", passed, False),
+            ("passed-blocked-owner", passed_blocked, True),
+            ("npy-sample", sample, True),
+            ("build-cache", unrelated, False),
         )
         self.subtest_cases = tuple(row[0] for row in expected_rows)
         selected = set(selected_paths(self.preset_root))
@@ -275,10 +302,17 @@ class ArtifactSelectionTests(unittest.TestCase):
 
     def test_selector_fails_closed_on_ambiguous_or_unbound_marker_metadata(self):
         cases = (
-            "duplicate-outcome", "fixture-mismatch", "owner-root-missing",
-            "owner-root-path-missing", "owner-root-outside", "descendant-owner-with-live-root",
-            "blocked-not-a-list", "unknown-field",
-            "passed-with-failure", "passed-with-error", "cleanup-exception",
+            "duplicate-outcome",
+            "fixture-mismatch",
+            "owner-root-missing",
+            "owner-root-path-missing",
+            "owner-root-outside",
+            "descendant-owner-with-live-root",
+            "blocked-not-a-list",
+            "unknown-field",
+            "passed-with-failure",
+            "passed-with-error",
+            "cleanup-exception",
         )
         self.subtest_cases = cases
         for case_id in cases:
@@ -290,7 +324,8 @@ class ArtifactSelectionTests(unittest.TestCase):
                 record = json.loads(marker.read_text(encoding="utf-8"))
                 if case_id == "duplicate-outcome":
                     content = marker.read_text(encoding="utf-8").replace(
-                        '"outcome": "passed"', '"outcome": "failed", "outcome": "passed"', 1)
+                        '"outcome": "passed"', '"outcome": "failed", "outcome": "passed"', 1
+                    )
                     marker.write_text(content, encoding="utf-8")
                 else:
                     if case_id == "fixture-mismatch":
@@ -336,8 +371,11 @@ class ArtifactSelectionTests(unittest.TestCase):
                 elif case_id == "empty-lease-directory":
                     (fixture / "out/verification-locks/acquiring-owner").mkdir(parents=True)
                 else:
-                    running = (fixture / "logs/native.running.lock" if case_id == "dependency-command-lock" else
-                               fixture / "out/validation/linux-debug/results/campaign/native.running.lock")
+                    running = (
+                        fixture / "logs/native.running.lock"
+                        if case_id == "dependency-command-lock"
+                        else fixture / "out/validation/linux-debug/results/campaign/native.running.lock"
+                    )
                     running.parent.mkdir(parents=True)
                     running.write_text("running\n", encoding="utf-8")
                 self.assertIn(fixture, selected_paths(self.preset_root))
@@ -393,9 +431,11 @@ class ArtifactSelectionTests(unittest.TestCase):
                     tooling_artifacts = re.findall(r"^          name: (.+)$", job[1], re.M)
                     self.assertTrue(tooling_artifacts)
                     self.assertTrue(all("${{ matrix.shard }}" in artifact for artifact in tooling_artifacts))
-                    expanded = [artifact.replace("${{ matrix.shard }}", shard)
-                                for artifact in artifacts
-                                for shard in (shards if artifact in tooling_artifacts else [""])]
+                    expanded = [
+                        artifact.replace("${{ matrix.shard }}", shard)
+                        for artifact in artifacts
+                        for shard in (shards if artifact in tooling_artifacts else [""])
+                    ]
                     for shard in shards:
                         self.assertIn(f"windows-tooling-{shard}-results", expanded)
                         self.assertIn(f"windows-tooling-{shard}-failed-controls", expanded)
@@ -410,15 +450,22 @@ class ArtifactSelectionTests(unittest.TestCase):
 ArtifactSelectionTests.test_selector_omits_absent_empty_and_successful_families.required_subtests = True
 ArtifactSelectionTests.test_selector_includes_every_unproved_fixture_and_required_sample.required_subtests = True
 ArtifactSelectionTests.test_selector_includes_every_unproved_fixture_and_required_sample.subtest_cases = (
-    "failed-marker", "interrupted-marker", "missing-marker", "malformed-marker",
-    "passed-marker", "passed-blocked-owner", "npy-sample", "build-cache",
+    "failed-marker",
+    "interrupted-marker",
+    "missing-marker",
+    "malformed-marker",
+    "passed-marker",
+    "passed-blocked-owner",
+    "npy-sample",
+    "build-cache",
 )
 ArtifactSelectionTests.test_selector_fails_closed_on_ambiguous_or_unbound_marker_metadata.required_subtests = True
 ArtifactSelectionTests.test_selector_rescans_live_owner_and_named_command_locks.required_subtests = True
 ArtifactSelectionTests.test_selector_retains_linked_output_directories.required_subtests = True
 ArtifactSelectionTests.test_native_workflows_upload_selected_paths_and_keep_reports.required_subtests = True
 ArtifactSelectionTests.test_native_workflows_upload_selected_paths_and_keep_reports.subtest_cases = (
-    "linux-workflow", "windows-workflow"
+    "linux-workflow",
+    "windows-workflow",
 )
 
 

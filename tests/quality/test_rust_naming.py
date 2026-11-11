@@ -14,7 +14,6 @@ import unittest
 from pathlib import Path
 
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 FIXTURES = Path(__file__).resolve().parent / "fixtures/rust_naming"
@@ -32,8 +31,11 @@ def preset_build_for_probe(target_dir: Path, family: str) -> Path:
         relative = target_dir.relative_to(build_root)
     except ValueError as error:
         raise ValueError("Rust naming probe cache must be under the standard preset Cargo tree") from error
-    if (len(relative.parts) != 4 or relative.parts[0] not in quality.PRESET_TARGETS
-            or relative.parts[1:] != ("cargo", "quality-probes", family)):
+    if (
+        len(relative.parts) != 4
+        or relative.parts[0] not in quality.PRESET_TARGETS
+        or relative.parts[1:] != ("cargo", "quality-probes", family)
+    ):
         raise ValueError("Rust naming probe cache must be <root>/out/build/<preset>/cargo/quality-probes/naming")
     return build_root / relative.parts[0]
 
@@ -51,6 +53,7 @@ class RustNamingTests(unittest.TestCase):
             os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
         ]
         from execution import NativeRun, OutputLease
+
         cls.lease = OutputLease(ROOT, cls.preset_build)
         cls.lease.__enter__()
         cls.addClassCleanup(cls.release_lease)
@@ -76,8 +79,11 @@ class RustNamingTests(unittest.TestCase):
     def cleanup_artifacts(cls) -> None:
         if not cls.artifacts.exists():
             return
-        if (cls.retain_artifacts or cls.completed_tests != cls.expected_tests
-                or os.environ.get("JUICER_TEST_RETAIN_FIXTURES")):
+        if (
+            cls.retain_artifacts
+            or cls.completed_tests != cls.expected_tests
+            or os.environ.get("JUICER_TEST_RETAIN_FIXTURES")
+        ):
             print("Retained Rust naming fixture evidence:", cls.artifacts, file=sys.stderr)
             return
         if cls.lease.blocked or not cls.commands_drained():
@@ -93,9 +99,10 @@ class RustNamingTests(unittest.TestCase):
 
     @classmethod
     def commands_drained(cls) -> bool:
-        return all(row.get("drained", False)
-                   and row.get("process_status") in {"completed", "failed-parent"}
-                   for row in cls.native_run.commands)
+        return all(
+            row.get("drained", False) and row.get("process_status") in {"completed", "failed-parent"}
+            for row in cls.native_run.commands
+        )
 
     @classmethod
     def report_command_costs(cls) -> None:
@@ -123,11 +130,16 @@ class RustNamingTests(unittest.TestCase):
         cls = type(self)
         outcome = self._outcome
         result = outcome.result if outcome else None
-        failed = (result is None or getattr(self, "interrupted", False)
-                  or cls.lease.blocked
-                  or not cls.commands_drained()
-                  or any(owner is self or getattr(owner, "test_case", None) is self
-                         for owner, _ in [*result.failures, *result.errors]))
+        failed = (
+            result is None
+            or getattr(self, "interrupted", False)
+            or cls.lease.blocked
+            or not cls.commands_drained()
+            or any(
+                owner is self or getattr(owner, "test_case", None) is self
+                for owner, _ in [*result.failures, *result.errors]
+            )
+        )
         if failed:
             cls.retain_artifacts = True
         cls.completed_tests.add(self._testMethodName)
@@ -148,10 +160,8 @@ class RustNamingTests(unittest.TestCase):
             invocation = cls.invocation
         name = f"{invocation:02d}-{self._testMethodName}-{package}-{profile}".lower().replace("_", "-")
         try:
-            log = cls.native_run.command(name, arguments, env=self.environment,
-                                         stdout_only=True, cwd=self.workspace)
-            returncode = next(record["returncode"] for record in cls.native_run.commands
-                              if record["name"] == name)
+            log = cls.native_run.command(name, arguments, env=self.environment, stdout_only=True, cwd=self.workspace)
+            returncode = next(record["returncode"] for record in cls.native_run.commands if record["name"] == name)
         except subprocess.CalledProcessError as error:
             log = cls.artifacts / f"{name}.log"
             returncode = error.returncode
@@ -169,9 +179,18 @@ class RustNamingTests(unittest.TestCase):
     def clippy(self, package: str, release: bool) -> tuple[int, list[dict]]:
         profile = "release" if release else "dev"
         command = [
-            self.cargo, "clippy", "--locked", "--offline", "--package", package,
-            "--all-targets", "--target", self.target,
-            "--target-dir", str(self.target_dir), "--message-format=json",
+            self.cargo,
+            "clippy",
+            "--locked",
+            "--offline",
+            "--package",
+            package,
+            "--all-targets",
+            "--target",
+            self.target,
+            "--target-dir",
+            str(self.target_dir),
+            "--message-format=json",
         ]
         if release:
             command.append("--release")
@@ -190,9 +209,7 @@ class RustNamingTests(unittest.TestCase):
         for package in PACKAGES:
             self.add_probe(package, "accepted")
         cases = tuple((package, release) for package in PACKAGES for release in self.profiles)
-        self.subtest_cases = tuple(
-            f"{package}:{'release' if release else 'debug'}" for package, release in cases
-        )
+        self.subtest_cases = tuple(f"{package}:{'release' if release else 'debug'}" for package, release in cases)
         for case_id, (package, release) in zip(self.subtest_cases, cases):
             with self.subTest(case=case_id):
                 status, diagnostics = self.clippy(package, release)
@@ -202,20 +219,24 @@ class RustNamingTests(unittest.TestCase):
         expected = {
             "non_camel_case_types": ("bad_type", "bad_trait", "negative_direct"),
             "non_snake_case": (
-                "badModule", "renderFrame", "rowBytes", "cameraEV", "filmDensity",
-                "fromRGB", "testRenderFrame",
+                "badModule",
+                "renderFrame",
+                "rowBytes",
+                "cameraEV",
+                "filmDensity",
+                "fromRGB",
+                "testRenderFrame",
             ),
             "non_upper_case_globals": ("kFilmFormat", "currentFrame", "kChannels"),
             "clippy::upper_case_acronyms": ("RGB", "RGBToXYZ", "CMY", "PrintRGB", "CUDAContext"),
             "clippy::allow_attributes_without_reason": (
-                "#[allow(non_snake_case)]", "#[expect(non_snake_case)]",
+                "#[allow(non_snake_case)]",
+                "#[expect(non_snake_case)]",
             ),
             "unfulfilled_lint_expectations": ("non_snake_case",),
         }
         cases = tuple((package, release) for package in PACKAGES for release in self.profiles)
-        self.subtest_cases = tuple(
-            f"{package}:{'release' if release else 'debug'}" for package, release in cases
-        )
+        self.subtest_cases = tuple(f"{package}:{'release' if release else 'debug'}" for package, release in cases)
         for package in PACKAGES:
             self.add_probe(package, "rejected")
         for case_id, (package, release) in zip(self.subtest_cases, cases):
@@ -226,19 +247,19 @@ class RustNamingTests(unittest.TestCase):
                     spans = [
                         span
                         for diagnostic in diagnostics
-                        if (diagnostic.get("code") or {}).get("code") == lint
-                        and diagnostic["level"] == "error"
+                        if (diagnostic.get("code") or {}).get("code") == lint and diagnostic["level"] == "error"
                         for span in diagnostic["spans"]
-                        if span["is_primary"]
-                        and span["file_name"].endswith("naming_probe.rs")
+                        if span["is_primary"] and span["file_name"].endswith("naming_probe.rs")
                     ]
                     identifiers = [
-                        text["text"][text["highlight_start"] - 1:text["highlight_end"] - 1]
-                        for span in spans for text in span["text"]
+                        text["text"][text["highlight_start"] - 1 : text["highlight_end"] - 1]
+                        for span in spans
+                        for text in span["text"]
                     ]
                     for name in names:
                         self.assertIn(
-                            name, identifiers,
+                            name,
+                            identifiers,
                             f"missing blocking {lint} for {name}: {diagnostics}",
                         )
                 if release == self.profiles[-1]:
@@ -259,15 +280,21 @@ class RustNamingTests(unittest.TestCase):
 def exercise_scratch_lifetime_controls(test_case, owner):
     original_hold = os.environ.get("JUICER_TEST_RETAIN_FIXTURES")
     try:
-        scenarios = (("success", False, False, False, False, False),
-                     ("failure", True, False, False, False, False),
-                     ("hold", False, True, False, False, False),
-                     ("cleanup-error", False, False, True, False, False),
-                     ("incomplete", False, False, False, True, False),
-                     ("undrained", False, False, False, False, True))
+        scenarios = (
+            ("success", False, False, False, False, False),
+            ("failure", True, False, False, False, False),
+            ("hold", False, True, False, False, False),
+            ("cleanup-error", False, False, True, False, False),
+            ("incomplete", False, False, False, True, False),
+            ("undrained", False, False, False, False, True),
+        )
         for name, failed, hold, cleanup_error, incomplete, undrained in scenarios:
-            with test_case.subTest(case="scratch-lifetime:" + name), tempfile.TemporaryDirectory(prefix="naming scratch lifetime ") as parent:
+            with (
+                test_case.subTest(case="scratch-lifetime:" + name),
+                tempfile.TemporaryDirectory(prefix="naming scratch lifetime ") as parent,
+            ):
                 artifacts = Path(parent) / "run-fixture"
+
                 class ControlLease:
                     blocked = undrained
 
@@ -296,7 +323,8 @@ def exercise_scratch_lifetime_controls(test_case, owner):
                         self.workspace = self.artifacts / "probe-fixture"
                         self.workspace.mkdir()
                         (self.workspace / "mutated-source.rs").write_text(
-                            "synthetic expected-negative probe\n", encoding="utf-8")
+                            "synthetic expected-negative probe\n", encoding="utf-8"
+                        )
                         self.addCleanup(self.finalize_test, self.workspace)
                         if cleanup_error:
                             self.addCleanup(self.fail_cleanup)

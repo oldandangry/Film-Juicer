@@ -59,8 +59,9 @@ def summarize(junit: Path, inventory: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--junit", required=True, type=Path)
-    parser.add_argument("--inventory", required=True, type=Path,
-                        help="CTest --show-only=json-v1 output for the required selection")
+    parser.add_argument(
+        "--inventory", required=True, type=Path, help="CTest --show-only=json-v1 output for the required selection"
+    )
     arguments = parser.parse_args()
     try:
         summary = summarize(arguments.junit, arguments.inventory)

@@ -59,8 +59,16 @@ def name_component(value: str) -> str:
 
 
 def run_process_tree(
-    command, root, environment, output, timeout, receipt, lock, tree,
-    stderr_output=None, vctip_cleanup=None,
+    command,
+    root,
+    environment,
+    output,
+    timeout,
+    receipt,
+    lock,
+    tree,
+    stderr_output=None,
+    vctip_cleanup=None,
 ):
     OutputLease.check_held()
     supervisor = Path(__file__).with_name("process_tree.py")
@@ -120,9 +128,7 @@ class OutputLease:
             "gpu"
             if build is None
             else "build-"
-            + hashlib.sha256(
-                build.resolve().relative_to(self.root).as_posix().casefold().encode()
-            ).hexdigest()[:24]
+            + hashlib.sha256(build.resolve().relative_to(self.root).as_posix().casefold().encode()).hexdigest()[:24]
         )
         self.path = self.root / "out/verification-locks" / key
         self.timeout = timeout
@@ -133,14 +139,9 @@ class OutputLease:
     def check_admission(self):
         try:
             owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
-            if (
-                self.blocked
-                or owner["status"] != "owned"
-                or owner["token"] != self.token
-            ):
+            if self.blocked or owner["status"] != "owned" or owner["token"] != self.token:
                 raise RuntimeError(
-                    "output owner is blocked or changed; establish drainage before recovery: "
-                    + str(self.path)
+                    "output owner is blocked or changed; establish drainage before recovery: " + str(self.path)
                 )
         except BaseException:
             self.blocked = True
@@ -183,9 +184,7 @@ class OutputLease:
                 if owner.get("status") == "blocked":
                     raise RuntimeError(f"output owner is blocked; inspect drainage before recovery: {self.path}")
                 if self.timeout is not None and time.monotonic() - started >= self.timeout:
-                    raise TimeoutError(
-                        f"output remains owned; inspect drainage before recovery: {self.path}"
-                    )
+                    raise TimeoutError(f"output remains owned; inspect drainage before recovery: {self.path}")
                 time.sleep(0.05)
         self.wait_seconds = time.monotonic() - started
         self.token = str(uuid.uuid4())
@@ -199,9 +198,7 @@ class OutputLease:
             },
         )
         self.previous = os.environ.get("JUICER_OUTPUT_LEASES")
-        os.environ["JUICER_OUTPUT_LEASES"] = json.dumps(
-            {**inherited, key: self.token}, sort_keys=True
-        )
+        os.environ["JUICER_OUTPUT_LEASES"] = json.dumps({**inherited, key: self.token}, sort_keys=True)
         self.held[self.path] = self
         return self
 
@@ -254,25 +251,38 @@ class NativeRun:
         process_record = self.directory / f"{name}.process.json"
         lock = self.directory / f"{name}.running.lock"
         tree = {"drained": True}
-        record = {"name": name, "command": list(map(str, command)), "directory": str(cwd or self.root), "returncode": None}
+        record = {
+            "name": name,
+            "command": list(map(str, command)),
+            "directory": str(cwd or self.root),
+            "returncode": None,
+        }
         if cleanup:
             record["vctip_cleanup"] = cleanup
         self.commands.append(record)
         started = time.perf_counter()
         try:
             from contextlib import ExitStack
+
             with ExitStack() as streams:
                 stream = streams.enter_context(log.open("xb"))
-                errors = streams.enter_context((self.directory / f"{name}.stderr.log").open("xb")) if stdout_only else None
+                errors = (
+                    streams.enter_context((self.directory / f"{name}.stderr.log").open("xb")) if stdout_only else None
+                )
                 options = {}
                 if cleanup:
                     options["vctip_cleanup"] = cleanup
                 if errors is not None:
                     options["stderr_output"] = errors
                 record["returncode"] = run_process_tree(
-                    record["command"], cwd or self.root,
+                    record["command"],
+                    cwd or self.root,
                     command_environment(os.environ if env is None else env),
-                    stream, timeout, process_record, lock, tree,
+                    stream,
+                    timeout,
+                    process_record,
+                    lock,
+                    tree,
                     **options,
                 )
             if record["returncode"]:
@@ -286,10 +296,13 @@ class NativeRun:
             if stdout_only:
                 errors = self.directory / f"{name}.stderr.log"
                 record["stderr_bytes"] = errors.stat().st_size if errors.exists() else 0
-            record.update(seconds=time.perf_counter() - started,
-                          drained=tree["drained"], process_status=tree.get("status"),
-                          command_seconds=tree.get("command_seconds"),
-                          drain_seconds=tree.get("drain_seconds"))
+            record.update(
+                seconds=time.perf_counter() - started,
+                drained=tree["drained"],
+                process_status=tree.get("status"),
+                command_seconds=tree.get("command_seconds"),
+                drain_seconds=tree.get("drain_seconds"),
+            )
             if "resource_usage" in tree:
                 record["resource_usage"] = tree["resource_usage"]
             if "resource_usage_error" in tree:
@@ -361,9 +374,13 @@ def _write_closeout_json(root, path, value):
 
 
 def _closeout_state(value, result_bytes):
-    if (not isinstance(value, dict) or value.get("schema") != "native-closeout-v1"
-            or value.get("result_sha256") != hashlib.sha256(result_bytes).hexdigest()
-            or type(value.get("accepted")) is not bool or value.get("review") not in {"open", "closed"}):
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "native-closeout-v1"
+        or value.get("result_sha256") != hashlib.sha256(result_bytes).hexdigest()
+        or type(value.get("accepted")) is not bool
+        or value.get("review") not in {"open", "closed"}
+    ):
         raise ValueError("invalid or mismatched closeout")
     closed = value.get("closed_at")
     if closed is not None and (type(closed) not in (int, float) or not math.isfinite(closed) or closed < 0):
@@ -371,33 +388,50 @@ def _closeout_state(value, result_bytes):
     if (closed is not None) != (value["accepted"] and value["review"] == "closed"):
         raise ValueError("incomplete acceptance/review closeout")
     holds = value.get("holds")
-    if (not isinstance(holds, list) or any(hold not in {"review", "failure", "reproduction"} for hold in holds)
-            or len(holds) != len(set(holds))):
+    if (
+        not isinstance(holds, list)
+        or any(hold not in {"review", "failure", "reproduction"} for hold in holds)
+        or len(holds) != len(set(holds))
+    ):
         raise ValueError("invalid closeout holds")
     disposition = value.get("disposition", {})
-    if (not isinstance(disposition, dict) or type(disposition.get("deleted_bytes", 0)) is not int
-            or disposition.get("deleted_bytes", 0) < 0):
+    if (
+        not isinstance(disposition, dict)
+        or type(disposition.get("deleted_bytes", 0)) is not int
+        or disposition.get("deleted_bytes", 0) < 0
+    ):
         raise ValueError("invalid closeout disposition")
     if disposition and disposition.get("status") not in {"pending", "deleted", "absent", "failed"}:
         raise ValueError("invalid closeout disposition status")
     if disposition.get("status") == "pending" and (
-            type(disposition.get("pending_bytes")) is not int or disposition["pending_bytes"] < 0):
+        type(disposition.get("pending_bytes")) is not int or disposition["pending_bytes"] < 0
+    ):
         raise ValueError("invalid pending diagnostic size")
     return value
 
 
 def _expiry_result(root, directory, result, preset):
-    if (not isinstance(result, dict) or result.get("schema") not in {
-            "native-tests-v1", "native-quality-v1", "native-build-v1", "native-spatial-optics-v1"}
-            or result.get("preset") != preset):
+    if (
+        not isinstance(result, dict)
+        or result.get("schema")
+        not in {"native-tests-v1", "native-quality-v1", "native-build-v1", "native-spatial-optics-v1"}
+        or result.get("preset") != preset
+    ):
         raise ValueError("unsupported closeout result")
     commands = result.get("commands")
     if not isinstance(commands, list) or any(not isinstance(command, dict) for command in commands):
         raise ValueError("invalid closeout command metadata")
-    if (result.get("status") != "passed" or result.get("candidate_unchanged") is not True
-            or not commands
-            or any(command.get("drained") is not True or command.get("returncode") != 0
-                   or command.get("process_status") != "completed" for command in commands)):
+    if (
+        result.get("status") != "passed"
+        or result.get("candidate_unchanged") is not True
+        or not commands
+        or any(
+            command.get("drained") is not True
+            or command.get("returncode") != 0
+            or command.get("process_status") != "completed"
+            for command in commands
+        )
+    ):
         return False
     members = result.get("members", {})
     if not isinstance(members, dict) or not {"candidate.json", "candidate.patch"} <= members.keys():
@@ -431,8 +465,14 @@ def closeout_run(root, preset, run_id, *, accept=False, review=None, hold=(), re
     eligible = _expiry_result(root, directory, result, preset)
     path = directory / "closeout.json"
     if _plain_path(root, path, missing=True) is None:
-        state = {"schema": "native-closeout-v1", "result_sha256": hashlib.sha256(raw).hexdigest(),
-                 "accepted": False, "review": "open", "closed_at": None, "holds": []}
+        state = {
+            "schema": "native-closeout-v1",
+            "result_sha256": hashlib.sha256(raw).hexdigest(),
+            "accepted": False,
+            "review": "open",
+            "closed_at": None,
+            "holds": [],
+        }
     else:
         state = _closeout_state(_read_closeout_json(root, path, costs)[0], raw)
     if review is not None and review not in {"open", "closed"}:
@@ -462,8 +502,16 @@ def expire_diagnostics(root, preset, *, now=None):
     started = time.perf_counter()
     owner = _preset_owner(root, preset)
     root = owner.root
-    summary = {"visited": 0, "directory_entries": 0, "read_bytes": 0, "write_bytes": 0, "deleted_bytes": 0,
-               "deleted_runs": 0, "errors": [], "more": False}
+    summary = {
+        "visited": 0,
+        "directory_entries": 0,
+        "read_bytes": 0,
+        "write_bytes": 0,
+        "deleted_bytes": 0,
+        "deleted_runs": 0,
+        "errors": [],
+        "more": False,
+    }
     runs = root / "out/validation" / preset / "results"
     # Missing roots are ordinary on the first invocation; create no history tree.
     if _plain_path(root, runs, directory=True, missing=True) is None:
@@ -473,8 +521,11 @@ def expire_diagnostics(root, preset, *, now=None):
     after = ""
     if _plain_path(root, cursor_path, missing=True) is not None:
         cursor, _ = _read_closeout_json(root, cursor_path, summary)
-        if (not isinstance(cursor, dict) or cursor.get("schema") != "native-expiry-cursor-v1"
-                or not isinstance(cursor.get("after"), str)):
+        if (
+            not isinstance(cursor, dict)
+            or cursor.get("schema") != "native-expiry-cursor-v1"
+            or not isinstance(cursor.get("after"), str)
+        ):
             raise ValueError("invalid diagnostic expiry cursor")
         after = cursor["after"]
     ready = not after
@@ -504,8 +555,7 @@ def expire_diagnostics(root, preset, *, now=None):
                 state, _ = _read_closeout_json(root, path, summary)
                 result, raw = _read_closeout_json(root, directory / "result.json", summary)
                 state = _closeout_state(state, raw)
-                if (state["closed_at"] is None or state["holds"]
-                        or timestamp < state["closed_at"] + 7 * 24 * 60 * 60):
+                if state["closed_at"] is None or state["holds"] or timestamp < state["closed_at"] + 7 * 24 * 60 * 60:
                     continue
                 if not _expiry_result(root, directory, result, preset):
                     continue
@@ -519,16 +569,21 @@ def expire_diagnostics(root, preset, *, now=None):
                     if info is not None:
                         # Persist intent first so interruption after unlink does
                         # not lose the measured byte count on a later retry.
-                        state["disposition"] = {"status": "pending", "deleted_bytes": previous,
-                                                "pending_bytes": info.st_size}
+                        state["disposition"] = {
+                            "status": "pending",
+                            "deleted_bytes": previous,
+                            "pending_bytes": info.st_size,
+                        }
                         summary["write_bytes"] += _write_closeout_json(root, path, state)
                         owner.check_admission()
                         _plain_path(root, target)  # Recheck confinement at deletion.
                         target.unlink()
                         summary["deleted_bytes"] += info.st_size
                         summary["deleted_runs"] += 1
-                    state["disposition"] = {"status": "deleted" if info is not None or previous else "absent",
-                                            "deleted_bytes": previous + (info.st_size if info is not None else 0)}
+                    state["disposition"] = {
+                        "status": "deleted" if info is not None or previous else "absent",
+                        "deleted_bytes": previous + (info.st_size if info is not None else 0),
+                    }
                 except OSError as error:
                     state["disposition"] = {"status": "failed", "deleted_bytes": previous, "error": str(error)}
                     summary["errors"].append({"run": entry.name, "error": str(error)})
@@ -538,7 +593,8 @@ def expire_diagnostics(root, preset, *, now=None):
     summary["cursor_reset"] = not ready
     summary["more"] |= not ready
     summary["write_bytes"] += _write_closeout_json(
-        root, cursor_path, {"schema": "native-expiry-cursor-v1", "after": last if summary["more"] else ""})
+        root, cursor_path, {"schema": "native-expiry-cursor-v1", "after": last if summary["more"] else ""}
+    )
     summary["seconds"] = time.perf_counter() - started
     print("Diagnostic expiry:", json.dumps(summary, sort_keys=True))
     return summary

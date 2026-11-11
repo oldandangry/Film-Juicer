@@ -23,7 +23,9 @@ class NinjaGraph:
         current = None
         dependencies = subprocess.check_output(
             [self.ninja, "-C", str(self.build), "-t", "deps"],
-            text=True, encoding="utf-8", timeout=None,
+            text=True,
+            encoding="utf-8",
+            timeout=None,
         )
         for line in dependencies.splitlines():
             if ": #deps " in line:
@@ -102,10 +104,22 @@ def header_consumers(root, build, headers, *, require_compiled=True, compilation
     graph = NinjaGraph(build)
     entries = compilation.rows
     wanted = {str(compilation.resolve(root / name)) for name in headers}
-    outputs = [str(compilation.resolve(Path(row["directory"]) / row["output"]).relative_to(build)) for row in entries if row.get("output")]
-    current = subprocess.run([graph.ninja, "-C", str(build), "-n", "-d", "explain", *outputs],
-                             text=True, capture_output=True, timeout=None, check=True)
-    changed_commands = {str((build / name).resolve()) for name in re.findall(r"^ninja explain: command line changed for (.+)$", current.stderr, re.M)}
+    outputs = [
+        str(compilation.resolve(Path(row["directory"]) / row["output"]).relative_to(build))
+        for row in entries
+        if row.get("output")
+    ]
+    current = subprocess.run(
+        [graph.ninja, "-C", str(build), "-n", "-d", "explain", *outputs],
+        text=True,
+        capture_output=True,
+        timeout=None,
+        check=True,
+    )
+    changed_commands = {
+        str((build / name).resolve())
+        for name in re.findall(r"^ninja explain: command line changed for (.+)$", current.stderr, re.M)
+    }
     targets, sources, found, macros = set(), set(), set(), {}
     for row in entries:
         if not row.get("output"):
@@ -120,7 +134,8 @@ def header_consumers(root, build, headers, *, require_compiled=True, compilation
             if name not in macros:
                 candidate = Path(name)
                 macros[name] = (
-                    candidate.is_relative_to(root) and candidate.is_file()
+                    candidate.is_relative_to(root)
+                    and candidate.is_file()
                     and bool(re.search(r"^\s*#\s*include\s+[^<\"\s]", candidate.read_text(encoding="utf-8"), re.M))
                 )
             opaque |= macros[name]

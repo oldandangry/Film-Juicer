@@ -176,11 +176,7 @@ class WindowsJob:
         limits = ExtendedLimits()
         limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway
         try:
-            self.check(
-                self.api.SetInformationJobObject(
-                    self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
-                )
-            )
+            self.check(self.api.SetInformationJobObject(self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
         except BaseException:
             self.close()
             raise
@@ -204,9 +200,7 @@ class WindowsJob:
             stdin=subprocess.PIPE,
         )
         try:
-            self.check(
-                self.api.AssignProcessToJobObject(self.job, int(self.process._handle))
-            )
+            self.check(self.api.AssignProcessToJobObject(self.job, int(self.process._handle)))
             # App execution aliases may add a redirector even for a base path.
             # Assign the actual gated interpreter too, before releasing stdin.
             deadline = time.monotonic() + 5
@@ -216,8 +210,7 @@ class WindowsJob:
                 if self.process.poll() is not None or time.monotonic() >= deadline:
                     detail = ": " + str(read_error) if read_error is not None else ""
                     raise RuntimeError(
-                        "gated interpreter did not report a readable process identity "
-                        "before exit or deadline" + detail
+                        "gated interpreter did not report a readable process identity before exit or deadline" + detail
                     ) from read_error
 
             while True:
@@ -250,9 +243,7 @@ class WindowsJob:
         self.process.poll()
         accounting = self.accounting_type()
         self.check(
-            self.api.QueryInformationJobObject(
-                self.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
-            )
+            self.api.QueryInformationJobObject(self.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None)
         )
         return accounting.active != 0
 
@@ -262,9 +253,7 @@ class WindowsJob:
     def resource_usage(self):
         accounting = self.basic_and_io_accounting_type()
         self.check(
-            self.api.QueryInformationJobObject(
-                self.job, 8, ctypes.byref(accounting), ctypes.sizeof(accounting), None
-            )
+            self.api.QueryInformationJobObject(self.job, 8, ctypes.byref(accounting), ctypes.sizeof(accounting), None)
         )
         io = accounting.io
         return {
@@ -286,9 +275,7 @@ class WindowsJob:
         capacity = 16
         for _ in range(16):
             buffer = ctypes.create_string_buffer(8 + capacity * ctypes.sizeof(ctypes.c_size_t))
-            if self.api.QueryInformationJobObject(
-                self.job, 3, buffer, ctypes.sizeof(buffer), None
-            ):
+            if self.api.QueryInformationJobObject(self.job, 3, buffer, ctypes.sizeof(buffer), None):
                 assigned = ctypes.c_uint32.from_buffer(buffer, 0).value
                 count = ctypes.c_uint32.from_buffer(buffer, 4).value
                 if count > capacity:
@@ -325,10 +312,8 @@ class WindowsJob:
                     raise ctypes.WinError(ctypes.get_last_error())
                 image = ctypes.create_unicode_buffer(32768)
                 length = wintypes.DWORD(len(image))
-                self.check(self.api.QueryFullProcessImageNameW(
-                    handle, 0, image, ctypes.byref(length)
-                ))
-                path = image.value[:length.value]
+                self.check(self.api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length)))
+                path = image.value[: length.value]
                 if os.path.normcase(os.path.realpath(path)) != expected:
                     continue
                 if not self.api.TerminateProcess(handle, 125):
@@ -349,7 +334,7 @@ def main():
     timeout = None if sys.argv[2] == "None" else float(sys.argv[2])
     position = 3
     cleanup = json.loads(sys.argv[position + 1]) if sys.argv[position] == "--vctip-cleanup" else None
-    command = sys.argv[position + 2:] if cleanup else sys.argv[position:]
+    command = sys.argv[position + 2 :] if cleanup else sys.argv[position:]
     interrupted = threading.Event()
 
     def watch_owner():
@@ -365,9 +350,7 @@ def main():
             ctypes.c_void_p,
             *([ctypes.POINTER(ctypes.c_uint64)] * 4),
         ]
-        if not api.GetProcessTimes(
-            ctypes.c_void_p(-1), *(ctypes.byref(value) for value in times)
-        ):
+        if not api.GetProcessTimes(ctypes.c_void_p(-1), *(ctypes.byref(value) for value in times)):
             raise ctypes.WinError(ctypes.get_last_error())
         creation = {"windows_creation_time_100ns": times[0].value}
     else:
@@ -417,21 +400,28 @@ def main():
                 break
             now = time.monotonic()
             if (
-                cleanup and next_vctip_check is not None
-                and now >= next_vctip_check and (deadline is None or now < deadline)
+                cleanup
+                and next_vctip_check is not None
+                and now >= next_vctip_check
+                and (deadline is None or now < deadline)
                 and not interrupted.is_set()
             ):
+
                 def record_termination(child):
-                    record["vctip_terminated"].append({
-                        **child, "seconds_after_parent": time.monotonic() - command_end,
-                    })
+                    record["vctip_terminated"].append(
+                        {
+                            **child,
+                            "seconds_after_parent": time.monotonic() - command_end,
+                        }
+                    )
                     save()
 
                 owner.stop_vctip(cleanup["executable"], record_termination)
                 next_vctip_check = now + 0.5
             if stopping is None and (
                 interrupted.is_set()
-                or deadline is not None and now >= deadline
+                or deadline is not None
+                and now >= deadline
                 or failed_parent is not None
                 and now >= failed_parent
             ):

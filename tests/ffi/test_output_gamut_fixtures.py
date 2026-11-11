@@ -1,4 +1,5 @@
 """Immutable native A9 captures, raw identity widths and complete byte sharing."""
+
 import hashlib
 import json
 from pathlib import Path
@@ -9,9 +10,9 @@ FIXTURES = Path(__file__).parent / "fixtures/output_gamut"
 
 
 def fnv(data):
-    value = 0xcbf29ce484222325
+    value = 0xCBF29CE484222325
     for byte in data:
-        value = ((value ^ byte) * 0x100000001b3) & 0xffffffffffffffff
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
     return value
 
 
@@ -19,29 +20,37 @@ class OutputGamutFixtures(unittest.TestCase):
     def test_provenance_membership_and_every_identity_stream(self):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
         payloads = {name: (FIXTURES / name).read_bytes() for name in manifest["files"]}
-        memberships = {(member["records"], member["tables"], member["extra"])
-                       for member in manifest["preset_membership"].values()}
-        decoded = {records_name: json.loads(payloads[records_name])
-                   for records_name, _, _ in memberships}
-        extras = {extra_name: json.loads(payloads[extra_name])
-                  for _, _, extra_name in memberships}
+        memberships = {
+            (member["records"], member["tables"], member["extra"]) for member in manifest["preset_membership"].values()
+        }
+        decoded = {records_name: json.loads(payloads[records_name]) for records_name, _, _ in memberships}
+        extras = {extra_name: json.loads(payloads[extra_name]) for _, _, extra_name in memberships}
         self.subtest_cases = tuple(
             [f"file/{name}" for name in manifest["files"]]
-            + [f"record/{name}/{row['tag']}-{row['variant']}" for name, records in decoded.items()
-               for row in records["rows"]]
-            + [f"direction/{name}/{index}" for name, records in decoded.items()
-               for index, _ in enumerate(records["directions"])]
-            + [f"oklab/{name}/{index}" for name, records in decoded.items()
-               for index, _ in enumerate(records["oklab"])]
-            + [f"extra/{name}/primitive/{index}" for name, extra in extras.items()
-               for index, _ in enumerate(extra["primitives"])]
-            + [f"extra/{name}/cube/{index}" for name, extra in extras.items()
-               for index, _ in enumerate(extra["cube"])]
-            + [f"extra/{name}/row/{index}" for name, extra in extras.items()
-               for index, _ in enumerate(extra["rows"])]
+            + [
+                f"record/{name}/{row['tag']}-{row['variant']}"
+                for name, records in decoded.items()
+                for row in records["rows"]
+            ]
+            + [
+                f"direction/{name}/{index}"
+                for name, records in decoded.items()
+                for index, _ in enumerate(records["directions"])
+            ]
+            + [f"oklab/{name}/{index}" for name, records in decoded.items() for index, _ in enumerate(records["oklab"])]
+            + [
+                f"extra/{name}/primitive/{index}"
+                for name, extra in extras.items()
+                for index, _ in enumerate(extra["primitives"])
+            ]
+            + [f"extra/{name}/cube/{index}" for name, extra in extras.items() for index, _ in enumerate(extra["cube"])]
+            + [f"extra/{name}/row/{index}" for name, extra in extras.items() for index, _ in enumerate(extra["rows"])]
         )
         self.assertEqual(manifest["parent"], "d033f27cb3d1493adebcbc6c3d032f4bf6cb1666")
-        self.assertEqual(set(manifest["preset_membership"]), {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"})
+        self.assertEqual(
+            set(manifest["preset_membership"]),
+            {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"},
+        )
         for name, entry in manifest["files"].items():
             with self.subTest(case=f"file/{name}"):
                 data = payloads[name]
@@ -65,7 +74,10 @@ class OutputGamutFixtures(unittest.TestCase):
                         self.assertEqual(fnv(row["contract_stream"]), row["transform"]["contract_hash"])
                     if row["boundary_ok"]:
                         start = row["table_offset"]
-                        self.assertEqual(fnv(struct.pack("<Q", row["transform"]["contract_hash"]) + table[start:start + 184320]), row["boundary_hash"])
+                        self.assertEqual(
+                            fnv(struct.pack("<Q", row["transform"]["contract_hash"]) + table[start : start + 184320]),
+                            row["boundary_hash"],
+                        )
             for index, direction in enumerate(records["directions"]):
                 with self.subTest(case=f"direction/{records_name}/{index}"):
                     self.assertIsInstance(direction, list)

@@ -15,6 +15,7 @@ FAMILIES = ("checkpoint-controls", "build-evidence-controls", "registration-cont
 
 def read_fixture_marker(path):
     """Reject ambiguous JSON object keys anywhere in a fixture marker."""
+
     def unique_object(pairs):
         record = {}
         for key, value in pairs:
@@ -33,8 +34,7 @@ def _directory_children(path):
         info = path.lstat()
     except FileNotFoundError:
         return ()
-    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or getattr(info, "st_file_attributes", 0) & 0x400):
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
         raise OSError("control directory is linked or not a directory: " + str(path))
     return tuple(path.iterdir())
 
@@ -77,14 +77,23 @@ def current_fixture_blockers(owner_root):
 def record_fixture(root, test, outcome=None, *, owner_root=None):
     result = test._outcome.result if test._outcome else None
     messages = {
-        kind: [trace for owner, trace in getattr(result, kind, ())
-               if owner is test or getattr(owner, "test_case", None) is test]
+        kind: [
+            trace
+            for owner, trace in getattr(result, kind, ())
+            if owner is test or getattr(owner, "test_case", None) is test
+        ]
         for kind in ("failures", "errors")
     }
     if outcome is None:
-        outcome = ("interrupted" if getattr(test, "interrupted", False) else
-                   "incomplete" if result is None else
-                   "failed" if any(messages.values()) else "passed")
+        outcome = (
+            "interrupted"
+            if getattr(test, "interrupted", False)
+            else "incomplete"
+            if result is None
+            else "failed"
+            if any(messages.values())
+            else "passed"
+        )
     fixture_root = Path(root).resolve()
     owner_root = Path(owner_root or root).resolve()
     try:
@@ -93,9 +102,13 @@ def record_fixture(root, test, outcome=None, *, owner_root=None):
         # Selection treats a nonempty blocker list as unproved evidence.
         blocked_owners = [str(owner_root)]
     record = {
-        "test": test.id(), "fixture": str(fixture_root), "outcome": outcome,
-        "failures": messages["failures"], "errors": messages["errors"],
-        "owner_root": str(owner_root), "blocked_owners": blocked_owners,
+        "test": test.id(),
+        "fixture": str(fixture_root),
+        "outcome": outcome,
+        "failures": messages["failures"],
+        "errors": messages["errors"],
+        "owner_root": str(owner_root),
+        "blocked_owners": blocked_owners,
     }
     if sys.exception() is not None:
         record["cleanup_exception"] = traceback.format_exc()
@@ -128,9 +141,11 @@ def selected_paths(preset_root):
             for fixture in children:
                 try:
                     info = fixture.lstat()
-                    if (not stat.S_ISDIR(info.st_mode)
-                            or stat.S_ISLNK(info.st_mode)
-                            or getattr(info, "st_file_attributes", 0) & 0x400):
+                    if (
+                        not stat.S_ISDIR(info.st_mode)
+                        or stat.S_ISLNK(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & 0x400
+                    ):
                         continue
                     fixture_root = fixture.resolve(strict=True)
                     if fixture_root.parent != directory_root:
@@ -143,8 +158,11 @@ def selected_paths(preset_root):
                     for path, directory_expected in ((marker.parent, True), (marker, False)):
                         info = path.lstat()
                         correct_type = stat.S_ISDIR(info.st_mode) if directory_expected else stat.S_ISREG(info.st_mode)
-                        if (not correct_type or stat.S_ISLNK(info.st_mode)
-                                or getattr(info, "st_file_attributes", 0) & 0x400):
+                        if (
+                            not correct_type
+                            or stat.S_ISLNK(info.st_mode)
+                            or getattr(info, "st_file_attributes", 0) & 0x400
+                        ):
                             raise ValueError("linked or invalid fixture marker path")
                     record = read_fixture_marker(marker)
                 except (OSError, ValueError, TypeError):
@@ -153,20 +171,31 @@ def selected_paths(preset_root):
                     continue
                 required = {"test", "fixture", "outcome", "failures", "errors", "owner_root", "blocked_owners"}
                 allowed = required | {"cleanup_exception"}
-                if (not isinstance(record, dict) or not required.issubset(record)
-                        or not set(record).issubset(allowed)
-                        or not isinstance(record.get("test"), str) or not record["test"]
-                        or record.get("outcome") != "passed"
-                        or not isinstance(record.get("failures"), list)
-                        or not isinstance(record.get("errors"), list)
-                        or not isinstance(record.get("blocked_owners"), list)
-                        or any(not isinstance(value, str) or not value for value in
-                               (*record.get("failures", []), *record.get("errors", []),
-                                *record.get("blocked_owners", [])))
-                        or record.get("failures") or record.get("errors") or record.get("blocked_owners")
-                        or "cleanup_exception" in record
-                        or not isinstance(record.get("fixture"), str)
-                        or not isinstance(record.get("owner_root"), str)):
+                if (
+                    not isinstance(record, dict)
+                    or not required.issubset(record)
+                    or not set(record).issubset(allowed)
+                    or not isinstance(record.get("test"), str)
+                    or not record["test"]
+                    or record.get("outcome") != "passed"
+                    or not isinstance(record.get("failures"), list)
+                    or not isinstance(record.get("errors"), list)
+                    or not isinstance(record.get("blocked_owners"), list)
+                    or any(
+                        not isinstance(value, str) or not value
+                        for value in (
+                            *record.get("failures", []),
+                            *record.get("errors", []),
+                            *record.get("blocked_owners", []),
+                        )
+                    )
+                    or record.get("failures")
+                    or record.get("errors")
+                    or record.get("blocked_owners")
+                    or "cleanup_exception" in record
+                    or not isinstance(record.get("fixture"), str)
+                    or not isinstance(record.get("owner_root"), str)
+                ):
                     paths.add(fixture)
                     continue
                 try:
@@ -185,15 +214,20 @@ def selected_paths(preset_root):
                 if blockers:
                     paths.add(fixture)
     npy_root = preset_root / "rust-core"
-    paths.update(p for p in npy_root.glob("npy-*.npy")
-                 if p.is_file() and p.resolve().is_relative_to(npy_root.resolve()))
+    paths.update(
+        p for p in npy_root.glob("npy-*.npy") if p.is_file() and p.resolve().is_relative_to(npy_root.resolve())
+    )
     return sorted(paths)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--preset", nargs="+", required=True, choices=(
-        "linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"))
+    parser.add_argument(
+        "--preset",
+        nargs="+",
+        required=True,
+        choices=("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"),
+    )
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]

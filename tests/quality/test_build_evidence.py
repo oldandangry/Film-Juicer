@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
 
@@ -33,21 +34,22 @@ class CompilationInputsTests(unittest.TestCase):
             (root / "first/entry.h").write_text("// no selected consumer\n")
             (root / "second/entry.h").write_text('#include "../selected.h"\n')
             (root / "selected.h").write_text("// selected\n")
-            (root / "main.cpp").write_text('#include <entry.h>\n')
+            (root / "main.cpp").write_text("#include <entry.h>\n")
             link = root / "current"
 
             def link_to(directory):
                 if os.name == "nt":
                     subprocess.run(
                         ["cmd.exe", "/c", "mklink", "/J", str(link), str(directory)],
-                        check=True, capture_output=True, timeout=10,
+                        check=True,
+                        capture_output=True,
+                        timeout=10,
                     )
                 else:
                     link.symlink_to(directory, target_is_directory=True)
 
             link_to(root / "first")
-            row = {"file": "main.cpp", "directory": str(root),
-                   "arguments": ["c++", "-I" + str(link)]}
+            row = {"file": "main.cpp", "directory": str(root), "arguments": ["c++", "-I" + str(link)]}
             (build / "compile_commands.json").write_text(json.dumps([row]))
             first = CompilationInputs(root, build)
             self.assertEqual(first.paths(row), {"main.cpp", "first/entry.h"})
@@ -65,12 +67,15 @@ class CompilationInputsTests(unittest.TestCase):
                 (root / directory).mkdir()
                 (root / directory / "chosen.h").write_text("// " + directory)
             source = root / "main.cpp"
-            source.write_text('#include <chosen.h>\n')
+            source.write_text("#include <chosen.h>\n")
             forced = root / "forced.h"
             forced.write_text("// forced\n")
             rows = [
-                {"file": "main.cpp", "directory": str(root),
-                 "arguments": ["c++", "-I" + str(root / a), "-I" + str(root / b), *extra]}
+                {
+                    "file": "main.cpp",
+                    "directory": str(root),
+                    "arguments": ["c++", "-I" + str(root / a), "-I" + str(root / b), *extra],
+                }
                 for a, b, extra in [("first", "second", []), ("second", "first", ["-include", "forced.h"])]
             ]
             (build / "compile_commands.json").write_text(json.dumps(rows))
@@ -79,7 +84,7 @@ class CompilationInputsTests(unittest.TestCase):
             self.assertEqual(boundary.paths(rows[1]), {"main.cpp", "second/chosen.h", "forced.h"})
             self.assertEqual(boundary.paths(rows[0]), {"main.cpp", "first/chosen.h"})
             stamp = source.stat()
-            source.write_text('#include <other.h>\n')
+            source.write_text("#include <other.h>\n")
             os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             (root / "first/other.h").write_text("// next boundary\n")
             fresh = CompilationInputs(root, build)
@@ -92,9 +97,10 @@ class CompilationInputsTests(unittest.TestCase):
 class NativeDependencyWitnessTests(unittest.TestCase):
     def setUp(self):
         self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        artifact_root = Path(os.environ.get(
-            "JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset
-        )).resolve() / "build-evidence-controls"
+        artifact_root = (
+            Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)).resolve()
+            / "build-evidence-controls"
+        )
         artifact_root.mkdir(parents=True, exist_ok=True)
         # Nested lifetime controls must fit Windows compiler-tool path limits.
         self.scratch = Path(tempfile.mkdtemp(prefix="n ü ", dir=artifact_root))
@@ -133,45 +139,54 @@ class NativeDependencyWitnessTests(unittest.TestCase):
             "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
             "set(CMAKE_CXX_EXTENSIONS OFF)\n"
             "add_library(selected_producer STATIC producer.cpp)\n"
-            "target_include_directories(selected_producer PUBLIC \"${CMAKE_CURRENT_SOURCE_DIR}\")\n"
+            'target_include_directories(selected_producer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")\n'
             "add_executable(selected_consumer main.cpp)\n"
             "target_link_libraries(selected_consumer PRIVATE selected_producer)\n"
             "add_executable(unrelated_consumer unrelated.cpp)\n",
             encoding="utf-8",
         )
         (self.source / "value.h").write_text("inline constexpr int value = 1;\n", encoding="utf-8")
-        (self.source / "producer.h").write_text(
-            '#include "value.h"\nint produced_value();\n', encoding="utf-8"
-        )
+        (self.source / "producer.h").write_text('#include "value.h"\nint produced_value();\n', encoding="utf-8")
         (self.source / "producer.cpp").write_text(
             '#include "producer.h"\nint produced_value() { return value + 1; }\n', encoding="utf-8"
         )
         (self.source / "main.cpp").write_text(
-            "#include <concepts>\n#include <iostream>\n#include \"producer.h\"\n"
+            '#include <concepts>\n#include <iostream>\n#include "producer.h"\n'
             "static_assert(std::same_as<decltype(produced_value()), int>);\n"
             "int main() { std::cout << produced_value() << '\\n'; }\n",
             encoding="utf-8",
         )
-        (self.source / "unrelated.cpp").write_text(
-            "int main() { return 0; }\n", encoding="utf-8"
-        )
-        args = [self.cmake, "-S", str(self.source), "-B", str(self.build), "-G", "Ninja",
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DCMAKE_CXX_COMPILER={self.compiler}"]
+        (self.source / "unrelated.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+        args = [
+            self.cmake,
+            "-S",
+            str(self.source),
+            "-B",
+            str(self.build),
+            "-G",
+            "Ninja",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            f"-DCMAKE_CXX_COMPILER={self.compiler}",
+        ]
         if os.name == "nt":
             args.append("-DCMAKE_LINKER_TYPE=LLD")
         self.native_run.command("configure", args, timeout=120, cwd=self.source)
 
     def build_selected(self, label):
         return self.native_run.command(
-            label, [self.cmake, "--build", str(self.build), "--target", "selected_consumer", "--verbose"],
-            timeout=120, cwd=self.source,
+            label,
+            [self.cmake, "--build", str(self.build), "--target", "selected_consumer", "--verbose"],
+            timeout=120,
+            cwd=self.source,
         )
 
     def execute_selected(self, label):
         executable = self.build / ("selected_consumer.exe" if os.name == "nt" else "selected_consumer")
-        return self.native_run.command(label, [str(executable)], timeout=10, cwd=self.source).read_text(
-            encoding="utf-8"
-        ).strip()
+        return (
+            self.native_run.command(label, [str(executable)], timeout=10, cwd=self.source)
+            .read_text(encoding="utf-8")
+            .strip()
+        )
 
     def test_selected_cxx20_closure_rebuilds_only_its_consumers(self):
         with OutputLease(self.scratch, self.build):
@@ -184,10 +199,12 @@ class NativeDependencyWitnessTests(unittest.TestCase):
 
             query = subprocess.check_output
             queries = []
+
             def observe_query(command, **options):
                 output = query(command, **options)
                 queries.append((command[command.index("-t") + 1], len(output.encode("utf-8"))))
                 return output
+
             with patch("build_dependencies.subprocess.check_output", side_effect=observe_query):
                 targets, sources = header_consumers(self.source, self.build, ["value.h"])
             self.assertEqual([tool for tool, _ in queries], ["deps"])
@@ -200,9 +217,7 @@ class NativeDependencyWitnessTests(unittest.TestCase):
             original_times = executable.stat().st_mtime_ns, producer_object.stat().st_mtime_ns
             no_op = self.build_selected("build-no-op").read_text(encoding="utf-8").lower()
             self.assertIn("no work to do", no_op)
-            self.assertEqual(
-                (executable.stat().st_mtime_ns, producer_object.stat().st_mtime_ns), original_times
-            )
+            self.assertEqual((executable.stat().st_mtime_ns, producer_object.stat().st_mtime_ns), original_times)
 
             (self.source / "producer.cpp").write_text(
                 '#include "producer.h"\nint produced_value() { return value + 10; }\n',
@@ -226,14 +241,17 @@ class NativeDependencyWitnessTests(unittest.TestCase):
             self.assertNotEqual(producer_object.stat().st_mtime_ns, before_header_edit[1])
             self.assertEqual(self.execute_selected("run-header-edit"), "30")
 
-            self.native_run.publish({
-                "schema": "native-cmake-dependency-v1",
-                "preset": self.preset,
-                "targets": ["selected_consumer"],
-                "commands": self.native_run.commands,
-            })
-            self.assertEqual(json.loads((self.logs / "result.json").read_text())[
-                "schema"], "native-cmake-dependency-v1")
+            self.native_run.publish(
+                {
+                    "schema": "native-cmake-dependency-v1",
+                    "preset": self.preset,
+                    "targets": ["selected_consumer"],
+                    "commands": self.native_run.commands,
+                }
+            )
+            self.assertEqual(
+                json.loads((self.logs / "result.json").read_text())["schema"], "native-cmake-dependency-v1"
+            )
             self.succeeded = True
 
     def test_failed_native_command_retains_scratch_diagnostics(self):
@@ -256,15 +274,20 @@ class NativeDependencyWitnessTests(unittest.TestCase):
 class DependencyFixtureLifetimeTests(unittest.TestCase):
     def run_control(self, *, outer_failure=False, cleanup_failure=False):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / preset)) / "build-evidence-controls"
+        parent = (
+            Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / preset))
+            / "build-evidence-controls"
+        )
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(prefix="l-", dir=parent, delete=False)
         case = NativeDependencyWitnessTests("test_failed_native_command_retains_scratch_diagnostics")
         original = case.test_failed_native_command_retains_scratch_diagnostics
         if outer_failure:
+
             def fail_after_control():
                 original()
                 case.fail("controlled outer failure")
+
             case.test_failed_native_command_retains_scratch_diagnostics = fail_after_control
         with patch.dict(os.environ, {"JUICER_TEST_ARTIFACT_DIR": directory.name, "JUICER_TEST_RETAIN_FIXTURES": ""}):
             if cleanup_failure:

@@ -1,4 +1,5 @@
 """GPU-domain membership and exclusion evidence are offline data checks."""
+
 from __future__ import annotations
 
 import copy
@@ -27,10 +28,7 @@ def synthetic_bundle():
         "Resource.Gpu.NegativeDirect": "negative-direct",
         "Resource.Gpu.NegativePrint": "negative-print",
     }
-    commands = {
-        name: ["/unavailable/build/GpuRoutes", route]
-        for name, route in routes.items()
-    }
+    commands = {name: ["/unavailable/build/GpuRoutes", route] for name, route in routes.items()}
     targets = {"GpuRoutes": "/unavailable/build/GpuRoutes"}
     contract = {
         "schema": "native-gpu-contracts-v1",
@@ -43,12 +41,14 @@ def synthetic_bundle():
     registrations = []
     case_files = {}
     payloads = {
-        "candidate.json": encoded({
-            "head": "synthetic-source",
-            "preset": "linux-debug",
-            "inputs": {"Resources/profiles/fixture.json": "source-identity"},
-            "configuration": {"BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug"},
-        }),
+        "candidate.json": encoded(
+            {
+                "head": "synthetic-source",
+                "preset": "linux-debug",
+                "inputs": {"Resources/profiles/fixture.json": "source-identity"},
+                "configuration": {"BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug"},
+            }
+        ),
         "candidate.patch": b"synthetic candidate patch\n",
         "gpu-contracts.json": encoded(contract),
         "gpu-targets.json": encoded(targets),
@@ -63,18 +63,27 @@ def synthetic_bundle():
         native_command = commands[name]
         key = "host-" + hashlib.sha256(json.dumps(native_command, ensure_ascii=False).encode()).hexdigest()[:16]
         launcher = [
-            "/unavailable/tools/python", "verify.py", "native-case", "--runtime", "gpu",
-            "--protocol", "custom", "--", *native_command,
+            "/unavailable/tools/python",
+            "verify.py",
+            "native-case",
+            "--runtime",
+            "gpu",
+            "--protocol",
+            "custom",
+            "--",
+            *native_command,
         ]
-        registrations.append({
-            "name": name,
-            "command": launcher,
-            "properties": [
-                {"name": "LABELS", "value": ["gpu"]},
-                {"name": "TIMEOUT", "value": 600},
-                {"name": "RESOURCE_LOCK", "value": ["juicer_gpu"]},
-            ],
-        })
+        registrations.append(
+            {
+                "name": name,
+                "command": launcher,
+                "properties": [
+                    {"name": "LABELS", "value": ["gpu"]},
+                    {"name": "TIMEOUT", "value": 600},
+                    {"name": "RESOURCE_LOCK", "value": ["juicer_gpu"]},
+                ],
+            }
+        )
         case_files[name] = {"key": key, "protocol": "custom", "rows": False}
         caller, case_id = "cpp", route
         payloads[key + ".list.jsonl"] = encoded({"caller": caller, "id": case_id}) + b"\n"
@@ -84,9 +93,13 @@ def synthetic_bundle():
             {"caller": caller, "id": case_id, "event": "terminal", "outcome": "passed"},
         ]
         payloads[key + ".jsonl"] = b"".join(encoded(event) + b"\n" for event in events)
-        payloads[key + ".execution.json"] = encoded({
-            "command": native_command, "returncode": 0, "outcomes_valid": True,
-        })
+        payloads[key + ".execution.json"] = encoded(
+            {
+                "command": native_command,
+                "returncode": 0,
+                "outcomes_valid": True,
+            }
+        )
 
     payloads["registration.json"] = encoded({"tests": registrations})
     result = {
@@ -111,8 +124,9 @@ def synthetic_bundle():
 
 class GpuResultTests(unittest.TestCase):
     def test_only_explicit_disabled_benchmark_can_be_excluded(self):
-        discovered = encoded({"testsuites": [{"name": "Suite", "testsuite": [
-            {"name": "Correctness"}, {"name": "DISABLED_Timing"}]}]})
+        discovered = encoded(
+            {"testsuites": [{"name": "Suite", "testsuite": [{"name": "Correctness"}, {"name": "DISABLED_Timing"}]}]}
+        )
         with self.assertRaisesRegex(ValueError, "disabled"):
             gtest_discovery(discovered)
         excluded = {("Suite", "DISABLED_Timing")}
@@ -127,7 +141,11 @@ class GpuResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "terminal"):
             framework_terminals(xml.replace(b'status="notrun"', b'status="run"'), expected, filtered=excluded)
         with self.assertRaisesRegex(ValueError, "skipped"):
-            framework_terminals(xml.replace(b'name="Correctness" status="run"', b'name="Correctness" status="notrun"'), expected, filtered=excluded)
+            framework_terminals(
+                xml.replace(b'name="Correctness" status="run"', b'name="Correctness" status="notrun"'),
+                expected,
+                filtered=excluded,
+            )
 
     @classmethod
     def setUpClass(cls):
@@ -139,9 +157,7 @@ class GpuResultTests(unittest.TestCase):
             directory = Path(cls.actual_bundle)
             cls.actual_result_bytes = (directory / "result.json").read_bytes()
             actual_result = json.loads(cls.actual_result_bytes)
-            cls.actual_payloads = {
-                name: (directory / name).read_bytes() for name in actual_result["members"]
-            }
+            cls.actual_payloads = {name: (directory / name).read_bytes() for name in actual_result["members"]}
             cls.actual_result = actual_result
 
     def setUp(self):
@@ -247,10 +263,18 @@ class GpuResultTests(unittest.TestCase):
     test_zero_and_historical_positive_timeout_are_accepted.required_subtests = True
 
     def test_missing_and_invalid_timeout_are_rejected(self):
-        cases = (("missing", None), ("null", None), ("true", True), ("false", False),
-                 ("negative", -1), ("numeric-string-zero", "0"), ("numeric-string-positive", "600"),
-                 ("nan", float("nan")), ("positive-infinity", float("inf")),
-                 ("negative-infinity", -float("inf")))
+        cases = (
+            ("missing", None),
+            ("null", None),
+            ("true", True),
+            ("false", False),
+            ("negative", -1),
+            ("numeric-string-zero", "0"),
+            ("numeric-string-positive", "600"),
+            ("nan", float("nan")),
+            ("positive-infinity", float("inf")),
+            ("negative-infinity", -float("inf")),
+        )
         self.subtest_cases = tuple(case for case, _ in cases)
         for case, timeout in cases:
             with self.subTest(case=case):
@@ -339,7 +363,9 @@ class GpuResultTests(unittest.TestCase):
         self.routes = list(self.result["selection"])
         key = self.key_for(self.routes[0])
         name = key + ".jsonl"
-        self.payloads[name] = b"\n".join(row for row in self.payloads[name].splitlines() if b'"membership"' not in row) + b"\n"
+        self.payloads[name] = (
+            b"\n".join(row for row in self.payloads[name].splitlines() if b'"membership"' not in row) + b"\n"
+        )
         with self.assertRaisesRegex(ValueError, "required cohort"):
             self.check()
 
@@ -357,29 +383,50 @@ class GpuResultTests(unittest.TestCase):
         events = []
         for cohort in range(52):
             caller = f"prior-{cohort}"
-            cohort_ids = ([f"case-{index}" for index in range(27)] if cohort == 0
-                          else [f"case-{index}" for index in range(6 if cohort < 48 else 4)])
+            cohort_ids = (
+                [f"case-{index}" for index in range(27)]
+                if cohort == 0
+                else [f"case-{index}" for index in range(6 if cohort < 48 else 4)]
+            )
             events.append({"caller": caller, "event": "membership", "ids": cohort_ids})
             for case_id in cohort_ids:
-                events.extend(({"caller": caller, "id": case_id, "event": "start"},
-                               {"caller": caller, "id": case_id, "event": "terminal", "outcome": "passed"}))
+                events.extend(
+                    (
+                        {"caller": caller, "id": case_id, "event": "start"},
+                        {"caller": caller, "id": case_id, "event": "terminal", "outcome": "passed"},
+                    )
+                )
         events.append({"caller": "production-state-contract", "event": "membership", "ids": list(ids)})
         for case_id in ids:
-            events.extend(({"caller": "production-state-contract", "id": case_id, "event": "start"},
-                           {"caller": "production-state-contract", "id": case_id, "event": "terminal", "outcome": "passed"}))
+            events.extend(
+                (
+                    {"caller": "production-state-contract", "id": case_id, "event": "start"},
+                    {"caller": "production-state-contract", "id": case_id, "event": "terminal", "outcome": "passed"},
+                )
+            )
         # 27 + 47*6 + 4*5 gives the retained 329 terminal rows.
         for cohort in range(48, 52):
             caller = f"prior-{cohort}"
             membership = next(row for row in events if row.get("caller") == caller and row["event"] == "membership")
             membership["ids"].append("case-4")
-            events.extend(({"caller": caller, "id": "case-4", "event": "start"},
-                           {"caller": caller, "id": "case-4", "event": "terminal", "outcome": "passed"}))
+            events.extend(
+                (
+                    {"caller": caller, "id": "case-4", "event": "start"},
+                    {"caller": caller, "id": "case-4", "event": "terminal", "outcome": "passed"},
+                )
+            )
+
         def install(list_rows, event_rows):
             self.payloads[key + ".list.jsonl"] = b"".join(encoded(row) + b"\n" for row in list_rows)
             self.payloads[key + ".jsonl"] = b"".join(encoded(row) + b"\n" for row in event_rows)
+
         install(listed, events)
         self.assertEqual(self.check()["status"], "passed")
-        cases = tuple(f"{operation}/{case}" for operation in ("omit-list", "duplicate-list", "omit-terminal", "duplicate-terminal") for case in ids)
+        cases = tuple(
+            f"{operation}/{case}"
+            for operation in ("omit-list", "duplicate-list", "omit-terminal", "duplicate-terminal")
+            for case in ids
+        )
         self.subtest_cases = cases
         for operation in ("omit-list", "duplicate-list", "omit-terminal", "duplicate-terminal"):
             for case_id in ids:
@@ -387,13 +434,23 @@ class GpuResultTests(unittest.TestCase):
                     list_rows = copy.deepcopy(listed)
                     event_rows = copy.deepcopy(events)
                     if operation.endswith("list"):
-                        index = next(i for i, row in enumerate(list_rows) if row["caller"] == "production-state-contract" and row["id"] == case_id)
+                        index = next(
+                            i
+                            for i, row in enumerate(list_rows)
+                            if row["caller"] == "production-state-contract" and row["id"] == case_id
+                        )
                         if operation == "omit-list":
                             list_rows.pop(index)
                         else:
                             list_rows.append(list_rows[index])
                     else:
-                        index = next(i for i, row in enumerate(event_rows) if row.get("caller") == "production-state-contract" and row.get("id") == case_id and row["event"] == "terminal")
+                        index = next(
+                            i
+                            for i, row in enumerate(event_rows)
+                            if row.get("caller") == "production-state-contract"
+                            and row.get("id") == case_id
+                            and row["event"] == "terminal"
+                        )
                         if operation == "omit-terminal":
                             event_rows.pop(index)
                         else:
@@ -405,7 +462,9 @@ class GpuResultTests(unittest.TestCase):
         altered = copy.deepcopy(events)
         # Removing an entire prior case changes terminal count while retaining cohort count.
         altered = [row for row in altered if not (row.get("caller") == "prior-51" and row.get("id") == "case-4")]
-        next(row for row in altered if row.get("caller") == "prior-51" and row["event"] == "membership")["ids"].remove("case-4")
+        next(row for row in altered if row.get("caller") == "prior-51" and row["event"] == "membership")["ids"].remove(
+            "case-4"
+        )
         install(listed, altered)
         with self.assertRaisesRegex(ValueError, "native membership"):
             self.check()
@@ -446,7 +505,7 @@ class GpuResultTests(unittest.TestCase):
                 (bundle / name).write_bytes(data)
             (bundle / "result.json").write_bytes(result_bytes)
             shutil.copyfile(Path(__file__).resolve().parents[2] / "scripts/qualification.py", root / "reader.py")
-            script = r'''
+            script = r"""
 import collections, json, pathlib, runpy, sys
 root = pathlib.Path(sys.argv[1]).resolve()
 import argparse, hashlib, stat, time, xml.etree.ElementTree, pkgutil, __future__
@@ -471,7 +530,7 @@ except SystemExit as exc:
         raise
 for p in (root / 'relocated bundle ü').iterdir():
     assert opened[str(p.resolve())] == 1, (p, opened)
-'''
+"""
             completed = subprocess.run([sys.executable, "-B", "-c", script, str(root)], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
@@ -480,6 +539,7 @@ for p in (root / 'relocated bundle ü').iterdir():
 class NativeGpuWriterTests(unittest.TestCase):
     def assert_output_failure(self, output):
         from execution import NativeRun, OutputLease
+
         root = Path(__file__).resolve().parents[2]
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
         directory = root / "out/validation" / preset / "native-gpu-controls" / ("writer-failure-" + uuid.uuid4().hex)
@@ -488,8 +548,12 @@ class NativeGpuWriterTests(unittest.TestCase):
             run = NativeRun(root, directory)
             try:
                 with self.assertRaises(subprocess.CalledProcessError):
-                    run.command("gpu-writer-error", [os.environ["FJ_GPU_NATIVE_PROBE"], "--accepted-clean-captures"],
-                                env=dict(os.environ, FJ_HOST_CASES=str(directory / output)), timeout=120)
+                    run.command(
+                        "gpu-writer-error",
+                        [os.environ["FJ_GPU_NATIVE_PROBE"], "--accepted-clean-captures"],
+                        env=dict(os.environ, FJ_HOST_CASES=str(directory / output)),
+                        timeout=120,
+                    )
                 self.assertTrue(run.commands[0]["drained"])
                 self.assertIn("native case results output", (directory / "gpu-writer-error.log").read_text())
                 self.assertFalse((directory / "result.json").exists())

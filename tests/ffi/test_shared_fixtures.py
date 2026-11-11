@@ -12,8 +12,10 @@ from unittest.mock import patch
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
 from shared_fixture import load_shared_fixture, original_capture_bytes
 from effects_frame_probe_contract import (
-    EFFECTS_FRAME_CASE_IDS, EFFECTS_FRAME_CASE_COUNT,
-    EFFECTS_FRAME_FAILURE_WORD_COUNT, EFFECTS_FRAME_INPUT_WORD_COUNT,
+    EFFECTS_FRAME_CASE_IDS,
+    EFFECTS_FRAME_CASE_COUNT,
+    EFFECTS_FRAME_FAILURE_WORD_COUNT,
+    EFFECTS_FRAME_INPUT_WORD_COUNT,
     EFFECTS_FRAME_OUTPUT_WORD_COUNT,
 )
 
@@ -21,22 +23,37 @@ from effects_frame_probe_contract import (
 FIXTURES = Path(__file__).parent / "fixtures"
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
 PREPARED_STATE_CASE_IDS = (
-    "NegativeDirectHanatos", "NegativeDirectMallett", "NegativeDirectArctic",
-    "NegativePrintHanatos", "NegativePrintMallett", "NegativePrintArctic",
-    "PositiveDirectHanatos", "PositiveDirectMallett", "PositiveDirectArctic",
-    "PositivePrintHanatos", "PositivePrintMallett", "PositivePrintArctic",
+    "NegativeDirectHanatos",
+    "NegativeDirectMallett",
+    "NegativeDirectArctic",
+    "NegativePrintHanatos",
+    "NegativePrintMallett",
+    "NegativePrintArctic",
+    "PositiveDirectHanatos",
+    "PositiveDirectMallett",
+    "PositiveDirectArctic",
+    "PositivePrintHanatos",
+    "PositivePrintMallett",
+    "PositivePrintArctic",
     "DirectIgnoresPrintControls",
     "PreflashAndNormalizationModes[norm=0,compensate=0]",
     "PreflashAndNormalizationModes[norm=0,compensate=1]",
     "PreflashAndNormalizationModes[norm=1,compensate=0]",
     "PreflashAndNormalizationModes[norm=1,compensate=1]",
-    "GammaAndGrainLayers", "PhysicalDefectsAndWeave", "CameraAndEnlargerOptics",
-    "DirAndCompressionOff", "SignedZeroGlare[+0]", "SignedZeroGlare[-0]",
-    "CorrectionsAndScannerControls[print]", "CorrectionsAndScannerControls[direct]",
-    "EncodingOnlyReusesMediumIdentities[encoded]", "EncodingOnlyReusesMediumIdentities[linear]",
+    "GammaAndGrainLayers",
+    "PhysicalDefectsAndWeave",
+    "CameraAndEnlargerOptics",
+    "DirAndCompressionOff",
+    "SignedZeroGlare[+0]",
+    "SignedZeroGlare[-0]",
+    "CorrectionsAndScannerControls[print]",
+    "CorrectionsAndScannerControls[direct]",
+    "EncodingOnlyReusesMediumIdentities[encoded]",
+    "EncodingOnlyReusesMediumIdentities[linear]",
     "SnapshotIntegerBooleansPreserveNonzeroCasts[direct]",
     "SnapshotIntegerBooleansPreserveNonzeroCasts[print]",
-    "DisabledFamiliesExcludeUnusedControls", "GrainDebugSuppressesPhysicalEffects",
+    "DisabledFamiliesExcludeUnusedControls",
+    "GrainDebugSuppressesPhysicalEffects",
 )
 
 
@@ -52,9 +69,13 @@ def _safe_relative_path(value):
     if not isinstance(value, str) or not value:
         return False
     path = Path(value)
-    return ("\\" not in value and not path.is_absolute() and not PureWindowsPath(value).drive
-            and all(part not in ("", ".", "..") for part in value.split("/"))
-            and all(part not in ("", ".", "..") for part in path.parts))
+    return (
+        "\\" not in value
+        and not path.is_absolute()
+        and not PureWindowsPath(value).drive
+        and all(part not in ("", ".", "..") for part in value.split("/"))
+        and all(part not in ("", ".", "..") for part in path.parts)
+    )
 
 
 class SharedFixtureTests(unittest.TestCase):
@@ -65,30 +86,40 @@ class SharedFixtureTests(unittest.TestCase):
         for preset in self.subtest_cases:
             with self.subTest(case=preset), TemporaryDirectory(prefix="production header ü ") as temporary:
                 directory = Path(temporary)
-                with patch.object(production_contract, "execute", side_effect=AssertionError("native execution")), \
-                     patch.object(production_contract, "arguments", None), \
-                     patch.object(production_contract, "build", None):
-                    production_contract.main(["--preset", preset, "--artifacts", str(directory),
-                                              "--generate-expected-header"])
+                with (
+                    patch.object(production_contract, "execute", side_effect=AssertionError("native execution")),
+                    patch.object(production_contract, "arguments", None),
+                    patch.object(production_contract, "build", None),
+                ):
+                    production_contract.main(
+                        ["--preset", preset, "--artifacts", str(directory), "--generate-expected-header"]
+                    )
                 header = (directory / "production-film-expected.h").read_text()
                 fixture = json.loads((Path(__file__).parents[1] / "film/fixtures" / (preset + ".json")).read_text())
                 profile = fixture["profiles"]["kodak_portra_400"]
                 self.assertIn("#define FILM_N " + str(len(profile["axis"])) + "U\n", header)
-                self.assertIn("#define FILM_NORMALIZED_HASH UINT64_C(" + str(profile["normalized_hash"]) + ")\n", header)
+                self.assertIn(
+                    "#define FILM_NORMALIZED_HASH UINT64_C(" + str(profile["normalized_hash"]) + ")\n", header
+                )
                 self.assertIn("static const uint64_t correction_hashes[28]", header)
 
     test_production_header_generation_requires_no_native_execution.required_subtests = True
 
     def _assert_prepared_projection_identity(self, payload, preset, entry):
-        self.assertEqual(set(payload), {"schema_version", "preset", "producer", "toolchain", "configuration", "inputs", "cases"})
+        self.assertEqual(
+            set(payload), {"schema_version", "preset", "producer", "toolchain", "configuration", "inputs", "cases"}
+        )
         self.assertIs(type(payload["schema_version"]), int)
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["preset"], preset)
-        self.assertEqual(payload["producer"], {
-            "authority": "Film-Juicer native composition",
-            "target": "JuicerPreparedStateTests",
-            "manifest_entry": preset,
-        })
+        self.assertEqual(
+            payload["producer"],
+            {
+                "authority": "Film-Juicer native composition",
+                "target": "JuicerPreparedStateTests",
+                "manifest_entry": preset,
+            },
+        )
         producer_executable = PureWindowsPath(entry["producer"]["executable"]).name.removesuffix(".exe")
         self.assertEqual(producer_executable, payload["producer"]["target"])
         for key in ("toolchain", "configuration", "inputs"):
@@ -98,8 +129,19 @@ class SharedFixtureTests(unittest.TestCase):
         self.assertIs(type(cases), list)
         self.assertEqual([row["case_id"] for row in cases], list(PREPARED_STATE_CASE_IDS))
         self.assertEqual(len({row["case_id"] for row in cases}), len(PREPARED_STATE_CASE_IDS))
-        row_keys = {"case_id", "input", "status", "api", "native_code", "diagnostic", "expected", "captured_actual", "backing_relations"}
+        row_keys = {
+            "case_id",
+            "input",
+            "status",
+            "api",
+            "native_code",
+            "diagnostic",
+            "expected",
+            "captured_actual",
+            "backing_relations",
+        }
         for row in cases:
+
             def assert_case():
                 self.assertEqual(set(row), row_keys)
                 self.assertIsInstance(row["input"], dict)
@@ -114,6 +156,7 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertIsInstance(row["captured_actual"], dict)
                 self.assertEqual(row["captured_actual"], row["expected"], row["case_id"])
                 self.assertIsInstance(row["backing_relations"], list)
+
             if preset is None:
                 assert_case()
             else:
@@ -134,12 +177,27 @@ class SharedFixtureTests(unittest.TestCase):
             [f"source/{path}" for path in manifest["source_files"]]
             + [f"resource/{path}" for path in manifest["resource_files"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"prepared/{preset}/{case_id}" for preset in PRESETS
-               for case_id in PREPARED_STATE_CASE_IDS]
-            + ["control/missing-prepared-case", "control/duplicate-prepared-case",
-               "control/wrong-preset", "control/wrong-hash"]
+            + [f"prepared/{preset}/{case_id}" for preset in PRESETS for case_id in PREPARED_STATE_CASE_IDS]
+            + [
+                "control/missing-prepared-case",
+                "control/duplicate-prepared-case",
+                "control/wrong-preset",
+                "control/wrong-hash",
+            ]
         )
-        self.assertEqual(set(manifest), {"schema_version", "authority", "source_head", "reference_revision", "source_files", "resource_files", "case_ids", "presets"})
+        self.assertEqual(
+            set(manifest),
+            {
+                "schema_version",
+                "authority",
+                "source_head",
+                "reference_revision",
+                "source_files",
+                "resource_files",
+                "case_ids",
+                "presets",
+            },
+        )
         self.assertIs(type(manifest["schema_version"]), int)
         self.assertEqual(manifest["schema_version"], 1)
         self.assertEqual(manifest["authority"], "Film-Juicer native composition")
@@ -166,11 +224,21 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertTrue(resource.is_file(), relative_path)
                 self.assertEqual(hashlib.sha256(resource.read_bytes()).hexdigest(), checksum)
 
-        producer_keys = {"executable", "sha256", "build_log", "build_log_sha256", "capture_log", "capture_log_sha256", "preparation"}
+        producer_keys = {
+            "executable",
+            "sha256",
+            "build_log",
+            "build_log_sha256",
+            "capture_log",
+            "capture_log_sha256",
+            "preparation",
+        }
         for preset in PRESETS:
             with self.subTest(case=f"preset/{preset}", preset=preset):
                 entry = manifest["presets"][preset]
-                self.assertEqual(set(entry), {"file", "bytes", "sha256", "producer", "toolchain", "configuration", "inputs"})
+                self.assertEqual(
+                    set(entry), {"file", "bytes", "sha256", "producer", "toolchain", "configuration", "inputs"}
+                )
                 self.assertEqual(entry["file"], f"{preset}.json")
                 self.assertIs(type(entry["bytes"]), int)
                 self.assertGreater(entry["bytes"], 0)
@@ -195,10 +263,13 @@ class SharedFixtureTests(unittest.TestCase):
                 build_type = "Debug" if preset.endswith("debug") else "Release"
                 self.assertIs(type(entry["configuration"].get("testing")), bool)
                 self.assertEqual(entry["configuration"], {"build_type": build_type, "testing": True})
-                self.assertEqual(entry["inputs"], {
-                    "resource_directory": f"out/build/{preset}/tests/Resources",
-                    "parameter_type": "FjPreparationParams",
-                })
+                self.assertEqual(
+                    entry["inputs"],
+                    {
+                        "resource_directory": f"out/build/{preset}/tests/Resources",
+                        "parameter_type": "FjPreparationParams",
+                    },
+                )
 
                 payload_bytes = (directory / entry["file"]).read_bytes()
                 self._assert_prepared_projection_bytes(payload_bytes, entry)
@@ -226,10 +297,7 @@ class SharedFixtureTests(unittest.TestCase):
         directory = Path(__file__).parents[1] / "film/effects-frame-fixtures"
         manifest = json.loads((directory / "manifest.json").read_bytes())
         checked = json.loads((directory / "checked.json").read_bytes())
-        production_ids = tuple(
-            f"{preset}/{case_id}"
-            for preset in PRESETS for case_id in EFFECTS_FRAME_CASE_IDS
-        )
+        production_ids = tuple(f"{preset}/{case_id}" for preset in PRESETS for case_id in EFFECTS_FRAME_CASE_IDS)
         native_ids = tuple(
             f"capture/{preset}/{group}/{case_id}"
             for preset in PRESETS
@@ -248,26 +316,57 @@ class SharedFixtureTests(unittest.TestCase):
             + list(native_ids)
             + [f"production/{case_id}" for case_id in production_ids]
             + list(diagnostic_ids)
-            + [f"control/{control}/{preset}"
-               for preset in PRESETS for control in ("damaged-output", "missing-membership")]
+            + [
+                f"control/{control}/{preset}"
+                for preset in PRESETS
+                for control in ("damaged-output", "missing-membership")
+            ]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         for name, checksum in manifest["sha256"].items():
             with self.subTest(case=f"sha256/{name}"):
                 self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), checksum)
-        self.assertEqual((EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT), (453, 180, 40))
+        self.assertEqual(
+            (EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT), (453, 180, 40)
+        )
 
         def output(row):
             if not row["success"] or not row["input"]["active"]:
                 return [0] * EFFECTS_FRAME_OUTPUT_WORD_COUNT
             native = row["native"]
-            flags = sum(int(native[name]) << index for index, name in enumerate(
-                ("weave_active", "film_active", "gate_transmittance_active", "gate_output_active", "requires_full_frame")))
+            flags = sum(
+                int(native[name]) << index
+                for index, name in enumerate(
+                    (
+                        "weave_active",
+                        "film_active",
+                        "gate_transmittance_active",
+                        "gate_output_active",
+                        "requires_full_frame",
+                    )
+                )
+            )
             words = [1, flags] + native["render_extent"] + native["full_frame_extent"]
             words += [word for origin in native["origins"] for word in origin]
-            words += [native[name] for name in (
-                "sample_step_x_mm", "sample_step_y_mm", "roi_offset_x", "roi_offset_y", "gate_width", "gate_height",
-                "session_seed", "clip_token", "weave_dx_px", "weave_dy_px", "weave_cos_rot", "weave_sin_rot", "recipe_hash", "hash")]
+            words += [
+                native[name]
+                for name in (
+                    "sample_step_x_mm",
+                    "sample_step_y_mm",
+                    "roi_offset_x",
+                    "roi_offset_y",
+                    "gate_width",
+                    "gate_height",
+                    "session_seed",
+                    "clip_token",
+                    "weave_dx_px",
+                    "weave_dy_px",
+                    "weave_cos_rot",
+                    "weave_sin_rot",
+                    "recipe_hash",
+                    "hash",
+                )
+            ]
             self.assertEqual(len(words), EFFECTS_FRAME_OUTPUT_WORD_COUNT)
             return [word & ((1 << 64) - 1) for word in words]
 
@@ -276,15 +375,19 @@ class SharedFixtureTests(unittest.TestCase):
             with self.subTest(case=f"preset/{preset}", preset=preset):
                 captured = load_shared_fixture(directory / entry["native"])
                 self.assertEqual(captured["preset"], preset)
-                self.assertEqual(hashlib.sha256(original_capture_bytes(captured, "LF")).hexdigest(), entry["original_capture_sha256"])
+                self.assertEqual(
+                    hashlib.sha256(original_capture_bytes(captured, "LF")).hexdigest(), entry["original_capture_sha256"]
+                )
                 self.assertEqual([len(captured[key]) for key in ("cases", "products", "primitives")], [347, 72, 57])
                 self.assertEqual([row["input"]["id"] for row in captured["cases"]], checked["case_ids"])
                 self.assertEqual(len(set(checked["case_ids"])), 347)
                 self.assertEqual([row["input"]["id"] for row in captured["products"]], checked["product_ids"])
             rows = manifest["production_cases"][preset]
+
             def membership(values):
                 self.assertEqual(tuple(row["case"] for row in values), EFFECTS_FRAME_CASE_IDS)
                 self.assertEqual(len({row["case"] for row in values}), EFFECTS_FRAME_CASE_COUNT)
+
             membership(rows)
             with self.subTest(case=f"control/missing-membership/{preset}"), self.assertRaises(AssertionError):
                 membership(rows[:-1])
@@ -298,7 +401,9 @@ class SharedFixtureTests(unittest.TestCase):
                         expected = by_id[name]
                         self.assertEqual(expected["output"], output(native))
                         self.assertEqual(expected["diagnostic"], native["diagnostic"])
-                        self.assertEqual(len(manifest["production_inputs"][preset][name]["words"]), EFFECTS_FRAME_INPUT_WORD_COUNT)
+                        self.assertEqual(
+                            len(manifest["production_inputs"][preset][name]["words"]), EFFECTS_FRAME_INPUT_WORD_COUNT
+                        )
             for row in rows:
                 with self.subTest(case=f"production/{preset}/{row['case']}"):
                     raw_null_cases = {"raw/4", "raw/5", "raw/6"}
@@ -314,27 +419,31 @@ class SharedFixtureTests(unittest.TestCase):
                         self.assertEqual(row["diagnostic_length"], len(diagnostic))
                     else:
                         self.assertEqual(len(row["output"]), EFFECTS_FRAME_OUTPUT_WORD_COUNT)
-                        self.assertTrue(row["failure"] is None or
-                                        len(row["failure"]) == EFFECTS_FRAME_FAILURE_WORD_COUNT)
+                        self.assertTrue(
+                            row["failure"] is None or len(row["failure"]) == EFFECTS_FRAME_FAILURE_WORD_COUNT
+                        )
             damaged = list(by_id["literal/mixed"]["output"])
             damaged[-1] ^= 1
             with self.subTest(case=f"control/damaged-output/{preset}"), self.assertRaises(AssertionError):
                 self.assertEqual(damaged, output(captured["cases"][0]))
             for prefix, message, category, reason in (
-                    ("geometry-diagnostic/", checked["geometry_failure"]["diagnostic"], 3, 3),
-                    ("inactive-diagnostic/", "", 3, 2),
-                    ("raw-diagnostic/", checked["raw_failure"]["diagnostic"], 2, 1)):
+                ("geometry-diagnostic/", checked["geometry_failure"]["diagnostic"], 3, 3),
+                ("inactive-diagnostic/", "", 3, 2),
+                ("raw-diagnostic/", checked["raw_failure"]["diagnostic"], 2, 1),
+            ):
                 selected = [row for row in rows if row["case"].startswith(prefix)]
                 self.assertEqual(len(selected), 5)
-                self.assertEqual({manifest["production_inputs"][preset][row["case"]]["capacity"] for row in selected},
-                                 {0, 1, 7, len(message), len(message) + 1})
+                self.assertEqual(
+                    {manifest["production_inputs"][preset][row["case"]]["capacity"] for row in selected},
+                    {0, 1, 7, len(message), len(message) + 1},
+                )
                 for row in selected:
                     with self.subTest(case=f"diagnostic/{preset}/{row['case']}"):
                         capacity = manifest["production_inputs"][preset][row["case"]]["capacity"]
                         self.assertEqual(row["envelope"], [category, 0, 0])
                         self.assertEqual(row["failure"], [reason])
                         self.assertEqual(row["output"], [0] * EFFECTS_FRAME_OUTPUT_WORD_COUNT)
-                        self.assertEqual(row["diagnostic"], message[:max(0, capacity - 1)])
+                        self.assertEqual(row["diagnostic"], message[: max(0, capacity - 1)])
                         self.assertEqual(row["diagnostic_length"], len(row["diagnostic"]))
 
     test_effects_frame_exact_native_contexts_and_complete_production_cases.required_subtests = True
@@ -359,13 +468,21 @@ class SharedFixtureTests(unittest.TestCase):
                 frame_checked = frame_manifest.parent / frame_spec["checked"]
                 self.assertNotEqual(grain_manifest, frame_manifest)
                 self.assertNotEqual(grain_payload, frame_payload)
-                self.assertEqual(hashlib.sha256(grain_payload.read_bytes()).hexdigest(), grain_spec["payload_sha256"][grain_payload.name])
+                self.assertEqual(
+                    hashlib.sha256(grain_payload.read_bytes()).hexdigest(),
+                    grain_spec["payload_sha256"][grain_payload.name],
+                )
                 for path in (frame_payload, frame_checked, frame_manifest.parent / "inputs.json"):
                     self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), frame_spec["sha256"][path.name])
-                grain = next(row for row in json.loads(grain_payload.read_bytes())["products"]
-                             if row["key"] == "kodak_portra_400" and row["route"] == 0
-                             and row["gamma"] == [1065353216] and row["controls"]["active"]
-                             and row["controls"]["sublayers_active"])
+                grain = next(
+                    row
+                    for row in json.loads(grain_payload.read_bytes())["products"]
+                    if row["key"] == "kodak_portra_400"
+                    and row["route"] == 0
+                    and row["gamma"] == [1065353216]
+                    and row["controls"]["active"]
+                    and row["controls"]["sublayers_active"]
+                )
                 directory = Path(temporary)
                 with patch.object(production_contract, "arguments", SimpleNamespace(preset=preset)):
                     production_contract.expected_film_header(directory)
@@ -383,11 +500,19 @@ class SharedFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"sha256/{name}" for name in manifest["sha256"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"capture/{preset}/{group}/{index}" for preset in PRESETS
-               for group, count in (("case", 153), ("product", 44)) for index in range(count)]
+            + [
+                f"capture/{preset}/{group}/{index}"
+                for preset in PRESETS
+                for group, count in (("case", 153), ("product", 44))
+                for index in range(count)
+            ]
             + [f"production/{row['case']}" for row in manifest["production_cases"]]
-            + [f"diagnostic/{row['case']}" for prefix in ("raw-diagnostic/", "r1-diagnostic/")
-               for row in manifest["production_cases"] if row["case"].startswith(prefix)]
+            + [
+                f"diagnostic/{row['case']}"
+                for prefix in ("raw-diagnostic/", "r1-diagnostic/")
+                for row in manifest["production_cases"]
+                if row["case"].startswith(prefix)
+            ]
             + ["control/r1-failure", "control/r1-output"]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
@@ -414,8 +539,13 @@ class SharedFixtureTests(unittest.TestCase):
                         self.assertTrue(all(len(g) == 3 for layer in native["dye_cloud"] for g in layer))
             r1 = next(row for row in captured["cases"] if row["input"]["name"] == "S4D6-R1")
             self.assertFalse(r1["success"])
-            self.assertEqual(r1["diagnostic"], "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count")
-            self.assertEqual(r1["input"]["layer_curves"], [[[0], [0], [1065353216]], [[1065353216], [0], [1065353216]], [[1065353216], [0], [1065353216]]])
+            self.assertEqual(
+                r1["diagnostic"], "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count"
+            )
+            self.assertEqual(
+                r1["input"]["layer_curves"],
+                [[[0], [0], [1065353216]], [[1065353216], [0], [1065353216]], [[1065353216], [0], [1065353216]]],
+            )
         rows = manifest["production_cases"]
         self.assertEqual(len(rows), 188)
         self.assertEqual(len({row["case"] for row in rows}), 188)
@@ -428,31 +558,37 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertTrue(row["output"] is None or len(row["output"]) == 115)
                 self.assertTrue(row["failure"] is None or len(row["failure"]) == 4)
         r1 = next(row for row in rows if row["case"] == "literal/S4D6-R1")
+
         def require_r1(value):
             self.assertEqual(value["envelope"], [3, 0, 0])
             self.assertEqual(value["failure"], [2, 12, 0, 0])
             self.assertEqual(value["output"], [0] * 115)
+
         require_r1(r1)
         for key, replacement in (("failure", [2, 10, 3, 1]), ("output", [1] + [0] * 114)):
             damaged = dict(r1, **{key: replacement})
             control = "control/r1-failure" if key == "failure" else "control/r1-output"
             with self.subTest(case=control), self.assertRaises(AssertionError):
                 require_r1(damaged)
-        for prefix, message, metadata in (("raw-diagnostic/", "visual grain frame arguments are invalid", [1, 0, 3, 3]),
-                                          ("r1-diagnostic/", r1["diagnostic"], [2, 12, 0, 0])):
+        for prefix, message, metadata in (
+            ("raw-diagnostic/", "visual grain frame arguments are invalid", [1, 0, 3, 3]),
+            ("r1-diagnostic/", r1["diagnostic"], [2, 12, 0, 0]),
+        ):
             selected = [row for row in rows if row["case"].startswith(prefix)]
             self.assertEqual(len(selected), 5)
-            self.assertEqual({manifest["production_inputs"][row["case"]]["capacity"] for row in selected}, {0, 1, 7, len(message), len(message) + 1})
+            self.assertEqual(
+                {manifest["production_inputs"][row["case"]]["capacity"] for row in selected},
+                {0, 1, 7, len(message), len(message) + 1},
+            )
             for row in selected:
                 with self.subTest(case=f"diagnostic/{row['case']}"):
                     capacity = manifest["production_inputs"][row["case"]]["capacity"]
                     self.assertEqual(row["failure"], metadata)
                     self.assertEqual(row["output"], [0] * 115)
-                    self.assertEqual(row["diagnostic"], message[:max(0, capacity - 1)])
+                    self.assertEqual(row["diagnostic"], message[: max(0, capacity - 1)])
                     self.assertEqual(row["diagnostic_length"], min(len(message), max(0, capacity - 1)))
 
     test_grain_frame_complete_native_contexts_and_r1_production_contract.required_subtests = True
-
 
     def test_dir_boundary_exact_native_products_keys_and_production_contracts(self):
         root = Path(__file__).parents[1] / "dir/boundary-fixtures"
@@ -462,8 +598,11 @@ class SharedFixtureTests(unittest.TestCase):
             + [f"preset/{preset}" for preset in PRESETS]
             + [f"capture/{preset}/case/{index}" for preset in PRESETS for index in range(114)]
             + [f"production/{row['case']}" for row in manifest["production_cases"]]
-            + [f"raw/{operation}/{mode}" for operation in ("describe", "acquire", "view")
-               for mode in (11, 12, 13, 14, 15)]
+            + [
+                f"raw/{operation}/{mode}"
+                for operation in ("describe", "acquire", "view")
+                for mode in (11, 12, 13, 14, 15)
+            ]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         for name, checksum in manifest["sha256"].items():
@@ -496,16 +635,18 @@ class SharedFixtureTests(unittest.TestCase):
                     self.assertEqual(len(encoded), 100)
                     self.assertEqual(list(encoded), row["key_bytes"])
                     if ordinary[source["name"]][0] != 2:
-                        identity = 0xcbf29ce484222325
+                        identity = 0xCBF29CE484222325
                         for byte in encoded:
-                            identity = ((identity ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
+                            identity = ((identity ^ byte) * 0x100000001B3) & ((1 << 64) - 1)
                         self.assertEqual(identity, row["key"])
                     if row["success"]:
                         for name in ("horizontal", "vertical"):
                             axis = row[name]
                             self.assertEqual(len(axis["weights"]), 3 * axis["length"])
                             self.assertEqual(len(axis["terminal"]), 9)
-                            self.assertEqual(axis["terminal"][axis["terminal_size"] ** 2:], [0] * (9 - axis["terminal_size"] ** 2))
+                            self.assertEqual(
+                                axis["terminal"][axis["terminal_size"] ** 2 :], [0] * (9 - axis["terminal_size"] ** 2)
+                            )
         self.assertEqual(len(manifest["production_cases"]), 171)
         self.assertEqual({row["case"] for row in manifest["production_cases"]}, set(manifest["production_inputs"]))
         self.assertEqual(len(manifest["production_inputs"]), 171)
@@ -514,19 +655,28 @@ class SharedFixtureTests(unittest.TestCase):
             kind: {case for case, source in input_by_case.items() if source["kind"] == kind}
             for kind in ("values", "raw", "lifetime")
         }
-        self.assertEqual({kind: len(cases) for kind, cases in cases_by_kind.items()},
-                         {"values": 117, "raw": 51, "lifetime": 3})
+        self.assertEqual(
+            {kind: len(cases) for kind, cases in cases_by_kind.items()}, {"values": 117, "raw": 51, "lifetime": 3}
+        )
         self.assertEqual(sum(map(len, cases_by_kind.values())), len(manifest["production_cases"]))
         self.assertEqual(len({row["case"] for row in manifest["production_cases"]}), 171)
         self.assertEqual(len({case for case in cases_by_kind["values"] if case.startswith("values/")}), 114)
-        self.assertEqual({case for case in cases_by_kind["values"] if case.startswith("safety/")},
-                         {"safety/horizontal-overflow", "safety/vertical-overflow",
-                          "safety/horizontal-policy-before-vertical-overflow"})
-        self.assertEqual({case for case in cases_by_kind["lifetime"]},
-                         {"lifetime/independent-expiry", "lifetime/release-malformed", "lifetime/null-release"})
-        self.assertEqual({(input_by_case[case]["operation"], input_by_case[case]["mode"])
-                          for case in cases_by_kind["raw"]},
-                         {(operation, mode) for operation in range(3) for mode in range(17)})
+        self.assertEqual(
+            {case for case in cases_by_kind["values"] if case.startswith("safety/")},
+            {
+                "safety/horizontal-overflow",
+                "safety/vertical-overflow",
+                "safety/horizontal-policy-before-vertical-overflow",
+            },
+        )
+        self.assertEqual(
+            {case for case in cases_by_kind["lifetime"]},
+            {"lifetime/independent-expiry", "lifetime/release-malformed", "lifetime/null-release"},
+        )
+        self.assertEqual(
+            {(input_by_case[case]["operation"], input_by_case[case]["mode"]) for case in cases_by_kind["raw"]},
+            {(operation, mode) for operation in range(3) for mode in range(17)},
+        )
         raw = [row for row in manifest["production_cases"] if row["case"] in cases_by_kind["raw"]]
         self.assertEqual(len(raw), 51)
         for row in manifest["production_cases"]:
@@ -535,41 +685,87 @@ class SharedFixtureTests(unittest.TestCase):
                 source = input_by_case[case]
                 if source["kind"] == "values":
                     self.assertTrue(case.startswith(("values/", "safety/")))
-                    expected_source_fields = {"kind", "words"} if case.startswith("values/") else {
-                        "kind", "words", "authority"}
+                    expected_source_fields = (
+                        {"kind", "words"} if case.startswith("values/") else {"kind", "words", "authority"}
+                    )
                     self.assertEqual(set(source), expected_source_fields)
                     self.assertEqual(len(source["words"]), 18)
-                    self.assertTrue(all(type(word) is int and 0 <= word <= 0xFFFFFFFFFFFFFFFF
-                                        for word in source["words"]))
-                    self.assertEqual(set(row), {"case", "envelope", "key", "failure", "shape", "weights",
-                                                "terminal", "diagnostic", "diagnostic_length", "owner"})
+                    self.assertTrue(
+                        all(type(word) is int and 0 <= word <= 0xFFFFFFFFFFFFFFFF for word in source["words"])
+                    )
+                    self.assertEqual(
+                        set(row),
+                        {
+                            "case",
+                            "envelope",
+                            "key",
+                            "failure",
+                            "shape",
+                            "weights",
+                            "terminal",
+                            "diagnostic",
+                            "diagnostic_length",
+                            "owner",
+                        },
+                    )
                     self.assertEqual(len(row["envelope"]), 3)
                     self.assertEqual(len(row["failure"]), 7)
                     self.assertIs(type(row["key"]), int)
                     self.assertIs(type(row["owner"]), bool)
                     self.assertTrue(row["shape"] is None or len(row["shape"]) == 6)
                     self.assertTrue(row["terminal"] is None or len(row["terminal"]) == 18)
-                    self.assertTrue(row["weights"] is None or
-                                    all(type(word) is int and 0 <= word <= 0xFFFFFFFFFFFFFFFF
-                                        for word in row["weights"]))
+                    self.assertTrue(
+                        row["weights"] is None
+                        or all(type(word) is int and 0 <= word <= 0xFFFFFFFFFFFFFFFF for word in row["weights"])
+                    )
                     self.assertIs(type(row["diagnostic"]), str)
                     self.assertEqual(row["diagnostic_length"], len(row["diagnostic"]))
                     if case.startswith("safety/"):
-                        self.assertEqual(source["authority"],
-                                         "authored representation/order contract; independent FNV encoding; never run through undefined native period overflow")
+                        self.assertEqual(
+                            source["authority"],
+                            "authored representation/order contract; independent FNV encoding; never run through undefined native period overflow",
+                        )
                 elif source["kind"] == "raw":
                     self.assertTrue(case.startswith("raw/"))
                     _, operation, mode = case.split("/")
-                    self.assertEqual(set(source), {"kind", "operation", "mode", "output_valid", "failure_valid",
-                                                   "error_record", "error_span", "capacity"})
+                    self.assertEqual(
+                        set(source),
+                        {
+                            "kind",
+                            "operation",
+                            "mode",
+                            "output_valid",
+                            "failure_valid",
+                            "error_record",
+                            "error_span",
+                            "capacity",
+                        },
+                    )
                     self.assertEqual(source["operation"], {"describe": 0, "acquire": 1, "view": 2}[operation])
                     self.assertEqual(source["mode"], int(mode))
-                    self.assertTrue(all(type(source[name]) is bool for name in (
-                        "output_valid", "failure_valid", "error_record", "error_span")))
+                    self.assertTrue(
+                        all(
+                            type(source[name]) is bool
+                            for name in ("output_valid", "failure_valid", "error_record", "error_span")
+                        )
+                    )
                     self.assertIs(type(source["capacity"]), int)
                     self.assertGreaterEqual(source["capacity"], 0)
-                    self.assertEqual(set(row), {"case", "envelope", "key", "failure", "shape", "weights",
-                                                "terminal", "diagnostic", "diagnostic_length", "owner"})
+                    self.assertEqual(
+                        set(row),
+                        {
+                            "case",
+                            "envelope",
+                            "key",
+                            "failure",
+                            "shape",
+                            "weights",
+                            "terminal",
+                            "diagnostic",
+                            "diagnostic_length",
+                            "owner",
+                        },
+                    )
                     self.assertEqual(len(row["envelope"]), 3)
                     self.assertIn(row["shape"], (None, [0, 0, 0, 0, 0, 0]))
                     self.assertTrue(row["failure"] is None or len(row["failure"]) == 7)
@@ -600,8 +796,11 @@ class SharedFixtureTests(unittest.TestCase):
                 row = next(row for row in raw if row["case"] == f"raw/{operation}/{mode}")
                 with self.subTest(case=f"raw/{operation}/{mode}"):
                     message = "spatial DIR reflected-boundary arguments are invalid"
-                    self.assertEqual(row["diagnostic_length"], min(len(message), max(0, manifest["production_inputs"][row["case"]]["capacity"] - 1)))
-                    self.assertEqual(row["diagnostic"], message[:row["diagnostic_length"]])
+                    self.assertEqual(
+                        row["diagnostic_length"],
+                        min(len(message), max(0, manifest["production_inputs"][row["case"]]["capacity"] - 1)),
+                    )
+                    self.assertEqual(row["diagnostic"], message[: row["diagnostic_length"]])
                     self.assertEqual(row["envelope"], [2, 0, 0])
 
     test_dir_boundary_exact_native_products_keys_and_production_contracts.required_subtests = True
@@ -612,8 +811,12 @@ class SharedFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"sha256/{name}" for name in manifest["sha256"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"capture/{preset}/{group}/{index}" for preset in PRESETS
-               for group, count in (("case", 74), ("product", 24)) for index in range(count)]
+            + [
+                f"capture/{preset}/{group}/{index}"
+                for preset in PRESETS
+                for group, count in (("case", 74), ("product", 24))
+                for index in range(count)
+            ]
             + [f"production/{row['case']}" for row in manifest["production_cases"]]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
@@ -671,14 +874,26 @@ class SharedFixtureTests(unittest.TestCase):
             captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
             provenance = manifest["provenance"][preset]
             with self.subTest(case=f"preset/{preset}"):
-                self.assertEqual(hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(), provenance["original_capture_sha256"])
-                self.assertEqual([len(captured[k]) for k in ("samples", "frames", "products", "primitives")], [94, 35, 92, 8])
+                self.assertEqual(
+                    hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(),
+                    provenance["original_capture_sha256"],
+                )
+                self.assertEqual(
+                    [len(captured[k]) for k in ("samples", "frames", "products", "primitives")], [94, 35, 92, 8]
+                )
             edges = load_shared_fixture(root / manifest["presets"][preset]["edges"])
             edge_provenance = manifest["edge_provenance"][preset]
-            self.assertEqual(hashlib.sha256(original_capture_bytes(edges, edge_provenance["line_ending"])).hexdigest(), edge_provenance["original_capture_sha256"])
+            self.assertEqual(
+                hashlib.sha256(original_capture_bytes(edges, edge_provenance["line_ending"])).hexdigest(),
+                edge_provenance["original_capture_sha256"],
+            )
             self.assertEqual(edge_provenance["producer_sha256"], provenance["producer_sha256"])
             self.assertEqual([len(edges[k]) for k in ("samples", "frames", "products", "primitives")], [2, 0, 0, 0])
-            samples = captured["samples"] + edges["samples"] + [sample for row in captured["products"] for sample in row["samples"]]
+            samples = (
+                captured["samples"]
+                + edges["samples"]
+                + [sample for row in captured["products"] for sample in row["samples"]]
+            )
             self.assertEqual(len(samples), 174)
             for index, row in enumerate(samples):
                 with self.subTest(case=f"sample/{preset}/{index}"):
@@ -694,8 +909,12 @@ class SharedFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"sha256/{name}" for name in manifest["sha256"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"capture/{preset}/{group}/{index}" for preset in PRESETS
-               for group, count in (("case", 52), ("product", 20)) for index in range(count)]
+            + [
+                f"capture/{preset}/{group}/{index}"
+                for preset in PRESETS
+                for group, count in (("case", 52), ("product", 20))
+                for index in range(count)
+            ]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         self.assertEqual(len(set(manifest["contexts"].values())), 4)
@@ -707,7 +926,10 @@ class SharedFixtureTests(unittest.TestCase):
             with self.subTest(case=f"preset/{preset}"):
                 self.assertEqual(captured["preset"], preset)
                 provenance = manifest["provenance"][preset]
-                self.assertEqual(hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(), provenance["original_capture_sha256"])
+                self.assertEqual(
+                    hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(),
+                    provenance["original_capture_sha256"],
+                )
                 self.assertEqual(len(captured["cases"]), 52)
                 self.assertEqual(len(captured["products"]), 20)
             for group in ("cases", "products"):
@@ -745,9 +967,20 @@ class SharedFixtureTests(unittest.TestCase):
             adopted = (root / manifest["payloads"][manifest["presets"][preset]["native"]]).read_bytes()
             self.assertNotIn(b"\r", adopted)
             original = adopted.replace(b"\n", b"\r\n") if captured["native_payload_line_ending"] == "CRLF" else adopted
-            self.assertEqual(hashlib.sha256(original).hexdigest(), captured["producer"]["files"]["payload.json"]["sha256"])
+            self.assertEqual(
+                hashlib.sha256(original).hexdigest(), captured["producer"]["files"]["payload.json"]["sha256"]
+            )
             self.assertTrue(captured["commands"])
-            self.assertEqual(set(captured["producer"]["files"]), {"JuicerAdapterTraceProbe.exe" if "windows" in preset else "JuicerAdapterTraceProbe", "JuicerEffect.cpp.txt", "inputs.json", "payload.json", "context.json"})
+            self.assertEqual(
+                set(captured["producer"]["files"]),
+                {
+                    "JuicerAdapterTraceProbe.exe" if "windows" in preset else "JuicerAdapterTraceProbe",
+                    "JuicerEffect.cpp.txt",
+                    "inputs.json",
+                    "payload.json",
+                    "context.json",
+                },
+            )
             for index, row in enumerate(captured["domains"]):
                 with self.subTest(case=f"domain/{preset}/{index}"):
                     self.assertEqual(len(row["bounds"]), 4)
@@ -786,12 +1019,14 @@ class SharedFixtureTests(unittest.TestCase):
             for index, row in enumerate(captured["cases"]):
                 with self.subTest(case=f"capture/{preset}/{index}"):
                     self.assertEqual(len(row["weights"]), row["count"])
-                    self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xffffffff for word in row["weights"]))
+                    self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xFFFFFFFF for word in row["weights"]))
             self.assertTrue(any("fir-dir" in row["name"] and row["count"] > 0 for row in captured["cases"]))
             original = deepcopy(captured)
             provenance = original.pop("provenance")
             ending = "LF" if preset.startswith("linux-") else "CRLF"
-            self.assertEqual(hashlib.sha256(original_capture_bytes(original, ending)).hexdigest(), provenance["capture_sha256"])
+            self.assertEqual(
+                hashlib.sha256(original_capture_bytes(original, ending)).hexdigest(), provenance["capture_sha256"]
+            )
         self.assertEqual(len(manifest["production_cases"]), 201)
         self.assertEqual(len(set(manifest["production_cases"])), 201)
         for native in ("linux", "windows-clang"):
@@ -803,7 +1038,9 @@ class SharedFixtureTests(unittest.TestCase):
                 debug["provenance"].clear()
                 self.assertNotEqual(debug["cases"], release["cases"])
                 self.assertTrue(release["provenance"])
-                self.assertEqual(load_shared_fixture(root / manifest["presets"][native + "-release"]["native"]), release)
+                self.assertEqual(
+                    load_shared_fixture(root / manifest["presets"][native + "-release"]["native"]), release
+                )
 
     test_gaussian_complete_arrays_and_distinct_native_contexts.required_subtests = True
 
@@ -850,8 +1087,12 @@ class SharedFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"sha256/{name}" for name in manifest["sha256"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"capture/{preset}/{group}/{index}" for preset in PRESETS
-               for group, count in (("case", 520), ("product", 4)) for index in range(count)]
+            + [
+                f"capture/{preset}/{group}/{index}"
+                for preset in PRESETS
+                for group, count in (("case", 520), ("product", 4))
+                for index in range(count)
+            ]
             + [f"production/{row['case']}" for row in result_rows]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
@@ -891,9 +1132,12 @@ class SharedFixtureTests(unittest.TestCase):
         self.subtest_cases = tuple(
             [f"storage/{name}" for name in manifest["storage_files"]]
             + [f"preset/{preset}" for preset in PRESETS]
-            + [f"capture/{preset}/{group}/{index}" for preset in PRESETS
-               for group, count in (("case", 30), ("product", 4), ("slope", 15), ("primitive", 63))
-               for index in range(count)]
+            + [
+                f"capture/{preset}/{group}/{index}"
+                for preset in PRESETS
+                for group, count in (("case", 30), ("product", 4), ("slope", 15), ("primitive", 63))
+                for index in range(count)
+            ]
         )
         logical_names = {preset + ".json" for preset in PRESETS}
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
@@ -914,13 +1158,20 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertEqual(set(context), {"preset", "primitives"})
                 capture = load_shared_fixture(root / logical)
                 self.assertEqual(capture["preset"], preset)
-                self.assertEqual({key: len(capture[key]) for key in ("cases", "products", "slopes", "primitives")},
-                                 {"cases": 30, "products": 4, "slopes": 15, "primitives": 63})
+                self.assertEqual(
+                    {key: len(capture[key]) for key in ("cases", "products", "slopes", "primitives")},
+                    {"cases": 30, "products": 4, "slopes": 15, "primitives": 63},
+                )
                 raw = original_capture_bytes(capture, manifest["original_line_endings"][logical])
-                self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"],
-                                 "every original ordered record, integer word and capture field must reconstruct exactly")
+                self.assertEqual(
+                    hashlib.sha256(raw).hexdigest(),
+                    entry["sha256"],
+                    "every original ordered record, integer word and capture field must reconstruct exactly",
+                )
                 for group, expected_count in (("cases", 30), ("products", 4), ("slopes", 15), ("primitives", 63)):
-                    row_group = {"cases": "case", "products": "product", "slopes": "slope", "primitives": "primitive"}[group]
+                    row_group = {"cases": "case", "products": "product", "slopes": "slope", "primitives": "primitive"}[
+                        group
+                    ]
                     for index, row in enumerate(capture[group]):
                         with self.subTest(case=f"capture/{preset}/{row_group}/{index}"):
                             self.assertLess(index, expected_count)
@@ -928,12 +1179,18 @@ class SharedFixtureTests(unittest.TestCase):
     test_scanner_lut_original_capture_integrity.required_subtests = True
 
     def test_shared_context_is_required_disjoint_and_independently_owned(self):
-        self.subtest_cases = ("control/debug-context-load", "control/copy-isolation",
-                              "control/missing-release-context", "control/overlapping-context")
+        self.subtest_cases = (
+            "control/debug-context-load",
+            "control/copy-isolation",
+            "control/missing-release-context",
+            "control/overlapping-context",
+        )
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            manifest = {"payloads": {"debug.json": "native.json", "release.json": "native.json"},
-                        "contexts": {"debug.json": "debug-context.json"}}
+            manifest = {
+                "payloads": {"debug.json": "native.json", "release.json": "native.json"},
+                "contexts": {"debug.json": "debug-context.json"},
+            }
             (root / "manifest.json").write_text(json.dumps(manifest))
             words = [0, 0x80000000, 0x7FC00123, 0xFFFFFFFF]
             (root / "native.json").write_text(json.dumps({"words": words}))
@@ -947,7 +1204,10 @@ class SharedFixtureTests(unittest.TestCase):
             with self.subTest(case="control/missing-release-context"), self.assertRaises(KeyError):
                 load_shared_fixture(root / "release.json")
             (root / "debug-context.json").write_text(json.dumps({"words": words}))
-            with self.subTest(case="control/overlapping-context"), self.assertRaisesRegex(ValueError, "context overlaps payload"):
+            with (
+                self.subTest(case="control/overlapping-context"),
+                self.assertRaisesRegex(ValueError, "context overlaps payload"),
+            ):
                 load_shared_fixture(root / "debug.json")
 
     test_shared_context_is_required_disjoint_and_independently_owned.required_subtests = True
@@ -959,8 +1219,13 @@ class SharedFixtureTests(unittest.TestCase):
             [f"file/{name}" for name in manifest["files"]]
             + [f"preset/{preset}" for preset in PRESETS]
             + [f"input/{preset}/{index}" for preset in PRESETS for index in range(19)]
-            + [f"product/{preset}/{route}-{mode}-{variant}" for preset in PRESETS
-               for route in range(4) for mode in range(3) for variant in range(6)]
+            + [
+                f"product/{preset}/{route}-{mode}-{variant}"
+                for preset in PRESETS
+                for route in range(4)
+                for mode in range(3)
+                for variant in range(6)
+            ]
         )
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         inputs = json.loads((root / "cases.json").read_bytes())["cases"]
@@ -979,13 +1244,23 @@ class SharedFixtureTests(unittest.TestCase):
             for index, (source, row) in enumerate(zip(inputs, capture["cases"], strict=True)):
                 with self.subTest(case=f"input/{preset}/{index}"):
                     self.assertEqual({key: row[key] for key in source}, source)
-                    for key, extent in (("film_base_density", 81), ("filtered_illuminant", 81), ("print_sensitivity_cmy", 243), ("raw", 3)):
+                    for key, extent in (
+                        ("film_base_density", 81),
+                        ("filtered_illuminant", 81),
+                        ("print_sensitivity_cmy", 243),
+                        ("raw", 3),
+                    ):
                         self.assertEqual(len(row[key]), extent)
-                        self.assertTrue(all(type(word) is int and 0 <= word <= 0xffffffff for word in row[key]))
+                        self.assertTrue(all(type(word) is int and 0 <= word <= 0xFFFFFFFF for word in row[key]))
                     self.assertEqual(row["success"], row["id"] not in manifest["failure_channels"])
-                    self.assertEqual(row["diagnostic"], "" if row["success"] else "MalformedRequiredResource phase=4B field=preflash_raw")
-            self.assertEqual({(r["route"], r["mode"], r["variant"]) for r in capture["products"]},
-                             {(route, mode, variant) for route in range(4) for mode in range(3) for variant in range(6)})
+                    self.assertEqual(
+                        row["diagnostic"],
+                        "" if row["success"] else "MalformedRequiredResource phase=4B field=preflash_raw",
+                    )
+            self.assertEqual(
+                {(r["route"], r["mode"], r["variant"]) for r in capture["products"]},
+                {(route, mode, variant) for route in range(4) for mode in range(3) for variant in range(6)},
+            )
             for row in capture["products"]:
                 case = f"product/{preset}/{row['route']}-{row['mode']}-{row['variant']}"
                 with self.subTest(case=case):
@@ -999,23 +1274,39 @@ class SharedFixtureTests(unittest.TestCase):
     test_preflash_native_integrity_inputs_and_caller_membership.required_subtests = True
 
     def test_unique_payload_integrity_and_native_membership(self):
-        families = (("color", "", "manifest.json", "recipes", 15),
-                    ("color", "cat02-", "cat02-manifest.json", "recipes", 56),
-                    ("color", "input-color-", "input-color-manifest.json", "recipes", 140),
-                    ("illuminants", "construction-", "construction-manifest.json", "products", 270))
-        manifests = {name: json.loads((FIXTURES / directory / name).read_bytes())
-                     for directory, _, name, _, _ in families}
+        families = (
+            ("color", "", "manifest.json", "recipes", 15),
+            ("color", "cat02-", "cat02-manifest.json", "recipes", 56),
+            ("color", "input-color-", "input-color-manifest.json", "recipes", 140),
+            ("illuminants", "construction-", "construction-manifest.json", "products", 270),
+        )
+        manifests = {
+            name: json.loads((FIXTURES / directory / name).read_bytes()) for directory, _, name, _, _ in families
+        }
         self.subtest_cases = tuple(
             [f"family/{name}" for _, _, name, _, _ in families]
-            + [f"payload/{name}/{payload}" for _, _, name, _, _ in families
-               for payload in set(manifests[name]["payloads"].values())]
-            + [f"row/{name}/{payload}/{index}" for _, _, name, group, count in families
-               for payload in set(manifests[name]["payloads"].values()) for index in range(count)]
-            + [f"witness/{logical}" for _, _, name, _, _ in families
-               if "preset_witnesses" in manifests[name]
-               for logical in manifests[name]["payloads"]]
-            + [f"storage/{name}/{payload}" for _, _, name, _, _ in families
-               for payload in manifests[name]["storage_files"]]
+            + [
+                f"payload/{name}/{payload}"
+                for _, _, name, _, _ in families
+                for payload in set(manifests[name]["payloads"].values())
+            ]
+            + [
+                f"row/{name}/{payload}/{index}"
+                for _, _, name, group, count in families
+                for payload in set(manifests[name]["payloads"].values())
+                for index in range(count)
+            ]
+            + [
+                f"witness/{logical}"
+                for _, _, name, _, _ in families
+                if "preset_witnesses" in manifests[name]
+                for logical in manifests[name]["payloads"]
+            ]
+            + [
+                f"storage/{name}/{payload}"
+                for _, _, name, _, _ in families
+                for payload in manifests[name]["storage_files"]
+            ]
         )
         for directory, prefix, name, group, count in families:
             root = FIXTURES / directory
@@ -1090,13 +1381,23 @@ class SharedFixtureTests(unittest.TestCase):
             rows = json.loads(data)["rows"]
             self.assertEqual(len(rows), 140)
             base = {(row["route"], row["space"], row["method"], row["decode"]) for row in rows[:96]}
-            self.assertEqual(base, {(route, space, method, decode) for route in range(4)
-                                   for space in range(4) for method in range(3) for decode in range(2)})
+            self.assertEqual(
+                base,
+                {
+                    (route, space, method, decode)
+                    for route in range(4)
+                    for space in range(4)
+                    for method in range(3)
+                    for decode in range(2)
+                },
+            )
             self.assertEqual([row["control"] for row in rows[96:]], list(range(44)))
             for index, row in enumerate(rows):
                 with self.subTest(case=f"input/{name}/{index}"):
                     raw = row["raw"]
-                    self.assertEqual([len(raw[field]) for field in ("rgb_to_xyz", "xyz_adapt", "xyz_to_linear_srgb")], [9, 9, 9])
+                    self.assertEqual(
+                        [len(raw[field]) for field in ("rgb_to_xyz", "xyz_adapt", "xyz_to_linear_srgb")], [9, 9, 9]
+                    )
                     self.assertEqual(len(raw["sensitivity"]), 81)
                     self.assertTrue(all(len(sample) == 3 for sample in raw["sensitivity"]))
                     self.assertEqual(len(raw["surface"]), 3)
@@ -1121,7 +1422,10 @@ class SharedFixtureTests(unittest.TestCase):
             self.assertEqual(expanded["recipes"][1]["expected"]["sensitivity"], words)
             self.assertEqual(blocks["sensitivity"][0], words)
         compact["native"]["recipes"][0]["expected"]["sensitivity_record"] = -1
-        with self.subTest(case="control/invalid-reference"), self.assertRaisesRegex(ValueError, "invalid expected block"):
+        with (
+            self.subTest(case="control/invalid-reference"),
+            self.assertRaisesRegex(ValueError, "invalid expected block"),
+        ):
             expand_expected_blocks(compact["native"], blocks)
 
     test_expanded_cases_are_independent_and_preserve_exact_words.required_subtests = True

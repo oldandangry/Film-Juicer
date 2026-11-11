@@ -1,4 +1,5 @@
 """Check a deliberate sanitizer failure and retain its original output."""
+
 from __future__ import annotations
 
 import argparse
@@ -33,15 +34,28 @@ def main() -> int:
     except subprocess.TimeoutExpired as error:
         output = (error.stdout or b"") + (error.stderr or b"")
         (directory / "output.log").write_bytes(output)
-        (directory / "result.json").write_text(json.dumps({
-            "command": [str(executable), arguments.mode], "status": "timeout",
-            "executable_sha256": before, "output_sha256": hashlib.sha256(output).hexdigest(),
-        }, indent=2) + "\n", encoding="utf-8")
+        (directory / "result.json").write_text(
+            json.dumps(
+                {
+                    "command": [str(executable), arguments.mode],
+                    "status": "timeout",
+                    "executable_sha256": before,
+                    "output_sha256": hashlib.sha256(output).hexdigest(),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         raise
     output = result.stdout + result.stderr
     (directory / "output.log").write_bytes(output)
-    record = {"command": [str(executable), arguments.mode], "returncode": result.returncode,
-              "executable_sha256": before, "output_sha256": hashlib.sha256(output).hexdigest()}
+    record = {
+        "command": [str(executable), arguments.mode],
+        "returncode": result.returncode,
+        "executable_sha256": before,
+        "output_sha256": hashlib.sha256(output).hexdigest(),
+    }
     (directory / "result.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"Sanitizer control evidence: {directory}", flush=True)
     if hashlib.sha256(executable.read_bytes()).hexdigest() != before:

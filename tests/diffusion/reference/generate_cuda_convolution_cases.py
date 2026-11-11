@@ -262,9 +262,7 @@ def _generate_case(
     for _label, params, pixel_size_um, expected_radius in stages:
         current, observed_radius = _capture_apply(current, params, pixel_size_um)
         if expected_radius is not None and observed_radius != expected_radius:
-            raise RuntimeError(
-                f"{case_id} radius {observed_radius} did not equal {expected_radius}"
-            )
+            raise RuntimeError(f"{case_id} radius {observed_radius} did not equal {expected_radius}")
         observed_radii.append(observed_radius)
     normalized_output = writer.array(f"{case_id}-normalized-output", current, "normalized_output")
     del normalized, current
@@ -275,10 +273,9 @@ def _generate_case(
     current = hdr
     for stage_index, (_label, params, pixel_size_um, expected_radius) in enumerate(stages):
         current, observed_radius = _capture_apply(current, params, pixel_size_um)
-        if (
-            (expected_radius is not None and observed_radius != expected_radius)
-            or observed_radius != observed_radii[stage_index]
-        ):
+        if (expected_radius is not None and observed_radius != expected_radius) or observed_radius != observed_radii[
+            stage_index
+        ]:
             raise RuntimeError(f"{case_id} HDR radius disagrees with normalized radius")
     hdr_output = writer.array(f"{case_id}-hdr-output", current, "hdr_output")
     del hdr, current

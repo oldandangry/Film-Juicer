@@ -23,13 +23,24 @@ class MaintenanceTests(unittest.TestCase):
     def test_committed_contract_needs_no_reference_environment(self) -> None:
         # A different checkout and absent historical environment cannot invalidate bytes.
         suite = unittest.defaultTestLoader.loadTestsFromModule(test_reference_contract)
-        with mock.patch.object(test_reference_contract.subprocess, "run", side_effect=AssertionError("unexpected Git/environment command")), \
-             mock.patch("builtins.__import__", wraps=__import__) as imports:
+        with (
+            mock.patch.object(
+                test_reference_contract.subprocess,
+                "run",
+                side_effect=AssertionError("unexpected Git/environment command"),
+            ),
+            mock.patch("builtins.__import__", wraps=__import__) as imports,
+        ):
             result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
         self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
         self.assertEqual(result.testsRun, 9)
-        self.assertFalse(any(call.args[0].startswith(("spektrafilm", "tools.diffusion_reference"))
-                             or call.args[0] == "tests.diffusion.reference" for call in imports.call_args_list))
+        self.assertFalse(
+            any(
+                call.args[0].startswith(("spektrafilm", "tools.diffusion_reference"))
+                or call.args[0] == "tests.diffusion.reference"
+                for call in imports.call_args_list
+            )
+        )
 
     def test_committed_provenance_edit_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -62,8 +73,11 @@ class MaintenanceTests(unittest.TestCase):
             directory = Path(temporary)
             data = json.loads(test_reference_contract.MANIFEST.read_text(encoding="utf-8"))
             data["python"].update(
-                version=platform.python_version(), implementation=platform.python_implementation(),
-                platform=platform.platform(), machine=platform.machine(), executable=sys.executable,
+                version=platform.python_version(),
+                implementation=platform.python_implementation(),
+                platform=platform.platform(),
+                machine=platform.machine(),
+                executable=sys.executable,
             )
             (directory / "diffusion_reference_v1.json").write_text(json.dumps(data), encoding="utf-8")
             cases = {case._testMethodName: case for case in test_reference_contract.capture_suite(directory)}

@@ -152,6 +152,7 @@ def unsupported(name, arguments):
     def reject(*_arguments):
         unsupported_calls.append(name)
         return 5  # kOfxStatErrUnsupported
+
     return callback(int_type, arguments, reject)
 
 
@@ -159,14 +160,18 @@ image_suite = (pointer_type * 13)()
 image_suite[0] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
 image_suite[1] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_params)
 image_suite[2] = unsupported("clipDefine", [pointer_type, string_type, c.POINTER(pointer_type)])
-image_suite[3] = unsupported("clipGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
+image_suite[3] = unsupported(
+    "clipGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)]
+)
 image_suite[5] = unsupported("clipGetImage", [pointer_type, double_type, pointer_type, c.POINTER(pointer_type)])
 image_suite[6] = unsupported("clipReleaseImage", [pointer_type])
 image_suite[7] = unsupported("clipGetRegionOfDefinition", [pointer_type, double_type, pointer_type])
 image_suite[8] = unsupported("abort", [pointer_type])
 parameter_suite = (pointer_type * 32)()
 parameter_suite[0] = unsupported("paramDefine", [pointer_type, string_type, string_type, c.POINTER(pointer_type)])
-parameter_suite[1] = unsupported("paramGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
+parameter_suite[1] = unsupported(
+    "paramGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)]
+)
 parameter_suite[2] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
 parameter_suite[3] = unsupported("paramGetPropertySet", [pointer_type, c.POINTER(pointer_type)])
 parameter_suite[4] = unsupported("paramGetValue", [pointer_type])
@@ -260,15 +265,17 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
 
             if action == b"OfxActionDescribe" and results[name] == 0:
                 described_properties = {
-                    key.decode(): [value.decode() if isinstance(value, bytes) else value
-                                   for value in values]
+                    key.decode(): [value.decode() if isinstance(value, bytes) else value for value in values]
                     for key, values in sorted(props[2].items())
                 }
                 with self.subTest(case="descriptor"):
                     if args.expected_descriptor:
                         expected = json.loads(args.expected_descriptor.read_text(encoding="utf-8"))
-                        self.assertEqual(described_properties, expected.get("properties", expected),
-                                         "OFX descriptor properties differ from captured reference")
+                        self.assertEqual(
+                            described_properties,
+                            expected.get("properties", expected),
+                            "OFX descriptor properties differ from captured reference",
+                        )
                     cuda_support = props.get(2, {}).get(b"OfxImageEffectPropCudaRenderSupported")
                     self.assertEqual(cuda_support, [b"true"], "unexpected CUDA support declaration")
 
@@ -284,11 +291,14 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
 
         self.assertEqual(unsupported_calls, [], "lifecycle requested an unsupported host operation")
         self.assertEqual(messages, [], "unexpected lifecycle host message")
-        self.assertEqual(results, {
-            "OfxActionLoad": 0,
-            "OfxActionDescribe": 0,
-            "OfxActionUnload": 0,
-        })
+        self.assertEqual(
+            results,
+            {
+                "OfxActionLoad": 0,
+                "OfxActionDescribe": 0,
+                "OfxActionUnload": 0,
+            },
+        )
         print(
             json.dumps(
                 {
