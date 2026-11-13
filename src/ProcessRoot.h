@@ -134,8 +134,7 @@ namespace JuicerProcess {
     namespace TestSupport {
         class RootLifetimeObserver;
 #if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        // Isolated prepared-frame test compilation only; remove when the
-        // native Root ownership boundary moves in S2.B.
+        // Injects a one-shot context drain failure in the isolated prepared-frame tests.
         bool arm_context_drain_failure_once(
             const JuicerCuda::ResourceManager::DeviceContextKey& key) noexcept;
         void clear_context_drain_failure() noexcept;

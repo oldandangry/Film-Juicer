@@ -14,7 +14,6 @@
 #include <variant>
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "GaussianSciPy.h"
 
 #include <cuda_runtime.h>
 

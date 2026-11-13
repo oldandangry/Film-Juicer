@@ -369,9 +369,8 @@ namespace Spektrafilm {
     void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept;
 
 
-    // S4.E consumes an already-computed Rust frame result; native code retains
-    // final scratch/role/alias and execution hash binding.
-    // Bind completed execution math before scratch/hash composition.
+    // Bind the resolved Rust frame math before composing native scratch roles,
+    // aliases and execution hash.
     bool bind_spatial_dir_math(const FjDirFrameMath&, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool finish_spatial_dir_descriptor(float pixelSizeUm, SpatialDirDescriptor&);
 

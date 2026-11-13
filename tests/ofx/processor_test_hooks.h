@@ -41,6 +41,7 @@ namespace JuicerCuda::ExecutorTest {
         bool adapterRecoveryPending = false;
         bool messageMatches = false;
         bool armed = true;
+        bool diffusionComponentsPanic = false;
         FjStatus classifiedStatus{};
         bool failureDiagnosticMatches = false;
         bool retirementObserved = false;

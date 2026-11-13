@@ -1086,10 +1086,10 @@ namespace JuicerCuda::Diffusion {
              ++keyIndex) {
             const auto& stage =
                 *stage_for_key(frameSet, descriptor, keyIndex);
-            if (!Spektrafilm::expand_diffusion_psf_components(
+            if (!JuicerDiffusion::prepare_components(
                     stage.sample,
                     components[keyIndex],
-                    outError.diagnostic)) {
+                    outError)) {
                 if (outError.diagnostic.empty()) {
                     outError.diagnostic =
                         "ResourceDescriptorMismatch component=diffusion field=psf_components";
