@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 
 namespace Spektrafilm {
 
@@ -46,11 +45,6 @@ namespace Spektrafilm {
         std::array<double, kCount> greenWeights{};
         std::array<double, kCount> blueWeights{};
     };
-
-    bool expand_diffusion_psf_components(
-        const DiffusionPsfSampleDescriptor& descriptor,
-        DiffusionPsfComponents& out,
-        std::string& diagnostic);
 
 } // namespace Spektrafilm
 
