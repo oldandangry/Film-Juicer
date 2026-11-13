@@ -61,7 +61,7 @@
     {
       "destination": "OpenFX-1.4/include/ofxParamExt.h",
       "sha256": "a22d138dcb7628c494d379f16feacf409d7c482a17e6acb38009239ba48c3cb7",
-      "vendored_sha256": "a22d138dcb7628c494d379f16feacf409d7c482a17e6acb38009239ba48c3cb7"
+      "vendored_sha256": "5ce6866410d4247961a362bfbfeb49ac83711e55d59efd80f4470231cc4edc8e"
     },
     {
       "destination": "OpenFX-1.4/include/ofxParametricParam.h",
@@ -171,7 +171,7 @@
     {
       "destination": "Support/include/ofxsProcessing.h",
       "sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a",
-      "vendored_sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a"
+      "vendored_sha256": "88761009cd8377cde72ba063672231aa13670677192dfba08994ca7856cf265b"
     },
     {
       "destination": "Support/include/ofxsSupportPrivate.h",
@@ -219,6 +219,16 @@
       "file": "Support/include/ofxsParam.h",
       "typed_exception_specs_removed": 1,
       "platform_macros": 0
+    },
+    {
+      "file": "OpenFX-1.4/include/ofxParamExt.h",
+      "commit": "23ddf73da9803f89a3577781084663643cf96dfc",
+      "description": "Use stdarg.h for C consumers and retain cstdarg for C++ consumers."
+    },
+    {
+      "file": "Support/include/ofxsProcessing.h",
+      "commit": "4e5a7f822f17099517d09cc8c1cd8dce9df22a1a",
+      "description": "Add, initialize and assign the CUDA stream-property-presence field separately from the stream pointer."
     }
   ],
   "compatibility_whitespace": "Remove whitespace artifacts on declarations and definitions after typed exception specification removal."
