@@ -169,6 +169,7 @@
     "GrainScratch.GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction": 1,
     "GrainScratch.ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations": 1,
     "GrainScratch.FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage": 1,
+    "GrainScratch.DirAmountChangeOverwritesCurvesInPlace": 1,
     "GrainScratch.GrainMatchesDedicatedScratchBitForBitAcrossRoutesShapesTimesAndDebugViews": 1,
     "GrainScratch.ReusesOnlyWithinEligibleRouteAndRetainedTier": 1,
     "GrainScratch.SurvivesResolutionChangesQueuedAbortAndContextRetirement": 1,

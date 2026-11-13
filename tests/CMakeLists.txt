@@ -1015,7 +1015,6 @@ add_executable(JuicerPreparedBoundaryProbe
     ffi/prepared_boundary.c
     ffi/prepared_descriptors.cpp)
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_test_core film_juicer_rust_test_support CUDA::cuda_driver)
-add_dependencies(JuicerPreparedBoundaryProbe JuicerProductionPreparedRenderProbe)
 add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
         "${CMAKE_INSTALL_PREFIX}/juicer.ofx.bundle/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"

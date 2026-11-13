@@ -35,6 +35,7 @@
 #include <limits>
 #include <numeric>
 #include <atomic>
+#include <span>
 #include <sstream>
 #include <exception>
 #include <type_traits>
@@ -1313,15 +1314,24 @@ namespace JuicerCuda {
         return true;
     }
 
+    namespace {
+
+        struct CurveUploadView {
+            std::span<const float> axis;
+            std::span<const float> samples;
+        };
+
+    } // namespace
+
     static bool alloc_and_upload_curve(
         Resources& resources,
         DeviceCurve& dst,
-        const Spectral::Curve& src,
+        const CurveUploadView& src,
         void* cudaStreamOpaque,
         Failure& outError) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        const int n = static_cast<int>(src.lambda_nm.size());
-        const size_t bytes = src.lambda_nm.size() * sizeof(float);
+        const int n = static_cast<int>(src.axis.size());
+        const size_t bytes = src.axis.size_bytes();
         dst.domainBegin = 0;
         dst.domainEnd = n - 1;
         if (!allocate_owned_device(
@@ -1347,7 +1357,7 @@ namespace JuicerCuda {
                 resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.x"},
                 dst.x,
-                src.lambda_nm.data(),
+                src.axis.data(),
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
@@ -1359,7 +1369,7 @@ namespace JuicerCuda {
                 resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.y"},
                 dst.y,
-                src.linear.data(),
+                src.samples.data(),
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
@@ -1375,14 +1385,14 @@ namespace JuicerCuda {
     static bool upload_curve_locked(
         Resources& resources,
         DeviceCurve& dst,
-        const Spectral::Curve& src,
+        const CurveUploadView& src,
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         Failure& outError) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        const size_t sampleCount = src.lambda_nm.size();
-        if (sampleCount == 0 || src.linear.size() != sampleCount) {
+        const size_t sampleCount = src.axis.size();
+        if (sampleCount == 0 || src.samples.size() != sampleCount) {
             outError.diagnostic = std::string(label) + ": curve has no samples or mismatched arrays";
             return false;
         }
@@ -1407,7 +1417,7 @@ namespace JuicerCuda {
                                                resources,
                                                HostToDeviceCopyRequest{"upload_curve_locked", labelX.c_str()},
                                                dst.x,
-                                               src.lambda_nm.data(),
+                                               src.axis.data(),
                                                bytes,
                                                cudaStreamOpaque,
                                                outError);
@@ -1416,7 +1426,7 @@ namespace JuicerCuda {
                                                 resources,
                                                 HostToDeviceCopyRequest{"upload_curve_locked", labelY.c_str()},
                                                 dst.y,
-                                                src.linear.data(),
+                                                src.samples.data(),
                                                 bytes,
                                                 cudaStreamOpaque,
                                                 outError);
@@ -3493,46 +3503,37 @@ namespace JuicerCuda {
             routeLut.canonical_ready() &&
             routeLut.hash == scannerDescriptor.hash;
 
-        Spectral::Curve sensB;
-        Spectral::Curve sensG;
-        Spectral::Curve sensR;
-        Spectral::assign_reference_axis(sensB.lambda_nm);
-        sensG.lambda_nm = sensB.lambda_nm;
-        sensR.lambda_nm = sensB.lambda_nm;
-        sensB.linear.resize(Spectral::kNumSamples);
-        sensG.linear.resize(Spectral::kNumSamples);
-        sensR.linear.resize(Spectral::kNumSamples);
+        const std::span<const float> sensitivityWavelengthsNm = Spectral::kReferenceShape.wavelengths;
+        std::vector<float> sensB(Spectral::kNumSamples);
+        std::vector<float> sensG(Spectral::kNumSamples);
+        std::vector<float> sensR(Spectral::kNumSamples);
         for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
             const auto rgb = filmRaw.finalSensitivityRgb.sample(static_cast<std::size_t>(sample));
-            sensB.linear[static_cast<std::size_t>(sample)] = rgb[2];
-            sensG.linear[static_cast<std::size_t>(sample)] = rgb[1];
-            sensR.linear[static_cast<std::size_t>(sample)] = rgb[0];
+            sensB[static_cast<std::size_t>(sample)] = rgb[2];
+            sensG[static_cast<std::size_t>(sample)] = rgb[1];
+            sensR[static_cast<std::size_t>(sample)] = rgb[0];
         }
 
-        Spectral::Curve densB;
-        Spectral::Curve densG;
-        Spectral::Curve densR;
-        densB.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
-        densG.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
-        densR.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
-        densB.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
-        densG.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
-        densR.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
-        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurvesRgb.sample_count(); ++sample) {
+        const auto filmLogExposure = filmDevelop.logExposure;
+        const std::size_t densitySampleCount = filmDevelop.normalizedDensityCurvesRgb.sample_count();
+        std::vector<float> densB(densitySampleCount);
+        std::vector<float> densG(densitySampleCount);
+        std::vector<float> densR(densitySampleCount);
+        for (std::size_t sample = 0; sample < densitySampleCount; ++sample) {
             const auto rgb = filmDevelop.normalizedDensityCurvesRgb.sample(sample);
-            densB.linear[sample] = rgb[2];
-            densG.linear[sample] = rgb[1];
-            densR.linear[sample] = rgb[0];
+            densB[sample] = rgb[2];
+            densG[sample] = rgb[1];
+            densR[sample] = rgb[0];
         }
 
         resources.filmFinalSensitivityHash = 0;
         resources.filmDensityCurvesHash = 0;
-        if (!upload_curve_locked(resources, resources.sensB, sensB, cudaStreamOpaque, &lock, "focused film finalSensB", outError) ||
-            !upload_curve_locked(resources, resources.sensG, sensG, cudaStreamOpaque, &lock, "focused film finalSensG", outError) ||
-            !upload_curve_locked(resources, resources.sensR, sensR, cudaStreamOpaque, &lock, "focused film finalSensR", outError) ||
-            !upload_curve_locked(resources, resources.densB, densB, cudaStreamOpaque, &lock, "focused film normalizedDensB", outError) ||
-            !upload_curve_locked(resources, resources.densG, densG, cudaStreamOpaque, &lock, "focused film normalizedDensG", outError) ||
-            !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "focused film normalizedDensR", outError)) {
+        if (!upload_curve_locked(resources, resources.sensB, {sensitivityWavelengthsNm, sensB}, cudaStreamOpaque, &lock, "focused film finalSensB", outError) ||
+            !upload_curve_locked(resources, resources.sensG, {sensitivityWavelengthsNm, sensG}, cudaStreamOpaque, &lock, "focused film finalSensG", outError) ||
+            !upload_curve_locked(resources, resources.sensR, {sensitivityWavelengthsNm, sensR}, cudaStreamOpaque, &lock, "focused film finalSensR", outError) ||
+            !upload_curve_locked(resources, resources.densB, {filmLogExposure, densB}, cudaStreamOpaque, &lock, "focused film normalizedDensB", outError) ||
+            !upload_curve_locked(resources, resources.densG, {filmLogExposure, densG}, cudaStreamOpaque, &lock, "focused film normalizedDensG", outError) ||
+            !upload_curve_locked(resources, resources.densR, {filmLogExposure, densR}, cudaStreamOpaque, &lock, "focused film normalizedDensR", outError)) {
             return false;
         }
 
@@ -3618,15 +3619,10 @@ namespace JuicerCuda {
                 outError.diagnostic = "focused film DIR resource descriptor mismatch";
                 return false;
             }
-            Spectral::Curve dirB = densB;
-            Spectral::Curve dirG = densG;
-            Spectral::Curve dirR = densR;
-            dirB.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[2].begin(), dirCouplers.compensatedDensityCurveAxesRgb[2].end());
-            dirG.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[1].begin(), dirCouplers.compensatedDensityCurveAxesRgb[1].end());
-            dirR.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[0].begin(), dirCouplers.compensatedDensityCurveAxesRgb[0].end());
-            if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
-                !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
-                !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
+            const auto& compensatedLogExposureRgb = dirCouplers.compensatedDensityCurveAxesRgb;
+            if (!upload_curve_locked(resources, resources.dirDensB, {compensatedLogExposureRgb[2], densB}, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
+                !upload_curve_locked(resources, resources.dirDensG, {compensatedLogExposureRgb[1], densG}, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
+                !upload_curve_locked(resources, resources.dirDensR, {compensatedLogExposureRgb[0], densR}, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
                 return false;
             }
         } else {
@@ -3995,25 +3991,19 @@ namespace JuicerCuda {
                 resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
             }
             if (!profileHit) {
-                Spectral::Curve dcC;
-                Spectral::Curve dcM;
-                Spectral::Curve dcY;
-                dcC.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
-                dcM.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
-                dcY.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
-                dcC.linear.resize(input.printDensityCurvesCmy.sample_count());
-                dcM.linear.resize(input.printDensityCurvesCmy.sample_count());
-                dcY.linear.resize(input.printDensityCurvesCmy.sample_count());
+                const auto printLogExposure = input.printLogExposure;
+                const std::size_t densitySampleCount = input.printDensityCurvesCmy.sample_count();
+                std::vector<float> dcC(densitySampleCount);
+                std::vector<float> dcM(densitySampleCount);
+                std::vector<float> dcY(densitySampleCount);
                 std::vector<float> sensC(Spectral::kNumSamples);
                 std::vector<float> sensM(Spectral::kNumSamples);
                 std::vector<float> sensY(Spectral::kNumSamples);
-                for (std::size_t sample = 0;
-                     sample < input.printDensityCurvesCmy.sample_count();
-                     ++sample) {
+                for (std::size_t sample = 0; sample < densitySampleCount; ++sample) {
                     const auto cmy = input.printDensityCurvesCmy.sample(sample);
-                    dcC.linear[sample] = cmy[0];
-                    dcM.linear[sample] = cmy[1];
-                    dcY.linear[sample] = cmy[2];
+                    dcC[sample] = cmy[0];
+                    dcM[sample] = cmy[1];
+                    dcY[sample] = cmy[2];
                 }
                 for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
                     const auto cmy = input.printSensitivityCmy.sample(static_cast<std::size_t>(sample));
@@ -4021,9 +4011,9 @@ namespace JuicerCuda {
                     sensM[static_cast<std::size_t>(sample)] = cmy[1];
                     sensY[static_cast<std::size_t>(sample)] = cmy[2];
                 }
-                if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
-                    !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
-                    !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
+                if (!upload_curve_locked(resources, resources.printDcC, {printLogExposure, dcC}, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
+                    !upload_curve_locked(resources, resources.printDcM, {printLogExposure, dcM}, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
+                    !upload_curve_locked(resources, resources.printDcY, {printLogExposure, dcY}, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
                     !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
                     !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
                     !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
