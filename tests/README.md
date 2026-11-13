@@ -955,14 +955,19 @@ compare the C entry with direct execution and immutable captures; see
 
 `Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
 processor adapter and prepared-frame abort observer. It drives both route failure
-sites through the same native OFX fixture, checking failure classification,
+sites through the OFX callback, checking failure classification,
 prepared-frame abort, gate release, deferred DIR message attempt, adapter context
 recovery and fatal OFX result order. It also covers non-DIR filtering,
-percent escaping, failed/throwing host delivery and a failure that requires no
-context retirement. The injected context-loss status exercises the existing
-retirement/latch policy on the fixture's CUDA context; it does not simulate real
-driver loss or establish Resolve recovery acceptance. The hook definitions are
-absent from the product and ordinary processor-reference objects.
+percent escaping and failed or throwing host delivery. The cold direct-scan
+diffusion case enables camera diffusion and arms a one-shot Rust component panic.
+It checks the full internal-failure status and decorated diagnostic through
+native classification and OFX completion, frame abort before classification,
+no diffusion allocation or context retirement, image release and successful
+same-context retry with the same submission.
+
+The injected context-loss status exercises the retirement and submission latch
+policy on the fixture's CUDA context. Live driver loss and Resolve recovery
+require separate evidence. The hook definitions belong to the isolated test build.
 
 `Ofx.Gpu.ResourceFailure.DefectFence` and `Ofx.Gpu.ResourceFailure.GrainUpload`
 extend that isolated build to the CUDA resource owner. They check Runtime event
@@ -1032,9 +1037,7 @@ hard self-release only to prevent a test deadlock, and a passing row requires
 that fallback not to fire. A separately compiled prepared-frame test object has
 one narrow, one-shot seam that returns a defined drain error before calling the
 physical CUDA drain. It requires ownership and ledger retention, then retries
-the ordinary drain successfully. The seam is absent from the plug-in build and
-is removed when the native Root ownership boundary moves in migration stage
-S2.B.
+the ordinary drain successfully. The seam belongs to the isolated test build.
 This is controlled failure-branch evidence; it is not a real CUDA context-loss
 or driver-reset test and never resets a live host-owned context.
 
