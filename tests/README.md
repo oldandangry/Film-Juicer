@@ -1600,9 +1600,13 @@ These are Film-Juicer characterizations, not external-reference pixel fixtures.
 `Ofx.Gpu.AdapterTrace` observes film-f32, print-f64 and resolved grain values from
 actual current-value OFX capture, including invalid controls and recovery.
 `Grain.Gpu.ScratchReuse` verifies that a required film-gamma host rebuild changes
-development/final identities while reusing unchanged device curve/layer storage
-and preserving every uploaded word. Identical snapshots instead reuse the whole
-published state; equal curve hashes alone do not prove an absence of host work.
+development and final identities while the focused resource cache retains the
+device curves and layers. A second cohort changes the active DIR amount to
+force a focused resource miss at the same curve sizes. It checks exact device
+addresses for normalized and DIR curves and active layers, and compares the
+device values bit for bit with the held prepared state, including the changed
+compensated axes. Both cohorts cover all four scan routes with layers on and off.
+Identical snapshots reuse the whole published state.
 
 The immutable fixture directory is an ordinary test input. Capture generators
 and maintenance environments are excluded from CTest. Generate and review

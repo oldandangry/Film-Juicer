@@ -3,6 +3,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #include <optional>
@@ -84,6 +85,24 @@ namespace {
         return "route-" + std::to_string(static_cast<int>(route));
     }
 
+    constexpr std::array kCurveStorageRoutes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                             Spektrafilm::ScanRoute::NegativePrintScan,
+                                             Spektrafilm::ScanRoute::PositiveDirectScan,
+                                             Spektrafilm::ScanRoute::PositivePrintScan};
+    constexpr std::array kCurveStorageLayerModes{false, true};
+
+    std::string curve_storage_case_key(Spektrafilm::ScanRoute route, bool layers) {
+        return route_case_key(route) + "/layers-" + (layers ? "on" : "off");
+    }
+
+    std::vector<std::string> curve_storage_case_ids() {
+        std::vector<std::string> ids;
+        for (const auto route : kCurveStorageRoutes)
+            for (bool layers : kCurveStorageLayerModes)
+                ids.push_back(curve_storage_case_key(route, layers));
+        return ids;
+    }
+
     void require(bool ok, const std::string& detail) {
         if (!ok) {
             throw std::runtime_error(detail);
@@ -103,10 +122,12 @@ namespace {
         float pixelSize = 6.0f;
         bool cameraDiffusion = false;
         float filmGamma = 1.0f;
+        float dirAmount = 1.0f;
     };
 
     struct CurvePointers {
         std::array<JuicerCuda::DeviceCurveView, 3> normalized{};
+        std::array<JuicerCuda::DeviceCurveView, 3> dir{};
         std::array<JuicerCuda::DeviceCurveView, 3> layerBase{};
         std::array<std::array<const float*, 3>, 3> layers{};
         std::uint64_t normalizedHash = 0;
@@ -161,6 +182,7 @@ namespace {
             result.values.grain.chroma_shared_weight = variant.shared ? 1.0f : 0.0f;
             result.values.grain.chroma_independent_weight = variant.shared ? 0.0f : 1.0f;
             result.values.grain.debug_view = variant.debug;
+            result.values.dir_couplers.amount = variant.dirAmount;
             result.values.dir_couplers.diffusion_size_um = 20.0f;
             result.values.dir_couplers.diffusion_tail_um = 200.0f;
             result.values.dir_couplers.diffusion_tail_weight = 0.03f;
@@ -212,6 +234,23 @@ namespace {
         const CurvePointers* expectedCurves = nullptr;
     };
 
+    void audit_density_curve(const JuicerCuda::DeviceCurveView& curve,
+                             FjFloatSpan logExposure,
+                             FjFloatSpan densityRgb,
+                             std::size_t channel) {
+        const std::size_t count = logExposure.count;
+        require(count != 0 && curve.n == static_cast<int>(count) && densityRgb.count == count * 3,
+                "device and held density curve extents match");
+        std::vector<float> axis(count), density(count);
+        require_cuda(cudaMemcpy(axis.data(), curve.x, count * sizeof(float), cudaMemcpyDeviceToHost));
+        require_cuda(cudaMemcpy(density.data(), curve.y, count * sizeof(float), cudaMemcpyDeviceToHost));
+        require(std::memcmp(axis.data(), logExposure.data, count * sizeof(float)) == 0, "device exposure axis matches held state");
+        for (std::size_t row = 0; row < count; ++row) {
+            require(std::bit_cast<std::uint32_t>(density[row]) == std::bit_cast<std::uint32_t>(densityRgb.data[row * 3 + channel]),
+                    "device density matches held state");
+        }
+    }
+
     void audit_curve_storage(const FrameFixture::Inputs& prepared,
                              Frame& frame,
                              CurvePointers* output,
@@ -219,19 +258,22 @@ namespace {
         if (!output && !expected)
             return;
         const auto& development = prepared.state.film_development;
+        const auto& dirRecipe = prepared.state.dir_recipe;
         const auto film = frame.focused_resources().film;
         const auto layers = frame.visual_grain_resources().densityLayers;
         const std::size_t count = development.log_exposure.count;
-        require(count == static_cast<std::size_t>(film.normalizedDensR.n), "film curve sample count matches held state");
+        require(film.normalizedDensityCurvesHash == development.density_curves_hash, "published normalized identity matches held state");
+        require(film.dirCouplersHash == dirRecipe.hash, "published DIR identity matches held state");
         const std::array<JuicerCuda::DeviceCurveView, 3> normalized{{film.normalizedDensR, film.normalizedDensG, film.normalizedDensB}};
+        const std::array<JuicerCuda::DeviceCurveView, 3> dir{{film.dirDensR, film.dirDensG, film.dirDensB}};
         for (std::size_t channel = 0; channel < 3; ++channel) {
-            require(normalized[channel].n == static_cast<int>(count), "normalized curve extent");
-            std::vector<float> axis(count), density(count);
-            require_cuda(cudaMemcpy(axis.data(), normalized[channel].x, count * sizeof(float), cudaMemcpyDeviceToHost));
-            require_cuda(cudaMemcpy(density.data(), normalized[channel].y, count * sizeof(float), cudaMemcpyDeviceToHost));
-            for (std::size_t row = 0; row < count; ++row) {
-                require(std::bit_cast<std::uint32_t>(axis[row]) == std::bit_cast<std::uint32_t>(development.log_exposure.data[row]), "device exposure axis matches held state");
-                require(std::bit_cast<std::uint32_t>(density[row]) == std::bit_cast<std::uint32_t>(development.density_rgb.data[row * 3 + channel]), "device normalized density matches held state");
+            {
+                SCOPED_TRACE("normalized density");
+                audit_density_curve(normalized[channel], development.log_exposure, development.density_rgb, channel);
+            }
+            if (dirRecipe.mode != FJ_DIR_INACTIVE) {
+                SCOPED_TRACE("DIR-compensated density");
+                audit_density_curve(dir[channel], dirRecipe.compensated_axes_rgb[channel], development.density_rgb, channel);
             }
             if (prepared.state.grain.sublayers_active != 0) {
                 for (std::size_t layer = 0; layer < 3; ++layer) {
@@ -248,6 +290,7 @@ namespace {
         }
         if (output) {
             output->normalized = normalized;
+            output->dir = dir;
             std::copy(std::begin(layers.baseCurvesCmy), std::end(layers.baseCurvesCmy), output->layerBase.begin());
             for (std::size_t layer = 0; layer < 3; ++layer)
                 for (std::size_t channel = 0; channel < 3; ++channel)
@@ -259,6 +302,7 @@ namespace {
         if (expected) {
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 require(expected->normalized[channel].x == normalized[channel].x && expected->normalized[channel].y == normalized[channel].y, "exact normalized curve storage reused");
+                require(expected->dir[channel].x == dir[channel].x && expected->dir[channel].y == dir[channel].y, "exact DIR curve storage reused");
                 if (expected->layersActive) {
                     require(expected->layerBase[channel].x == layers.baseCurvesCmy[channel].x && expected->layerBase[channel].y == layers.baseCurvesCmy[channel].y, "exact layer base storage reused");
                     for (std::size_t layer = 0; layer < 3; ++layer)
@@ -613,20 +657,10 @@ namespace {
     }
 
     TEST_F(GrainScratch, FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage) {
-        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
-                                Spektrafilm::ScanRoute::NegativePrintScan,
-                                Spektrafilm::ScanRoute::PositiveDirectScan,
-                                Spektrafilm::ScanRoute::PositivePrintScan};
-        const std::array layerModes{false, true};
-        std::vector<std::string> ids;
-        ids.reserve(routes.size() * layerModes.size());
-        for (const auto route : routes)
-            for (const auto layers : layerModes)
-                ids.push_back(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
-        JuicerTests::GtestCohort cases("route-layer-mode", ids);
-        for (auto route : routes) {
-            for (bool layers : layerModes) {
-                auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
+        JuicerTests::GtestCohort cases("route-layer-mode", curve_storage_case_ids());
+        for (const auto route : kCurveStorageRoutes) {
+            for (bool layers : kCurveStorageLayerModes) {
+                auto row = cases.case_event(curve_storage_case_key(route, layers));
                 GrainVariant variant;
                 variant.layers = layers;
                 Inputs before(runtime, 64, 48, route, variant);
@@ -647,6 +681,70 @@ namespace {
                 EXPECT_EQ(changedCurves.layersActive, layers);
                 EXPECT_EQ(firstCurves.normalizedHash, changedCurves.normalizedHash);
                 EXPECT_EQ(firstCurves.layersHash, changedCurves.layersHash);
+                finish(second);
+                row.passed();
+            }
+        }
+    }
+
+    TEST_F(GrainScratch, DirAmountChangeOverwritesCurvesInPlace) {
+        JuicerTests::GtestCohort cases("route-layer-mode", curve_storage_case_ids());
+        for (const auto route : kCurveStorageRoutes) {
+            for (bool layers : kCurveStorageLayerModes) {
+                const auto caseKey = curve_storage_case_key(route, layers);
+                SCOPED_TRACE(caseKey);
+                auto row = cases.case_event(caseKey);
+                GrainVariant variant;
+                variant.layers = layers;
+                const Inputs before(runtime, 64, 48, route, variant);
+                variant.dirAmount = 0.5f;
+                const Inputs changed(runtime, 64, 48, route, variant);
+
+                FjPreparedStateView firstView{}, changedView{};
+                FjErrorBuffer error{};
+                ASSERT_EQ(before.state.view(firstView, error).category, FJ_STATUS_SUCCESS);
+                ASSERT_EQ(changed.state.view(changedView, error).category, FJ_STATUS_SUCCESS);
+                const auto& firstDir = firstView.dir_recipe;
+                const auto& changedDir = changedView.dir_recipe;
+                ASSERT_NE(firstDir.mode, FJ_DIR_INACTIVE);
+                ASSERT_EQ(changedDir.mode, firstDir.mode);
+                ASSERT_NE(firstDir.hash, 0u);
+                ASSERT_NE(changedDir.hash, 0u);
+                ASSERT_NE(firstDir.hash, changedDir.hash);
+
+                const auto& firstDevelopment = firstView.film_development;
+                const auto& changedDevelopment = changedView.film_development;
+                const std::size_t count = firstDevelopment.log_exposure.count;
+                ASSERT_GT(count, 0u);
+                ASSERT_EQ(changedDevelopment.log_exposure.count, count);
+                ASSERT_EQ(firstDevelopment.density_rgb.count, count * 3);
+                ASSERT_EQ(changedDevelopment.density_rgb.count, count * 3);
+                ASSERT_NE(firstDevelopment.density_curves_hash, 0u);
+                ASSERT_EQ(changedDevelopment.density_curves_hash, firstDevelopment.density_curves_hash);
+                ASSERT_EQ(firstView.grain.sublayers_active != 0, layers);
+                ASSERT_EQ(changedView.grain.sublayers_active != 0, layers);
+                ASSERT_EQ(firstDevelopment.density_layers_hash != 0, layers);
+                ASSERT_EQ(changedDevelopment.density_layers_hash, firstDevelopment.density_layers_hash);
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const auto& firstAxis = firstDir.compensated_axes_rgb[channel];
+                    const auto& changedAxis = changedDir.compensated_axes_rgb[channel];
+                    ASSERT_EQ(firstAxis.count, count);
+                    ASSERT_EQ(changedAxis.count, count);
+                    ASSERT_NE(std::memcmp(firstAxis.data, changedAxis.data, count * sizeof(float)), 0) << "RGB channel " << channel;
+                    for (std::size_t layer = 0; layer < 3; ++layer) {
+                        ASSERT_EQ(firstDevelopment.density_layers[layer][channel].count, layers ? count : 0u);
+                        ASSERT_EQ(changedDevelopment.density_layers[layer][channel].count, layers ? count : 0u);
+                    }
+                }
+
+                CurvePointers firstCurves;
+                auto first = prepare(before, false, 0x475241494eull, &firstCurves);
+                ASSERT_EQ(firstCurves.layersActive, layers);
+                ASSERT_EQ(firstCurves.layersHash, firstDevelopment.density_layers_hash);
+                finish(first);
+                // The resident DIR identity differs from the second request's
+                // identity checked by the focused resource warm predicate.
+                auto second = prepare(changed, false, 0x475241494eull, nullptr, &firstCurves);
                 finish(second);
                 row.passed();
             }
