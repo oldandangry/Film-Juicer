@@ -21,7 +21,6 @@
 #include "juicer_host_preparation.h"
 
 #include "Logging.h"
-#include "nlohmann/json.hpp"
 
 #include <cuda_runtime.h>
 
