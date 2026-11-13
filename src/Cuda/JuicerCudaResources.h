@@ -746,6 +746,7 @@ namespace JuicerCuda {
         };
         std::int32_t injected_error(Operation operation) noexcept;
         void before_diagnostic();
+        void after_overwrite_staging(Resources&) noexcept;
 
         struct Block {
             void* pointer = nullptr;

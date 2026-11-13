@@ -146,6 +146,9 @@
   "gtest_cohorts": {
     "InspectGpu.AllocationCoverageIncludesFullSourceAndDestinationBounds": 1,
     "PinnedUpload.ReservationFailuresPreserveRuntimeCodesWithoutDeviceReclaim": 1,
+    "PinnedUpload.OverwriteReturnsReservationsOnAllocationEventAndCopyFailure": 1,
+    "PinnedUpload.FrameUseRegistrationIsExcludedAtBothCurveCopySeams": 1,
+    "PinnedUpload.CurveAxisSubmissionDeterminesSamplesFailurePrecedence": 1,
     "PinnedUpload.FailedStagedCopyReturnsReservationAndNeverBorrowsCallerStorage": 1,
     "PinnedUpload.ReservationDiagnosticFailurePreservesNativeStatus": 1,
     "PinnedUpload.CopyDiagnosticFailureReturnsReservationAndPreservesNativeStatus": 1,

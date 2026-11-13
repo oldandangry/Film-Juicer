@@ -1021,6 +1021,18 @@ errors and a purge-disposition test do not simulate actual driver/context loss.
 Diagnostic-allocation failures also check terminal reservation transitions,
 native-status preservation, and device-ledger rollback before owner teardown.
 
+Same-size print curve updates exercise registration during off-lock staging.
+The reader sees the old axis and sample values, and the upload replaces both
+arrays at their original device addresses. A warm repeat issues no pinned
+upload operations. Coordinated contenders check that frame-use registration
+stays excluded at both copy seams after fencing. Curve-pair cases exercise
+reuse of the axis staging block for samples after proven completion, typed
+failure precedence, and retained device charges. When the axis submits and
+the sample upload fails, readback checks the partial update and the prior
+descriptor remains published until a successful retry. An injected event
+record and stream synchronization failure also checks quarantine and
+exact-context retirement.
+
 The `ScatterHalation.Gpu.PreparedFrame` lifetime rows call the actual
 `Root::prepare_cuda_frame` path, complete the production scan-error staging
 sequence, and then queue a pinned host-to-device upload into Root-owned

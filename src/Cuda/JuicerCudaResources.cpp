@@ -32,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <numeric>
 #include <atomic>
@@ -40,6 +41,7 @@
 #include <exception>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -161,6 +163,16 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         Failure& outError) noexcept;
+
+    static bool overwrite_array_locked(
+        Resources& resources,
+        const HostToDeviceCopyRequest& request,
+        float*& dst,
+        const float* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>& resourcesLock,
+        Failure& outError);
 
     static void free_stbn(Resources& resources) noexcept;
     static void free_wang(Resources& resources) noexcept;
@@ -1189,7 +1201,7 @@ namespace JuicerCuda {
         const float* src,
         int n,
         void* cudaStreamOpaque,
-        std::unique_lock<std::mutex>* resourcesLock,
+        std::unique_lock<std::mutex>& resourcesLock,
         const char* label,
         Failure& outError) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -1200,29 +1212,14 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst && currentN == n) {
-            const bool waitOk = wait_for_frame_use_events_locked(
-                resources,
-                cudaStreamOpaque,
-                label,
-                outError);
-            const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                                              resources,
-                                              HostToDeviceCopyRequest{"upload_array_locked", label},
-                                              dst,
-                                              src,
-                                              bytes,
-                                              cudaStreamOpaque,
-                                              outError);
-            return copyOk;
+            return overwrite_array_locked(resources, {"upload_array_locked", label}, dst, src, bytes, cudaStreamOpaque, resourcesLock, outError);
         }
 
         float* tmp = nullptr;
-        if (resourcesLock) {
-            resourcesLock->unlock();
-        }
+        resourcesLock.unlock();
         const bool allocOk =
             alloc_and_upload_array(resources, tmp, src, n, cudaStreamOpaque, label, outError);
-        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+        if (!relock_resources_after_offlock_upload(resources, &resourcesLock, outError)) {
             if (tmp) {
                 free_owned_device_noexcept(resources, tmp);
             }
@@ -1323,6 +1320,15 @@ namespace JuicerCuda {
 
     } // namespace
 
+    static bool overwrite_curve_locked(
+        Resources& resources,
+        DeviceCurve& dst,
+        const CurveUploadView& src,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>& resourcesLock,
+        const char* label,
+        Failure& outError);
+
     static bool alloc_and_upload_curve(
         Resources& resources,
         DeviceCurve& dst,
@@ -1387,7 +1393,7 @@ namespace JuicerCuda {
         DeviceCurve& dst,
         const CurveUploadView& src,
         void* cudaStreamOpaque,
-        std::unique_lock<std::mutex>* resourcesLock,
+        std::unique_lock<std::mutex>& resourcesLock,
         const char* label,
         Failure& outError) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -1402,40 +1408,10 @@ namespace JuicerCuda {
             return false;
         }
         const int n = static_cast<int>(sampleCount);
-        const size_t bytes = sampleCount * sizeof(float);
 
         // If the allocation matches, update in place to avoid alloc/free churn (common during slider scrubs).
         if (dst.x && dst.y && dst.n == n) {
-            const char* baseLabel = label ? label : "curve";
-            const std::string labelX = std::string(baseLabel) + ".x";
-            const bool waitOk = wait_for_frame_use_events_locked(
-                resources,
-                cudaStreamOpaque,
-                baseLabel,
-                outError);
-            const bool copyXOk = waitOk && enqueue_host_to_device_copy(
-                                               resources,
-                                               HostToDeviceCopyRequest{"upload_curve_locked", labelX.c_str()},
-                                               dst.x,
-                                               src.axis.data(),
-                                               bytes,
-                                               cudaStreamOpaque,
-                                               outError);
-            const std::string labelY = std::string(baseLabel) + ".y";
-            const bool copyYOk = copyXOk && enqueue_host_to_device_copy(
-                                                resources,
-                                                HostToDeviceCopyRequest{"upload_curve_locked", labelY.c_str()},
-                                                dst.y,
-                                                src.samples.data(),
-                                                bytes,
-                                                cudaStreamOpaque,
-                                                outError);
-            if (!copyXOk) {
-                outError.diagnostic = std::string(baseLabel) + ".x upload failed: " + outError.diagnostic;
-                return false;
-            }
-            if (!copyYOk) {
-                outError.diagnostic = std::string(baseLabel) + ".y upload failed: " + outError.diagnostic;
+            if (!overwrite_curve_locked(resources, dst, src, cudaStreamOpaque, resourcesLock, label, outError)) {
                 return false;
             }
 
@@ -1446,9 +1422,7 @@ namespace JuicerCuda {
         }
 
         DeviceCurve tmp{};
-        if (resourcesLock) {
-            resourcesLock->unlock();
-        }
+        resourcesLock.unlock();
         const bool allocOk =
             alloc_and_upload_curve(
                 resources,
@@ -1456,7 +1430,7 @@ namespace JuicerCuda {
                 src,
                 cudaStreamOpaque,
                 outError);
-        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+        if (!relock_resources_after_offlock_upload(resources, &resourcesLock, outError)) {
             free_curve(resources, tmp);
             return false;
         }
@@ -1528,7 +1502,7 @@ namespace JuicerCuda {
         DeviceCurve& dst,
         const std::vector<float>& src,
         void* cudaStreamOpaque,
-        std::unique_lock<std::mutex>* resourcesLock,
+        std::unique_lock<std::mutex>& resourcesLock,
         const char* label,
         Failure& outError) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -1545,20 +1519,7 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst.y && dst.n == n) {
-            const bool waitOk = wait_for_frame_use_events_locked(
-                resources,
-                cudaStreamOpaque,
-                label,
-                outError);
-            const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                                              resources,
-                                              HostToDeviceCopyRequest{"upload_spectral_samples_locked", label},
-                                              dst.y,
-                                              src.data(),
-                                              bytes,
-                                              cudaStreamOpaque,
-                                              outError);
-            if (!copyOk) {
+            if (!overwrite_array_locked(resources, {"upload_spectral_samples_locked", label}, dst.y, src.data(), bytes, cudaStreamOpaque, resourcesLock, outError)) {
                 return false;
             }
             dst.n = n;
@@ -1568,12 +1529,10 @@ namespace JuicerCuda {
         }
 
         DeviceCurve tmp{};
-        if (resourcesLock) {
-            resourcesLock->unlock();
-        }
+        resourcesLock.unlock();
         const bool allocOk =
             alloc_and_upload_spectral_samples(resources, tmp, src, cudaStreamOpaque, label, outError);
-        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+        if (!relock_resources_after_offlock_upload(resources, &resourcesLock, outError)) {
             free_curve(resources, tmp);
             return false;
         }
@@ -2555,23 +2514,23 @@ namespace JuicerCuda {
     }
 
     static PinnedUploadReservation reserve_pinned_upload_block(
-        Resources& resources,
+        const PinnedUploadContextKey& key,
         std::size_t bytes,
         const char* stage,
+        bool& capExceeded,
         Failure& outError) {
         PinnedUploadReservation result{};
         if (bytes == 0) {
             return result;
         }
 
-        result.key.deviceId = resources.ownerContextKey.deviceId;
-        result.key.contextOpaque = resources.ownerContextKey.contextOpaque;
-        if (result.key.deviceId < 0 || !result.key.contextOpaque ||
-            resources.deviceId != result.key.deviceId) {
+        result.key = key;
+        if (key.deviceId < 0 || !key.contextOpaque) {
             outError.diagnostic = "pinned staging invalid_resource_owner";
             return result;
         }
         if (bytes > kPinnedUploadStagingMaxBytes) {
+            capExceeded = true;
             outError.diagnostic = "pinned staging cap_exceeded";
             return result;
         }
@@ -2667,6 +2626,7 @@ namespace JuicerCuda {
                 bytes,
                 totalBytesAfterTrim);
             if (totalBytesAfterTrim > kPinnedUploadStagingMaxBytes - bytes) {
+                capExceeded = true;
                 outError.diagnostic = "pinned staging cap_exceeded";
                 return result;
             }
@@ -2776,7 +2736,9 @@ namespace JuicerCuda {
             policyState,
             reservation.key,
             reservation.blockId);
-        if (!block || block->state != PinnedUploadBlockState::Reserved) {
+        if (!block || block->ptr != reservation.stagingPtr ||
+            block->doneEventOpaque != reservation.doneEventOpaque ||
+            block->state != PinnedUploadBlockState::Reserved) {
             return false;
         }
 
@@ -2794,6 +2756,25 @@ namespace JuicerCuda {
             PinnedUploadBlockState::Available);
     }
 
+    struct StagedHostUpload {
+        PinnedUploadReservation reservation;
+        bool capExceeded = false;
+
+        StagedHostUpload() = default;
+        StagedHostUpload(const StagedHostUpload&) = delete;
+        StagedHostUpload& operator=(const StagedHostUpload&) = delete;
+
+        ~StagedHostUpload() noexcept {
+            if (reservation.staged) {
+                try {
+                    (void)return_pinned_upload_reservation(reservation);
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+            }
+        }
+    };
+
     enum class PinnedUploadCompletionResult : std::uint8_t {
         InFlight = 0,
         CompletedAfterExceptionalSync,
@@ -2804,7 +2785,15 @@ namespace JuicerCuda {
         const PinnedUploadReservation& reservation,
         cudaStream_t stream,
         const char* stage,
+        Resources* overwriteOwner,
         Failure& outError) {
+        const auto retain_unfenced_destination = [&] {
+            if (overwriteOwner) {
+                // The caller owns resources.m and the destination is still published.
+                overwriteOwner->frameUseFenceQuarantined = true;
+                overwriteOwner->unfencedFrameUseStreamOpaque = stream;
+            }
+        };
         outError = {};
         cudaError_t recordErr = cudaSuccess;
 #if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
@@ -2820,6 +2809,7 @@ namespace JuicerCuda {
                     PinnedUploadBlockState::InFlight)) {
                 return PinnedUploadCompletionResult::InFlight;
             }
+            retain_unfenced_destination();
             outError.diagnostic = "pinned staging reservation ownership was lost";
             return PinnedUploadCompletionResult::Quarantined;
         }
@@ -2849,6 +2839,7 @@ namespace JuicerCuda {
             return PinnedUploadCompletionResult::CompletedAfterExceptionalSync;
         }
 
+        retain_unfenced_destination();
         const bool quarantined = transition_pinned_upload_reservation(
             reservation,
             PinnedUploadBlockState::Quarantined);
@@ -2877,33 +2868,42 @@ namespace JuicerCuda {
         return PinnedUploadCompletionResult::Quarantined;
     }
 
-    static bool enqueue_host_to_device_copy(
-        Resources& resources,
+    static bool stage_host_to_device_copy(
+        const PinnedUploadContextKey& key,
         const HostToDeviceCopyRequest& request,
-        void* dst,
         const void* src,
         std::size_t bytes,
-        void* cudaStreamOpaque,
+        StagedHostUpload& staged,
         Failure& outError) noexcept try {
         outError = {};
-        if (bytes == 0) {
-            return true;
-        }
-        if (!dst || !src) {
-            outError.diagnostic = std::string(request.label ? request.label : "copy") + " upload args invalid";
-            return false;
-        }
-
-        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
-        const PinnedUploadReservation reservation =
-            reserve_pinned_upload_block(resources, bytes, request.stage, outError);
-        if (!reservation.staged) {
+        staged.capExceeded = false;
+        staged.reservation = reserve_pinned_upload_block(key, bytes, request.stage, staged.capExceeded, outError);
+        if (!staged.reservation.staged) {
             outError.diagnostic = std::string(request.label ? request.label : "upload") + ": " + outError.diagnostic;
             return false;
         }
 
         // The caller's storage expires at return, including local split/generated tables.
-        std::memcpy(reservation.stagingPtr, src, bytes);
+        std::memcpy(staged.reservation.stagingPtr, src, bytes);
+        return true;
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+        outError.diagnostic.clear();
+        return false;
+    }
+
+    static bool enqueue_staged_host_to_device_copy(
+        Resources& resources,
+        const HostToDeviceCopyRequest& request,
+        void* dst,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        StagedHostUpload& staged,
+        [[maybe_unused]] const void* src,
+        bool overwrite,
+        Failure& outError) noexcept try {
+        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        const PinnedUploadReservation reservation = std::exchange(staged.reservation, {});
         cudaError_t copyErr = cudaSuccess;
 #if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
         copyErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Copy));
@@ -2929,7 +2929,7 @@ namespace JuicerCuda {
         }
 
         const PinnedUploadCompletionResult completion =
-            complete_enqueued_pinned_upload(reservation, stream, request.stage, outError);
+            complete_enqueued_pinned_upload(reservation, stream, request.stage, overwrite ? &resources : nullptr, outError);
         if (completion == PinnedUploadCompletionResult::Quarantined) {
             return false;
         }
@@ -2943,6 +2943,171 @@ namespace JuicerCuda {
         JuicerLogging::discard_current_exception();
         outError.diagnostic.clear();
         return false;
+    }
+
+    static bool enqueue_host_to_device_copy(
+        Resources& resources,
+        const HostToDeviceCopyRequest& request,
+        void* dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        Failure& outError) noexcept try {
+        outError = {};
+        if (bytes == 0) {
+            return true;
+        }
+        if (!dst || !src) {
+            outError.diagnostic = std::string(request.label ? request.label : "copy") + " upload args invalid";
+            return false;
+        }
+        const PinnedUploadContextKey key = resources.deviceId == resources.ownerContextKey.deviceId
+                                               ? PinnedUploadContextKey{resources.deviceId, resources.ownerContextKey.contextOpaque}
+                                               : PinnedUploadContextKey{};
+        StagedHostUpload staged;
+        return stage_host_to_device_copy(key, request, src, bytes, staged, outError) &&
+               enqueue_staged_host_to_device_copy(resources, request, dst, bytes, cudaStreamOpaque, staged, src, false, outError);
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+        outError.diagnostic.clear();
+        return false;
+    }
+
+    static bool validate_overwrite_owner_locked(
+        Resources& resources,
+        const ResourceManager::DeviceContextKey& key,
+        std::uint64_t epoch,
+        Failure& outError) {
+        if (!validate_resource_owner_locked(resources, outError, false)) {
+            return false;
+        }
+        if (resources.contextInvalidatedByProvenLoss || resources.contextEpoch != epoch ||
+            !(resources.ownerContextKey == key)) {
+            outError.diagnostic = "CUDA resource owner changed during upload staging";
+            return false;
+        }
+        return true;
+    }
+
+    static bool overwrite_allocations_match_locked(
+        Resources& resources,
+        std::initializer_list<float*> pointers,
+        std::size_t bytes) {
+        std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
+        return std::all_of(pointers.begin(), pointers.end(), [&](float* pointer) {
+            const auto record = resources.deviceAllocationRecords.find(pointer);
+            return record != resources.deviceAllocationRecords.end() && record->second.bytes() == bytes &&
+                   record->second.state() == DeviceReservationState::Committed;
+        });
+    }
+
+    static bool overwrite_array_locked(
+        Resources& resources,
+        const HostToDeviceCopyRequest& request,
+        float*& dst,
+        const float* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>& resourcesLock,
+        Failure& outError) {
+        const auto key = resources.ownerContextKey;
+        const auto epoch = resources.contextEpoch;
+        float* const destination = dst;
+        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque};
+        StagedHostUpload staged;
+        Failure stagingError;
+
+        resourcesLock.unlock();
+        const bool stagedOk = stage_host_to_device_copy(stagingKey, request, src, bytes, staged, stagingError);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        PinnedUploadTest::after_overwrite_staging(resources);
+#endif
+        resourcesLock.lock();
+        if (!validate_overwrite_owner_locked(resources, key, epoch, outError)) {
+            return false;
+        }
+        if (dst != destination || !overwrite_allocations_match_locked(resources, {dst}, bytes)) {
+            outError.diagnostic = std::string(request.label) + ": CUDA upload destination changed during staging";
+            return false;
+        }
+        if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, request.label, outError)) {
+            return false;
+        }
+        if (!stagedOk) {
+            outError = std::move(stagingError);
+            return false;
+        }
+        return enqueue_staged_host_to_device_copy(resources, request, dst, bytes, cudaStreamOpaque, staged, src, true, outError);
+    }
+
+    static bool overwrite_curve_locked(
+        Resources& resources,
+        DeviceCurve& dst,
+        const CurveUploadView& src,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>& resourcesLock,
+        const char* label,
+        Failure& outError) {
+        const auto key = resources.ownerContextKey;
+        const auto epoch = resources.contextEpoch;
+        const DeviceCurve destination = dst;
+        const std::size_t bytes = src.axis.size_bytes();
+        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque};
+        const char* baseLabel = label ? label : "curve";
+        const std::string labelX = std::string(baseLabel) + ".x";
+        const std::string labelY = std::string(baseLabel) + ".y";
+        const HostToDeviceCopyRequest axisRequest{"upload_curve_locked", labelX.c_str()};
+        const HostToDeviceCopyRequest sampleRequest{"upload_curve_locked", labelY.c_str()};
+        StagedHostUpload axis;
+        StagedHostUpload samples;
+        Failure axisError;
+        Failure sampleError;
+
+        resourcesLock.unlock();
+        const bool axisStaged = stage_host_to_device_copy(stagingKey, axisRequest, src.axis.data(), bytes, axis, axisError);
+        bool samplesStaged = axisStaged && stage_host_to_device_copy(stagingKey, sampleRequest, src.samples.data(), bytes, samples, sampleError);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        PinnedUploadTest::after_overwrite_staging(resources);
+#endif
+        resourcesLock.lock();
+        if (!validate_overwrite_owner_locked(resources, key, epoch, outError)) {
+            return false;
+        }
+        if (dst.x != destination.x || dst.y != destination.y || dst.n != destination.n ||
+            !overwrite_allocations_match_locked(resources, {dst.x, dst.y}, bytes)) {
+            outError.diagnostic = std::string(baseLabel) + ": CUDA upload destination changed during staging";
+            return false;
+        }
+
+        // Registration also takes resources.m. Fence the current list and keep
+        // it locked through both overwrites, including exceptional completion.
+        if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, baseLabel, outError)) {
+            outError.diagnostic = labelX + " upload failed: " + outError.diagnostic;
+            return false;
+        }
+        if (!axisStaged) {
+            outError = std::move(axisError);
+        }
+        if (!axisStaged ||
+            !enqueue_staged_host_to_device_copy(resources, axisRequest, dst.x, bytes, cudaStreamOpaque, axis, src.axis.data(), true, outError)) {
+            outError.diagnostic = labelX + " upload failed: " + outError.diagnostic;
+            return false;
+        }
+
+        // A pair can exhaust the staging cap while X is Reserved. In that
+        // case retain the original post-X reservation opportunity for Y.
+        if (samples.capExceeded) {
+            samplesStaged = stage_host_to_device_copy(stagingKey, sampleRequest, src.samples.data(), bytes, samples, sampleError);
+        }
+        if (!samplesStaged ||
+            !enqueue_staged_host_to_device_copy(resources, sampleRequest, dst.y, bytes, cudaStreamOpaque, samples, src.samples.data(), true, outError)) {
+            if (!samplesStaged) {
+                outError = std::move(sampleError);
+            }
+            outError.diagnostic = labelY + " upload failed: " + outError.diagnostic;
+            return false;
+        }
+        return true;
     }
 
 #if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
@@ -3528,12 +3693,12 @@ namespace JuicerCuda {
 
         resources.filmFinalSensitivityHash = 0;
         resources.filmDensityCurvesHash = 0;
-        if (!upload_curve_locked(resources, resources.sensB, {sensitivityWavelengthsNm, sensB}, cudaStreamOpaque, &lock, "focused film finalSensB", outError) ||
-            !upload_curve_locked(resources, resources.sensG, {sensitivityWavelengthsNm, sensG}, cudaStreamOpaque, &lock, "focused film finalSensG", outError) ||
-            !upload_curve_locked(resources, resources.sensR, {sensitivityWavelengthsNm, sensR}, cudaStreamOpaque, &lock, "focused film finalSensR", outError) ||
-            !upload_curve_locked(resources, resources.densB, {filmLogExposure, densB}, cudaStreamOpaque, &lock, "focused film normalizedDensB", outError) ||
-            !upload_curve_locked(resources, resources.densG, {filmLogExposure, densG}, cudaStreamOpaque, &lock, "focused film normalizedDensG", outError) ||
-            !upload_curve_locked(resources, resources.densR, {filmLogExposure, densR}, cudaStreamOpaque, &lock, "focused film normalizedDensR", outError)) {
+        if (!upload_curve_locked(resources, resources.sensB, {sensitivityWavelengthsNm, sensB}, cudaStreamOpaque, lock, "focused film finalSensB", outError) ||
+            !upload_curve_locked(resources, resources.sensG, {sensitivityWavelengthsNm, sensG}, cudaStreamOpaque, lock, "focused film finalSensG", outError) ||
+            !upload_curve_locked(resources, resources.sensR, {sensitivityWavelengthsNm, sensR}, cudaStreamOpaque, lock, "focused film finalSensR", outError) ||
+            !upload_curve_locked(resources, resources.densB, {filmLogExposure, densB}, cudaStreamOpaque, lock, "focused film normalizedDensB", outError) ||
+            !upload_curve_locked(resources, resources.densG, {filmLogExposure, densG}, cudaStreamOpaque, lock, "focused film normalizedDensG", outError) ||
+            !upload_curve_locked(resources, resources.densR, {filmLogExposure, densR}, cudaStreamOpaque, lock, "focused film normalizedDensR", outError)) {
             return false;
         }
 
@@ -3584,7 +3749,7 @@ namespace JuicerCuda {
                             filmDevelop.densityCurvesLayers[layer][ch].data(),
                             densitySamples,
                             cudaStreamOpaque,
-                            &lock,
+                            lock,
                             "focused density_curves_layers",
                             outError)) {
                         return false;
@@ -3620,9 +3785,9 @@ namespace JuicerCuda {
                 return false;
             }
             const auto& compensatedLogExposureRgb = dirCouplers.compensatedDensityCurveAxesRgb;
-            if (!upload_curve_locked(resources, resources.dirDensB, {compensatedLogExposureRgb[2], densB}, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
-                !upload_curve_locked(resources, resources.dirDensG, {compensatedLogExposureRgb[1], densG}, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
-                !upload_curve_locked(resources, resources.dirDensR, {compensatedLogExposureRgb[0], densR}, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
+            if (!upload_curve_locked(resources, resources.dirDensB, {compensatedLogExposureRgb[2], densB}, cudaStreamOpaque, lock, "focused film DIR densB", outError) ||
+                !upload_curve_locked(resources, resources.dirDensG, {compensatedLogExposureRgb[1], densG}, cudaStreamOpaque, lock, "focused film DIR densG", outError) ||
+                !upload_curve_locked(resources, resources.dirDensR, {compensatedLogExposureRgb[0], densR}, cudaStreamOpaque, lock, "focused film DIR densR", outError)) {
                 return false;
             }
         } else {
@@ -3647,7 +3812,7 @@ namespace JuicerCuda {
             constexpr int extent = Spectral::kFilmTcLutExtent;
             constexpr int integratedCount =
                 extent * extent * Spectral::kFilmTcLutChannels;
-            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::kFilmTcLutChannels, input.filmTcLut.data(), integratedCount, cudaStreamOpaque, &lock, "film TC LUT", outError)) {
+            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::kFilmTcLutChannels, input.filmTcLut.data(), integratedCount, cudaStreamOpaque, lock, "film TC LUT", outError)) {
                 return false;
             }
             resources.filmTcLutExtent = extent;
@@ -3661,7 +3826,7 @@ namespace JuicerCuda {
                 resources.mallettBasisK = 0;
             }
         } else if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, input.exposureIlluminant.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
+            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, input.exposureIlluminant.data(), exposureK, cudaStreamOpaque, lock, "focused film tablesIllum", outError)) {
                 return false;
             }
             resources.tablesK = exposureK;
@@ -3673,7 +3838,7 @@ namespace JuicerCuda {
                 return false;
             }
             const int count = k * 3;
-            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, input.mallettBasis.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
+            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, input.mallettBasis.data(), count, cudaStreamOpaque, lock, "film Mallett basis", outError)) {
                 return false;
             }
             resources.mallettBasisK = k;
@@ -3979,10 +4144,10 @@ namespace JuicerCuda {
                 }
                 Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
                 const int currentK = tables.K;
-                if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
-                    !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
-                    !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
-                    !upload_array_locked(resources, tables.baseDensityMin, currentK, input.filmBaseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
+                if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, lock, "phase4B print film density epsC", outError) ||
+                    !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, lock, "phase4B print film density epsM", outError) ||
+                    !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, lock, "phase4B print film density epsY", outError) ||
+                    !upload_array_locked(resources, tables.baseDensityMin, currentK, input.filmBaseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, lock, "phase4B print film density base", outError)) {
                     return false;
                 }
                 tables.K = Spectral::kNumSamples;
@@ -4011,12 +4176,12 @@ namespace JuicerCuda {
                     sensM[static_cast<std::size_t>(sample)] = cmy[1];
                     sensY[static_cast<std::size_t>(sample)] = cmy[2];
                 }
-                if (!upload_curve_locked(resources, resources.printDcC, {printLogExposure, dcC}, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
-                    !upload_curve_locked(resources, resources.printDcM, {printLogExposure, dcM}, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
-                    !upload_curve_locked(resources, resources.printDcY, {printLogExposure, dcY}, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
-                    !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
-                    !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
-                    !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
+                if (!upload_curve_locked(resources, resources.printDcC, {printLogExposure, dcC}, cudaStreamOpaque, lock, "phase4B print dcC", outError) ||
+                    !upload_curve_locked(resources, resources.printDcM, {printLogExposure, dcM}, cudaStreamOpaque, lock, "phase4B print dcM", outError) ||
+                    !upload_curve_locked(resources, resources.printDcY, {printLogExposure, dcY}, cudaStreamOpaque, lock, "phase4B print dcY", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, lock, "phase4B print sensC", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, lock, "phase4B print sensM", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, lock, "phase4B print sensY", outError)) {
                     return false;
                 }
                 resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
@@ -4029,7 +4194,7 @@ namespace JuicerCuda {
                         mainIlluminant.data(),
                         Spectral::kNumSamples,
                         cudaStreamOpaque,
-                        &lock,
+                        lock,
                         "phase4B filtered main print illuminant",
                         outError)) {
                     return false;
@@ -4048,7 +4213,7 @@ namespace JuicerCuda {
                             preflashIlluminant.data(),
                             Spectral::kNumSamples,
                             cudaStreamOpaque,
-                            &lock,
+                            lock,
                             "phase4B filtered preflash print illuminant",
                             outError)) {
                         return false;
