@@ -71,6 +71,7 @@ namespace JuicerCuda::PinnedUploadTest {
         return error;
     }
     void before_diagnostic() {}
+    void after_overwrite_staging(Resources&) noexcept {}
 } // namespace JuicerCuda::PinnedUploadTest
 
 namespace JuicerCuda::RenderTest {
