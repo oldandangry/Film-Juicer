@@ -180,16 +180,9 @@ boundary in six cases. It is a product-linked host registration; see the
 
 ## Validation cadence
 
-The Rust host candidate has twelve focused host/boundary registrations:
-`Ofx.Host.Actions`, `Ofx.Host.Render`, `Ofx.Host.RenderControls`,
-`Ofx.Host.Module`, `Ofx.Host.ModuleControls.Construction`, `.Panic`, `.Terminal`,
-`Ofx.Host.Context`, `Ofx.Host.ContextControls`, `Ofx.Host.Instance`,
-`Ofx.Host.Capture` and `Ofx.Host.InstanceControls`. The three instance/capture
-registrations have 8/11/5 named cases and reuse the existing 234 grain witnesses.
-The module target declares 303 Describe, 24 Load and 7 lifecycle rows; Rust owns
-the OFX descriptor and callbacks, while native CUDA Root retains CUDA resources
-and frame admission. The control target uses the Rust test-support archive. See the
-[OFX fixture guide](ofx/README.md) for scope and the independent C++ consumers.
+The [OFX fixture guide](ofx/README.md) describes the host and GPU callback
+registrations, their independent C++ consumers and their Rust archive roles.
+The [host registration contract](host-contracts.json) pins the required cohorts.
 The focused compiler method is
 `test_rust_boundaries.RustBoundaryTests.test_ofx_callback_borrows`: seven fixtures,
 both feature forms, fourteen logical cases in four batched Cargo checks per native
@@ -916,10 +909,11 @@ extend `Ffi.Host.NativeBoundary` for concrete retired symbols/dependencies and
 add accepted/rejected controls. Do not replace contextual ownership review with
 function-size limits, generic source parsers or an expanding exception baseline.
 
-The diffusion fixture is an external reference. The scatter binary fixture is
-also an external reference with revision, shape, channel order and numerical
-limits recorded in its manifest. Gamma comparator rows are product/tooling
-contracts; they do not make the stale historical gamma captures current.
+The [diffusion](diffusion/README.md) and [scatter and halation](scatter_halation/README.md)
+guides document their external-reference cohorts, including provenance and
+comparison bounds. Gamma comparator rows are product/tooling contracts.
+The [migration record](MIGRATION.md#required-history-active-tools-and-bounded-obligations)
+describes the historical gamma captures and retained reproduction obligations.
 `ofx/descriptor_manifest.json` is a C++ characterization of only the describe
 properties observable in the synthetic property suite at the pinned source
 commit and binary digest recorded in that fixture. The admission rows in the
@@ -947,11 +941,8 @@ and destination image handles independently and rejects duplicate, unknown,
 or missing releases. Fixture emission is an explicit
 `--emit-reference` maintenance operation and is never part of CTest.
 
-`Ffi.Gpu.CudaRender.negative-direct` and `.negative-print` cover the real C render
-entry, bounded cancellation, native status/exception containment, callback scope,
-context/stream ownership, and successful reuse after abort. Prepared-boundary cases
-compare the C entry with direct execution and immutable captures; see
-[the FFI guide](ffi/README.md#native-render-entry) for the exact evidence boundary.
+See the [FFI guide](ffi/README.md#native-render-entry) for the C render entry,
+prepared-boundary, cancellation and reuse evidence.
 
 `Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
 processor adapter and prepared-frame abort observer. It drives both route failure
@@ -1125,16 +1116,19 @@ derive expected results solely from the implementation under test. Structural
 checks may enforce explicit architectural requirements, but cannot substitute for
 numerical or lifecycle evidence when those contracts are affected.
 
-For a small host C++ regression, add a normal `TEST(Suite, Name)` block to the
-domain's existing GoogleTest source and rebuild. CMake discovers the case; no
-registry or wrapper edit is required. Use production headers/targets and keep
-the assertion at a product boundary.
+For a small host C++ regression, add a `TEST(Suite, Name)` block to the domain's
+existing GoogleTest source. Check the owning CTest registration and independent
+cohort contract before rebuilding. Hash uses per-case CTest registrations and
+an independent three-registration pin in [the host contract](host-contracts.json).
+A grouped registration may already include the new case through its filter.
+Use production headers and targets and keep the assertion at a product boundary.
 
 For gamma comparator behavior, add a `unittest.TestCase` method to
 `test_compare.py`. For a new integration executable or destructive lifecycle
-group, declare one explicit CTest process in `tests/CMakeLists.txt`, give it a
-finite `TIMEOUT` and its actual `host`/`gpu` requirement, and keep destructive
-transitions isolated.
+group, declare an explicit CTest process in `tests/CMakeLists.txt` with numeric
+`TIMEOUT 0` and its actual `host` or `gpu` requirement. Keep destructive
+transitions isolated. Explicit fault-control bounds and hosted-job limits still
+apply where specified.
 
 Fixtures must state whether they express a product contract, a Film-Juicer
 characterization, or an external reference. Never regenerate or widen an

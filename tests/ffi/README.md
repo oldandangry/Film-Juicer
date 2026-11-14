@@ -1020,21 +1020,27 @@ exercises the same actual fallible reserve boundary separately.
 ## Prepared-host sanitizer pilot
 
 The optional Debug-only `JUICER_PREPARED_FFI_SANITIZERS` CMake option defaults to
-OFF. With `BUILD_TESTING=ON`, configure either native Debug preset with
-`-DJUICER_PREPARED_FFI_SANITIZERS=ON`, build the complete preset, then run the
-unfiltered CTest preset. `ctest --preset <preset> -L sanitizer` is a focused
-diagnostic invocation and does not replace that complete qualification.
+OFF. For a focused run, configure either native Debug preset with
+`-DBUILD_TESTING=ON -DJUICER_PREPARED_FFI_SANITIZERS=ON`. Build
+`JuicerPreparedSanitizerTests` and `JuicerPreparedSanitizerControl` with
+`scripts/verify.py prepare --preset <preset> --testing ON --targets` followed by
+those two target names. Run the four pilot registrations with
+`ctest --preset <preset> -L sanitizer`. Complete qualification uses the scope
+specified by its checkpoint.
 
-The pilot compiles all three existing prepared-host test sources and production
-`native/juicer_cuda_prepared.cpp` / `juicer_cuda_descriptors.cpp` with
+The pilot compiles the prepared-host sources, the spatial-optics fixture, the
+fault control, and production `native/juicer_cuda_prepared.cpp` and
+`native/juicer_cuda_descriptors.cpp` with
 `-fsanitize=address,undefined -fno-sanitize-recover=undefined`; Linux also retains
-frame pointers. The original `Ffi.Host.PreparedProjection` target and assertions
-remain unchanged. Four added host processes cover the same prepared-host cases,
-a clean runtime control, production-decoder use-after-free and signed integer
-overflow. Controls require nonzero exit and the specific sanitizer report; an
-arbitrary crash, missing runtime or silent return cannot pass. Raw failure output
-and executable/log hashes are retained under the preset's `prepared-sanitizers/`
-artifact directory in separate fresh run directories.
+frame pointers. The prepared suite uses the configured preset at compilation
+and runtime to select frozen projection inputs. It links the Rust test-support
+archive and uses the shared GoogleTest runner for case logging. The control
+executable links the production Rust archive. Four host processes cover the
+prepared-host cases, a clean runtime control, production-decoder use-after-free
+and signed integer overflow. Each intentional fault must exit nonzero and report
+its expected sanitizer diagnostic. Raw failure output and executable/log hashes
+are retained under the preset's `prepared-sanitizers/` artifact directory in
+separate fresh run directories.
 
 Windows uses the selected Clang compiler's ASan DLL and symbolizer directories in
 these tests' environment only; configure fails if the required DLL is missing.
