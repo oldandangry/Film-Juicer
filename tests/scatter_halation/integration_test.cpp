@@ -34,7 +34,6 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 
-#include "ColorTransforms.h"
 #include "Hash.h"
 #include "prepared_product_fixture.h"
 #include "ProcessRoot.h"

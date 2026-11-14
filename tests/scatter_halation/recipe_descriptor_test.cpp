@@ -14,7 +14,6 @@
 #include "gtest/gtest.h"
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "ColorTransforms.h"
 #include "../ffi/owner_fixture.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"

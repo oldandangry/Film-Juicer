@@ -20,7 +20,6 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"

@@ -21,7 +21,6 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "gtest/gtest.h"
 
-#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "JuicerDirBoundary.h"
 #include "boundary_test_hooks.h"

@@ -21,7 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <cuda_runtime_api.h>
 
-#include "ColorTransforms.h"
+#include "SpectralData.h"
 #include "GamutCompression.h"
 #include "gamut_fixture.h"
 #include "owner_fixture.h"
@@ -217,7 +217,7 @@ namespace {
         cctf.values.output_cctf_encoding = 0;
         out.emplace_back("recipe-cctf-off", cctf);
         auto input = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025);
-        input.values.input_color_space = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::SRGB_Rec709);
+        input.values.input_color_space = Spectral::input_color_space_to_index(Spectral::InputColorSpace::SRGB_Rec709);
         out.emplace_back("recipe-input-srgb", input);
         auto output = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025);
         output.values.output_color_space = OutputEncoding::toIndex(OutputEncoding::ColorSpace::DCI_P3);
@@ -1411,7 +1411,7 @@ namespace {
                 require(decoded.view(decodedView, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
                 require(bits(productView.film_exposure.input_xyz_adapt, 9) == bits(decodedView.film_exposure.input_xyz_adapt, 9) && productView.film_exposure.hash != decodedView.film_exposure.hash && productView.recipe_hash != decodedView.recipe_hash, "input CCTF decoding keeps adaptation and changes film identity");
                 auto input = controls;
-                input.values.input_color_space = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::ACES2065_1);
+                input.values.input_color_space = Spectral::input_color_space_to_index(Spectral::InputColorSpace::ACES2065_1);
                 auto inputChanged = Cat02Fixtures::prepare(assets, input);
                 FjPreparedStateView inputChangedView{};
                 require(inputChanged.view(inputChangedView, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
@@ -2026,7 +2026,7 @@ namespace {
             }
         }
         require(fixture.at("input_d65") != fixture.at("process_dwg_white"), "input D65 and process DWG white remain distinct");
-        require(Spectral::inputColorSpaceFromIndex(-1) == Spectral::InputColorSpace::DaVinciWideGamut && Spectral::inputColorSpaceFromIndex(4) == Spectral::InputColorSpace::DaVinciWideGamut, "native integer transport fallback retained");
+        require(Spectral::input_color_space_from_index(-1) == Spectral::InputColorSpace::DaVinciWideGamut && Spectral::input_color_space_from_index(4) == Spectral::InputColorSpace::DaVinciWideGamut, "native integer transport fallback retained");
         controls_event.passed();
         std::puts("Input color: exact matrices/A, decode, explicit A/B conversions, linear leaves/projection and C11/ten-operation fault/default/facade controls passed");
     }

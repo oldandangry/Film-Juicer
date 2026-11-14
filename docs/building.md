@@ -52,6 +52,12 @@ remains disabled; the existing numerical fixtures are unchanged.
 MSVC `/RTC` checks are incompatible with `/O2`; optimised Debug retains `/sdl`
 and assertions instead of requesting those incompatible compiler options.
 
+Native file diagnostics use the compile gate in [Logging.h](../src/Logging.h)
+and the sink in [Logging.cpp](../src/Logging.cpp). Debug uses
+`JUICER_DIAGNOSTICS` for the runtime level (0–3, default 0) and optionally
+`JUICER_DIAGNOSTICS_PATH` for the output file. The standard Release presets
+compile out the sink and trace calls.
+
 For example:
 
 ```sh

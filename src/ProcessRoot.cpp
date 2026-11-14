@@ -28,7 +28,6 @@
 
 #include "Logging.h"
 #include "Scanner.h"
-#include "ColorTransforms.h"
 
 #include <cuda_runtime.h>
 
@@ -36,6 +35,76 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+
+namespace JuicerProcess::detail {
+    namespace {
+        enum class GrainStaticMembershipResult : std::uint8_t {
+            Applied,
+            Idempotent,
+            StaleSnapshot,
+            ConflictingEqualSnapshot,
+            InvalidInput
+        };
+        bool grain_static_has_active_instance(
+            const GrainStaticInstanceMap& instances) noexcept {
+            for (const auto& item : instances) {
+                if (item.second.active) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        GrainStaticMembershipResult apply_grain_static_membership(
+            GrainStaticInstanceMap& instances,
+            std::uint64_t instanceToken,
+            std::uint64_t snapshotId,
+            bool active,
+            GrainStaticMembershipChange& outChange) {
+            outChange = GrainStaticMembershipChange{};
+            if (instanceToken == 0 || snapshotId == 0) {
+                return GrainStaticMembershipResult::InvalidInput;
+            }
+            const auto current = instances.find(instanceToken);
+            if (current != instances.end()) {
+                const GrainStaticInstanceState& state = current->second;
+                if (snapshotId < state.latestSnapshotId) {
+                    return GrainStaticMembershipResult::StaleSnapshot;
+                }
+                if (snapshotId == state.latestSnapshotId) {
+                    return active == state.active
+                               ? GrainStaticMembershipResult::Idempotent
+                               : GrainStaticMembershipResult::ConflictingEqualSnapshot;
+                }
+                outChange.previous = state;
+                outChange.hadPrevious = true;
+            }
+            instances[instanceToken] = GrainStaticInstanceState{snapshotId, active};
+            outChange.instanceToken = instanceToken;
+            outChange.appliedSnapshotId = snapshotId;
+            outChange.applied = true;
+            return GrainStaticMembershipResult::Applied;
+        }
+        bool rollback_grain_static_membership(
+            GrainStaticInstanceMap& instances,
+            const GrainStaticMembershipChange& change) {
+            if (!change.applied || change.instanceToken == 0 ||
+                change.appliedSnapshotId == 0) {
+                return false;
+            }
+            const auto current = instances.find(change.instanceToken);
+            if (current == instances.end() ||
+                current->second.latestSnapshotId != change.appliedSnapshotId) {
+                return false;
+            }
+            if (change.hadPrevious) {
+                current->second = change.previous;
+            } else {
+                instances.erase(current);
+            }
+            return true;
+        }
+    } // namespace
+} // namespace JuicerProcess::detail
 
 namespace JuicerProcess {
 
