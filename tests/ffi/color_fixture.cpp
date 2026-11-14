@@ -5,7 +5,6 @@
 #include <utility>
 
 #include "Cuda/JuicerCudaExecutor.h"
-#include "ColorTransforms.h"
 #include "OutputColor.h"
 #include "juicer_test_api.h"
 

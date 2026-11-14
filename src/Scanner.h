@@ -71,13 +71,13 @@ namespace Scanner {
     };
 
     // ScannerSpectralLutDescriptor family contract:
-    // Producer: safe Rust scanner::describe_lut through the synchronous S4.E bridge.
+    // Producer: Rust recipe construction calls scanner::describe_lut.
     // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
     // Identity: route, medium/polarity, density-bounds hash, selected channel/base density,
     // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
     // Scanner correction, output color/CCTF, glare, blur, unsharp, frame bounds, auto exposure,
     // and downstream scanner effects are excluded.
-    // Lifetime: plain host descriptor; no upload/admission/allocation occurs in Phase 3A.
+    // Lifetime: host value. Native Root owns CUDA LUT residency.
     struct ScannerSpectralLutDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         ScannedMediumKind medium = ScannedMediumKind::Film;
@@ -107,7 +107,7 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    // Resolved post-effects values; Gaussian weights and residency remain native.
+    // Rust resolves post effects and constructs Gaussian weights. Native Root owns CUDA residency.
     struct ScannerPostEffectsDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool glareActive = false;

@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <utility>
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "juicer_diffusion_api.h"
@@ -82,15 +81,3 @@ namespace JuicerDiffusion {
         return true;
     }
 } // namespace JuicerDiffusion
-
-namespace Spektrafilm {
-    bool expand_diffusion_psf_components(
-        const DiffusionPsfSampleDescriptor& descriptor,
-        DiffusionPsfComponents& out,
-        std::string& diagnostic) {
-        JuicerCuda::Failure failure;
-        const bool success = JuicerDiffusion::prepare_components(descriptor, out, failure);
-        diagnostic = std::move(failure.diagnostic);
-        return success;
-    }
-} // namespace Spektrafilm

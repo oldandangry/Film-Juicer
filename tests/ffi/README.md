@@ -1254,6 +1254,12 @@ clear each independently admitted output. Native standalone failure keeps its
 BlackProMist default; raw failure clears family to zero. Optional diagnostics
 support absent/zero-capacity backing and bounded NUL-terminated truncation.
 
+Native diffusion resource preparation calls the checked Rust component operation
+before acquiring the host lease. It returns the complete typed failure to Root,
+which adds context, budget, ledger and diffusion descriptor identity before
+aborting frame preparation. `Ofx.Gpu.ExecutorFailureOrder` exercises this path
+with a contained component panic.
+
 See the [exact native characterization](../diffusion/frame-fixtures/README.md),
 `Ffi.Host.DiffusionFrame` and `Optics.Host.DiffusionFrameProducts`. The ON
 strict-C11 fixture executes 507 complete frozen value/failure results through

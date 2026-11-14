@@ -223,7 +223,8 @@ juicer_stage_test_resources("${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_RESOURC
     "${JUICER_PRESET_BUILD_DIR}/tests/resources.stamp")
 
 include(GoogleTest)
-add_executable(JuicerHashContractTests hash/hash_contract_test.cpp)
+add_executable(JuicerHashContractTests hash/hash_contract_test.cpp
+    "${JUICER_TEST_ROOT}/src/Logging.cpp")
 target_link_libraries(JuicerHashContractTests PRIVATE juicer_settings GTest::gtest juicer_host_gtest_main)
 set_target_properties(JuicerHashContractTests PROPERTIES
     LINKER_LANGUAGE CXX
@@ -1015,7 +1016,6 @@ add_executable(JuicerPreparedBoundaryProbe
     ffi/prepared_boundary.c
     ffi/prepared_descriptors.cpp)
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_test_core film_juicer_rust_test_support CUDA::cuda_driver)
-add_dependencies(JuicerPreparedBoundaryProbe JuicerProductionPreparedRenderProbe)
 add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
         "${CMAKE_INSTALL_PREFIX}/juicer.ofx.bundle/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"

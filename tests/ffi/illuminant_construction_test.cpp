@@ -15,7 +15,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include "gtest_cases.h"
-#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "test_asset_workspace.h"
 #include "test_asset_bridge.h"

@@ -48,10 +48,10 @@
 
 #include "Hash.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "../ffi/color_fixture.h"
 #include "../ffi/preparation_fixture.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
-#include "ColorTransforms.h"
 #include "ScanRoute.h"
 
 
@@ -591,7 +591,24 @@ namespace {
         };
         CallbackReleases releases(host, effect);
         fj_test_ofx_render_tokens(0x20260923, token, 0x5312);
-        const OfxStatus status = runtime.call(kOfxImageEffectActionRender, effect, args);
+        OfxStatus status;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        const auto* observation = JuicerCuda::ExecutorTest::observation;
+        if (observation && observation->diffusionComponentsPanic) {
+            struct ClearDiffusionFault {
+                ~ClearDiffusionFault() {
+                    (void)fj_test_diffusion_frame_fault(2, 0);
+                }
+            } clear;
+            if (fj_test_diffusion_frame_fault(2, 1).category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("could not arm diffusion components panic");
+            }
+            status = runtime.call(kOfxImageEffectActionRender, effect, args);
+        } else
+#endif
+        {
+            status = runtime.call(kOfxImageEffectActionRender, effect, args);
+        }
         if (status != kOfxStatOK)
             throw CallbackStatus{status};
         FjOfxRenderObservation observed{};
@@ -3454,11 +3471,84 @@ namespace {
             throw std::runtime_error("recovery interference subsequent submission behavior changed");
     }
 
+    constexpr std::string_view kDiffusionComponentsPanicCase = "failure-direct/diffusion-components-panic";
+
+    void check_diffusion_components_panic(CallbackSession& runtime, const Case& test) {
+        using namespace JuicerCuda::ExecutorTest;
+        JuicerTestSupport::InstanceFixture state;
+        MembershipRetirement stateRetirement{runtime, state};
+        auto parameters = parameters_for(test);
+        parameters.values.camera_diffusion.active = true;
+        parameters.values.grain.active = false;
+
+        FailureObservation failure;
+        failure.armed = false;
+        failure.diffusionComponentsPanic = true;
+        failure.stage = "prepare_diffusion_resources";
+        failure.status = {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+        failure.diagnostic = "diffusion components preparation panicked";
+        reset_workspace_transitions();
+        bool fatal = false;
+        {
+            struct ClearFailureObservation {
+                ~ClearFailureObservation() {
+                    observation = nullptr;
+                }
+            } clear;
+            observation = &failure;
+            try {
+                (void)render_case(runtime, test, parameters, state);
+            } catch (const CallbackStatus& error) {
+                fatal = error.status() == kOfxStatErrFatal;
+                failure.record(Event::FatalMapped);
+            }
+        }
+
+        constexpr std::array expected{Event::FrameAborted, Event::Classified, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped};
+        const auto& completion = failure.completionOutcome;
+        if (!fatal || failure.overflow || failure.count != expected.size() ||
+            !std::equal(expected.begin(), expected.end(), failure.events.begin()) ||
+            !failure.failureStageMatches || !failure.failureStatusMatches || !failure.failureDiagnosticMatches ||
+            !failure.completionObserved || !failure.completionFatal || !failure.completionDiagnosticMatches ||
+            completion.status.category != failure.status.category || completion.status.api != failure.status.api ||
+            completion.status.native_code != failure.status.native_code || completion.flags != 0 ||
+            failure.nativeRecoveryPending || failure.adapterRecoveryPending || failure.retirementObserved) {
+            throw std::runtime_error("diffusion components panic propagation changed; category=" +
+                                     std::to_string(failure.classifiedStatus.category) + " api=" +
+                                     std::to_string(failure.classifiedStatus.api) + " code=" +
+                                     std::to_string(failure.classifiedStatus.native_code) + " events=" +
+                                     std::to_string(failure.count) + " stage_match=" +
+                                     std::to_string(failure.failureStageMatches) + " diagnostic_match=" +
+                                     std::to_string(failure.failureDiagnosticMatches) + " completion_diagnostic_match=" +
+                                     std::to_string(failure.completionDiagnosticMatches));
+        }
+        const auto workspace = workspace_transitions();
+        const auto submission = runtime.submission(state);
+        auto* const effect = runtime.find(state);
+        if (workspace.resourcesAcquired != 1 || workspace.aborts != 1 || workspace.candidateCount != 0 ||
+            workspace.captureEnqueued || workspace.scannerEnqueued || workspace.finishes != 0 ||
+            !submission.valid || runtime.host().image_release_count(effect, "Source") != 1 ||
+            runtime.host().image_release_count(effect, "Output") != 1) {
+            throw std::runtime_error("diffusion components panic did not stop preparation and release the frame");
+        }
+        (void)render_case(runtime, test, parameters, state);
+        const auto retry = runtime.submission(state);
+        if (!retry.valid || retry.context.device_id != submission.context.device_id ||
+            retry.context.context != submission.context.context ||
+            retry.submission.submission_id != submission.submission.submission_id) {
+            throw std::runtime_error("diffusion components panic changed same-context retry");
+        }
+        std::cout << kDiffusionComponentsPanicCase << " stage=" << failure.stage
+                  << " category=" << failure.status.category << " api=" << failure.status.api
+                  << " code=" << failure.status.native_code << " abort/classify/recovery/fatal order and retry passed\n";
+    }
+
     void run_failure_order_cases(CallbackSession& runtime) {
         const std::array<Case, 2> cases{{{"failure-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"failure-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
         std::vector<std::string> intended;
-        intended.reserve(36);
+        intended.reserve(43);
+        intended.emplace_back(kDiffusionComponentsPanicCase);
         for (const Case& test : cases) {
             for (const char* delivery : {"success", "failure", "throw"})
                 intended.push_back(std::string(test.name) + "/delivery/" + delivery);
@@ -3469,6 +3559,11 @@ namespace {
                 intended.push_back(std::string(test.name) + "/terminal/" + terminal);
         }
         JuicerTests::Cohort rows("failure_order", intended);
+        {
+            auto row = rows.case_event(kDiffusionComponentsPanicCase);
+            check_diffusion_components_panic(runtime, cases.front());
+            row.passed();
+        }
         for (const Case& test : cases) {
             unsigned deliveryIndex = 0;
             for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
@@ -4344,7 +4439,7 @@ namespace {
             parameters.film_key = settings.at("film").get<std::string>();
             parameters.print_key = settings.at("print").get<std::string>();
             parameters.values.print_gamma_factor = settings.at("print_gamma").get<double>();
-            parameters.values.input_color_space = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::ITU_R_BT2020);
+            parameters.values.input_color_space = Spectral::input_color_space_to_index(Spectral::InputColorSpace::ITU_R_BT2020);
             parameters.values.input_cctf_decoding = 0;
             parameters.values.output_color_space = OutputEncoding::toIndex(OutputEncoding::ColorSpace::ITU_R_BT2020);
             parameters.values.output_cctf_encoding = 0;
@@ -4443,6 +4538,7 @@ int main(int argc, char** argv) try {
         }
         if (argc == 3 && std::string_view(argv[1]) == "--failure-order") {
             JuicerTests::list_case("processor_operation", "failure_order");
+            JuicerTests::list_case("failure_order", kDiffusionComponentsPanicCase);
             for (const char* route : {"failure-direct", "failure-print"}) {
                 for (const char* delivery : {"success", "failure", "throw"})
                     JuicerTests::list_case("failure_order", std::string(route) + "/delivery/" + delivery);

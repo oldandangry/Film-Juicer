@@ -14,7 +14,6 @@
 #include <variant>
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "GaussianSciPy.h"
 
 #include <cuda_runtime.h>
 
@@ -271,7 +270,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 #include "Logging.h"
 #include "Hash.h"
 #include "SpectralData.h"
-#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "Scanner.h"
 #include "OutputColor.h"

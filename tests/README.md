@@ -955,14 +955,19 @@ compare the C entry with direct execution and immutable captures; see
 
 `Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
 processor adapter and prepared-frame abort observer. It drives both route failure
-sites through the same native OFX fixture, checking failure classification,
+sites through the OFX callback, checking failure classification,
 prepared-frame abort, gate release, deferred DIR message attempt, adapter context
 recovery and fatal OFX result order. It also covers non-DIR filtering,
-percent escaping, failed/throwing host delivery and a failure that requires no
-context retirement. The injected context-loss status exercises the existing
-retirement/latch policy on the fixture's CUDA context; it does not simulate real
-driver loss or establish Resolve recovery acceptance. The hook definitions are
-absent from the product and ordinary processor-reference objects.
+percent escaping and failed or throwing host delivery. The cold direct-scan
+diffusion case enables camera diffusion and arms a one-shot Rust component panic.
+It checks the full internal-failure status and decorated diagnostic through
+native classification and OFX completion, frame abort before classification,
+no diffusion allocation or context retirement, image release and successful
+same-context retry with the same submission.
+
+The injected context-loss status exercises the retirement and submission latch
+policy on the fixture's CUDA context. Live driver loss and Resolve recovery
+require separate evidence. The hook definitions belong to the isolated test build.
 
 `Ofx.Gpu.ResourceFailure.DefectFence` and `Ofx.Gpu.ResourceFailure.GrainUpload`
 extend that isolated build to the CUDA resource owner. They check Runtime event
@@ -991,6 +996,8 @@ DIR, scatter/halation and retirement groups retain the actual lifetime witnesses
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,
 recipe/build/latch identities, output signatures, messages, and image releases.
+Its [parameter ID expectations](ofx/adapter_parameter_ids.h) are maintained
+with the fixture and checked against the actual OFX calls.
 Preset and advanced-reset operations must apply their expected parameter
 values and produce respectively 22 and 16 synchronously suppressed nested
 callbacks without changing state inside any nested callback. Every admitted
@@ -1016,6 +1023,18 @@ errors and a purge-disposition test do not simulate actual driver/context loss.
 Diagnostic-allocation failures also check terminal reservation transitions,
 native-status preservation, and device-ledger rollback before owner teardown.
 
+Same-size print curve updates exercise registration during off-lock staging.
+The reader sees the old axis and sample values, and the upload replaces both
+arrays at their original device addresses. A warm repeat issues no pinned
+upload operations. Coordinated contenders check that frame-use registration
+stays excluded at both copy seams after fencing. Curve-pair cases exercise
+reuse of the axis staging block for samples after proven completion, typed
+failure precedence, and retained device charges. When the axis submits and
+the sample upload fails, readback checks the partial update and the prior
+descriptor remains published until a successful retry. An injected event
+record and stream synchronization failure also checks quarantine and
+exact-context retirement.
+
 The `ScatterHalation.Gpu.PreparedFrame` lifetime rows call the actual
 `Root::prepare_cuda_frame` path, complete the production scan-error staging
 sequence, and then queue a pinned host-to-device upload into Root-owned
@@ -1032,9 +1051,7 @@ hard self-release only to prevent a test deadlock, and a passing row requires
 that fallback not to fire. A separately compiled prepared-frame test object has
 one narrow, one-shot seam that returns a defined drain error before calling the
 physical CUDA drain. It requires ownership and ledger retention, then retries
-the ordinary drain successfully. The seam is absent from the plug-in build and
-is removed when the native Root ownership boundary moves in migration stage
-S2.B.
+the ordinary drain successfully. The seam belongs to the isolated test build.
 This is controlled failure-branch evidence; it is not a real CUDA context-loss
 or driver-reset test and never resets a live host-owned context.
 
@@ -1597,9 +1614,13 @@ These are Film-Juicer characterizations, not external-reference pixel fixtures.
 `Ofx.Gpu.AdapterTrace` observes film-f32, print-f64 and resolved grain values from
 actual current-value OFX capture, including invalid controls and recovery.
 `Grain.Gpu.ScratchReuse` verifies that a required film-gamma host rebuild changes
-development/final identities while reusing unchanged device curve/layer storage
-and preserving every uploaded word. Identical snapshots instead reuse the whole
-published state; equal curve hashes alone do not prove an absence of host work.
+development and final identities while the focused resource cache retains the
+device curves and layers. A second cohort changes the active DIR amount to
+force a focused resource miss at the same curve sizes. It checks exact device
+addresses for normalized and DIR curves and active layers, and compares the
+device values bit for bit with the held prepared state, including the changed
+compensated axes. Both cohorts cover all four scan routes with layers on and off.
+Identical snapshots reuse the whole published state.
 
 The immutable fixture directory is an ordinary test input. Capture generators
 and maintenance environments are excluded from CTest. Generate and review

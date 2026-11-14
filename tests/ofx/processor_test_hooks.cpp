@@ -31,6 +31,33 @@ namespace JuicerCuda::ExecutorTest {
             bool armed = false;
         };
         thread_local WorkspaceRejectionState s_workspaceRejection;
+
+        bool matches_failure_diagnostic(const FailureObservation& expected, std::string_view diagnostic) noexcept {
+            if (!expected.diagnostic) {
+                return false;
+            }
+            if (!expected.diffusionComponentsPanic) {
+                return diagnostic == expected.diagnostic;
+            }
+            if (!diagnostic.starts_with(expected.diagnostic)) {
+                return false;
+            }
+            diagnostic.remove_prefix(std::strlen(expected.diagnostic));
+            if (!diagnostic.starts_with(" device_id=")) {
+                return false;
+            }
+            // The cold failure must precede diffusion allocation or retirement.
+            constexpr std::array fields{
+                " device_id=", " context=", " epoch=", " device_budget_bytes=", " allocation_cap_bytes=", " ledger_reserved_bytes=0 ledger_committed_bytes=0 ledger_retiring_bytes=0", " frame_set_hash=", " execution_hash=", " fft_width=", " fft_height=", " unique_spectra=1", " spectrum_key_0="};
+            for (std::string_view field : fields) {
+                const auto position = diagnostic.find(field);
+                if (position == std::string_view::npos) {
+                    return false;
+                }
+                diagnostic.remove_prefix(position + field.size());
+            }
+            return true;
+        }
     } // namespace
     void reset_workspace_transitions() noexcept {
         s_workspace = {};
@@ -248,7 +275,7 @@ namespace JuicerCuda::ExecutorTest {
             observation->failureStatusMatches = failure.status.category == observation->status.category && failure.status.api == observation->status.api && failure.status.native_code == observation->status.native_code;
             observation->nativeRecoveryPending = recoveryPending;
             observation->classifiedStatus = failure.status;
-            observation->failureDiagnosticMatches = failure.diagnostic == observation->diagnostic;
+            observation->failureDiagnosticMatches = matches_failure_diagnostic(*observation, failure.diagnostic);
             observation->record(Event::Classified);
         }
     }
@@ -290,7 +317,7 @@ namespace JuicerCuda::ExecutorTest {
             observation->completionObserved = true;
             observation->completionOutcome = outcome;
             observation->completionFatal = fatal;
-            observation->completionDiagnosticMatches = observation->diagnostic && diagnostic == observation->diagnostic;
+            observation->completionDiagnosticMatches = matches_failure_diagnostic(*observation, diagnostic);
         }
     }
 } // namespace JuicerCuda::ExecutorTest

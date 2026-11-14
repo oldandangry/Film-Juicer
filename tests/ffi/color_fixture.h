@@ -10,9 +10,38 @@ namespace OutputEncoding {
 }
 
 namespace Spectral {
-    enum class InputColorSpace : std::uint8_t;
-    struct Mat3;
-    struct ChromaticAdaptationWhites;
+    // Independent input tags checked against the fixture ABI in color_fixture.cpp.
+    enum class InputColorSpace : std::uint8_t {
+        DaVinciWideGamut = 0,
+        ITU_R_BT2020,
+        ACES2065_1,
+        SRGB_Rec709,
+        Count
+    };
+
+    constexpr int input_color_space_to_index(InputColorSpace cs) {
+        return static_cast<int>(cs);
+    }
+
+    constexpr InputColorSpace input_color_space_from_index(int index) {
+        if (index < 0) {
+            return InputColorSpace::DaVinciWideGamut;
+        }
+        const int maxIndex = static_cast<int>(InputColorSpace::Count) - 1;
+        if (index > maxIndex) {
+            return InputColorSpace::DaVinciWideGamut;
+        }
+        return static_cast<InputColorSpace>(index);
+    }
+
+    struct Mat3 {
+        float m[9];
+    };
+
+    struct ChromaticAdaptationWhites {
+        const float* source = nullptr;
+        const float* destination = nullptr;
+    };
 } // namespace Spectral
 
 namespace JuicerTestFixture::Color {

@@ -1446,8 +1446,8 @@ class RustBoundaryTests(unittest.TestCase):
         for name in ["hash_diffusion_authored_controls", "build_diffusion_psf_sample_descriptor"]:
             self.assertFalse(definition(name, sources["DiffusionHostBehavior.cpp"]), name)
             self.assertTrue(definition(name, "bool " + name + "() {}"))
-        self.assertTrue(definition("expand_diffusion_psf_components", sources["DiffusionHostBehavior.cpp"]))
-        self.assertIn("JuicerDiffusion::prepare_components(", sources["DiffusionHostBehavior.cpp"])
+        self.assertNotIn("expand_diffusion_psf_components", production)
+        self.assertTrue(definition("prepare_components", sources["DiffusionHostBehavior.cpp"]))
         self.assertIn("fj_diffusion_components_prepare(", sources["DiffusionHostBehavior.cpp"])
         for name in ["build_scatter_halation_controls", "build_scatter_halation_frame_descriptor"]:
             self.assertFalse(definition(name, sources["ScatterHalation.cpp"]), name)
@@ -1638,8 +1638,12 @@ class RustBoundaryTests(unittest.TestCase):
             self.assertIsNone(re.search(pattern, "bool " + name + "();"))
         self.assertNotIn("kDiffusionFrameFnvPrime", recipe)
         self.assertNotIn("JuicerDiffusion::prepare_sample(", diffusion)
-        self.assertEqual(diffusion.count("JuicerDiffusion::prepare_components("), 1)
         self.assertEqual(diffusion.count("fj_diffusion_components_prepare("), 1)
+        self.assertIn(
+            "JuicerCuda::set_failure(failure, status, std::string_view(text.data(), error.length))", diffusion
+        )
+        bridge = (ROOT / "rust/film-juicer-plugin/src/diffusion_bridge.rs").read_text()
+        self.assertIn("Components::new(sample_fields(input))?", bridge)
         self.assertNotIn("JuicerDiffusion::prepare_frame(", recipe)
         self.assertFalse((ROOT / "src/RustDiffusionBridge.cpp").exists())
         frame = (ROOT / "rust/film-juicer-plugin/src/cuda/frame_policy.rs").read_text()
@@ -1647,7 +1651,12 @@ class RustBoundaryTests(unittest.TestCase):
         capture = (ROOT / "rust/film-juicer-core/src/capture.rs").read_text()
         self.assertEqual(capture.count("optics::hash_diffusion_authored_controls("), 2)
         resources = (ROOT / "src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp").read_text()
-        self.assertIn("Spektrafilm::expand_diffusion_psf_components(", resources)
+        self.assertEqual(resources.count("JuicerDiffusion::prepare_components("), 1)
+        self.assertRegex(
+            resources,
+            r"if\s*\(!JuicerDiffusion::prepare_components\(\s*stage\.sample,\s*components\[keyIndex\],\s*outError\)\)"
+            r"\s*\{\s*if\s*\(outError\.diagnostic\.empty\(\)\)\s*\{[^{}]*\}\s*return false;",
+        )
         fixtures = "\n".join(
             (ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "diffusion_frame_test.inc")
         )

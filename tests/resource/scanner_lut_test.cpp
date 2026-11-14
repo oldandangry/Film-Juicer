@@ -232,6 +232,7 @@ namespace JuicerCuda::PinnedUploadTest {
         return 0;
     }
     void before_diagnostic() {}
+    void after_overwrite_staging(Resources&) noexcept {}
 } // namespace JuicerCuda::PinnedUploadTest
 
 namespace {
