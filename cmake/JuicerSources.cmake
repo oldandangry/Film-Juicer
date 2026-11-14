@@ -25,6 +25,7 @@ set(JUICER_NATIVE_SOURCES
 )
 
 set(JUICER_HOST_SOURCES
+    src/Logging.cpp
     src/DiffusionHostBehavior.cpp
     src/RenderValues.cpp
     src/FilmEffectsFrameDescriptors.cpp

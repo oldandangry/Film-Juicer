@@ -996,6 +996,8 @@ DIR, scatter/halation and retirement groups retain the actual lifetime witnesses
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,
 recipe/build/latch identities, output signatures, messages, and image releases.
+Its [parameter ID expectations](ofx/adapter_parameter_ids.h) are maintained
+with the fixture and checked against the actual OFX calls.
 Preset and advanced-reset operations must apply their expected parameter
 values and produce respectively 22 and 16 synchronously suppressed nested
 callbacks without changing state inside any nested callback. Every admitted

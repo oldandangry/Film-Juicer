@@ -53,11 +53,10 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ParamNames.h"
+#include "adapter_parameter_ids.h"
 #include "ProcessRoot.h"
 #include "RenderValues.h"
 #include "juicer_cuda_owner.h"
-#include "ColorTransforms.h"
 #include "ofxMemory.h"
 #include "ofxMultiThread.h"
 

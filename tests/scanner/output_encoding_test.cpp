@@ -21,7 +21,6 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "gtest/gtest.h"
 
-#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"

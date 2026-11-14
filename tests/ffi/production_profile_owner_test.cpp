@@ -25,7 +25,6 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "test_asset_workspace.h"
 #include "ProcessRoot.h"
-#include "ColorTransforms.h"
 #include "Hash.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "juicer_cuda_owner.h"

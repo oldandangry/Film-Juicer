@@ -1,30 +1,13 @@
 #pragma once
 
-#include <array>
-
+// Independent OFX identifiers for the adapter trace expectations.
 namespace JuicerParams {
-    struct CameraFilmFormatPreset {
-        const char* label = nullptr;
-        double longEdgeMm = 0.0;
-    };
-
     inline constexpr const char kCameraFilmFormatPreset[] = "CameraFilmFormatPreset";
     inline constexpr const char kCameraFilmFormatMm[] = "CameraFilmFormatMm";
-    inline constexpr std::array<CameraFilmFormatPreset, 10> kCameraFilmFormatPresets{{{"APS-C film (25 mm)", 25.0},
-                                                                                      {"35 mm / 135 (36 mm)", 36.0},
-                                                                                      {"645 / 6x4.5 (56 mm)", 56.0},
-                                                                                      {"6x7 (70 mm)", 70.0},
-                                                                                      {"4x5 (120 mm)", 120.0},
-                                                                                      {"Super 16 (11.66 mm)", 11.66},
-                                                                                      {"35mm Academy (21.95 mm)", 21.95},
-                                                                                      {"Super 35 (24.89 mm)", 24.89},
-                                                                                      {"VistaVision 8-perf (37.72 mm)", 37.72},
-                                                                                      {"IMAX/65mm (70.4 mm)", 70.4}}};
     inline constexpr const char kCameraMeteringMethod[] = "CameraMeteringMethod";
     inline constexpr const char kFilmProfileKey[] = "FilmProfileKey";
     inline constexpr const char kPrintProfileKey[] = "PrintProfileKey";
     inline constexpr const char kParamScanRoute[] = "ScanRoute";
-    inline constexpr const char kTuningGroup[] = "TuningGroup";
     inline constexpr const char kFilmGammaFactor[] = "FilmGammaFactor";
     inline constexpr const char kPrintGammaFactor[] = "PrintGammaFactor";
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
@@ -34,7 +17,6 @@ namespace JuicerParams {
         "OutputGamutCompression";
     inline constexpr const char kHanatos2025AdaptationWindow[] = "Hanatos2025AdaptationWindow";
     inline constexpr const char kHanatos2025AdaptationSurface[] = "Hanatos2025AdaptationSurface";
-    inline constexpr const char kDirCouplersGroup[] = "Couplers";
     inline constexpr const char kDirCouplersActive[] = "CouplersActive";
     inline constexpr const char kDirCouplersAmount[] = "CouplersAmount";
     inline constexpr const char kDirCouplersInhibitionSameLayer[] = "CouplersInhibitionSameLayer";
@@ -85,7 +67,6 @@ namespace JuicerParams {
     inline constexpr const char kGateDustAmount[] = "GateDustAmount";
     inline constexpr const char kFilmScratchAmount[] = "FilmScratchAmount";
     inline constexpr const char kGateScratchAmount[] = "GateScratchAmount";
-    inline constexpr const char kDiffusionGroup[] = "DiffusionGroup";
     inline constexpr const char kCameraDiffusionEnabled[] = "CameraDiffusionEnabled";
     inline constexpr const char kCameraDiffusionFamily[] = "CameraDiffusionFamily";
     inline constexpr const char kCameraDiffusionStrength[] = "CameraDiffusionStrength";

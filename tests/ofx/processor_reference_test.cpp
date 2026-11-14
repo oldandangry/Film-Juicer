@@ -48,10 +48,10 @@
 
 #include "Hash.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "../ffi/color_fixture.h"
 #include "../ffi/preparation_fixture.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
-#include "ColorTransforms.h"
 #include "ScanRoute.h"
 
 
@@ -4439,7 +4439,7 @@ namespace {
             parameters.film_key = settings.at("film").get<std::string>();
             parameters.print_key = settings.at("print").get<std::string>();
             parameters.values.print_gamma_factor = settings.at("print_gamma").get<double>();
-            parameters.values.input_color_space = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::ITU_R_BT2020);
+            parameters.values.input_color_space = Spectral::input_color_space_to_index(Spectral::InputColorSpace::ITU_R_BT2020);
             parameters.values.input_cctf_decoding = 0;
             parameters.values.output_color_space = OutputEncoding::toIndex(OutputEncoding::ColorSpace::ITU_R_BT2020);
             parameters.values.output_cctf_encoding = 0;

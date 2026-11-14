@@ -34,7 +34,7 @@
 #include "test_asset_workspace.h"
 #include "native_path.h"
 #include "test_asset_bridge.h"
-#include "ColorTransforms.h"
+#include "SpectralData.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"

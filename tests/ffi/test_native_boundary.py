@@ -1567,7 +1567,7 @@ class NativeBoundary(unittest.TestCase):
 
     def test_retired_input_color_producers_stay_deleted(self):
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_INPUT_COLOR), [])
-        self.assertEqual(forbidden_uses([ROOT / "src/ColorTransforms.h"], INPUT_MATRIX_METHODS), [])
+        self.assertEqual(forbidden_uses([ROOT / "tests/ffi/color_fixture.h"], INPUT_MATRIX_METHODS), [])
 
     def test_retired_native_profile_authority_stays_deleted(self):
         paths = [
@@ -1803,7 +1803,7 @@ class NativeBoundaryControls(unittest.TestCase):
                     encoding="utf-8",
                 )
                 self.assertEqual(forbidden_uses(color_sources(root), RETIRED_INPUT_COLOR), [])
-            owner = root / "src/ColorTransforms.h"
+            owner = root / "tests/ffi/color_fixture.h"
             for text in (
                 "void mul(const float v[3], float out[3]);",
                 "Mat3 inverse(float fallback) const;",
@@ -1811,7 +1811,7 @@ class NativeBoundaryControls(unittest.TestCase):
             ):
                 owner.write_text(text, encoding="utf-8")
                 self.assertEqual(len(forbidden_uses([owner], INPUT_MATRIX_METHODS)), 1)
-            owner.write_text("struct Mat3 { float m[9]; };\nMat3 make_identity_mat3();\n", encoding="utf-8")
+            owner.write_text("struct Mat3 { float m[9]; };\n", encoding="utf-8")
             other = root / "src/OutputColor.h"
             other.write_text("struct Mat3 { void mul(); Mat3 inverse(); };\n", encoding="utf-8")
             cuda = root / "src/Cuda/device.cuh"

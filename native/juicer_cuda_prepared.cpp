@@ -9,7 +9,6 @@
 #include <span>
 #include <string_view>
 
-#include "ColorTransforms.h"
 #include "Cuda/JuicerCudaHostViews.h"
 
 namespace {
