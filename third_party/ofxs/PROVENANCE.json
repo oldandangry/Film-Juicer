@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "source": "Local Resolve OFXS / OpenFX-1.4 SDK snapshot consumed by Film-Juicer before CMake migration",
   "source_revision": null,
   "capture_date": "2026-09-12",
@@ -87,98 +88,103 @@
       "destination": "OpenFX-1.4/include/ofxTimeLine.h",
       "sha256": "d96decacc59db3a51ff28d896b481faa85eb804e9813b7ddb5b52aeb4c94ca9b",
       "vendored_sha256": "d96decacc59db3a51ff28d896b481faa85eb804e9813b7ddb5b52aeb4c94ca9b"
-    },
-    {
-      "destination": "Support/Library/ofxsCore.cpp",
-      "sha256": "71a6698971883080217eaa68bce612a5ec5e2bedf0dbd8831310f93402b02df4",
-      "vendored_sha256": "3b40c46a54aa2cce171676ba4d62bbf6f24bbd9f8438b3b5f1d2ebeaebb66d0e"
-    },
-    {
-      "destination": "Support/Library/ofxsImageEffect.cpp",
-      "sha256": "27fdf354741a924d743074dc0a23dbd42438eae7b1225afa21e37ec60901aa1a",
-      "vendored_sha256": "1211dc095ba08b189a921d741b17c86159bddc020b60a962ed8ba7051b2ef9f7"
-    },
-    {
-      "destination": "Support/Library/ofxsInteract.cpp",
-      "sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3",
-      "vendored_sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3"
-    },
-    {
-      "destination": "Support/Library/ofxsLog.cpp",
-      "sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75",
-      "vendored_sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75"
-    },
-    {
-      "destination": "Support/Library/ofxsMultiThread.cpp",
-      "sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb",
-      "vendored_sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb"
-    },
-    {
-      "destination": "Support/Library/ofxsParams.cpp",
-      "sha256": "e17fecd306f31efca0ffb06ea8e2aa5a2b332e3d3af2955f711a770b2ee97cb8",
-      "vendored_sha256": "0b087d2eb5a6a8f151ea591695da5826a8a9da46e240c2f5ecf862a2d95d7f39"
-    },
-    {
-      "destination": "Support/Library/ofxsProperty.cpp",
-      "sha256": "63b339dd20b7e4ff3f0fd364856ab724d849808f863bc7c4c0c6790be993e8da",
-      "vendored_sha256": "cfc6ad6f5a85d808d883ea785a63ccde6d537068185ce0115f6e6eae95c5704f"
-    },
-    {
-      "destination": "Support/Library/ofxsPropertyValidation.cpp",
-      "sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be",
-      "vendored_sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be"
-    },
-    {
-      "destination": "Support/include/ofxsCore.h",
-      "sha256": "f6f1431121e7667834edbd1520e99f09749609d65021ad7cb8fffe488188e060",
-      "vendored_sha256": "f8de3dded300caa06bc632298c9e3fbd60c63344b625403d305e3170557dc1f7"
-    },
-    {
-      "destination": "Support/include/ofxsImageEffect.h",
-      "sha256": "6e4b29ab1f70463b408dadd80818b5bf035a4aa5cf665ef7bdab364a9b4049bc",
-      "vendored_sha256": "c87551a27d53b7c6fcae54136f8916ae833cce4c9fbc70cc7b60d2cddc17d397"
-    },
-    {
-      "destination": "Support/include/ofxsInteract.h",
-      "sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888",
-      "vendored_sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888"
-    },
-    {
-      "destination": "Support/include/ofxsLog.h",
-      "sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6",
-      "vendored_sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6"
-    },
-    {
-      "destination": "Support/include/ofxsMemory.h",
-      "sha256": "e0a990c3dceb64a9079cc609415fd38208cf00d2f13b2dc9fb1df44cb9c81589",
-      "vendored_sha256": "e6479bad903c79d610cc5b1d2948b144fb1c18b94f237e6bc93fbe932e6535d0"
-    },
-    {
-      "destination": "Support/include/ofxsMessage.h",
-      "sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f",
-      "vendored_sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f"
-    },
-    {
-      "destination": "Support/include/ofxsMultiThread.h",
-      "sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581",
-      "vendored_sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581"
-    },
-    {
-      "destination": "Support/include/ofxsParam.h",
-      "sha256": "366099146be7249cfff2265c71ca465aa3431ac2e2c98595a1a8627edfcacf25",
-      "vendored_sha256": "cc31af3ea64a356e25638e89478184434a9ad5529611d58227baffdf57a98a35"
-    },
-    {
-      "destination": "Support/include/ofxsProcessing.h",
-      "sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a",
-      "vendored_sha256": "88761009cd8377cde72ba063672231aa13670677192dfba08994ca7856cf265b"
-    },
-    {
-      "destination": "Support/include/ofxsSupportPrivate.h",
-      "sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb",
-      "vendored_sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb"
     }
   ],
+  "historical_files": {
+    "vendored_revision": "c0f4b3990efcb3b5bc1fda4bd66e7b44ee68c5e9",
+    "files": [
+      {
+        "destination": "Support/Library/ofxsCore.cpp",
+        "sha256": "71a6698971883080217eaa68bce612a5ec5e2bedf0dbd8831310f93402b02df4",
+        "vendored_sha256": "3b40c46a54aa2cce171676ba4d62bbf6f24bbd9f8438b3b5f1d2ebeaebb66d0e"
+      },
+      {
+        "destination": "Support/Library/ofxsImageEffect.cpp",
+        "sha256": "27fdf354741a924d743074dc0a23dbd42438eae7b1225afa21e37ec60901aa1a",
+        "vendored_sha256": "1211dc095ba08b189a921d741b17c86159bddc020b60a962ed8ba7051b2ef9f7"
+      },
+      {
+        "destination": "Support/Library/ofxsInteract.cpp",
+        "sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3",
+        "vendored_sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3"
+      },
+      {
+        "destination": "Support/Library/ofxsLog.cpp",
+        "sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75",
+        "vendored_sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75"
+      },
+      {
+        "destination": "Support/Library/ofxsMultiThread.cpp",
+        "sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb",
+        "vendored_sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb"
+      },
+      {
+        "destination": "Support/Library/ofxsParams.cpp",
+        "sha256": "e17fecd306f31efca0ffb06ea8e2aa5a2b332e3d3af2955f711a770b2ee97cb8",
+        "vendored_sha256": "0b087d2eb5a6a8f151ea591695da5826a8a9da46e240c2f5ecf862a2d95d7f39"
+      },
+      {
+        "destination": "Support/Library/ofxsProperty.cpp",
+        "sha256": "63b339dd20b7e4ff3f0fd364856ab724d849808f863bc7c4c0c6790be993e8da",
+        "vendored_sha256": "cfc6ad6f5a85d808d883ea785a63ccde6d537068185ce0115f6e6eae95c5704f"
+      },
+      {
+        "destination": "Support/Library/ofxsPropertyValidation.cpp",
+        "sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be",
+        "vendored_sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be"
+      },
+      {
+        "destination": "Support/include/ofxsCore.h",
+        "sha256": "f6f1431121e7667834edbd1520e99f09749609d65021ad7cb8fffe488188e060",
+        "vendored_sha256": "f8de3dded300caa06bc632298c9e3fbd60c63344b625403d305e3170557dc1f7"
+      },
+      {
+        "destination": "Support/include/ofxsImageEffect.h",
+        "sha256": "6e4b29ab1f70463b408dadd80818b5bf035a4aa5cf665ef7bdab364a9b4049bc",
+        "vendored_sha256": "c87551a27d53b7c6fcae54136f8916ae833cce4c9fbc70cc7b60d2cddc17d397"
+      },
+      {
+        "destination": "Support/include/ofxsInteract.h",
+        "sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888",
+        "vendored_sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888"
+      },
+      {
+        "destination": "Support/include/ofxsLog.h",
+        "sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6",
+        "vendored_sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6"
+      },
+      {
+        "destination": "Support/include/ofxsMemory.h",
+        "sha256": "e0a990c3dceb64a9079cc609415fd38208cf00d2f13b2dc9fb1df44cb9c81589",
+        "vendored_sha256": "e6479bad903c79d610cc5b1d2948b144fb1c18b94f237e6bc93fbe932e6535d0"
+      },
+      {
+        "destination": "Support/include/ofxsMessage.h",
+        "sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f",
+        "vendored_sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f"
+      },
+      {
+        "destination": "Support/include/ofxsMultiThread.h",
+        "sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581",
+        "vendored_sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581"
+      },
+      {
+        "destination": "Support/include/ofxsParam.h",
+        "sha256": "366099146be7249cfff2265c71ca465aa3431ac2e2c98595a1a8627edfcacf25",
+        "vendored_sha256": "cc31af3ea64a356e25638e89478184434a9ad5529611d58227baffdf57a98a35"
+      },
+      {
+        "destination": "Support/include/ofxsProcessing.h",
+        "sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a",
+        "vendored_sha256": "88761009cd8377cde72ba063672231aa13670677192dfba08994ca7856cf265b"
+      },
+      {
+        "destination": "Support/include/ofxsSupportPrivate.h",
+        "sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb",
+        "vendored_sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb"
+      }
+    ]
+  },
   "compatibility_edits": [
     {
       "file": "Support/Library/ofxsCore.cpp",
