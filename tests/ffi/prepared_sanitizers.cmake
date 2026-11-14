@@ -12,9 +12,11 @@ add_library(juicer_prepared_sanitizer_objects OBJECT
     "${PROJECT_SOURCE_DIR}/native/juicer_cuda_prepared.cpp"
     "${PROJECT_SOURCE_DIR}/native/juicer_cuda_descriptors.cpp")
 target_link_libraries(juicer_prepared_sanitizer_objects PRIVATE juicer_settings)
-add_executable(JuicerPreparedSanitizerTests ${JUICER_PREPARED_TEST_SOURCES}
+add_executable(JuicerPreparedSanitizerTests ${JUICER_PREPARED_TEST_SOURCES} ffi/spatial_optics_fixture.cpp
     $<TARGET_OBJECTS:juicer_prepared_sanitizer_objects>)
-target_link_libraries(JuicerPreparedSanitizerTests PRIVATE juicer_test_core film_juicer_rust_test_support GTest::gtest_main)
+target_link_libraries(JuicerPreparedSanitizerTests PRIVATE juicer_test_core film_juicer_rust_test_support GTest::gtest juicer_host_gtest_main)
+target_compile_definitions(JuicerPreparedSanitizerTests PRIVATE
+    FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}")
 add_executable(JuicerPreparedSanitizerControl ffi/fixtures/sanitizer/control.cpp
     $<TARGET_OBJECTS:juicer_prepared_sanitizer_objects>)
 target_link_libraries(JuicerPreparedSanitizerControl PRIVATE juicer_test_core film_juicer_rust)
@@ -49,6 +51,8 @@ set(sanitizer_tests Ffi.Host.PreparedSanitizers Ffi.Host.SanitizerCleanControl
     Ffi.Host.SanitizerControl.memory Ffi.Host.SanitizerControl.undefined)
 set_tests_properties(${sanitizer_tests} PROPERTIES LABELS "host;sanitizer" TIMEOUT 60
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0:halt_on_error=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;PYTHONDONTWRITEBYTECODE=1")
+set_property(TEST Ffi.Host.PreparedSanitizers APPEND PROPERTY ENVIRONMENT
+    "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
 if(WIN32)
     execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE sanitizer_resource_dir OUTPUT_STRIP_TRAILING_WHITESPACE
