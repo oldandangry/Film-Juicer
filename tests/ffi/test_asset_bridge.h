@@ -37,7 +37,6 @@ namespace JuicerAssets {
 #if defined(JUICER_ILLUMINANT_TEST_HOOK)
     namespace IlluminantTest {
         void calibration_result(FjNeutralCalibrationResult& result);
-        void frame_abort() noexcept;
     } // namespace IlluminantTest
 #endif
 
