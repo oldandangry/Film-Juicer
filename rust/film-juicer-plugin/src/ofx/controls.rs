@@ -320,7 +320,12 @@ pub(super) fn apply_dir_defaults(controls: &Controls<'_>) -> Result<(), Status> 
 }
 
 // Returns true for preset/reset edits, whose native path captures immediately.
-pub(super) fn change(controls: &Controls<'_>, name: &[u8], user: bool) -> Result<bool, Status> {
+pub(super) fn change(
+    controls: &Controls<'_>,
+    name: &[u8],
+    user: bool,
+    read_before_ui: bool,
+) -> Result<bool, Status> {
     if user && name == b"CameraFilmFormatPreset" {
         if let Some(mm) =
             film::input::film_format_preset(controls.integer(c"CameraFilmFormatPreset")?)
@@ -349,14 +354,33 @@ pub(super) fn change(controls: &Controls<'_>, name: &[u8], user: bool) -> Result
     if user && name == b"GrainPreset" {
         let index = controls.integer(c"GrainPreset")?;
         apply_grain_preset(controls, index)?;
+        if read_before_ui {
+            controls.begin_read()?;
+        }
         update_grain_label(controls, false)?;
         update_grain_chroma(controls)?;
         return Ok(true);
     }
     if user && name == b"GrainResetAdvanced" {
         reset_grain_advanced(controls)?;
+        if read_before_ui {
+            controls.begin_read()?;
+        }
         update_grain_chroma(controls)?;
         return Ok(true);
+    }
+    let linked_grain_write = user
+        && [
+            b"GrainParticleScaleMaster".as_slice(),
+            b"GrainParticleScaleLayersMaster",
+            b"GrainDensityMinMaster",
+            b"GrainUniformityMaster",
+            b"GrainSharpness",
+            b"GrainTexture",
+        ]
+        .contains(&name);
+    if read_before_ui && !linked_grain_write {
+        controls.begin_read()?;
     }
     if user
         && [
@@ -435,6 +459,9 @@ pub(super) fn change(controls: &Controls<'_>, name: &[u8], user: bool) -> Result
                 controls.set_double2(c"GrainMicroStructure", micro)?;
             }
         }
+    }
+    if read_before_ui {
+        controls.begin_read()?;
     }
     initialize(controls)?;
     Ok(false)

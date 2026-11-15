@@ -1085,6 +1085,10 @@ namespace {
         }
 
         using ParameterHook = std::function<OfxStatus(const std::string&)>;
+        using PropertyHook = std::function<OfxStatus(std::string_view, std::string_view)>;
+        void set_property_hook(PropertyHook hook) {
+            _propertyHook = std::move(hook);
+        }
         void set_getter_hook(ParameterHook hook) {
             _getterHook = std::move(hook);
         }
@@ -2052,6 +2056,13 @@ namespace {
                 host._propertyFailureParam == owningParam && host._propertyFailureProperty == property) {
                 return std::exchange(host._propertyFailureStatus, kOfxStatOK);
             }
+            const auto hook = host._propertyHook;
+            if (hook) {
+                const auto status = hook(owningParam, property);
+                if (status != kOfxStatOK) {
+                    return status;
+                }
+            }
             if (!host._propertyReentryArmed ||
                 host._propertyReentryOwningParam != owningParam ||
                 host._propertyReentryProperty != property) {
@@ -2639,6 +2650,7 @@ namespace {
         std::vector<std::string> _imageReleaseOrder;
         unsigned _scanRouteFailure = 0;
         ParameterHook _getterHook;
+        PropertyHook _propertyHook;
         ParameterHook _beforeSetterHook;
         ParameterHook _afterSetterHook;
         std::string _propertyFailureParam;
@@ -2792,7 +2804,7 @@ namespace {
     void run_instance_contract_rows() {
         using Observer = JuicerTestSupport::EffectObservation;
         const std::vector<std::string> ids{
-            "older-capture-success", "older-capture-getter-failure", "capturing-admission", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
+            "older-capture-success", "older-capture-getter-failure", "capturing-admission", "capturing-render-thread", "capturing-render-thread-getter-failure", "unread-change-render-thread", "grain-chroma-ui-render-thread", "read-failure-preserves-change-ui", "unread-change-ui-failure", "deferred-action-ui-failure", "initial-capture-superseded-render-read", "frame-input-during-new-change", "render-read-getter-failure", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
         JuicerTests::Cohort rows("publication_capture", ids);
         struct CallbackPause {
             std::mutex mutex;
@@ -2838,12 +2850,16 @@ namespace {
             EffectLease effect(*test_plugin, host.effect_handle());
             host.bind_effect(effect);
             DeviceFrame frame;
-            const bool initial = id == "superseded-before-write-grant" || id == "late-initial-gamma-write-success" ||
+            const bool initial = id == "superseded-before-write-grant" || id == "initial-capture-superseded-render-read" ||
+                                 id == "late-initial-gamma-write-success" ||
                                  id == "late-initial-gamma-write-partial-failure" || id == "initial-getter-failure";
             JuicerTestSupport::PublicationAdmission held;
             std::uint64_t heldHash = 0;
+            std::uint64_t baselineOutput = 0;
             if (!initial) {
-                require(host.render(effect, frame, "publication-baseline").succeeded, "publication baseline render");
+                const auto baseline = host.render(effect, frame, "publication-baseline");
+                require(baseline.succeeded, "publication baseline render");
+                baselineOutput = baseline.outputSignature;
                 held = Observer::admit(effect);
                 heldHash = JuicerTestSupport::published_view(held).recipe_hash;
             }
@@ -2877,20 +2893,427 @@ namespace {
             } else if (id == "capturing-admission") {
                 host.set_double_value(kParamExposure, 0.5);
                 bool fired = false;
+                std::uint64_t freshOutput = 0;
                 host.set_getter_hook([&](const std::string& name) {
                     if (name != kParamExposure || fired) {
                         return kOfxStatOK;
                     }
                     fired = true;
                     host.set_getter_hook({});
-                    const auto rejected = host.render(effect, frame, id, true);
-                    released_failure(rejected, NativeHost::ExceptionClass::Suite, kOfxStatFailed);
-                    require(rejected.state.latchSnapshotId == 1 && Observer::metrics(effect).build == before.build,
-                            "capturing admission submits no new work or publication");
+                    host.set_double_value(kParamExposure, 0.75);
+                    const auto rendered = host.render(effect, frame, id);
+                    freshOutput = rendered.outputSignature;
+                    require(rendered.succeeded && rendered.state.pendingExposureEv == 0.75 &&
+                                rendered.state.buildCounter == before.build + 1 &&
+                                Observer::metrics(effect).issued == before.issued + 2 &&
+                                rendered.releaseOrder == std::vector<std::string>{"Output", "Source"},
+                            "render supersedes reading capture with freshly read exposure and releases images");
                     return kOfxStatOK;
                 });
                 host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
-                require(fired && host.render(effect, frame, "capturing-completed").succeeded, "completed capture permits subsequent render");
+                const auto settled = host.render(effect, frame, "capturing-completed");
+                require(fired && settled.succeeded && settled.state.pendingExposureEv == 0.75 &&
+                            settled.state.buildCounter == before.build + 1 &&
+                            settled.outputSignature == freshOutput && freshOutput != baselineOutput,
+                        "old capture cannot overwrite fresh publication; overlap pixels match settled edit");
+            } else if (id == "capturing-render-thread" || id == "capturing-render-thread-getter-failure") {
+                CallbackPause pause;
+                const bool failOld = id == "capturing-render-thread-getter-failure";
+                std::exception_ptr workerFailure;
+                host.set_double_value(kParamExposure, 0.25);
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure) {
+                        return kOfxStatOK;
+                    }
+                    // The hook copy and parameter value are already read. Clearing
+                    // before signalling leaves the main thread exclusive host access.
+                    host.set_getter_hook({});
+                    pause.pause();
+                    return failOld ? kOfxStatErrBadHandle : kOfxStatOK;
+                });
+                std::jthread worker([&]() {
+                    try {
+                        host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                    } catch (...) {
+                        workerFailure = std::current_exception();
+                    }
+                });
+                const bool paused = pause.await();
+                std::exception_ptr mainFailure;
+                NativeHost::RenderResult overlap;
+                std::uint64_t freshIdentity = 0;
+                try {
+                    require(paused, "change getter reaches reading phase on worker thread");
+                    host.set_double_value(kParamExposure, 0.75);
+                    overlap = host.render(effect, frame, id);
+                    const auto fresh = Observer::metrics(effect);
+                    freshIdentity = fresh.inputIdentity;
+                    require(overlap.succeeded && overlap.state.pendingExposureEv == 0.75 &&
+                                fresh.issued == before.issued + 2 && fresh.build == before.build + 1 &&
+                                fresh.publishedIdentity == fresh.inputIdentity &&
+                                overlap.releaseOrder == std::vector<std::string>{"Output", "Source"},
+                            "other-thread render publishes current values while old getter remains paused");
+                } catch (...) {
+                    mainFailure = std::current_exception();
+                }
+                pause.release();
+                worker.join();
+                if (mainFailure) {
+                    std::rethrow_exception(mainFailure);
+                }
+                bool expectedOldFailure = false;
+                if (workerFailure) {
+                    try {
+                        std::rethrow_exception(workerFailure);
+                    } catch (const StatusFailure& failure) {
+                        expectedOldFailure = failOld && failure.status() == kOfxStatErrBadHandle;
+                        if (!expectedOldFailure) {
+                            throw;
+                        }
+                    }
+                }
+                const auto settled = host.render(effect, frame, "thread-capture-completed");
+                require(!pause.timedOut && expectedOldFailure == failOld && settled.succeeded &&
+                            settled.state.pendingExposureEv == 0.75 && settled.state.pendingDiagnostic.empty() &&
+                            Observer::metrics(effect).inputIdentity == freshIdentity &&
+                            settled.state.buildCounter == before.build + 1 &&
+                            overlap.outputSignature == settled.outputSignature && overlap.outputSignature != baselineOutput,
+                        "late old success or getter failure preserves fresh publication and matching output pixels");
+            } else if (id == "frame-input-during-new-change") {
+                host.set_double_value(kParamExposure, 0.25);
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                const auto expected = host.render(effect, frame, "frame-input-expected");
+                host.set_double_value(kParamExposure, 0.0);
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                require(host.render(effect, frame, "frame-input-cache-other").succeeded, "replace expected frame cache");
+                host.set_double_value(kParamExposure, 0.25);
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                CallbackPause pause;
+                std::exception_ptr workerFailure;
+                std::jthread worker;
+                struct DuringPrepare {
+                    NativeHost& host;
+                    EffectLease& effect;
+                    CallbackPause& pause;
+                    std::jthread& worker;
+                    std::exception_ptr& workerFailure;
+                    std::exception_ptr failure;
+                    unsigned calls = 0;
+                } edit{host, effect, pause, worker, workerFailure, {}, 0};
+                fj_test_instance_prepare_hooks(nullptr, [](void* user) noexcept {
+                    auto& edit = *static_cast<DuringPrepare*>(user);
+                    ++edit.calls;
+                    try {
+                        edit.host.set_double_value(kParamExposure, 0.75);
+                        edit.host.set_getter_hook([&edit](const std::string& name) {
+                            if (name != JuicerParams::kFilmProfileKey) {
+                                return kOfxStatOK;
+                            }
+                            edit.host.set_getter_hook({});
+                            edit.pause.pause();
+                            return kOfxStatOK;
+                        });
+                        edit.worker = std::jthread([&edit]() {
+                            try {
+                                edit.host.dispatch_event(edit.effect, kParamExposure, ChangeReason::UserEdit);
+                            } catch (...) {
+                                edit.workerFailure = std::current_exception();
+                            }
+                        });
+                        require(edit.pause.await(), "newer change pauses during the selected frame's preparation");
+                    } catch (...) {
+                        edit.failure = std::current_exception();
+                    }
+                },
+                                               &edit);
+                std::exception_ptr renderFailure;
+                NativeHost::RenderResult rendered;
+                const auto committed = Observer::metrics(effect);
+                try {
+                    rendered = host.render(effect, frame, id);
+                    require(rendered.succeeded && rendered.outputSignature == expected.outputSignature &&
+                                Observer::metrics(effect).build == committed.build &&
+                                Observer::metrics(effect).publishedIdentity == committed.publishedIdentity,
+                            "one prepared frame retains selected input and does not overwrite newer pending capture");
+                } catch (...) {
+                    renderFailure = std::current_exception();
+                }
+                fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
+                pause.release();
+                if (worker.joinable()) {
+                    worker.join();
+                }
+                for (const auto& failure : {renderFailure, edit.failure, workerFailure}) {
+                    if (failure) {
+                        std::rethrow_exception(failure);
+                    }
+                }
+                const auto settled = host.render(effect, frame, "frame-input-newer-settled");
+                require(edit.calls == 1 && !pause.timedOut && settled.succeeded &&
+                            settled.state.pendingExposureEv == 0.75 && settled.outputSignature != rendered.outputSignature,
+                        "newer edit has its own subsequent frame without retrying the selected frame");
+            } else if (id == "deferred-action-ui-failure") {
+                CallbackPause pause;
+                std::exception_ptr workerFailure;
+                host.set_setter_hooks([&](const std::string& name) {
+                    if (name == JuicerParams::kDirCouplersGammaSameLayerRgb) {
+                        host.set_setter_hooks({});
+                        pause.pause();
+                    }
+                    return kOfxStatOK;
+                });
+                std::jthread worker([&]() {
+                    try {
+                        host.dispatch_event(effect, JuicerParams::kDirCouplersGammaUseStock, ChangeReason::UserEdit);
+                    } catch (...) {
+                        workerFailure = std::current_exception();
+                    }
+                });
+                const bool paused = pause.await();
+                std::exception_ptr mainFailure;
+                try {
+                    require(paused && Observer::metrics(effect).outstandingWrites == 1,
+                            "older physical write remains registered during newer UI action");
+                    host.set_double_value(kParamExposure, 0.75);
+                    host.fail_property_once("CameraDiffusionEnabled", kOfxParamPropSecret, kOfxStatErrBadHandle);
+                    OfxStatus status = kOfxStatOK;
+                    try {
+                        host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                    } catch (const StatusFailure& error) {
+                        status = error.status();
+                    }
+                    require(status == kOfxStatErrBadHandle && Observer::metrics(effect).pendingKind == 5 &&
+                                Observer::metrics(effect).outstandingWrites == 1,
+                            "early deferred snapshot retains the current UI failure obligation");
+                } catch (...) {
+                    mainFailure = std::current_exception();
+                }
+                pause.release();
+                worker.join();
+                if (mainFailure) {
+                    std::rethrow_exception(mainFailure);
+                }
+                if (workerFailure) {
+                    std::rethrow_exception(workerFailure);
+                }
+                require(!pause.timedOut && Observer::metrics(effect).pendingKind == 5 &&
+                            Observer::metrics(effect).outstandingWrites == 0,
+                        "successful older write cannot erase the newer UI failure");
+                released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                require(host.render(effect, frame, "deferred-action-ui-recovered").succeeded,
+                        "explicit complete change recovers deferred UI failure");
+            } else if (id == "initial-capture-superseded-render-read") {
+                CallbackPause pause;
+                std::exception_ptr workerFailure;
+                std::exception_ptr mainFailure;
+                OfxStatus workerStatus = kOfxStatOK;
+                bool paused = false;
+                bool fired = false;
+                const auto renderThread = std::this_thread::get_id();
+                std::jthread worker;
+                host.set_double_value(kParamExposure, 0.25);
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    host.set_getter_hook([&](const std::string& inner) {
+                        if (std::this_thread::get_id() != renderThread && inner == JuicerParams::kFilmProfileKey) {
+                            host.set_getter_hook({});
+                            pause.pause();
+                        }
+                        return kOfxStatOK;
+                    });
+                    worker = std::jthread([&]() {
+                        try {
+                            host.set_double_value(kParamExposure, 0.75);
+                            host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                        } catch (const StatusFailure& error) {
+                            workerStatus = error.status();
+                        } catch (...) {
+                            workerFailure = std::current_exception();
+                        }
+                    });
+                    paused = pause.await();
+                    return kOfxStatOK;
+                });
+                std::uint64_t overlapOutput = 0;
+                try {
+                    const auto overlap = host.render(effect, frame, id);
+                    require(paused && fired && overlap.succeeded && overlap.state.pendingExposureEv == 0.75 &&
+                                Observer::metrics(effect).pendingKind == 4 && Observer::metrics(effect).outstandingWrites == 0 &&
+                                Observer::metrics(effect).issued == before.issued + 3 &&
+                                Observer::metrics(effect).build == before.build + 1 &&
+                                overlap.releaseOrder == std::vector<std::string>{"Output", "Source"},
+                            "initial capture supersession gets one fresh RenderRead while the change UI is paused");
+                    overlapOutput = overlap.outputSignature;
+                } catch (...) {
+                    mainFailure = std::current_exception();
+                }
+                pause.release();
+                if (worker.joinable()) {
+                    worker.join();
+                }
+                if (mainFailure) {
+                    std::rethrow_exception(mainFailure);
+                }
+                if (workerFailure) {
+                    std::rethrow_exception(workerFailure);
+                }
+                const auto settled = host.render(effect, frame, "initial-capture-superseded-settled");
+                require(workerStatus == kOfxStatOK && !pause.timedOut && settled.succeeded &&
+                            settled.state.pendingExposureEv == 0.75 && settled.outputSignature == overlapOutput,
+                        "initial RenderRead pixels match the completed newer change");
+            } else if (id == "unread-change-render-thread" || id == "unread-change-ui-failure" ||
+                       id == "grain-chroma-ui-render-thread" || id == "read-failure-preserves-change-ui") {
+                const bool uiFailure = id == "unread-change-ui-failure";
+                const bool earlyUi = id == "grain-chroma-ui-render-thread";
+                const bool readFailure = id == "read-failure-preserves-change-ui";
+                CallbackPause pause;
+                std::exception_ptr workerFailure;
+                OfxStatus workerStatus = kOfxStatOK;
+                if (!readFailure) {
+                    host.set_double_value(kParamExposure, 0.75);
+                }
+                if (!earlyUi) {
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 0);
+                }
+                require(host.param_property_int(JuicerParams::kDirCouplersLangmuirDonorKRgb, kOfxParamPropEnabled) == 1,
+                        "warm direct baseline enables DIR donor controls");
+                if (earlyUi) {
+                    host.set_property_hook([&](std::string_view name, std::string_view property) {
+                        if (name == "GrainChroma" && property == kOfxParamPropEnabled) {
+                            host.set_property_hook({});
+                            pause.pause();
+                        }
+                        return kOfxStatOK;
+                    });
+                } else {
+                    host.set_getter_hook([&](const std::string& name) {
+                        if (name != JuicerParams::kFilmProfileKey) {
+                            return kOfxStatOK;
+                        }
+                        host.set_getter_hook({});
+                        pause.pause();
+                        return kOfxStatOK;
+                    });
+                }
+                std::jthread worker([&]() {
+                    try {
+                        host.dispatch_event(effect, readFailure ? JuicerParams::kDirCouplersActive : kParamExposure, ChangeReason::UserEdit);
+                    } catch (const StatusFailure& error) {
+                        workerStatus = error.status();
+                    } catch (...) {
+                        workerFailure = std::current_exception();
+                    }
+                });
+                const bool paused = pause.await();
+                std::exception_ptr mainFailure;
+                std::uint64_t overlapOutput = 0;
+                bool readerFailed = false;
+                try {
+                    require(paused, "change pauses at the selected UI host call after parameter writes finish");
+                    const auto pending = Observer::metrics(effect);
+                    require(pending.pendingKind == 1 && pending.outstandingWrites == 0 &&
+                                pending.issued == before.issued + 1,
+                            "read-only UI action owns publication without an outstanding physical write");
+                    if (readFailure) {
+                        host.set_getter_hook([&](const std::string& name) {
+                            if (name != kParamExposure) {
+                                return kOfxStatOK;
+                            }
+                            host.set_getter_hook({});
+                            readerFailed = true;
+                            return kOfxStatErrBadHandle;
+                        });
+                        released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrBadHandle);
+                        FjOfxRenderObservation observation{};
+                        require(readerFailed && fj_test_ofx_render_observe(effect.handle(), &observation) != 0 &&
+                                    observation.native_entry_count == 0 && Observer::metrics(effect).pendingKind == 5 &&
+                                    Observer::metrics(effect).issued == pending.issued + 1 && Observer::metrics(effect).build == before.build,
+                                "one fresh read preserves its original getter status and rejects before native entry");
+                    } else {
+                        const auto overlap = host.render(effect, frame, id);
+                        overlapOutput = overlap.outputSignature;
+                        FjOfxRenderObservation observation{};
+                        require(overlap.succeeded && overlap.state.pendingExposureEv == 0.75 &&
+                                    Observer::metrics(effect).issued == pending.issued + 1 &&
+                                    Observer::metrics(effect).build == before.build + 1 &&
+                                    overlap.releasedImages == 2 && overlap.releaseOrder == std::vector<std::string>{"Output", "Source"} &&
+                                    fj_test_ofx_render_observe(effect.handle(), &observation) != 0 && observation.native_entry_count == 1,
+                                "one fresh read reaches native and releases both images during the paused UI call");
+                    }
+                    if (uiFailure) {
+                        host.fail_property_once("CameraDiffusionEnabled", kOfxParamPropSecret, kOfxStatErrBadHandle);
+                    }
+                } catch (...) {
+                    mainFailure = std::current_exception();
+                }
+                pause.release();
+                worker.join();
+                if (mainFailure) {
+                    std::rethrow_exception(mainFailure);
+                }
+                if (workerFailure) {
+                    std::rethrow_exception(workerFailure);
+                }
+                if (readFailure) {
+                    require(workerStatus == kOfxStatOK && !pause.timedOut &&
+                                host.param_property_int(JuicerParams::kDirCouplersLangmuirDonorKRgb, kOfxParamPropEnabled) == 0 &&
+                                Observer::metrics(effect).pendingKind == 5,
+                            "independent read failure preserves current DIR UI work without reopening frame admission");
+                    released_failure(host.render(effect, frame, "read-failure-ui-still-blocked", true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                    FjOfxRenderObservation observation{};
+                    require(fj_test_ofx_render_observe(effect.handle(), &observation) != 0 && observation.native_entry_count == 0,
+                            "completed UI work cannot admit a frame after the reader failure");
+                    host.dispatch_event(effect, JuicerParams::kDirCouplersActive, ChangeReason::UserEdit);
+                    require(host.render(effect, frame, "read-failure-ui-recovered").succeeded,
+                            "a new complete change recovers failed frame admission");
+                } else if (uiFailure) {
+                    require(workerStatus == kOfxStatErrBadHandle && !pause.timedOut,
+                            "remaining UI property failure is returned by the owning change");
+                    const auto failedMetrics = Observer::metrics(effect);
+                    released_failure(host.render(effect, frame, "unread-change-ui-failure-blocked", true),
+                                     NativeHost::ExceptionClass::Suite,
+                                     kOfxStatErrFatal);
+                    require(Observer::metrics(effect).build == failedMetrics.build,
+                            "failed UI action blocks subsequent admission without replacing the completed frame");
+                    host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                    const auto recovered = host.render(effect, frame, "unread-change-ui-failure-recovered");
+                    require(recovered.succeeded && recovered.state.pendingExposureEv == 0.75 &&
+                                recovered.outputSignature == overlapOutput,
+                            "a subsequent complete change recovers the failed UI action");
+                } else {
+                    const auto settled = host.render(effect, frame, "unread-change-completed");
+                    require(workerStatus == kOfxStatOK && !pause.timedOut && settled.succeeded && settled.state.pendingExposureEv == 0.75 &&
+                                settled.outputSignature == overlapOutput && overlapOutput != baselineOutput &&
+                                host.param_property_int(JuicerParams::kDirCouplersLangmuirDonorKRgb, kOfxParamPropEnabled) == (earlyUi ? 1 : 0),
+                            "fresh overlap pixels match settled state and render read preserves remaining UI work");
+                }
+            } else if (id == "render-read-getter-failure") {
+                host.set_double_value(kParamExposure, 0.5);
+                bool fired = false;
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    host.set_getter_hook([](const std::string& inner) {
+                        return inner == kParamExposure ? kOfxStatErrBadHandle : kOfxStatOK;
+                    });
+                    released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrBadHandle);
+                    host.set_getter_hook({});
+                    return kOfxStatOK;
+                });
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                require(fired && Observer::metrics(effect).pendingKind == 5 &&
+                            Observer::metrics(effect).build == before.build,
+                        "failed current render read blocks admission despite obsolete change completion");
+                released_failure(host.render(effect, frame, "render-read-failure-blocked", true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                host.dispatch_event(effect, kParamExposure, ChangeReason::UserEdit);
+                require(host.render(effect, frame, "render-read-failure-recovered").succeeded,
+                        "new complete change recovers typed render-read getter failure");
             } else if (id == "superseded-before-write-grant") {
                 bool fired = false;
                 unsigned setters = 0;
@@ -3068,15 +3491,18 @@ namespace {
                         }
                     },
                                                    &newer);
-                    const auto rendered = host.render(effect, frame, id);
+                    const auto rendered = host.render(effect, frame, id, true);
                     fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                     if (newer.failure) {
                         std::rethrow_exception(newer.failure);
                     }
-                    require(newer.fired && rendered.succeeded && rendered.exceptionClass == NativeHost::ExceptionClass::None &&
+                    released_failure(rendered, NativeHost::ExceptionClass::Allocation);
+                    require(newer.fired &&
                                 fj_test_prepared_contents_reservation_failure_consumed() && rendered.state.pendingExposureEv == 0.75 &&
-                                rendered.state.buildCounter == before.build + 1,
-                            "obsolete allocation retries newer input before external error mapping");
+                                rendered.state.buildCounter == before.build,
+                            "selected frame retains typed allocation failure despite a later valid edit");
+                    require(host.render(effect, frame, "newer-after-frame-allocation").succeeded,
+                            "subsequent frame admits the newer complete input after one-shot allocation failure");
                 } else {
                     const bool allocation = id != "current-preparation-rejection";
                     const auto failed = host.render(effect, frame, id, true);
@@ -3231,6 +3657,7 @@ namespace {
             }
             host.set_getter_hook({});
             host.set_setter_hooks({});
+            host.set_property_hook({});
             if (held.state) {
                 require(JuicerTestSupport::published_view(held).recipe_hash == heldHash && held.state->build() == before.build, "already-admitted backing survives callback overlap/failure");
             }

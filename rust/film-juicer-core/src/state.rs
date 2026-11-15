@@ -62,6 +62,7 @@ pub enum CaptureMode {
     Initial,
     Change,
     Refresh,
+    RenderRead,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureStart {
@@ -96,6 +97,22 @@ enum CapturePhase {
     Reading { revision: u64 },
 }
 
+#[derive(Clone, Copy)]
+enum FailureOrigin {
+    ReadOnly,
+    Action,
+    PhysicalWrite,
+}
+
+impl CaptureMode {
+    fn failure_origin(self) -> FailureOrigin {
+        match self {
+            Self::Refresh | Self::RenderRead => FailureOrigin::ReadOnly,
+            Self::Initial | Self::Change => FailureOrigin::Action,
+        }
+    }
+}
+
 // Each alternative owns its completion obligation; no validity/hash sentinel.
 #[expect(
     clippy::large_enum_variant,
@@ -114,7 +131,10 @@ enum Pending {
         params: Arc<Params>,
         identity: u64,
     },
-    Failed(CaptureFailure),
+    Failed {
+        failure: CaptureFailure,
+        origin: FailureOrigin,
+    },
     Blocked,
 }
 
@@ -162,6 +182,35 @@ pub struct Admission {
     input_identity: u64,
     build: u64,
 }
+
+/// Immutable photographic input selected for one frame.
+pub struct FrameInput<'a> {
+    publication: &'a Publication,
+    params: Arc<Params>,
+    identity: u64,
+}
+impl FrameInput<'_> {
+    #[cfg(feature = "test-support")]
+    pub fn input_identity(&self) -> u64 {
+        self.identity
+    }
+}
+
+pub enum FrameInstall<'a> {
+    Applied(FrameInput<'a>),
+    Ignored,
+    Deferred,
+}
+
+impl FrameInstall<'_> {
+    fn into_update(self) -> Update {
+        match self {
+            Self::Applied(_) => Update::Applied,
+            Self::Ignored => Update::Ignored,
+            Self::Deferred => Update::Deferred,
+        }
+    }
+}
 impl Admission {
     pub fn state(&self) -> &RenderState {
         &self.state
@@ -199,6 +248,7 @@ struct State {
     pending: Pending,
     published: Option<Published>,
     issued: u64,
+    last_action_ticket: u64,
     write_revision: u64,
     outstanding_writes: u64,
     build: u64,
@@ -213,7 +263,7 @@ impl State {
     fn input(&self) -> Result<(&Arc<Params>, u64), Error> {
         match &self.pending {
             Pending::Blocked => Err(Error::Poisoned),
-            Pending::Failed(failure) => Err(Error::CaptureFailed(failure.clone())),
+            Pending::Failed { failure, .. } => Err(Error::CaptureFailed(failure.clone())),
             _ if self.outstanding_writes != 0 => Err(Error::Capturing),
             Pending::Uninitialized => Err(Error::Uninitialized),
             Pending::Capturing { .. } | Pending::AwaitingWrites => Err(Error::Capturing),
@@ -241,6 +291,7 @@ impl Publication {
                 pending: Pending::Uninitialized,
                 published: None,
                 issued: 0,
+                last_action_ticket: 0,
                 write_revision: 0,
                 outstanding_writes: 0,
                 build: 0,
@@ -271,6 +322,12 @@ impl Publication {
             || (mode == CaptureMode::Refresh
                 && (!matches!(state.pending, Pending::NeedsRefresh)
                     || state.outstanding_writes != 0))
+            || (mode == CaptureMode::RenderRead
+                && (state.outstanding_writes != 0
+                    || !matches!(state.pending, Pending::Capturing {
+                        mode: CaptureMode::Initial | CaptureMode::Change | CaptureMode::Refresh,
+                        phase: CapturePhase::Reading { revision }, ..
+                    } if revision == state.write_revision)))
         {
             return Ok(CaptureStart::NotStarted);
         }
@@ -281,6 +338,9 @@ impl Publication {
             return Err(Error::Poisoned);
         };
         state.issued = ticket;
+        if matches!(mode, CaptureMode::Initial | CaptureMode::Change) {
+            state.last_action_ticket = ticket;
+        }
         let retired = std::mem::replace(
             &mut state.pending,
             Pending::Capturing {
@@ -295,6 +355,18 @@ impl Publication {
     }
     pub fn capture_is_current(&self, capture: u64) -> Result<bool, Error> {
         self.lock()?.current(capture)
+    }
+    pub fn property_is_current(&self, capture: u64) -> Result<bool, Error> {
+        let state = self.lock()?;
+        state.current(capture)?;
+        Ok(state.last_action_ticket == capture
+            && !matches!(
+                state.pending,
+                Pending::Failed {
+                    origin: FailureOrigin::Action | FailureOrigin::PhysicalWrite,
+                    ..
+                }
+            ))
     }
     pub fn begin_host_write(self: &Arc<Self>, capture: u64) -> Result<HostWriteStart, Error> {
         let mut state = self.lock()?;
@@ -370,9 +442,28 @@ impl Publication {
         params: Arc<Params>,
         identity: u64,
     ) -> Result<Update, Error> {
+        self.install_frame_shared(capture, write_revision, params, identity)
+            .map(FrameInstall::into_update)
+    }
+    pub fn install_frame(
+        &self,
+        capture: u64,
+        write_revision: u64,
+        params: Params,
+        identity: u64,
+    ) -> Result<FrameInstall<'_>, Error> {
+        self.install_frame_shared(capture, write_revision, Arc::new(params), identity)
+    }
+    fn install_frame_shared(
+        &self,
+        capture: u64,
+        write_revision: u64,
+        params: Arc<Params>,
+        identity: u64,
+    ) -> Result<FrameInstall<'_>, Error> {
         let mut state = self.lock()?;
         if !state.current(capture)? {
-            return Ok(Update::Ignored);
+            return Ok(FrameInstall::Ignored);
         }
         if !matches!(state.pending, Pending::Capturing { phase: CapturePhase::Reading { revision }, .. }
             if revision == write_revision)
@@ -385,10 +476,26 @@ impl Publication {
             } else {
                 Pending::AwaitingWrites
             };
-            return Ok(Update::Deferred);
+            return Ok(FrameInstall::Deferred);
         }
-        state.pending = Pending::Valid { params, identity };
-        Ok(Update::Applied)
+        state.pending = Pending::Valid {
+            params: Arc::clone(&params),
+            identity,
+        };
+        Ok(FrameInstall::Applied(FrameInput {
+            publication: self,
+            params,
+            identity,
+        }))
+    }
+    pub fn frame_input(&self) -> Result<FrameInput<'_>, Error> {
+        let state = self.lock()?;
+        let (params, identity) = state.input()?;
+        Ok(FrameInput {
+            publication: self,
+            params: Arc::clone(params),
+            identity,
+        })
     }
     /// A valid snapshot whose foreign decoding failed still completes its exact
     /// reading phase. Protocol errors must leave the capture obligation armed.
@@ -402,12 +509,21 @@ impl Publication {
         if !state.current(capture)? {
             return Ok(Update::Ignored);
         }
-        if !matches!(state.pending, Pending::Capturing { phase: CapturePhase::Reading { revision }, .. }
-            if revision == write_revision)
-        {
+        let Pending::Capturing {
+            mode,
+            phase: CapturePhase::Reading { revision },
+            ..
+        } = state.pending
+        else {
+            return Err(Error::InvalidCaptureOperation);
+        };
+        if revision != write_revision {
             return Err(Error::InvalidCaptureOperation);
         }
-        state.pending = Pending::Failed(failure);
+        state.pending = Pending::Failed {
+            failure,
+            origin: mode.failure_origin(),
+        };
         Ok(Update::Applied)
     }
     pub fn invalidate(&self, capture: u64, failure: CaptureFailure) -> Result<Update, Error> {
@@ -415,7 +531,29 @@ impl Publication {
         if !state.current(capture)? {
             return Ok(Update::Ignored);
         }
-        state.pending = Pending::Failed(failure);
+        let Pending::Capturing { mode, .. } = state.pending else {
+            unreachable!("current ticket must own a capture")
+        };
+        state.pending = Pending::Failed {
+            failure,
+            origin: mode.failure_origin(),
+        };
+        Ok(Update::Applied)
+    }
+    pub fn invalidate_action(
+        &self,
+        capture: u64,
+        failure: CaptureFailure,
+    ) -> Result<Update, Error> {
+        let mut state = self.lock()?;
+        state.current(capture)?;
+        if state.last_action_ticket != capture || matches!(state.pending, Pending::Failed { .. }) {
+            return Ok(Update::Ignored);
+        }
+        state.pending = Pending::Failed {
+            failure,
+            origin: FailureOrigin::Action,
+        };
         Ok(Update::Applied)
     }
     fn finish_write(&self, outcome: Result<(), CaptureFailure>) -> Result<WriteEnd, Error> {
@@ -430,8 +568,14 @@ impl Publication {
         state.outstanding_writes -= 1;
         state.write_revision = revision;
         if let Err(failure) = outcome {
-            if !matches!(state.pending, Pending::Failed(_)) {
-                let retired = std::mem::replace(&mut state.pending, Pending::Failed(failure));
+            if !matches!(state.pending, Pending::Failed { .. }) {
+                let retired = std::mem::replace(
+                    &mut state.pending,
+                    Pending::Failed {
+                        failure,
+                        origin: FailureOrigin::PhysicalWrite,
+                    },
+                );
                 drop(state);
                 drop(retired);
             }
@@ -442,6 +586,51 @@ impl Publication {
             return Ok(WriteEnd::RefreshRequired);
         }
         Ok(WriteEnd::Complete)
+    }
+    pub fn admit_frame(
+        &self,
+        input: FrameInput<'_>,
+        prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
+    ) -> Result<Arc<RenderState>, Error> {
+        if !std::ptr::eq(input.publication, self) {
+            return Err(Error::InvalidCaptureOperation);
+        }
+        let _rebuild = self.rebuild.lock().map_err(|_| Error::Poisoned)?;
+        {
+            let state = self.lock()?;
+            if let Some(published) = &state.published
+                && published.identity == input.identity
+            {
+                return Ok(Arc::clone(&published.state));
+            }
+        }
+        let candidate = match prepare(&input.params) {
+            Ok(value) => Arc::new(value),
+            Err(error) => {
+                if error.is_panic() {
+                    self.block();
+                }
+                return Err(Error::Preparation(error));
+            }
+        };
+        let mut state = self.lock()?;
+        if matches!(state.input(), Ok((_, identity)) if identity == input.identity) {
+            let Some(build) = state.build.checked_add(1) else {
+                let retired = std::mem::replace(&mut state.pending, Pending::Blocked);
+                drop(state);
+                drop(retired);
+                return Err(Error::Poisoned);
+            };
+            state.build = build;
+            let retired = state.published.replace(Published {
+                identity: input.identity,
+                state: Arc::clone(&candidate),
+                build,
+            });
+            drop(state);
+            drop(retired);
+        }
+        Ok(candidate)
     }
     pub fn admit(
         &self,
@@ -548,7 +737,7 @@ impl Publication {
                 params: Arc::clone(params),
                 identity: *identity,
             },
-            Pending::Failed(failure) => ObservedPending::Failed(failure.clone()),
+            Pending::Failed { failure, .. } => ObservedPending::Failed(failure.clone()),
             Pending::Blocked => ObservedPending::Blocked,
         };
         Ok(Observation {
@@ -1360,6 +1549,680 @@ mod tests {
             panic!("host write must be granted")
         };
         write
+    }
+
+    #[test]
+    fn frame_input_survives_new_change_without_replacing_current_cache() {
+        let assets = assets();
+        let publication = Publication::new();
+        let first = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, first);
+        let FrameInstall::Applied(input) = publication
+            .install_frame(first, revision, direct(), 41)
+            .unwrap()
+        else {
+            panic!("frame input must be installed")
+        };
+        let calls = AtomicUsize::new(0);
+        let frame = publication
+            .admit_frame(input, |params| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let newer = begin(&publication, CaptureMode::Change);
+                assert!(matches!(publication.frame_input(), Err(Error::Capturing)));
+                assert!(newer > first);
+                recipe::prepare(&assets, params)
+            })
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(frame.development().route(), ScanRoute::NegativeDirect);
+        {
+            let state = publication.state.lock().unwrap();
+            assert!(state.published.is_none());
+            assert_eq!(state.build, 0);
+        }
+        let newer = publication.state.lock().unwrap().issued;
+        let revision = reading(&publication, newer);
+        publication
+            .install(newer, revision, params(ScanRoute::NegativePrint, 1), 42)
+            .unwrap();
+        let newer = publication
+            .admit_frame(publication.frame_input().unwrap(), |params| {
+                recipe::prepare(&assets, params)
+            })
+            .unwrap();
+        assert_eq!(newer.development().route(), ScanRoute::NegativePrint);
+        let state = publication.state.lock().unwrap();
+        assert_eq!(state.published.as_ref().unwrap().identity, 42);
+        assert_eq!(state.build, 1);
+        assert!(!Arc::ptr_eq(&frame, &newer));
+    }
+
+    #[test]
+    fn frame_input_failure_and_cache_identity_are_explicit() {
+        let assets = assets();
+        let publication = Publication::new();
+        let ticket = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, ticket);
+        publication.install(ticket, revision, direct(), 1).unwrap();
+        let cached = publication
+            .admit_frame(publication.frame_input().unwrap(), |params| {
+                recipe::prepare(&assets, params)
+            })
+            .unwrap();
+        let reused = publication
+            .admit_frame(publication.frame_input().unwrap(), |_| {
+                panic!("matching frame rebuilt")
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&cached, &reused));
+        let ticket = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, ticket);
+        let mut bad = direct();
+        bad.film_gamma_factor = 0.0;
+        let FrameInstall::Applied(input) =
+            publication.install_frame(ticket, revision, bad, 2).unwrap()
+        else {
+            panic!("bad frame input not installed")
+        };
+        let newer = begin(&publication, CaptureMode::Change);
+        assert!(matches!(
+            publication.admit_frame(input, |params| recipe::prepare(&assets, params)),
+            Err(Error::Preparation(PrepareError::Development(
+                film::Error::InvalidGamma
+            )))
+        ));
+        assert!(matches!(publication.frame_input(), Err(Error::Capturing)));
+        let state = publication.state.lock().unwrap();
+        assert_eq!(state.published.as_ref().unwrap().identity, 1);
+        assert!(state.current(newer).unwrap());
+    }
+
+    #[test]
+    fn frame_input_rejects_another_publication_before_cache_or_preparation() {
+        let first = Publication::new();
+        let second = Publication::new();
+        let ticket = begin(&first, CaptureMode::Change);
+        let revision = reading(&first, ticket);
+        let FrameInstall::Applied(input) =
+            first.install_frame(ticket, revision, direct(), 1).unwrap()
+        else {
+            panic!("frame input not installed")
+        };
+        assert!(matches!(
+            second.admit_frame(input, |_| panic!("cross-owner preparation")),
+            Err(Error::InvalidCaptureOperation)
+        ));
+        let state = second.state.lock().unwrap();
+        assert!(state.published.is_none());
+        assert_eq!(state.build, 0);
+    }
+
+    #[test]
+    fn obsolete_frame_keeps_newer_cache_and_panic_blocks_publication() {
+        let assets = assets();
+        let publication = Publication::new();
+        let old = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, old);
+        let FrameInstall::Applied(input) = publication
+            .install_frame(old, revision, direct(), 1)
+            .unwrap()
+        else {
+            panic!("old input not installed")
+        };
+        let newer = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, newer);
+        publication
+            .install(newer, revision, params(ScanRoute::NegativePrint, 1), 2)
+            .unwrap();
+        let newer_state = publication
+            .admit_frame(publication.frame_input().unwrap(), |params| {
+                recipe::prepare(&assets, params)
+            })
+            .unwrap();
+        let old_state = publication
+            .admit_frame(input, |params| recipe::prepare(&assets, params))
+            .unwrap();
+        assert_eq!(old_state.development().route(), ScanRoute::NegativeDirect);
+        assert_eq!(newer_state.development().route(), ScanRoute::NegativePrint);
+        {
+            let state = publication.state.lock().unwrap();
+            assert_eq!(state.build, 1);
+            assert_eq!(state.published.as_ref().unwrap().identity, 2);
+            assert!(Arc::ptr_eq(
+                &state.published.as_ref().unwrap().state,
+                &newer_state
+            ));
+        }
+        let current = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, current);
+        publication.install(current, revision, direct(), 3).unwrap();
+        let input = publication.frame_input().unwrap();
+        begin(&publication, CaptureMode::Change);
+        assert!(matches!(
+            publication.admit_frame(input, |_| Err(PrepareError::Input(
+                film::input::Error::Panic(film::input::Operation::Sensitivity)
+            ))),
+            Err(Error::Preparation(_))
+        ));
+        assert!(matches!(publication.frame_input(), Err(Error::Poisoned)));
+    }
+
+    #[test]
+    fn frame_install_preserves_checks_and_action_identity() {
+        let publication = Arc::new(Publication::new());
+        assert!(matches!(
+            publication.property_is_current(0),
+            Err(Error::InvalidCaptureTicket)
+        ));
+        let action = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, action);
+        assert!(matches!(
+            publication.install_frame(action, revision + 1, direct(), 1),
+            Err(Error::InvalidCaptureOperation)
+        ));
+        let reader = begin(&publication, CaptureMode::RenderRead);
+        assert!(publication.property_is_current(action).unwrap());
+        assert!(!publication.property_is_current(reader).unwrap());
+        assert!(matches!(
+            publication.install_frame(action, revision, direct(), 1),
+            Ok(FrameInstall::Ignored)
+        ));
+        let reader_revision = reading(&publication, reader);
+        assert!(matches!(
+            publication.install_frame(reader, reader_revision, direct(), 2),
+            Ok(FrameInstall::Applied(_))
+        ));
+        assert!(publication.property_is_current(action).unwrap());
+        let next = begin(&publication, CaptureMode::Change);
+        assert!(!publication.property_is_current(action).unwrap());
+        let writer = write(&publication, next);
+        let newest = begin(&publication, CaptureMode::Change);
+        assert_eq!(
+            publication.begin_snapshot(newest).unwrap(),
+            SnapshotStart::Deferred
+        );
+        assert!(matches!(
+            publication.install_frame(newest, 0, direct(), 3),
+            Ok(FrameInstall::Ignored)
+        ));
+        writer
+            .finish(Err(CaptureFailure::new(
+                CaptureFailureKind::Host,
+                "write failed",
+            )))
+            .unwrap();
+        assert!(!publication.property_is_current(newest).unwrap());
+        assert!(matches!(
+            publication.frame_input(),
+            Err(Error::CaptureFailed(_))
+        ));
+
+        let capture = begin(&publication, CaptureMode::Change);
+        let revision = reading(&publication, capture);
+        publication.state.lock().unwrap().write_revision += 1;
+        assert!(matches!(
+            publication.install_frame(capture, revision, direct(), 4),
+            Ok(FrameInstall::Deferred)
+        ));
+        assert!(matches!(
+            publication.frame_input(),
+            Err(Error::RefreshRequired)
+        ));
+    }
+
+    #[test]
+    fn action_failure_survives_render_read_but_not_newer_action_or_failure() {
+        let publication = Arc::new(Publication::new());
+        let action = begin(&publication, CaptureMode::Change);
+        reading(&publication, action);
+        let reader = begin(&publication, CaptureMode::RenderRead);
+        let revision = reading(&publication, reader);
+        assert!(matches!(
+            publication.install_frame(reader, revision, direct(), 1),
+            Ok(FrameInstall::Applied(_))
+        ));
+        assert_eq!(
+            publication
+                .invalidate(
+                    reader,
+                    CaptureFailure::new(CaptureFailureKind::Host, "stale reader")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        assert_eq!(
+            publication
+                .invalidate_action(
+                    action,
+                    CaptureFailure::new(CaptureFailureKind::Host, "action UI failed")
+                )
+                .unwrap(),
+            Update::Applied
+        );
+        match publication.frame_input() {
+            Err(Error::CaptureFailed(failure)) => {
+                assert_eq!(failure.diagnostic(), "action UI failed")
+            }
+            _ => panic!("current action failure was lost"),
+        }
+
+        let action = begin(&publication, CaptureMode::Change);
+        reading(&publication, action);
+        let reader = begin(&publication, CaptureMode::RenderRead);
+        reading(&publication, reader);
+        let newer = begin(&publication, CaptureMode::Change);
+        assert_eq!(
+            publication
+                .invalidate_action(
+                    action,
+                    CaptureFailure::new(CaptureFailureKind::Host, "old action")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        assert!(publication.capture_is_current(newer).unwrap());
+        let writer = write(&publication, newer);
+        writer
+            .finish(Err(CaptureFailure::new(
+                CaptureFailureKind::Host,
+                "physical failure",
+            )))
+            .unwrap();
+        assert_eq!(
+            publication
+                .invalidate_action(
+                    newer,
+                    CaptureFailure::new(CaptureFailureKind::Host, "later action failure")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        match publication.frame_input() {
+            Err(Error::CaptureFailed(failure)) => {
+                assert_eq!(failure.diagnostic(), "physical failure")
+            }
+            _ => panic!("physical failure was replaced"),
+        }
+    }
+
+    #[test]
+    fn read_only_failure_keeps_latest_action_ui_and_rejects_frames() {
+        for snapshot_failure in [false, true] {
+            let publication = Arc::new(Publication::new());
+            let action = begin(&publication, CaptureMode::Change);
+            reading(&publication, action);
+            let reader = begin(&publication, CaptureMode::RenderRead);
+            let revision = reading(&publication, reader);
+            let failure = CaptureFailure::new(CaptureFailureKind::Host, "reader failed");
+            let outcome = if snapshot_failure {
+                publication.fail_snapshot(reader, revision, failure)
+            } else {
+                publication.invalidate(reader, failure)
+            };
+            assert_eq!(outcome.unwrap(), Update::Applied);
+            assert!(publication.property_is_current(action).unwrap());
+            assert!(!publication.property_is_current(reader).unwrap());
+            match publication.frame_input() {
+                Err(Error::CaptureFailed(failure)) => {
+                    assert_eq!(failure.kind(), CaptureFailureKind::Host);
+                    assert_eq!(failure.diagnostic(), "reader failed");
+                }
+                _ => panic!("read failure must block frames"),
+            }
+            assert_eq!(
+                publication
+                    .invalidate_action(
+                        action,
+                        CaptureFailure::new(CaptureFailureKind::Host, "later action failure")
+                    )
+                    .unwrap(),
+                Update::Ignored
+            );
+            match publication.frame_input() {
+                Err(Error::CaptureFailed(failure)) => {
+                    assert_eq!(failure.diagnostic(), "reader failed")
+                }
+                _ => panic!("first failure must remain"),
+            }
+            let newer = begin(&publication, CaptureMode::Change);
+            assert!(!publication.property_is_current(action).unwrap());
+            assert!(publication.property_is_current(newer).unwrap());
+            let writer = write(&publication, newer);
+            writer
+                .finish(Err(CaptureFailure::new(
+                    CaptureFailureKind::Allocation,
+                    "physical write failed",
+                )))
+                .unwrap();
+            assert!(!publication.property_is_current(newer).unwrap());
+            assert_eq!(
+                publication
+                    .invalidate_action(
+                        newer,
+                        CaptureFailure::new(CaptureFailureKind::Host, "later failure")
+                    )
+                    .unwrap(),
+                Update::Ignored
+            );
+            match publication.frame_input() {
+                Err(Error::CaptureFailed(failure)) => {
+                    assert_eq!(failure.kind(), CaptureFailureKind::Allocation);
+                    assert_eq!(failure.diagnostic(), "physical write failed");
+                }
+                _ => panic!("physical failure must remain"),
+            }
+        }
+    }
+
+    #[test]
+    fn failed_refresh_preserves_latest_action_ui_obligation() {
+        let publication = Arc::new(Publication::new());
+        let old = begin(&publication, CaptureMode::Change);
+        let writer = write(&publication, old);
+        let action = begin(&publication, CaptureMode::Change);
+        assert_eq!(
+            publication.begin_snapshot(action).unwrap(),
+            SnapshotStart::Deferred
+        );
+        assert_eq!(writer.finish(Ok(())).unwrap(), WriteEnd::RefreshRequired);
+        let refresh = begin(&publication, CaptureMode::Refresh);
+        let revision = reading(&publication, refresh);
+        assert_eq!(
+            publication
+                .fail_snapshot(
+                    refresh,
+                    revision,
+                    CaptureFailure::new(CaptureFailureKind::Host, "refresh failed")
+                )
+                .unwrap(),
+            Update::Applied
+        );
+        assert!(publication.property_is_current(action).unwrap());
+        assert!(!publication.property_is_current(refresh).unwrap());
+        assert!(matches!(
+            publication.frame_input(),
+            Err(Error::CaptureFailed(_))
+        ));
+    }
+
+    #[test]
+    fn render_read_supersedes_only_reading_and_preserves_newer_outcomes() {
+        let publication = Arc::new(Publication::new());
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+        let old = begin(&publication, CaptureMode::Change);
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+        let old_revision = reading(&publication, old);
+        let fresh = begin(&publication, CaptureMode::RenderRead);
+        assert!(fresh > old);
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+        assert!(matches!(
+            publication.begin_host_write(fresh),
+            Err(Error::InvalidCaptureOperation)
+        ));
+        let revision = reading(&publication, fresh);
+        assert_eq!(revision, old_revision);
+        let mut fresh_params = direct();
+        fresh_params.camera_exposure_compensation_ev = 0.75;
+        assert_eq!(
+            publication
+                .install(fresh, revision, fresh_params, 17)
+                .unwrap(),
+            Update::Applied
+        );
+        assert_eq!(
+            publication.install(old, old_revision, direct(), 9).unwrap(),
+            Update::Ignored
+        );
+        assert_eq!(
+            publication
+                .fail_snapshot(
+                    old,
+                    old_revision,
+                    CaptureFailure::new(CaptureFailureKind::Host, "old read")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        assert_eq!(
+            publication
+                .invalidate(
+                    old,
+                    CaptureFailure::new(CaptureFailureKind::Host, "old getter")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        let admission = publication
+            .admit(|params| recipe::prepare(&assets(), params))
+            .unwrap();
+        assert_eq!(admission.input_identity(), 17);
+        {
+            let state = publication.state.lock().unwrap();
+            let Pending::Valid { params, .. } = &state.pending else {
+                panic!("fresh input missing")
+            };
+            assert_eq!(params.camera_exposure_compensation_ev, 0.75);
+        }
+
+        let old = begin(&publication, CaptureMode::Change);
+        reading(&publication, old);
+        let reader = begin(&publication, CaptureMode::RenderRead);
+        let reader_revision = reading(&publication, reader);
+        let newer = begin(&publication, CaptureMode::Change);
+        let newer_revision = reading(&publication, newer);
+        assert_eq!(
+            publication
+                .install(newer, newer_revision, direct(), 23)
+                .unwrap(),
+            Update::Applied
+        );
+        assert_eq!(
+            publication
+                .install(reader, reader_revision, direct(), 18)
+                .unwrap(),
+            Update::Ignored
+        );
+        assert_eq!(
+            publication
+                .invalidate(
+                    reader,
+                    CaptureFailure::new(CaptureFailureKind::Host, "obsolete reader")
+                )
+                .unwrap(),
+            Update::Ignored
+        );
+        assert_eq!(
+            publication
+                .admit(|params| recipe::prepare(&assets(), params))
+                .unwrap()
+                .input_identity(),
+            23
+        );
+    }
+
+    #[test]
+    fn render_read_refuses_writes_failure_revision_mismatch_and_overflow() {
+        let publication = Arc::new(Publication::new());
+        let old = begin(&publication, CaptureMode::Change);
+        let pending_write = write(&publication, old);
+        let latest = begin(&publication, CaptureMode::Change);
+        assert_eq!(
+            publication.begin_snapshot(latest).unwrap(),
+            SnapshotStart::Deferred
+        );
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+        pending_write
+            .finish(Err(CaptureFailure::new(
+                CaptureFailureKind::Host,
+                "physical write failed",
+            )))
+            .unwrap();
+        assert!(matches!(
+            publication.admit(|_| panic!("failed write admitted")),
+            Err(Error::CaptureFailed(_))
+        ));
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+
+        let old = begin(&publication, CaptureMode::Change);
+        reading(&publication, old);
+        {
+            let mut state = publication.state.lock().unwrap();
+            state.write_revision += 1;
+        }
+        assert_eq!(
+            publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+            CaptureStart::NotStarted
+        );
+        let old = begin(&publication, CaptureMode::Change);
+        reading(&publication, old);
+        publication.state.lock().unwrap().issued = u64::MAX;
+        assert!(matches!(
+            publication.begin_capture(CaptureMode::RenderRead),
+            Err(Error::Poisoned)
+        ));
+        assert!(matches!(
+            publication.admit(|_| panic!("overflow admitted")),
+            Err(Error::Poisoned)
+        ));
+    }
+
+    #[test]
+    fn render_read_superseded_by_write_preserves_completion_and_failure() {
+        for fails in [false, true] {
+            let publication = Arc::new(Publication::new());
+            let old = begin(&publication, CaptureMode::Change);
+            reading(&publication, old);
+            let reader = begin(&publication, CaptureMode::RenderRead);
+            let reader_revision = reading(&publication, reader);
+            let newer = begin(&publication, CaptureMode::Change);
+            let writer = write(&publication, newer);
+            assert_eq!(
+                publication.begin_snapshot(newer).unwrap(),
+                SnapshotStart::Deferred
+            );
+            assert_eq!(
+                publication
+                    .install(reader, reader_revision, direct(), 1)
+                    .unwrap(),
+                Update::Ignored
+            );
+            assert_eq!(
+                publication
+                    .fail_snapshot(
+                        reader,
+                        reader_revision,
+                        CaptureFailure::new(CaptureFailureKind::Host, "late reader failure")
+                    )
+                    .unwrap(),
+                Update::Ignored
+            );
+            assert_eq!(
+                publication
+                    .invalidate(
+                        reader,
+                        CaptureFailure::new(CaptureFailureKind::Host, "late reader drop")
+                    )
+                    .unwrap(),
+                Update::Ignored
+            );
+            if fails {
+                assert_eq!(
+                    writer
+                        .finish(Err(CaptureFailure::new(
+                            CaptureFailureKind::Host,
+                            "partial write"
+                        )))
+                        .unwrap(),
+                    WriteEnd::Complete
+                );
+                match publication.admit(|_| panic!("failed write admitted")) {
+                    Err(Error::CaptureFailed(failure)) => {
+                        assert_eq!(failure.diagnostic(), "partial write")
+                    }
+                    _ => panic!("physical write failure lost"),
+                }
+                assert_eq!(
+                    publication.begin_capture(CaptureMode::RenderRead).unwrap(),
+                    CaptureStart::NotStarted
+                );
+            } else {
+                assert_eq!(writer.finish(Ok(())).unwrap(), WriteEnd::RefreshRequired);
+                assert!(matches!(
+                    publication.admit(|_| panic!("refresh pending admitted")),
+                    Err(Error::RefreshRequired)
+                ));
+                let refresh = begin(&publication, CaptureMode::Refresh);
+                let refresh_revision = reading(&publication, refresh);
+                let fresh = begin(&publication, CaptureMode::RenderRead);
+                let revision = reading(&publication, fresh);
+                assert_eq!(revision, refresh_revision);
+                assert_eq!(
+                    publication.install(fresh, revision, direct(), 29).unwrap(),
+                    Update::Applied
+                );
+                assert_eq!(
+                    publication
+                        .install(refresh, refresh_revision, direct(), 28)
+                        .unwrap(),
+                    Update::Ignored
+                );
+                assert_eq!(
+                    publication
+                        .admit(|params| recipe::prepare(&assets(), params))
+                        .unwrap()
+                        .input_identity(),
+                    29
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn render_read_supersedes_a_read_on_another_thread() {
+        let publication = Arc::new(Publication::new());
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker_publication = Arc::clone(&publication);
+        let worker = std::thread::spawn(move || {
+            let old = begin(&worker_publication, CaptureMode::Change);
+            let old_revision = reading(&worker_publication, old);
+            ready_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+            worker_publication
+                .install(old, old_revision, direct(), 1)
+                .unwrap()
+        });
+        ready_rx.recv().unwrap();
+        let reader = begin(&publication, CaptureMode::RenderRead);
+        let revision = reading(&publication, reader);
+        assert_eq!(
+            publication.install(reader, revision, direct(), 2).unwrap(),
+            Update::Applied
+        );
+        resume_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Update::Ignored);
+        assert_eq!(
+            publication
+                .admit(|params| recipe::prepare(&assets(), params))
+                .unwrap()
+                .input_identity(),
+            2
+        );
     }
 
     #[test]

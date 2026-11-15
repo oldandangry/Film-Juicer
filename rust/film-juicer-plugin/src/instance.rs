@@ -63,6 +63,12 @@ impl Instance {
     pub(crate) fn capture_is_current(&self, capture: u64) -> Result<bool, state::Error> {
         self.publication.capture_is_current(capture)
     }
+    pub(crate) fn property_is_current(&self, capture: u64) -> Result<bool, state::Error> {
+        self.publication.property_is_current(capture)
+    }
+    pub(crate) fn frame_input(&self) -> Result<state::FrameInput<'_>, state::Error> {
+        self.publication.frame_input()
+    }
     pub(crate) fn begin_host_write(
         &self,
         capture: u64,
@@ -75,6 +81,7 @@ impl Instance {
     ) -> Result<state::SnapshotStart, state::Error> {
         self.publication.begin_snapshot(capture)
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn install(
         &self,
         capture: u64,
@@ -84,6 +91,16 @@ impl Instance {
     ) -> Result<state::Update, state::Error> {
         self.publication
             .install(capture, write_revision, params, input_identity)
+    }
+    pub(crate) fn install_frame(
+        &self,
+        capture: u64,
+        write_revision: u64,
+        params: recipe::Params,
+        input_identity: u64,
+    ) -> Result<state::FrameInstall<'_>, state::Error> {
+        self.publication
+            .install_frame(capture, write_revision, params, input_identity)
     }
     pub(crate) fn fail_snapshot(
         &self,
@@ -101,8 +118,30 @@ impl Instance {
     ) -> Result<state::Update, state::Error> {
         self.publication.invalidate(capture, failure)
     }
+    pub(crate) fn invalidate_action(
+        &self,
+        capture: u64,
+        failure: state::CaptureFailure,
+    ) -> Result<state::Update, state::Error> {
+        self.publication.invalidate_action(capture, failure)
+    }
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn admit(&self, assets: &Assets) -> Result<state::Admission, state::Error> {
         self.publication.admit(|params| {
+            #[cfg(feature = "test-support")]
+            testing::before_prepare();
+            let outcome = recipe::prepare(assets, params);
+            #[cfg(feature = "test-support")]
+            testing::after_prepare();
+            outcome
+        })
+    }
+    pub(crate) fn admit_frame(
+        &self,
+        input: state::FrameInput<'_>,
+        assets: &Assets,
+    ) -> Result<Arc<recipe::RenderState>, state::Error> {
+        self.publication.admit_frame(input, |params| {
             #[cfg(feature = "test-support")]
             testing::before_prepare();
             let outcome = recipe::prepare(assets, params);

@@ -115,17 +115,31 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     #[cfg(feature = "test-support")]
     crate::frame_observer::record_full_domain(full);
     let assets = owner.loaded.runtime().assets();
-    let mut admitted = owner.state.admit(assets);
+    let mut input = owner.state.frame_input();
     if matches!(
-        admitted,
+        input,
         Err(state::Error::Uninitialized | state::Error::RefreshRequired)
     ) {
-        owner.render_capture(
-            callback,
-            matches!(admitted, Err(state::Error::Uninitialized)),
-        )?;
-        admitted = owner.state.admit(assets);
+        let captured =
+            owner.render_capture(callback, matches!(input, Err(state::Error::Uninitialized)))?;
+        input = match captured {
+            Some(input) => Ok(input),
+            None => owner.state.frame_input(),
+        };
     }
+    if matches!(input, Err(state::Error::Capturing)) {
+        let captured = owner.render_read(callback)?;
+        input = match captured {
+            Some(input) => Ok(input),
+            None => owner.state.frame_input(),
+        };
+    }
+    #[cfg(feature = "test-support")]
+    let input_identity = input.as_ref().map_or(0, state::FrameInput::input_identity);
+    let admitted = match input {
+        Ok(input) => owner.state.admit_frame(input, assets),
+        Err(error) => Err(error),
+    };
     let admitted = match admitted {
         Ok(admitted) => admitted,
         Err(
@@ -140,7 +154,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             return Err(Status::FATAL);
         }
     };
-    let state = admitted.state();
+    let state = admitted.as_ref();
     let print = matches!(
         state.development().route(),
         ScanRoute::NegativePrint | ScanRoute::PositivePrint
@@ -195,7 +209,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     };
     let (time, frame_token) = frame_position(args.time)?;
     #[cfg(feature = "test-support")]
-    super::host::test_support::render_state(&admitted);
+    super::host::test_support::render_state(&admitted, input_identity, &owner.state);
     callback.render_native(
         owner,
         state,

@@ -715,12 +715,24 @@ pub(in crate::ofx) fn render_tokens() -> Option<(u64, u64, u64)> {
 pub(in crate::ofx) fn begin_render() {
     RENDER_OBSERVATION.set(RenderObservation::EMPTY);
 }
-pub(in crate::ofx) fn render_state(state: &film_juicer_core::state::Admission) {
+pub(in crate::ofx) fn render_state(
+    state: &std::sync::Arc<film_juicer_core::recipe::RenderState>,
+    input_identity: u64,
+    instance: &crate::instance::Instance,
+) {
+    // An in-flight frame can outlive the input's publication. Zero means that
+    // this frame has no currently matching committed build, not a stale cache.
+    let build = instance
+        .observe()
+        .ok()
+        .and_then(|observed| observed.published)
+        .filter(|published| std::sync::Arc::ptr_eq(published.shared_state(), state))
+        .map_or(0, |published| published.build());
     RENDER_OBSERVATION.with(|cell| {
         let mut value = cell.get();
-        value.input_identity = state.input_identity();
-        value.build_number = state.build();
-        value.backing_identity = std::sync::Arc::as_ptr(state.shared_state()) as usize;
+        value.input_identity = input_identity;
+        value.build_number = build;
+        value.backing_identity = std::sync::Arc::as_ptr(state) as usize;
         cell.set(value);
     });
 }
