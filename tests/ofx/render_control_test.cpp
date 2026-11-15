@@ -147,7 +147,7 @@ namespace {
         }
     }
     void admission(OfxPlugin* plugin) {
-        const JuicerTests::Cohort rows("ofx.render_controls.admission", {"invalid_current", "first_capture_reentry", "release_once", "no_native_entry", "no_submission_mutation"});
+        const JuicerTests::Cohort rows("ofx.render_controls.admission", {"invalid_current", "first_capture_reentry", "render_read_reentry", "render_read_change_reentry", "release_once", "no_native_entry", "no_submission_mutation"});
         {
             auto row = rows.case_event("invalid_current");
             Fixture fixture;
@@ -186,12 +186,43 @@ namespace {
             });
             const auto status = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
             require(status == kOfxStatErrFatal, "out-of-domain first render rejected after capture");
-            require(nested == kOfxStatFailed, "overlapping first capture rejected without reentry deadlock");
+            require(nested == kOfxStatErrFatal, "fresh read completes before the nested out-of-domain frame is rejected");
             require(fixture.host.image_release_count(fixture.effect, "Source") == 2 &&
                         fixture.host.image_release_count(fixture.effect, "Output") == 2,
                     "outer and reentrant renders release their images once");
             const auto observation = observe(fixture);
             require(observation.native_entry_count == 0, "time rejection left native entry count unchanged");
+            row.passed();
+            finish(fixture);
+        }
+        for (const bool interveningChange : {false, true}) {
+            auto row = rows.case_event(interveningChange ? "render_read_change_reentry" : "render_read_reentry");
+            Fixture fixture;
+            start(fixture, plugin, time_from_bits(UINT64_C(0x43e0000000000000)), true);
+            OfxStatus nested = kOfxStatOK;
+            OfxStatus innermost = kOfxStatOK;
+            fixture.host.reenter_next("param_get/Exposure", [&] {
+                fixture.host.reenter_next("param_get/Exposure", [&] {
+                    if (interveningChange) {
+                        fixture.host.reenter_next("param_get/Exposure", [&] {
+                            innermost = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
+                        });
+                        auto* change = fixture.host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"});
+                        require(action(plugin, kOfxActionInstanceChanged, fixture.effect, change) == kOfxStatReplyDefault,
+                                "new change remains admitted inside fresh render read");
+                    } else {
+                        innermost = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
+                    }
+                });
+                nested = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
+            });
+            const auto outer = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
+            require(innermost == kOfxStatFailed && nested == kOfxStatErrFatal && outer == kOfxStatErrFatal,
+                    "one fresh read per callback chain even when a newer change supersedes it");
+            require(fixture.host.image_release_count(fixture.effect, "Source") == 3 &&
+                        fixture.host.image_release_count(fixture.effect, "Output") == 3,
+                    "all three nested render callbacks release both images once");
+            require(observe(fixture).native_entry_count == 0, "bounded reentry and invalid frame never enter CUDA");
             row.passed();
             finish(fixture);
         }

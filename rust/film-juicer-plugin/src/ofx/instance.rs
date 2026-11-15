@@ -2,13 +2,15 @@
 
 #![forbid(unsafe_code)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use film_juicer_core::{profile, state};
-use state::{CaptureFailure, CaptureFailureKind, CaptureMode, CaptureStart, Update};
+use state::{
+    CaptureFailure, CaptureFailureKind, CaptureMode, CaptureStart, FrameInput, FrameInstall, Update,
+};
 
 use super::controls::{self, CaptureError};
 use super::host::{Admission, Callback, InstanceHandles, ParameterAccess, Status};
@@ -27,6 +29,30 @@ pub(crate) struct Owner {
 // Host-call provenance is local to the synchronous callback chain. An unrelated
 // user/time event or another instance must remain admitted during nested edits.
 thread_local! { static HOST_CALL: Cell<Option<usize>> = const { Cell::new(None) }; }
+thread_local! { static RENDER_READ: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
+struct RenderRead(usize);
+impl RenderRead {
+    fn enter(owner: usize) -> Result<Option<Self>, Status> {
+        RENDER_READ.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.contains(&owner) {
+                return Ok(None);
+            }
+            stack.try_reserve(1).map_err(|_| Status::MEMORY)?;
+            stack.push(owner);
+            Ok(Some(Self(owner)))
+        })
+    }
+}
+impl Drop for RenderRead {
+    fn drop(&mut self) {
+        RENDER_READ.with(|stack| {
+            let owner = stack.borrow_mut().pop();
+            debug_assert_eq!(owner, Some(self.0));
+        });
+    }
+}
+
 struct HostCall(Option<usize>);
 impl HostCall {
     fn new(owner: &Owner) -> Self {
@@ -59,6 +85,8 @@ struct Capture<'a> {
     completion: Cell<Update>,
     refresh: Cell<bool>,
     physical_write_failed: Cell<bool>,
+    read_revision: Cell<Option<u64>>,
+    action_pending: Cell<bool>,
 }
 impl<'a> Capture<'a> {
     fn new(owner: &'a Owner, mode: CaptureMode, claim_initial: bool) -> Result<Self, Status> {
@@ -88,6 +116,10 @@ impl<'a> Capture<'a> {
             completion: Cell::new(Update::Ignored),
             refresh: Cell::new(false),
             physical_write_failed: Cell::new(false),
+            read_revision: Cell::new(None),
+            action_pending: Cell::new(
+                initial || matches!(mode, CaptureMode::Initial | CaptureMode::Change),
+            ),
         })
     }
     fn current(&self) -> Result<bool, Status> {
@@ -105,14 +137,17 @@ impl<'a> Capture<'a> {
         self.armed.set(false);
     }
     fn fail(&self, kind: CaptureFailureKind, text: &str) -> Result<Update, Status> {
-        if !self.armed.replace(false) {
+        let action = self.action_pending.replace(false) && self.ticket != 0;
+        if !self.armed.replace(false) && !action {
             return Ok(self.completion.get());
         }
-        let update = self
-            .owner
-            .state
-            .invalidate(self.ticket, CaptureFailure::new(kind, text))
-            .map_err(state_status)?;
+        let failure = CaptureFailure::new(kind, text);
+        let update = if action {
+            self.owner.state.invalidate_action(self.ticket, failure)
+        } else {
+            self.owner.state.invalidate(self.ticket, failure)
+        }
+        .map_err(state_status)?;
         self.completion.set(update);
         Ok(update)
     }
@@ -129,6 +164,10 @@ pub(crate) struct Controls<'a> {
     capture: Option<&'a Capture<'a>>,
 }
 impl Controls<'_> {
+    pub(super) fn begin_read(&self) -> Result<(), Status> {
+        let capture = self.capture.ok_or(Status::FATAL)?;
+        self.owner.begin_read(capture).map(|_| ())
+    }
     fn access(&self) -> ParameterAccess<'_> {
         self.callback.parameter_access(&self.owner.handles)
     }
@@ -205,7 +244,11 @@ impl Controls<'_> {
     }
     fn property(&self, operation: impl FnOnce() -> Result<(), Status>) -> Result<(), Status> {
         if let Some(capture) = self.capture
-            && !capture.current()?
+            && !self
+                .owner
+                .state
+                .property_is_current(capture.ticket)
+                .map_err(state_status)?
         {
             return Ok(());
         }
@@ -401,8 +444,13 @@ impl Owner {
                 owner: self,
                 capture: Some(&capture),
             };
-            let result = (|| {
-                let _early = controls::change(&controls, name, user)?;
+            let result: Result<(), Status> = (|| {
+                // Preserve host-call/failure order where defaults can still
+                // write values after UI. Other changes seal before the UI tail.
+                let read_before_ui = !capture.initial
+                    && name != b"FilmProfileKey"
+                    && name != b"CouplersGammaUseStock";
+                let _early = controls::change(&controls, name, user, read_before_ui)?;
                 if capture.initial
                     || name == b"FilmProfileKey"
                     || (name == b"CouplersGammaUseStock"
@@ -410,7 +458,8 @@ impl Owner {
                 {
                     controls::apply_dir_defaults(&controls)?;
                 }
-                self.finish(&controls, &capture)
+                self.finish(&controls, &capture)?;
+                Ok(())
             })();
             if let Err(status) = result {
                 let kind = if status.code() == super::sys::kOfxStatErrMemory {
@@ -440,13 +489,13 @@ impl Owner {
         &self,
         callback: &Callback<'_>,
         initial: bool,
-    ) -> Result<(), Status> {
+    ) -> Result<Option<FrameInput<'_>>, Status> {
         if !initial {
             return self.refresh(callback);
         }
         let capture = Capture::new(self, CaptureMode::Initial, false)?;
         if capture.ticket == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let controls = Controls {
             callback,
@@ -457,92 +506,156 @@ impl Owner {
             controls::apply_dir_defaults(&controls)?;
             self.finish(&controls, &capture)
         })();
-        if let Err(status) = result {
-            let update = capture.fail(
-                if status.code() == super::sys::kOfxStatErrMemory {
-                    CaptureFailureKind::Allocation
-                } else {
-                    CaptureFailureKind::Host
-                },
-                "host parameter capture failed",
-            )?;
-            if update != Update::Ignored || capture.physical_write_failed.get() {
-                return Err(status);
+        let input = match result {
+            Ok(input) => input,
+            Err(status) => {
+                let update = capture.fail(
+                    if status.code() == super::sys::kOfxStatErrMemory {
+                        CaptureFailureKind::Allocation
+                    } else {
+                        CaptureFailureKind::Host
+                    },
+                    "host parameter capture failed",
+                )?;
+                if update != Update::Ignored || capture.physical_write_failed.get() {
+                    return Err(status);
+                }
+                None
             }
-        }
+        };
         let refresh = capture.refresh.get();
         drop(capture);
         if refresh {
-            self.refresh(callback)?;
+            return self.refresh(callback);
         }
-        Ok(())
+        Ok(input)
     }
-    fn refresh(&self, callback: &Callback<'_>) -> Result<(), Status> {
-        let capture = Capture::new(self, CaptureMode::Refresh, false)?;
+    fn refresh(&self, callback: &Callback<'_>) -> Result<Option<FrameInput<'_>>, Status> {
+        self.read_capture(callback, CaptureMode::Refresh)
+    }
+    pub(super) fn render_read(
+        &self,
+        callback: &Callback<'_>,
+    ) -> Result<Option<FrameInput<'_>>, Status> {
+        let Some(_guard) = RenderRead::enter(std::ptr::from_ref(self) as usize)? else {
+            return Ok(None);
+        };
+        self.read_capture(callback, CaptureMode::RenderRead)
+    }
+    fn read_capture(
+        &self,
+        callback: &Callback<'_>,
+        mode: CaptureMode,
+    ) -> Result<Option<FrameInput<'_>>, Status> {
+        let capture = Capture::new(self, mode, false)?;
         if capture.ticket == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let controls = Controls {
             callback,
             owner: self,
             capture: Some(&capture),
         };
-        if let Err(status) = self.finish(&controls, &capture) {
-            let kind = if status.code() == super::sys::kOfxStatErrMemory {
-                CaptureFailureKind::Allocation
-            } else {
-                CaptureFailureKind::Host
-            };
-            let update = capture.fail(
-                kind,
-                if kind == CaptureFailureKind::Allocation {
-                    "host parameter capture allocation failed"
+        match self.finish(&controls, &capture) {
+            Ok(input) => Ok(input),
+            Err(status) => {
+                let kind = if status.code() == super::sys::kOfxStatErrMemory {
+                    CaptureFailureKind::Allocation
                 } else {
-                    "host parameter capture failed"
-                },
-            )?;
-            if update != Update::Ignored || capture.physical_write_failed.get() {
-                return Err(status);
+                    CaptureFailureKind::Host
+                };
+                let update = capture.fail(
+                    kind,
+                    if kind == CaptureFailureKind::Allocation {
+                        "host parameter capture allocation failed"
+                    } else {
+                        "host parameter capture failed"
+                    },
+                )?;
+                if update != Update::Ignored || capture.physical_write_failed.get() {
+                    return Err(status);
+                }
+                Ok(None)
             }
         }
-        Ok(())
     }
-    fn finish(&self, controls: &Controls<'_>, capture: &Capture<'_>) -> Result<(), Status> {
-        let revision = match self
+    fn begin_read(&self, capture: &Capture<'_>) -> Result<Option<u64>, Status> {
+        if !capture.armed.get() {
+            return Ok(None);
+        }
+        if let Some(revision) = capture.read_revision.get() {
+            return Ok(Some(revision));
+        }
+        match self
             .state
             .begin_snapshot(capture.ticket)
             .map_err(state_status)?
         {
-            state::SnapshotStart::Ready { write_revision } => write_revision,
+            state::SnapshotStart::Ready { write_revision } => {
+                capture.read_revision.set(Some(write_revision));
+                Ok(Some(write_revision))
+            }
             state::SnapshotStart::Ignored => {
                 capture.complete(Update::Ignored);
-                return Ok(());
+                Ok(None)
             }
             state::SnapshotStart::Deferred => {
                 capture.complete(Update::Deferred);
-                return Ok(());
+                Ok(None)
             }
+        }
+    }
+    fn finish(
+        &self,
+        controls: &Controls<'_>,
+        capture: &Capture<'_>,
+    ) -> Result<Option<FrameInput<'_>>, Status> {
+        // UI/action failures still belong to the latest real change. Once its
+        // full parameter read starts, a fresher render read can supersede it.
+        capture.action_pending.set(false);
+        let Some(revision) = self.begin_read(capture)? else {
+            return Ok(None);
         };
+        self.finish_read(controls, capture, revision)
+    }
+    fn finish_read(
+        &self,
+        controls: &Controls<'_>,
+        capture: &Capture<'_>,
+        revision: u64,
+    ) -> Result<Option<FrameInput<'_>>, Status> {
         let captured = match controls::capture(controls) {
             Ok(captured) => captured,
             Err(CaptureError::Host(status)) => return Err(status),
             Err(CaptureError::Invalid(text)) => {
                 capture.fail(CaptureFailureKind::InvalidControls, &text)?;
-                return Ok(());
+                return Ok(None);
             }
         };
         if !capture.current()? {
             capture.complete(Update::Ignored);
-            return Ok(());
+            return Ok(None);
         }
         match captured.admit() {
             Ok((params, identity)) => {
-                capture.complete(
-                    self.state
-                        .install(capture.ticket, revision, params, identity)
-                        .map_err(state_status)?,
-                );
-                Ok(())
+                match self
+                    .state
+                    .install_frame(capture.ticket, revision, params, identity)
+                    .map_err(state_status)?
+                {
+                    FrameInstall::Applied(input) => {
+                        capture.complete(Update::Applied);
+                        Ok(Some(input))
+                    }
+                    FrameInstall::Ignored => {
+                        capture.complete(Update::Ignored);
+                        Ok(None)
+                    }
+                    FrameInstall::Deferred => {
+                        capture.complete(Update::Deferred);
+                        Ok(None)
+                    }
+                }
             }
             Err(_) => {
                 let update = self
@@ -560,9 +673,30 @@ impl Owner {
                 if update == Update::Applied {
                     Err(Status::FATAL)
                 } else {
-                    Ok(())
+                    Ok(None)
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod render_read_tests {
+    use super::RenderRead;
+
+    #[test]
+    fn nested_render_read_is_bounded_and_guard_releases_on_unwind() {
+        struct IntentionalUnwind;
+        let panic = std::panic::catch_unwind(|| {
+            let _outer = RenderRead::enter(1).ok().flatten().expect("first read");
+            let _other = RenderRead::enter(2).ok().flatten().expect("other owner");
+            assert!(RenderRead::enter(1).ok().flatten().is_none());
+            assert!(RenderRead::enter(2).ok().flatten().is_none());
+            std::panic::panic_any(IntentionalUnwind);
+        })
+        .expect_err("intentional guard unwind");
+        assert!(panic.is::<IntentionalUnwind>());
+        assert!(RenderRead::enter(1).ok().flatten().is_some());
+        assert!(RenderRead::enter(2).ok().flatten().is_some());
     }
 }
