@@ -95,6 +95,23 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
+        enum class CarrierStage : std::uint8_t {
+            Exposure,
+            Boost,
+            CameraDiffusion,
+            Spatial,
+            DirLog,
+            Count
+        };
+        struct CarrierObservation {
+            CarrierStage stage = CarrierStage::Exposure;
+            CameraFilmLinearExposurePlanes planes{};
+            int width = 0;
+            int height = 0;
+            void* stream = nullptr;
+            float routeCorrection = 1.0f;
+        };
+        void observe_carrier(CarrierObservation observation);
         enum class WorkspaceHandoff : unsigned char {
             Monolithic,
             MaterializedDensity,

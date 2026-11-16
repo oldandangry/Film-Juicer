@@ -1557,7 +1557,7 @@ namespace {
         return static_cast<float>(acc);
     }
 
-    template <typename Params>
+    template <bool FromCarrier = false, typename Params>
     __device__ __forceinline__ bool load_spatial_dir_log_raw_for_final_develop_device(
         const Params& params,
         std::size_t pixelIndex,
@@ -1583,7 +1583,19 @@ namespace {
         }
 
         if (rgbIn) {
-            compute_logE_raw_selected_device(params, rgbIn, missingLogRawMask, logE_raw);
+            if constexpr (FromCarrier) {
+                float corrected[3]{rgbIn[0], rgbIn[1], rgbIn[2]};
+                apply_film_route_correction_device(params, corrected);
+                float carrierLog[3]{};
+                compute_logE_raw_from_film_raw_device(params, corrected, carrierLog);
+                for (int channel = 0; channel < 3; ++channel) {
+                    if ((missingLogRawMask & (1 << channel)) != 0) {
+                        logE_raw[channel] = carrierLog[channel];
+                    }
+                }
+            } else {
+                compute_logE_raw_selected_device(params, rgbIn, missingLogRawMask, logE_raw);
+            }
             return true;
         }
 
@@ -1609,7 +1621,7 @@ namespace {
         return true;
     }
 
-    template <typename Params>
+    template <bool FromCarrier = false, typename Params>
     __device__ __forceinline__ bool compute_capture_film_density_device(
         const Params& params,
         int x,
@@ -1624,7 +1636,7 @@ namespace {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) +
                                static_cast<size_t>(x);
             float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-            if (!load_spatial_dir_log_raw_for_final_develop_device(
+            if (!load_spatial_dir_log_raw_for_final_develop_device<FromCarrier>(
                     params,
                     idx,
                     rgbIn,
@@ -1644,7 +1656,11 @@ namespace {
         intermediates.logERaw = logE_raw;
         intermediates.logESanitized = logE_sanitized;
         intermediates.layerPre = layerPre;
-        compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
+        if constexpr (FromCarrier) {
+            compute_logE_from_camera_film_linear_exposure_device(params, rgbIn, intermediates);
+        } else {
+            compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
+        }
 
         if (dev.dir.mode != JuicerCuda::DirMode::Inactive) {
             float logE_corr[3] = {
@@ -1680,8 +1696,10 @@ namespace {
         return true;
     }
 
-    template <typename Params>
-    __global__ void pipeline_direct_kernel(Params params) {
+    template <bool FromCarrier, typename Params>
+    __device__ __forceinline__ void run_scan_pixel(
+        const Params& params,
+        JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
         if (params.width <= 0 || params.height <= 0) {
             return;
@@ -1707,10 +1725,20 @@ namespace {
         const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
         const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
 
-        const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
+        float input[3]{};
+        if constexpr (FromCarrier) {
+            const auto carrierIndex = yIndex * carrier.rowStrideFloats + xIndex;
+            input[0] = carrier.blueSensitive[carrierIndex];
+            input[1] = carrier.greenSensitive[carrierIndex];
+            input[2] = carrier.redSensitive[carrierIndex];
+        } else {
+            input[0] = srcPix[0];
+            input[1] = srcPix[1];
+            input[2] = srcPix[2];
+        }
 
         float D_cmy[3] = {0.0f, 0.0f, 0.0f};
-        if (!compute_capture_film_density_device(params, x, y, rgbIn, D_cmy)) {
+        if (!compute_capture_film_density_device<FromCarrier>(params, x, y, input, D_cmy)) {
             return;
         }
 
@@ -1828,6 +1856,35 @@ namespace {
         if (nC == 4) {
             dstPix[3] = srcPix[3];
         }
+    }
+
+    template <typename Params>
+    __global__ void pipeline_direct_kernel(Params params) {
+        run_scan_pixel<false>(params, {});
+    }
+
+    template <typename Params>
+    __global__ void pipeline_carrier_kernel(Params params, JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
+        run_scan_pixel<true>(params, carrier);
+    }
+
+    template <typename Params>
+    cudaError_t launch_scan_pipeline(
+        const Params& params,
+        JuicerCuda::CameraFilmLinearExposurePlanes carrier,
+        dim3 blocks,
+        dim3 threads,
+        cudaStream_t stream) {
+        if (carrier.redSensitive || carrier.greenSensitive || carrier.blueSensitive) {
+            if (!carrier.redSensitive || !carrier.greenSensitive || !carrier.blueSensitive ||
+                carrier.rowStrideFloats < static_cast<std::size_t>(params.width)) {
+                return cudaErrorInvalidValue;
+            }
+            pipeline_carrier_kernel<<<blocks, threads, 0, stream>>>(params, carrier);
+        } else {
+            pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
+        }
+        return cudaGetLastError();
     }
 
     template <typename Params>
@@ -2217,7 +2274,8 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline(
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     const JuicerCuda::DirectPipelineRunParams* hParams,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
@@ -2242,8 +2300,7 @@ extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     dim3 blocks(
         (params.width + threads.x - 1) / threads.x,
         (params.height + threads.y - 1) / threads.y);
-    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
-    return cudaGetLastError();
+    return launch_scan_pipeline(params, carrier, blocks, threads, stream);
 }
 
 struct FocusedScannerPostEffectOptions {
@@ -2281,7 +2338,8 @@ cudaError_t launch_focused_scan_linear_rgb(
     float* dTmp,
     float* dScratchBlurred,
     const FocusedScannerPostEffectOptions& options,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
     }
@@ -2349,8 +2407,7 @@ cudaError_t launch_focused_scan_linear_rgb(
     params.scanStage.linearRgbR = rgb.r;
     params.scanStage.linearRgbG = rgb.g;
     params.scanStage.linearRgbB = rgb.b;
-    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
-    return cudaGetLastError();
+    return launch_scan_pipeline(params, carrier, blocks, threads, stream);
 }
 
 template <typename Params>
@@ -2966,14 +3023,16 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
     return launch_focused_scan_linear_rgb(
         hParams,
         FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
         nullptr,
         nullptr,
         FocusedScannerPostEffectOptions{},
-        cudaStreamOpaque);
+        cudaStreamOpaque,
+        carrier);
 }
 
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
@@ -2990,7 +3049,8 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     float glareRoughness,
     const float* dGlareKernel,
     int glareRadius,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
     return launch_focused_scan_linear_rgb(
         hParams,
         FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
@@ -3005,7 +3065,8 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
             glareRoughness,
             dGlareKernel,
             glareRadius},
-        cudaStreamOpaque);
+        cudaStreamOpaque,
+        carrier);
 }
 
 extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
@@ -3709,7 +3770,8 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
     const JuicerCuda::PrintPipelineRunParams* hParams,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
     if (!hParams || !hParams->printExpose.active || !hParams->src || !hParams->dst) {
         return cudaErrorInvalidValue;
     }
@@ -3726,6 +3788,5 @@ extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
     dim3 blocks(
         (params.width + threads.x - 1) / threads.x,
         (params.height + threads.y - 1) / threads.y);
-    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
-    return cudaGetLastError();
+    return launch_scan_pipeline(params, carrier, blocks, threads, stream);
 }

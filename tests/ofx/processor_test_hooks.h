@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include <cuda_runtime.h>
 
@@ -11,6 +12,13 @@
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 namespace JuicerCuda::ExecutorTest {
+    struct CarrierReadback {
+        unsigned count = 0;
+        std::array<std::vector<float>, 3> rgb;
+        float routeCorrection = 1.0f;
+    };
+    using CarrierReadbacks = std::array<CarrierReadback, static_cast<std::size_t>(CarrierStage::Count)>;
+    void set_carrier_observer(CarrierReadbacks* readbacks) noexcept;
     extern thread_local std::optional<WorkspaceHandoff> workspaceHandoff;
     enum class Event : std::uint8_t {
         Injected,

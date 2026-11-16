@@ -22,26 +22,29 @@ namespace JuicerHalation {
         bool has_gaussian_shape(const FjHalationGaussian& v) {
             return (v.kind == FJ_HALATION_IDENTITY && v.radius == 0) ||
                    (v.kind == FJ_HALATION_FIR_REFLECT && v.radius >= 1 && v.radius <= 9) ||
-                   (v.kind == FJ_HALATION_YVV_REPLICATE && v.radius == 0);
+                   ((v.kind == FJ_HALATION_YVV_REPLICATE || v.kind == FJ_HALATION_YVV_REPLICATE_FACTORED) && v.radius == 0);
         }
         bool is_positive_zero(float value) {
             return std::bit_cast<std::uint32_t>(value) == 0;
         }
         bool is_cleared(const FjHalationGaussian& v) {
-            return v.kind == FJ_HALATION_IDENTITY && v.radius == 0 && is_positive_zero(v.feedforward) &&
+            return v.kind == FJ_HALATION_IDENTITY && v.radius == 0 &&
                    std::all_of(std::begin(v.fir_weights), std::end(v.fir_weights), is_positive_zero) &&
-                   std::all_of(std::begin(v.feedback), std::end(v.feedback), is_positive_zero);
+                   std::all_of(std::begin(v.yvv), std::end(v.yvv), is_positive_zero);
         }
         bool is_cleared(const FjScatterHalation& v) {
-            if (v.recipe_hash != 0 || !is_positive_zero(v.scatter_amount))
+            if (v.recipe_hash != 0 || !is_positive_zero(v.scatter_amount) || v.bounce_count != 0 ||
+                v.renormalize != 0 || !std::all_of(std::begin(v.bounce_weights), std::end(v.bounce_weights), is_positive_zero))
                 return false;
             for (const auto& c : v.channels) {
-                if (!is_positive_zero(c.total_strength) || !is_cleared(c.core))
+                if (!is_positive_zero(c.total_strength) || !is_positive_zero(c.tail_weight) || !is_cleared(c.core))
                     return false;
-                for (const auto* group : {&c.tail, &c.bounce})
-                    for (const auto& g : *group)
-                        if (!is_cleared(g))
-                            return false;
+                const auto gaussianIsCleared = [](const FjHalationGaussian& value) {
+                    return is_cleared(value);
+                };
+                if (!std::all_of(std::begin(c.tail), std::end(c.tail), gaussianIsCleared) ||
+                    !std::all_of(std::begin(c.bounce), std::end(c.bounce), gaussianIsCleared))
+                    return false;
             }
             return true;
         }
@@ -50,10 +53,7 @@ namespace JuicerHalation {
             out.kind = static_cast<ScatterHalationGaussianKind>(v.kind);
             out.radius = v.radius;
             std::copy(std::begin(v.fir_weights), std::end(v.fir_weights), out.firWeights.begin());
-            out.B = v.feedforward;
-            out.B1 = v.feedback[0];
-            out.B2 = v.feedback[1];
-            out.B3 = v.feedback[2];
+            std::copy(std::begin(v.yvv), std::end(v.yvv), out.yvv.begin());
             return out;
         }
     } // namespace
@@ -110,23 +110,26 @@ namespace JuicerHalation {
         for (const auto& c : wire.channels) {
             if (!has_gaussian_shape(c.core))
                 return reject_projection(rejected);
-            for (const auto* group : {&c.tail, &c.bounce})
-                for (const auto& g : *group)
-                    if (!has_gaussian_shape(g))
-                        return reject_projection(rejected);
+            if (!std::all_of(std::begin(c.tail), std::end(c.tail), has_gaussian_shape) ||
+                !std::all_of(std::begin(c.bounce), std::end(c.bounce), has_gaussian_shape))
+                return reject_projection(rejected);
         }
         ScatterHalationFrameDescriptor descriptor;
         descriptor.recipeHash = wire.recipe_hash;
         descriptor.scatterAmount = wire.scatter_amount;
+        descriptor.bounceCount = wire.bounce_count;
+        descriptor.renormalize = wire.renormalize != 0;
+        std::copy_n(wire.bounce_weights, descriptor.bounceWeights.size(), descriptor.bounceWeights.begin());
         for (std::size_t channel = 0; channel < descriptor.channels.size(); ++channel) {
             const auto& source = wire.channels[channel];
             auto& target = descriptor.channels[channel];
             target.core = project(source.core);
             target.totalStrength = source.total_strength;
-            for (std::size_t index = 0; index < target.tail.size(); ++index) {
+            target.tailWeight = source.tail_weight;
+            for (std::size_t index = 0; index < target.tail.size(); ++index)
                 target.tail[index] = project(source.tail[index]);
+            for (std::size_t index = 0; index < target.bounce.size(); ++index)
                 target.bounce[index] = project(source.bounce[index]);
-            }
         }
         out = descriptor;
         return true;

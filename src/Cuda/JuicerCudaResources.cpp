@@ -548,7 +548,7 @@ namespace JuicerCuda {
         for (size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
-            if (!ev) {
+            if (!ev || e.requiresContextDrain) {
                 // Retain allocations whose completion fence is missing; freeing early could
                 // race an in-flight launch. Blocking teardown owns final cleanup.
                 ++i;
@@ -619,7 +619,7 @@ namespace JuicerCuda {
             Resources::RetireEntry& e = resources.retireQueue[i];
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
             if (ev) {
-                const auto result = cudaEventSynchronize(ev);
+                const auto result = e.requiresContextDrain ? cudaDeviceSynchronize() : cudaEventSynchronize(ev);
                 if (result != cudaSuccess) {
                     if (allReleased) {
                         set_failure(outError, runtime_failure_status(result), "retired allocation completion wait failed");
@@ -695,6 +695,51 @@ namespace JuicerCuda {
             resources.completionEventPoolOpaque.clear();
         }
         return allReleased;
+    }
+
+    bool register_frame_status_staging(Resources& resources, void* host, std::size_t bytes, Failure& outError) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        if (bytes > std::numeric_limits<std::size_t>::max() - resources.retireBytes) {
+            set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "frame status staging byte accounting overflow");
+            return false;
+        }
+        try {
+            auto& entry = resources.retireQueue.emplace_back();
+            entry.ptr = host;
+            entry.bytes = bytes;
+            entry.kind = Resources::RetireKind::HostPinnedFree;
+            resources.retireBytes += bytes;
+            outError = {};
+            return true;
+        } catch (const std::bad_alloc&) {
+            set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "frame status staging retention failed");
+            return false;
+        }
+    }
+
+    bool retire_frame_status_staging(Resources& resources, void* host, cudaEvent_t completionEvent, bool requiresContextDrain, Failure& outError) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        const auto entry = std::find_if(resources.retireQueue.begin(), resources.retireQueue.end(), [host](const auto& e) {
+            return e.kind == Resources::RetireKind::HostPinnedFree && e.ptr == host;
+        });
+        if (entry == resources.retireQueue.end()) {
+            set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "unregistered frame status staging");
+            return false;
+        }
+        if (completionEvent) {
+            entry->doneEventOpaque = completionEvent;
+            entry->requiresContextDrain = requiresContextDrain;
+        } else if (const auto status = cudaFreeHost(host); status == cudaSuccess) {
+            resources.retireBytes -= entry->bytes;
+            resources.retireQueue.erase(entry);
+        } else {
+            set_failure(outError, runtime_failure_status(status), "frame status staging free failed");
+            return false;
+        }
+        return true;
     }
 
     static bool acquire_retire_event_locked(Resources& resources, void*& outEventOpaque, Failure& outError) {
@@ -1744,6 +1789,11 @@ namespace JuicerCuda {
             resources.gaussianKernelCache.clear();
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
+            for (const auto& entry : resources.retireQueue) {
+                if (entry.kind == Resources::RetireKind::HostPinnedFree && entry.ptr) {
+                    (void)cudaFreeHost(entry.ptr);
+                }
+            }
             resources.retireQueue.clear();
             resources.completionEventPoolOpaque.clear();
             resources.pendingFrameUseEvents.clear();

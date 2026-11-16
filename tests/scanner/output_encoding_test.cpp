@@ -31,8 +31,8 @@
 #include "../ffi/case_results.h"
 #include "../ffi/gtest_cases.h"
 
-extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
-extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
+extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*, JuicerCuda::CameraFilmLinearExposurePlanes);
+extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*, JuicerCuda::CameraFilmLinearExposurePlanes);
 extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(const JuicerCuda::DirectPipelineRunParams*, const float*, const float*, const float*, float*, float*, float*, const float*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(const JuicerCuda::PrintPipelineRunParams*, const float*, const float*, const float*, float*, float*, float*, float*, float*, int, int, std::uint64_t, float, float, const float*, int, void*);
 extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, float*, const float*, int, const float*, int, float, const JuicerCuda::FilmDefectsPayload*, const JuicerCuda::GateWeavePayload*, const float*, int, int, void*);
@@ -100,9 +100,9 @@ namespace {
     template <typename Params>
     void launch_pipeline(const Params& params) {
         if constexpr (std::is_same_v<Params, JuicerCuda::DirectPipelineRunParams>) {
-            check_cuda(juicer_cuda_negative_direct_pipeline(&params, nullptr));
+            check_cuda(juicer_cuda_negative_direct_pipeline(&params, nullptr, {}));
         } else {
-            check_cuda(juicer_cuda_print_focused_pipeline(&params, nullptr));
+            check_cuda(juicer_cuda_print_focused_pipeline(&params, nullptr, {}));
         }
     }
 

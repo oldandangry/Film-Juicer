@@ -19,6 +19,7 @@ set(JUICER_NATIVE_SOURCES
     src/Cuda/JuicerCudaFilmPayloads.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusion.cu
     src/Cuda/Film/JuicerCudaScatterHalation.cu
+    src/Cuda/Film/JuicerCudaHighlightBoost.cu
     src/Cuda/Film/JuicerCudaFilmPipeline.cu
     src/Cuda/JuicerCudaAutoExposure.cu
     src/Cuda/Scan/JuicerCudaScanPipeline.cu

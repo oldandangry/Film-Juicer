@@ -201,7 +201,7 @@ namespace {
         if (test.combined) {
             parameters.values.camera_diffusion.active = true;
             parameters.values.grain.active = true;
-            parameters.values.scatter_halation = {1, 1.0f, 1.0f, 1.0f, 1.0f};
+            parameters.values.scatter_halation = {1, 1.0f, 1.0f, 1.0f, 1.0f, 0, {}, {}, {}};
         }
         if (test.signedZeroGlare) {
             parameters.values.glare_active = true;
@@ -1931,9 +1931,15 @@ namespace {
                 params.values.dir_couplers.active = false;
                 params.values.gate_dust_amount = 1.0;
                 params.values.camera_diffusion.active = carrier == 2;
-                params.values.scatter_halation = carrier != 0
-                                                     ? decltype(params.values.scatter_halation){1, 1.0f, 1.0f, 1.0f, 1.0f}
-                                                     : decltype(params.values.scatter_halation){};
+                params.values.scatter_halation = {};
+                if (carrier != 0) {
+                    auto& spatial = params.values.scatter_halation;
+                    spatial.active = 1;
+                    spatial.scatter_amount = 1.0f;
+                    spatial.scatter_spatial_scale = 1.0f;
+                    spatial.halation_amount = 1.0f;
+                    spatial.halation_spatial_scale = 1.0f;
+                }
                 JuicerTestSupport::PreparedStateHold state = JuicerTestSupport::prepare_product(runtime.borrow().assets, params);
                 auto gateFacts = facts;
                 gateFacts.pixelSizeUm = 35'000.0f / 64;

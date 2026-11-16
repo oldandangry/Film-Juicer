@@ -151,10 +151,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.kind = static_cast<ScatterHalationGaussianKind>(source.kind);
             out.radius = source.radius;
             std::copy_n(source.fir_weights, out.firWeights.size(), out.firWeights.begin());
-            out.B = source.feedforward;
-            out.B1 = source.feedback[0];
-            out.B2 = source.feedback[1];
-            out.B3 = source.feedback[2];
+            std::copy_n(source.yvv, out.yvv.size(), out.yvv.begin());
             return out;
         }
 
@@ -162,15 +159,19 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             ScatterHalationFrameDescriptor out{};
             out.recipeHash = source.recipe_hash;
             out.scatterAmount = source.scatter_amount;
+            out.bounceCount = source.bounce_count;
+            out.renormalize = source.renormalize != 0;
+            std::copy_n(source.bounce_weights, out.bounceWeights.size(), out.bounceWeights.begin());
             for (std::size_t channel = 0; channel < out.channels.size(); ++channel) {
                 const auto& input = source.channels[channel];
                 auto& target = out.channels[channel];
                 target.totalStrength = input.total_strength;
+                target.tailWeight = input.tail_weight;
                 target.core = halation_gaussian(input.core);
-                for (std::size_t index = 0; index < target.tail.size(); ++index) {
+                for (std::size_t index = 0; index < target.tail.size(); ++index)
                     target.tail[index] = halation_gaussian(input.tail[index]);
+                for (std::size_t index = 0; index < target.bounce.size(); ++index)
                     target.bounce[index] = halation_gaussian(input.bounce[index]);
-                }
             }
             return out;
         }

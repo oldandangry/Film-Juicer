@@ -118,7 +118,7 @@ namespace JuicerTestSupport {
             for (std::size_t index = 0; index < actual.firWeights.size(); ++index)
                 if (std::bit_cast<std::uint32_t>(actual.firWeights[index]) != frozen.at("weights")[index].get<std::uint32_t>())
                     return false;
-            const std::array yvv{actual.B, actual.B1, actual.B2, actual.B3};
+            const auto& yvv = actual.yvv;
             for (std::size_t index = 0; index < yvv.size(); ++index)
                 if (std::bit_cast<std::uint32_t>(yvv[index]) != frozen.at("yvv")[index].get<std::uint32_t>())
                     return false;

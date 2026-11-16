@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +25,12 @@ namespace ScatterHalationValidation {
     struct ImageExtent {
         int width = 0;
         int height = 0;
+    };
+
+    struct HighlightBoostSettings {
+        double boostEv;
+        double protectionEv;
+        double range;
     };
 
     class PreparedRouteInputs final {
@@ -69,7 +76,9 @@ namespace ScatterHalationValidation {
         float pixelSizeUm,
         ImageExtent extent,
         float filmGammaFactor = 1.0f,
-        const std::string& filmProfileKey = {});
+        const std::string& filmProfileKey = {},
+        const FjPreparationHalation* halation = nullptr,
+        std::optional<HighlightBoostSettings> boost = std::nullopt);
 
     struct Arguments {
         std::string caseGroup;
@@ -109,6 +118,12 @@ namespace ScatterHalationValidation {
     };
 
     void run_focused_cuda_reference_rows(
+        const Arguments& arguments,
+        Results& results);
+    void run_advanced_spatial_rows(
+        const Arguments& arguments,
+        Results& results);
+    void run_highlight_boost_rows(
         const Arguments& arguments,
         Results& results);
     void run_route_boundary_rows(

@@ -212,7 +212,7 @@ namespace {
              source.effects.session_seed != frame.sessionSeed || source.effects.clip_token != frame.clipToken)) {
             return malformed(diagnostic, "effects.frame");
         }
-        if (source.optics.diffusion_hash != 0 &&
+        if ((source.optics.diffusion_hash != 0 || source.optics.highlight_boost.recipe_hash != 0) &&
             (!sameExtent(source.optics.full_frame, frame.sourceBounds) ||
              !sameExtent(source.optics.full_frame, frame.renderWindow) ||
              !sameExtent(source.optics.full_frame, frame.fullFrameExtent))) {
@@ -357,6 +357,7 @@ namespace JuicerCuda {
         identity.filmProfileKey = filmKey;
         identity.filmProfileAssetVersionToken = source.film_profile_asset_version;
         identity.scatterHalationHash = source.optics.scatter_halation.recipe_hash;
+        identity.highlightBoostHash = source.optics.highlight_boost.recipe_hash;
         identity.grainHash = source.grain.recipe_hash;
         identity.grainDensityLayersHash = development.density_layers_hash;
         identity.grainActive = (source.grain.flags & FJ_GRAIN_ACTIVE) != 0;
@@ -364,6 +365,7 @@ namespace JuicerCuda {
         identity.effectsActive = descriptors.effects.has_value();
         JuicerProcess::Root::PreparedFrameInput preparation{
             identity, focused, descriptors.color, descriptors.outputGamut, {}, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, frame.renderWindow.x2 - frame.renderWindow.x1, frame.renderWindow.y2 - frame.renderWindow.y1};
+        preparation.highlightBoostDescriptor = descriptors.highlightBoost ? &*descriptors.highlightBoost : nullptr;
         if (print) {
             preparation.print = decode_print(source);
         }

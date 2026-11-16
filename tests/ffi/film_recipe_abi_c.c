@@ -175,11 +175,11 @@ int fj_test_grain_frame_c_check(uint32_t facade, const FjGrainFrameInput* input,
 }
 #define FJ_GRAIN_ASSERT_TEST_FACADE 1
 #include "grain_frame_abi_assertions.inc"
-_Static_assert(sizeof(FjHalationFrameInput) == 64 && _Alignof(FjHalationFrameInput) == 8, "FjHalationFrameInput layout");
+_Static_assert(sizeof(FjHalationFrameInput) == 152 && _Alignof(FjHalationFrameInput) == 8, "FjHalationFrameInput layout");
 _Static_assert(_Generic(((FjHalationFrameInput*)0)->recipe, FjHalationRecipe: 1, default: 0), "FjHalationFrameInput.recipe type");
 _Static_assert(offsetof(FjHalationFrameInput, recipe) == 0, "FjHalationFrameInput.recipe offset");
 _Static_assert(_Generic(((FjHalationFrameInput*)0)->pixel_size_um, float: 1, default: 0), "FjHalationFrameInput.pixel_size_um type");
-_Static_assert(offsetof(FjHalationFrameInput, pixel_size_um) == 56, "FjHalationFrameInput.pixel_size_um offset");
+_Static_assert(offsetof(FjHalationFrameInput, pixel_size_um) == 144, "FjHalationFrameInput.pixel_size_um offset");
 _Static_assert(sizeof(FjHalationFrameFailure) == 24 && _Alignof(FjHalationFrameFailure) == 8, "FjHalationFrameFailure layout");
 _Static_assert(_Generic(((FjHalationFrameFailure*)0)->reason, uint32_t: 1, default: 0), "FjHalationFrameFailure.reason type");
 _Static_assert(offsetof(FjHalationFrameFailure, reason) == 0, "FjHalationFrameFailure.reason offset");
@@ -650,7 +650,7 @@ _Static_assert(_Generic(((FjHalationRecipe*)0)->total_strength, float*: 1, defau
 _Static_assert(offsetof(FjHalationRecipe, total_strength) == 32, "FjHalationRecipe.total_strength offset");
 _Static_assert(_Generic(((FjHalationRecipe*)0)->hash, uint64_t: 1, default: 0), "FjHalationRecipe.hash type");
 _Static_assert(offsetof(FjHalationRecipe, hash) == 48, "FjHalationRecipe.hash offset");
-_Static_assert(sizeof(FjHalationRecipe) == 56 && _Alignof(FjHalationRecipe) == 8, "FjHalationRecipe size/alignment");
+_Static_assert(sizeof(FjHalationRecipe) == 144 && _Alignof(FjHalationRecipe) == 8, "FjHalationRecipe size/alignment");
 _Static_assert(_Generic(((FjSpatialOpticsRecipe*)0)->camera_diffusion, FjDiffusionRecipe: 1, default: 0), "FjSpatialOpticsRecipe.camera_diffusion type");
 _Static_assert(offsetof(FjSpatialOpticsRecipe, camera_diffusion) == 0, "FjSpatialOpticsRecipe.camera_diffusion offset");
 _Static_assert(_Generic(((FjSpatialOpticsRecipe*)0)->camera_lens_blur, FjLensBlurRecipe: 1, default: 0), "FjSpatialOpticsRecipe.camera_lens_blur type");
@@ -658,10 +658,10 @@ _Static_assert(offsetof(FjSpatialOpticsRecipe, camera_lens_blur) == 104, "FjSpat
 _Static_assert(_Generic(((FjSpatialOpticsRecipe*)0)->scatter_halation, FjHalationRecipe: 1, default: 0), "FjSpatialOpticsRecipe.scatter_halation type");
 _Static_assert(offsetof(FjSpatialOpticsRecipe, scatter_halation) == 120, "FjSpatialOpticsRecipe.scatter_halation offset");
 _Static_assert(_Generic(((FjSpatialOpticsRecipe*)0)->enlarger_diffusion, FjDiffusionRecipe: 1, default: 0), "FjSpatialOpticsRecipe.enlarger_diffusion type");
-_Static_assert(offsetof(FjSpatialOpticsRecipe, enlarger_diffusion) == 176, "FjSpatialOpticsRecipe.enlarger_diffusion offset");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, enlarger_diffusion) == 264, "FjSpatialOpticsRecipe.enlarger_diffusion offset");
 _Static_assert(_Generic(((FjSpatialOpticsRecipe*)0)->hash, uint64_t: 1, default: 0), "FjSpatialOpticsRecipe.hash type");
-_Static_assert(offsetof(FjSpatialOpticsRecipe, hash) == 280, "FjSpatialOpticsRecipe.hash offset");
-_Static_assert(sizeof(FjSpatialOpticsRecipe) == 288 && _Alignof(FjSpatialOpticsRecipe) == 8, "FjSpatialOpticsRecipe size/alignment");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, hash) == 368, "FjSpatialOpticsRecipe.hash offset");
+_Static_assert(sizeof(FjSpatialOpticsRecipe) == 376 && _Alignof(FjSpatialOpticsRecipe) == 8, "FjSpatialOpticsRecipe size/alignment");
 _Static_assert(_Generic(((FjSpatialOpticsFailure*)0)->reason, uint32_t: 1, default: 0), "FjSpatialOpticsFailure.reason type");
 _Static_assert(offsetof(FjSpatialOpticsFailure, reason) == 0, "FjSpatialOpticsFailure.reason offset");
 _Static_assert(_Generic(((FjSpatialOpticsFailure*)0)->component, uint32_t: 1, default: 0), "FjSpatialOpticsFailure.component type");
@@ -1130,7 +1130,7 @@ static int halation_words_equal(const float* a, size_t count, const float* b) {
 }
 static int halation_gaussian_equal(const FjHalationGaussian* a, const FjHalationGaussian* b) {
     return a->kind == b->kind && a->radius == b->radius && halation_words_equal(a->fir_weights, 19, b->fir_weights) &&
-           halation_words_equal(&a->feedforward, 1, &b->feedforward) && halation_words_equal(a->feedback, 3, b->feedback);
+           halation_words_equal(a->yvv, 4, b->yvv);
 }
 int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput* input, const FjScatterHalation* expected, const FjHalationFrameFailure* expected_failure, uint32_t category, const char* diagnostic) {
     FjScatterHalation out;
@@ -1153,15 +1153,21 @@ int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput* input, co
         if (x != y)
             return 0;
     }
-    if (out.recipe_hash != expected->recipe_hash || !halation_words_equal(&out.scatter_amount, 1, &expected->scatter_amount))
+    if (out.recipe_hash != expected->recipe_hash || !halation_words_equal(&out.scatter_amount, 1, &expected->scatter_amount) ||
+        out.bounce_count != expected->bounce_count || out.renormalize != expected->renormalize ||
+        !halation_words_equal(out.bounce_weights, FJ_HALATION_MAX_BOUNCES, expected->bounce_weights))
         return 0;
     for (size_t c = 0; c < 3; ++c) {
         const FjHalationChannel* a = &out.channels[c];
         const FjHalationChannel* b = &expected->channels[c];
-        if (!halation_words_equal(&a->total_strength, 1, &b->total_strength) || !halation_gaussian_equal(&a->core, &b->core))
+        if (!halation_words_equal(&a->total_strength, 1, &b->total_strength) ||
+            !halation_words_equal(&a->tail_weight, 1, &b->tail_weight) || !halation_gaussian_equal(&a->core, &b->core))
             return 0;
-        for (size_t i = 0; i < 3; ++i)
-            if (!halation_gaussian_equal(&a->tail[i], &b->tail[i]) || !halation_gaussian_equal(&a->bounce[i], &b->bounce[i]))
+        for (size_t i = 0; i < FJ_HALATION_TAIL_COMPONENTS; ++i)
+            if (!halation_gaussian_equal(&a->tail[i], &b->tail[i]))
+                return 0;
+        for (size_t i = 0; i < FJ_HALATION_MAX_BOUNCES; ++i)
+            if (!halation_gaussian_equal(&a->bounce[i], &b->bounce[i]))
                 return 0;
     }
     return 1;

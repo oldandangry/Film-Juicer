@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include <cuda_runtime_api.h>
+
 #include "Cuda/JuicerCudaFailure.h"
 
 #include "Cuda/JuicerCudaDeviceLedger.h"
@@ -249,6 +251,7 @@ namespace JuicerCuda {
             RetireKind kind = RetireKind::DeviceFree;
             bool scratchTier = false;
             void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
+            bool requiresContextDrain = false;
             DeviceByteReservation deviceReservation;
 
             RetireEntry() noexcept = default;
@@ -701,6 +704,14 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
+        Failure& outError);
+
+    bool register_frame_status_staging(Resources& resources, void* host, std::size_t bytes, Failure& outError);
+    bool retire_frame_status_staging(
+        Resources& resources,
+        void* host,
+        cudaEvent_t completionEvent,
+        bool requiresContextDrain,
         Failure& outError);
     void quarantine_unfenced_frame_use(
         Resources& resources,

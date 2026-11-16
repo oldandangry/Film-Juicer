@@ -39,6 +39,8 @@ namespace {
         Route{"route/positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 3, 11, -3},
         Route{"route/positive-print", "NegativePrintScan", "fujifilm_provia_100f", 0, 4, 0, 0}};
 
+    constexpr std::array kBoostRows{"highlight/negative-direct", "highlight/negative-print-enlarger", "highlight/positive-direct-camera", "highlight/positive-print-composed"};
+
     OfxPlugin* candidate() {
         return OfxGetPlugin(0);
     }
@@ -192,6 +194,74 @@ namespace {
                                      fixture.host().image_release_count(fixture.effect(), "Output") == releases,
                                  "route image release count");
     }
+    void highlight_case(std::size_t index) {
+        constexpr int width = 33;
+        constexpr int height = 17;
+        constexpr int x = -11;
+        constexpr int y = 7;
+        const auto& route = kRoutes[index];
+        ofx_test::DeviceImages images({width, height, 4});
+        ofx_test::RenderHost fixture(candidate());
+        fixture.configure(images, {x, y});
+        const auto set = [&](const char* name, std::vector<ofx_test::InstanceValue> values) {
+            fixture.host().set_value(fixture.effect(), name, std::move(values));
+        };
+        const auto change_boost = [&](double stops) {
+            set("HalationHighlightBoostEv", {stops});
+            auto* args = fixture.host().change_args(
+                {kOfxChangeUserEdited, kOfxTypeParameter, "HalationHighlightBoostEv"}, 37.0);
+            ofx_test::require_render(fixture.call(kOfxActionInstanceChanged, fixture.effect(), args) == kOfxStatReplyDefault,
+                                     "highlight boost edit");
+        };
+        set("FilmProfileKey", {std::string(route.profile)});
+        set("ScanRoute", {std::string(route.route)});
+        set("InputCctfDecoding", {0});
+        set("CameraFilmFormatMm", {8.0});
+        set("CameraDiffusionEnabled", {index >= 2 ? 1 : 0});
+        set("PrintDiffusionEnabled", {index == 1 || index == 3 ? 1 : 0});
+        set("HalationActive", {index == 3 ? 1 : 0});
+        set("HalationHighlightProtectionEv", {0.0});
+        set("HalationHighlightBoostRange", {0.9});
+        ofx_test::require_render(fixture.render() == kOfxStatOK, "highlight baseline render");
+        const auto baseline = images.pixels(images.read());
+
+        change_boost(2.0);
+        images.reset();
+        fixture.host().clear_calls();
+        if (const auto status = fixture.render(); status != kOfxStatOK) {
+            for (const auto& call : fixture.host().calls()) {
+                if (call.operation == "message" && call.values.size() == 2) {
+                    std::fprintf(stderr, "%s\n", std::get<std::string>(call.values[1]).c_str());
+                }
+            }
+            throw std::runtime_error("active highlight reconstruction render status " + std::to_string(status));
+        }
+        const auto active = images.pixels(images.read());
+        double maximumChange = 0.0;
+        for (std::size_t i = 0; i < active.size(); ++i) {
+            ofx_test::require_render(std::isfinite(active[i]), "finite highlight output");
+            maximumChange = std::max(maximumChange, std::abs(static_cast<double>(active[i]) - baseline[i]));
+        }
+        ofx_test::require_render(maximumChange > 1e-4, "reconstructed carrier changes downstream output");
+        images.reset();
+        ofx_test::require_render(fixture.render() == kOfxStatOK && words(images.pixels(images.read())) == words(active),
+                                 "same-frame highlight output is repeatable");
+
+        if (index == 0) {
+            images.reset();
+            fixture.host().set_image_property(fixture.effect(), "Source", kOfxImagePropRegionOfDefinition, {x - 2, y, x + width, y + height});
+            ofx_test::require_render(fixture.render() == kOfxStatErrFatal, "highlight boost rejects partial source RoD");
+            for (float sample : images.read()) {
+                RenderAssertions::require_same_bits("rejected highlight destination", sample, ofx_test::DeviceImages::kCanary);
+            }
+            fixture.host().set_image_property(fixture.effect(), "Source", kOfxImagePropRegionOfDefinition, {x, y, x + width, y + height});
+        }
+        change_boost(0.0);
+        images.reset();
+        ofx_test::require_render(fixture.render() == kOfxStatOK && words(images.pixels(images.read())) == words(baseline),
+                                 "zero highlight boost returns identical route pixels");
+    }
+
     constexpr std::array kGeometryRows{"format/rgb", "format/rgba", "geometry/padding", "geometry/pitch", "geometry/bounds", "geometry/coverage", "geometry/overlap"};
     void geometry_case(std::string_view name, const JuicerTests::Cohort& rows) {
         const int components = name == "format/rgba" ? 4 : 3;
@@ -407,6 +477,8 @@ int main(int argc, char** argv) try {
     if (JuicerTests::list_requested(argc, argv)) {
         for (const auto& route : kRoutes)
             JuicerTests::list_case(kCaller, route.id);
+        for (const auto* id : kBoostRows)
+            JuicerTests::list_case(kCaller, id);
         for (const auto* id : kGeometryRows)
             JuicerTests::list_case(kCaller, id);
         for (const auto* id : kStreamRows)
@@ -428,6 +500,8 @@ int main(int argc, char** argv) try {
     ids.reserve(20);
     for (const auto& route : kRoutes)
         ids.emplace_back(route.id);
+    for (const auto* id : kBoostRows)
+        ids.emplace_back(id);
     for (const auto* id : kGeometryRows)
         ids.emplace_back(id);
     for (const auto* id : kStreamRows)
@@ -442,6 +516,11 @@ int main(int argc, char** argv) try {
     for (const auto& route : kRoutes) {
         auto row = rows.case_event(route.id);
         route_case(route, prints);
+        row.passed();
+    }
+    for (std::size_t i = 0; i < kBoostRows.size(); ++i) {
+        auto row = rows.case_event(kBoostRows[i]);
+        highlight_case(i);
         row.passed();
     }
     for (const auto* id : kGeometryRows) {

@@ -17,8 +17,7 @@ namespace HalationFrameTest {
     }
 
     Json project(const ScatterHalationGaussianDescriptor& v) {
-        const std::array<float, 4> coefficients{v.B, v.B1, v.B2, v.B3};
-        return {{"kind", static_cast<unsigned>(v.kind)}, {"radius", v.radius}, {"weights", words(v.firWeights.data(), v.firWeights.size())}, {"yvv", words(coefficients.data(), coefficients.size())}};
+        return {{"kind", static_cast<unsigned>(v.kind)}, {"radius", v.radius}, {"weights", words(v.firWeights.data(), v.firWeights.size())}, {"yvv", words(v.yvv.data(), v.yvv.size())}};
     }
 
     Json project(const ScatterHalationFrameDescriptor& v) {
@@ -27,8 +26,8 @@ namespace HalationFrameTest {
             Json tail = Json::array(), bounce = Json::array();
             for (const auto& g : c.tail)
                 tail.push_back(project(g));
-            for (const auto& g : c.bounce)
-                bounce.push_back(project(g));
+            for (std::size_t index = 0; index < 3; ++index)
+                bounce.push_back(project(c.bounce[index]));
             channels.push_back({{"core", project(c.core)}, {"tail", tail}, {"bounce", bounce}, {"strength", std::bit_cast<std::uint32_t>(c.totalStrength)}});
         }
         return {{"recipe_hash", v.recipeHash}, {"scatter_amount", std::bit_cast<std::uint32_t>(v.scatterAmount)}, {"channels", channels}};
@@ -107,8 +106,7 @@ namespace HalationFrameTest {
         return out;
     }
     Json project(const FjHalationGaussian& v) {
-        const std::array<float, 4> yvv{v.feedforward, v.feedback[0], v.feedback[1], v.feedback[2]};
-        return {{"kind", v.kind}, {"radius", v.radius}, {"weights", words(v.fir_weights, 19)}, {"yvv", words(yvv.data(), 4)}};
+        return {{"kind", v.kind}, {"radius", v.radius}, {"weights", words(v.fir_weights, 19)}, {"yvv", words(v.yvv, 4)}};
     }
     Json project(const FjScatterHalation& v) {
         Json channels = Json::array();
@@ -116,8 +114,8 @@ namespace HalationFrameTest {
             Json tail = Json::array(), bounce = Json::array();
             for (const auto& g : c.tail)
                 tail.push_back(project(g));
-            for (const auto& g : c.bounce)
-                bounce.push_back(project(g));
+            for (std::size_t index = 0; index < 3; ++index)
+                bounce.push_back(project(c.bounce[index]));
             channels.push_back({{"core", project(c.core)}, {"tail", tail}, {"bounce", bounce}, {"strength", std::bit_cast<std::uint32_t>(c.total_strength)}});
         }
         return {{"recipe_hash", v.recipe_hash}, {"scatter_amount", std::bit_cast<std::uint32_t>(v.scatter_amount)}, {"channels", channels}};
@@ -128,22 +126,30 @@ namespace HalationFrameTest {
         out.radius = v.at("radius");
         copy_words(v.at("weights"), out.fir_weights);
         const auto yvv = PrintPreflashTest::array<4>(v.at("yvv"));
-        out.feedforward = yvv[0];
-        std::copy(yvv.begin() + 1, yvv.end(), out.feedback);
+        std::copy(yvv.begin(), yvv.end(), out.yvv);
         return out;
     }
-    FjScatterHalation expected(const Json& v) {
+    FjScatterHalation expected(const Json& v, const FjHalationRecipe& recipe) {
         FjScatterHalation out{};
         if (v.is_null())
             return out;
         out.recipe_hash = v.at("recipe_hash");
         out.scatter_amount = std::bit_cast<float>(v.at("scatter_amount").get<std::uint32_t>());
+        if (recipe.back_reflection_active) {
+            out.bounce_count = 3;
+            out.bounce_weights[0] = 4.0f / 7.0f;
+            out.bounce_weights[1] = 2.0f / 7.0f;
+            out.bounce_weights[2] = 1.0f / 7.0f;
+            out.renormalize = 1;
+        }
+        constexpr std::array tailWeights{0.78f, 0.65f, 0.67f};
         require(v.at("channels").size() == 3, "halation channels extent");
         for (std::size_t channel = 0; channel < 3; ++channel) {
             const auto& c = v.at("channels")[channel];
             auto& output = out.channels[channel];
             output.core = expected_gaussian(c.at("core"));
             output.total_strength = std::bit_cast<float>(c.at("strength").get<std::uint32_t>());
+            output.tail_weight = recipe.scatter_active ? tailWeights[channel] : 0.0f;
             require(c.at("tail").size() == 3 && c.at("bounce").size() == 3, "halation schedule extents");
             for (std::size_t index = 0; index < 3; ++index) {
                 output.tail[index] = expected_gaussian(c.at("tail")[index]);
@@ -173,7 +179,7 @@ namespace HalationFrameTest {
             const auto input = raw(row.at("input"));
             const auto& contract = checked.at("cases").at(row.at("input").at("name").get<std::string>());
             const auto failureExpected = expected_failure(contract);
-            const auto outputExpected = expected(row.at("descriptor"));
+            const auto outputExpected = expected(row.at("descriptor"), input.recipe);
             for (auto prepare : {fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
                 FjScatterHalation out{};
                 std::memset(&out, 0x55, sizeof(out));
@@ -207,7 +213,7 @@ namespace HalationFrameTest {
                 changed.channels[2].bounce[2].fir_weights[18] = 1.0f;
                 require(!fj_test_scatter_halation_frame_c_check(&input, &changed, &failureExpected, 0, ""), "C11 reader reaches final unused weight");
                 changed = outputExpected;
-                changed.channels[2].bounce[2].feedback[2] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(changed.channels[2].bounce[2].feedback[2]) ^ 1u);
+                changed.channels[2].bounce[2].yvv[3] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(changed.channels[2].bounce[2].yvv[3]) ^ 1u);
                 require(!fj_test_scatter_halation_frame_c_check(&input, &changed, &failureExpected, 0, ""), "C11 reader reaches final YVV coefficient");
             }
             c11Event.passed();

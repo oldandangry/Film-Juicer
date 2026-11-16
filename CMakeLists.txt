@@ -96,16 +96,20 @@ if(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
-add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
-    tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
-target_include_directories(JuicerProductionPreparedRenderProbe PRIVATE
-    "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
-target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
-    juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
-    CUDA::cudart CUDA::cuda_driver)
-set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
-    LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+# The comparison consumer loads supplied bundles without rebuilding or staging
+# them. The production-contract consumer retains its bundle dependency below.
+foreach(probe JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe)
+    add_executable(${probe} EXCLUDE_FROM_ALL
+        tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
+    target_include_directories(${probe} PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
+    target_link_libraries(${probe} PRIVATE
+        juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
+        CUDA::cudart CUDA::cuda_driver)
+    set_target_properties(${probe} PROPERTIES
+        LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+endforeach()
 
 # Frozen expectations belong to the two test-support C11 value consumers.
 # Production probes below use only discovery and the retained native ABI.
@@ -183,5 +187,5 @@ if(BUILD_TESTING)
     add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
 
-juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerProductionOfxProbe
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
     ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})

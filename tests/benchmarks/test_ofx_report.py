@@ -10,6 +10,7 @@ import ofx
 
 
 def sample(lane, row):
+    width, height = ofx.HALATION_EXTENTS.get(row, (6048, 4032))
     renders = []
     phases = [(p, 0) for p in ["cold"] + ["warmup"] * 10 + ["warm"] * 30 + ["changed", "changed-reuse"] * 3]
     phases += [(p, c) for c in (1, 2) for p in ["cycle-cold"] + ["cycle-warmup"] * 10 + ["cycle-end"]]
@@ -65,14 +66,14 @@ def sample(lane, row):
         }
         endpoint["observation"].update({key: 1 for key in keys if "_peak_" in key})
         endpoint["observation"].update({"device_id": 0, "context_opaque": 1, "context_epoch": 1})
-    return {
+    record = {
         "schema": 1,
         "status": "passed",
         "mode": "measure",
         "lane": lane,
         "workload": row,
-        "width": 6048,
-        "height": 4032,
+        "width": width,
+        "height": height,
         "controls": {"x": [1]},
         "control_types": {"x": "double"},
         "device": {"ordinal": 0, "context_opaque": 1},
@@ -100,6 +101,14 @@ def sample(lane, row):
         },
         "drained": {"device_charged_bytes": 0, "device_records": 0, "pinned_upload_pool_physical_bytes": 0},
     }
+    if row in ofx.MATCHED_HIGHLIGHT_WORKLOADS:
+        record.update(
+            controls={"Exposure": [6.0]},
+            advanced_halation_available=True,
+            halation_boost_ev=4.0 if row.endswith("-boost") else 0.0,
+            halation_protection_ev=0.0,
+        )
+    return record
 
 
 def production_evidence(preset, module_hash, consumed_path):
@@ -227,6 +236,142 @@ class MeasurementReportTests(unittest.TestCase):
         )
         return directory
 
+    def make_matched_highlight_run(self, preset):
+        selected = list(ofx.MATCHED_HIGHLIGHT_WORKLOADS)
+        directory = self.make_run(preset, workloads=selected)
+        result = json.loads((directory / "result.json").read_text())
+        inputs = json.loads((directory / "inputs.json").read_text())
+        module_dir = "Win64" if preset.startswith("windows") else "Linux-x86-64"
+        baseline_shipping = self.root / preset / "baseline-shipping.ofx.bundle"
+        baseline_observed = self.root / preset / "baseline-observed.ofx.bundle"
+        candidate_shipping = self.root / preset / "candidate-shipping.ofx.bundle"
+        candidate_observed = self.root / preset / "candidate-observed.ofx.bundle"
+
+        def side_inputs(shipping_bundle, observed_bundle, shipping_hash, observed_hash):
+            return {
+                "shipping": {
+                    "path": str(shipping_bundle / "Contents" / module_dir / "juicer.ofx"),
+                    "sha256": shipping_hash,
+                },
+                "observed": {
+                    "path": str(observed_bundle / "Contents" / module_dir / "JuicerOfxMeasurementModule.ofx"),
+                    "sha256": observed_hash,
+                },
+                "resources": {"path": str(shipping_bundle / "Contents" / "Resources"), "files": {"x": "hash"}},
+                "observed_resources": {
+                    "path": str(observed_bundle / "Contents" / "Resources"),
+                    "files": {"x": "hash"},
+                },
+            }
+
+        inputs["reference"] = side_inputs(baseline_shipping, baseline_observed, "baseline-ship", "baseline-observed")
+        inputs["candidate"] = side_inputs(
+            candidate_shipping, candidate_observed, "candidate-ship", "candidate-observed"
+        )
+        baseline_manifest = {
+            preset: {
+                "shipping": str(baseline_shipping),
+                "observed": str(baseline_observed),
+                "observed_module_sha256": "baseline-observed",
+                "build_result": str(self.root / preset / "baseline-observed-build" / "result.json"),
+                "members": {
+                    f"Contents/{module_dir}/juicer.ofx": "baseline-ship",
+                    f"Contents/{module_dir}/JuicerOfxMeasurementModule.ofx": "baseline-observed",
+                    "Contents/Resources/x": "hash",
+                },
+            }
+        }
+        manifest_path = self.root / preset / "baseline-artifacts.json"
+        manifest_bytes = json.dumps(baseline_manifest).encode()
+        manifest_path.write_bytes(manifest_bytes)
+        inputs["matched_highlight_baseline"] = {
+            "path": str(manifest_path),
+            "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        }
+        for side in ofx.SIDES:
+            module_values = inputs[side]
+            result["identities"][side] = {
+                "shipping": module_values["shipping"]["sha256"],
+                "observed": module_values["observed"]["sha256"],
+                "resources": module_values["resources"]["files"],
+                "observed_resources": module_values["observed_resources"]["files"],
+            }
+        result["identities"]["matched_highlight_baseline"] = inputs["matched_highlight_baseline"]["sha256"]
+        for member, command in zip(result["samples"], result["commands"]):
+            lane = member["lane"]
+            side = member["side"]
+            resources_key = "resources" if lane == "shipping" else "observed_resources"
+            module_path = inputs[side][lane]["path"]
+            resources_path = inputs[side][resources_key]["path"]
+            sample_path = directory / member["file"]
+            sample_data = json.loads(sample_path.read_text())
+            sample_data["resources"] = resources_path
+            sample_path.write_text(json.dumps(sample_data))
+            command["command"][4] = module_path
+            command["command"][6] = resources_path
+        (directory / "inputs.json").write_text(json.dumps(inputs))
+
+        baseline_build_directory = manifest_path.parent / "baseline-observed-build"
+        baseline_build_directory.mkdir()
+        baseline_snapshot = json.dumps({"head": "baseline", "inputs": {}}).encode()
+        baseline_patch = b"baseline observation source patch"
+
+        def member(data):
+            return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+        baseline_build_result = {
+            "schema": "native-build-v1",
+            "status": "passed",
+            "preset": preset,
+            "targets": ["JuicerOfxMeasurementModule"],
+            "commands": [{"returncode": 0, "drained": True, "process_status": "completed"}],
+            "members": {"candidate.json": member(baseline_snapshot), "candidate.patch": member(baseline_patch)},
+        }
+        baseline_build_bytes = json.dumps(baseline_build_result).encode()
+        (directory / "matched-highlight-baseline-artifacts.json").write_bytes(manifest_bytes)
+        (directory / "matched-highlight-observed-build-result.json").write_bytes(baseline_build_bytes)
+        (directory / "matched-highlight-observed-candidate.json").write_bytes(baseline_snapshot)
+        (directory / "matched-highlight-observed-candidate.patch").write_bytes(baseline_patch)
+
+        consumed = self.root / "consumed"
+        consumed.write_text("qualified module source")
+        reference_production = production_evidence(preset, "baseline-ship", consumed)
+        candidate_production = production_evidence(preset, "candidate-ship", consumed)
+        for names, proof in ((ofx.REFERENCE_PROOF, reference_production),):
+            for (name, _), data in zip(names, proof):
+                (directory / name).write_bytes(data)
+        candidate_names = (
+            "candidate-production-result.json",
+            "candidate-production-contract.json",
+            "candidate-production-source.json",
+            "candidate-production-source.patch",
+        )
+        for name, data in zip(candidate_names, candidate_production):
+            (directory / name).write_bytes(data)
+        result["comparison"] = "matched-highlight"
+        result["reference_qualification"] = ofx.reference_qualification(
+            reference_production, preset, "baseline-ship", check_inputs=False, comparison="matched-highlight"
+        )
+        result["candidate_qualification"] = ofx.candidate_qualification(
+            *candidate_production, preset, "candidate-ship", check_inputs=False
+        )
+        result["matched_highlight_baseline_binding"] = ofx.validate_matched_highlight_baseline(
+            inputs,
+            preset,
+            result["identities"],
+            manifest_bytes=manifest_bytes,
+            build_result_bytes=baseline_build_bytes,
+            build_snapshot_bytes=baseline_snapshot,
+            build_patch_bytes=baseline_patch,
+        )["binding"]
+        result["evidence"] = {
+            path.name: ofx.execution.digest(path)
+            for path in directory.iterdir()
+            if path.is_file() and path.name != "result.json"
+        }
+        (directory / "result.json").write_text(json.dumps(result))
+        return directory
+
     def test_identity_mismatch(self):
         p = self.root / "file"
         p.write_text("x")
@@ -264,6 +409,60 @@ class MeasurementReportTests(unittest.TestCase):
         (p / "result.json").write_text(json.dumps(result))
         with self.assertRaises(ValueError):
             ofx.report_run(p)
+
+    def test_matched_highlight_report_requires_both_closures_and_all_controls(self):
+        linux = self.make_matched_highlight_run("linux-release")
+        windows = self.make_matched_highlight_run("windows-clang-release")
+        report = ofx.offline_report([linux, windows])
+        self.assertEqual(report["comparison"], "matched-highlight")
+        self.assertEqual(sum(key.startswith("shipping/") for key in report["comparisons"]["linux-release"]["rows"]), 10)
+
+        result = json.loads((linux / "result.json").read_text())
+        result["reference_qualification"] = None
+        (linux / "result.json").write_text(json.dumps(result))
+        with self.assertRaisesRegex(ValueError, "reference production closure"):
+            ofx.report_run(linux)
+
+    def test_matched_highlight_requires_candidate_closure_even_for_fixed_candidate_hash(self):
+        run = self.make_matched_highlight_run("linux-release")
+        result = json.loads((run / "result.json").read_text())
+        inputs_path = run / "inputs.json"
+        inputs = json.loads(inputs_path.read_text())
+        fixed_candidate_hash = ofx.SHIPPING["linux-release"]["candidate"]
+        inputs["candidate"]["shipping"]["sha256"] = fixed_candidate_hash
+        inputs_path.write_text(json.dumps(inputs))
+        result["identities"]["candidate"]["shipping"] = fixed_candidate_hash
+        result["candidate_qualification"] = None
+        result["evidence"]["inputs.json"] = ofx.execution.digest(inputs_path)
+        (run / "result.json").write_text(json.dumps(result))
+        with self.assertRaisesRegex(ValueError, "candidate production qualification"):
+            ofx.report_run(run)
+
+    def test_matched_highlight_rejects_missing_zero_control_and_wrong_exposure(self):
+        run = self.make_matched_highlight_run("linux-release")
+        sample_path = run / "shipping-halation-1080p-direct-boost-zero-0-reference.json"
+        original_sample = json.loads(sample_path.read_text())
+        original_bytes = sample_path.read_bytes()
+        cases = (("halation_boost_ev", 4.0), ("controls", {"Exposure": [5.0]}))
+        self.subtest_cases = tuple(field for field, _ in cases)
+        for field, value in cases:
+            sample_data = dict(original_sample)
+            sample_data[field] = value
+            sample_path.write_text(json.dumps(sample_data))
+            result = json.loads((run / "result.json").read_text())
+            result["evidence"][sample_path.name] = ofx.execution.digest(sample_path)
+            (run / "result.json").write_text(json.dumps(result))
+            with self.subTest(case=field), self.assertRaisesRegex(ValueError, "exposure 6"):
+                ofx.report_run(run)
+            sample_path.write_bytes(original_bytes)
+            result["evidence"][sample_path.name] = ofx.execution.digest(sample_path)
+            (run / "result.json").write_text(json.dumps(result))
+
+        result = json.loads((run / "result.json").read_text())
+        result["workloads"].remove("halation-uhd-direct-boost-zero")
+        (run / "result.json").write_text(json.dumps(result))
+        with self.assertRaisesRegex(ValueError, "all eight boosted and two zero-boost"):
+            ofx.report_run(run)
 
     def test_incomplete_memory(self):
         out_of_order = sample("observed", ofx.ROWS[0])
@@ -326,6 +525,9 @@ class MeasurementReportTests(unittest.TestCase):
         (windows / "result.json").write_text(json.dumps(result))
         with self.assertRaises(ValueError):
             ofx.offline_report([linux, windows])
+
+
+MeasurementReportTests.test_matched_highlight_rejects_missing_zero_control_and_wrong_exposure.required_subtests = True
 
 
 if __name__ == "__main__":

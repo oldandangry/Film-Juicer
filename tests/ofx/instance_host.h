@@ -32,7 +32,7 @@ namespace ofx_test {
     };
 
     // Frozen from the independent C++ constructor, in handle acquisition order.
-    inline constexpr std::array<InstanceParamDefinition, 113> kInstanceParameters{{{"Exposure", InstanceParamKind::Double},
+    inline constexpr std::array<InstanceParamDefinition, 125> kInstanceParameters{{{"Exposure", InstanceParamKind::Double},
                                                                                    {"CameraAutoExposure", InstanceParamKind::Boolean},
                                                                                    {"CameraFilmFormatPreset", InstanceParamKind::Choice},
                                                                                    {"CameraFilmFormatMm", InstanceParamKind::Double},
@@ -85,6 +85,18 @@ namespace ofx_test {
                                                                                    {"HalationScatterSpatialScale", InstanceParamKind::Double},
                                                                                    {"HalationAmount", InstanceParamKind::Double},
                                                                                    {"HalationSpatialScale", InstanceParamKind::Double},
+                                                                                   {"HalationScatterCoreSigmaUm", InstanceParamKind::Double3D},
+                                                                                   {"HalationScatterTailScaleUm", InstanceParamKind::Double3D},
+                                                                                   {"HalationScatterTailWeight", InstanceParamKind::Double3D},
+                                                                                   {"HalationReflectionSource", InstanceParamKind::Choice},
+                                                                                   {"HalationStrengthRgb", InstanceParamKind::Double3D},
+                                                                                   {"HalationFirstBounceSigmaUm", InstanceParamKind::Double3D},
+                                                                                   {"HalationBounceCount", InstanceParamKind::Integer},
+                                                                                   {"HalationBounceDecay", InstanceParamKind::Double},
+                                                                                   {"HalationRenormalize", InstanceParamKind::Boolean},
+                                                                                   {"HalationHighlightBoostEv", InstanceParamKind::Double},
+                                                                                   {"HalationHighlightProtectionEv", InstanceParamKind::Double},
+                                                                                   {"HalationHighlightBoostRange", InstanceParamKind::Double},
                                                                                    {"GrainActive", InstanceParamKind::Boolean},
                                                                                    {"GrainSublayersActive", InstanceParamKind::Boolean},
                                                                                    {"GrainPreset", InstanceParamKind::Choice},

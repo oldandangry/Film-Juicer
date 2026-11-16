@@ -463,7 +463,11 @@ namespace OpticsTest {
                                               input.scatter_halation.scatter_amount,
                                               input.scatter_halation.scatter_spatial_scale,
                                               input.scatter_halation.halation_amount,
-                                              input.scatter_halation.halation_spatial_scale};
+                                              input.scatter_halation.halation_spatial_scale,
+                                              0,
+                                              {},
+                                              {},
+                                              {}};
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<JuicerTestSupport::PreparedStateHold> product;

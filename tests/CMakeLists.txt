@@ -1217,13 +1217,26 @@ set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
 add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp ofx/render_assertions.cpp
     scatter_halation/integration_test_cases.cpp)
+
+# Explicit maintenance experiment; it never substitutes a production kernel.
+add_executable(JuicerHighlightBoostPrecisionTests EXCLUDE_FROM_ALL
+    scatter_halation/highlight_precision.cpp
+    ../src/Cuda/Film/JuicerCudaHighlightBoost.cu)
+target_link_libraries(JuicerHighlightBoostPrecisionTests PRIVATE
+    juicer_settings CUDA::cudart)
+set_target_properties(JuicerHighlightBoostPrecisionTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    JUICER_RUST_VARIANT none
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+
 add_test(NAME Ofx.Gpu.StreamContract
     COMMAND JuicerAdapterTraceProbe --stream-contract "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
         --trace-output "${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract.log")
 set_tests_properties(Ofx.Gpu.StreamContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu
     ENVIRONMENT "JUICER_DIAGNOSTICS=3;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract-diagnostic.log")
 
-add_library(juicer_context_drain_test_root OBJECT ../src/ProcessRoot.cpp)
+add_library(juicer_context_drain_test_root OBJECT
+    ../src/ProcessRoot.cpp ../src/Cuda/Film/JuicerCudaHighlightBoost.cu)
 target_link_libraries(juicer_context_drain_test_root PRIVATE juicer_settings)
 target_compile_definitions(juicer_context_drain_test_root PRIVATE
     JUICER_CONTEXT_DRAIN_TEST_HOOK=1)
@@ -1601,7 +1614,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(juicer_without_cufft_targets
         JuicerHashContractTests JuicerScratchRequestTests JuicerProfileCudaSafetyTests
         JuicerGrainDeltaTests JuicerRenderAssertionTests JuicerProductionPreparedRenderProbe
-        JuicerOfxMeasurement JuicerOfxMeasurementTests)
+        JuicerOfxMeasurement JuicerOfxMeasurementTests JuicerHighlightBoostPrecisionTests)
     set(juicer_shared_cufft_targets)
     get_property(juicer_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS juicer_test_targets)
@@ -1715,6 +1728,6 @@ foreach(target IN LISTS juicer_rust_candidates)
 endforeach()
 list(APPEND juicer_rust_consumers JuicerOfxMeasurementModule)
 set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts
-    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
+    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
 juicer_write_python_targets()
 set(JUICER_RUST_TEST_CONSUMERS "${juicer_rust_consumers}" PARENT_SCOPE)

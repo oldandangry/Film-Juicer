@@ -63,6 +63,20 @@ pub(crate) const FJ_OPTICS_FIELD_RESOLVED_HASH: u32 = 14;
 pub(crate) const FJ_OPTICS_FIELD_SIGMA_UM: u32 = 15;
 #[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_TOTAL_STRENGTH: u32 = 16;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_SCATTER_CORE: u32 = 17;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_SCATTER_TAIL: u32 = 18;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_SCATTER_TAIL_WEIGHT: u32 = 19;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_FIRST_BOUNCE_SIGMA: u32 = 20;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_REFLECTION_STRENGTH: u32 = 21;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_BOUNCE_COUNT: u32 = 22;
+#[cfg(feature = "test-support")]
+pub(crate) const FJ_OPTICS_FIELD_BOUNCE_DECAY: u32 = 23;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -144,9 +158,15 @@ pub(crate) struct FjHalationRecipe {
     pub(crate) first_sigma_um: [f32; 3],
     pub(crate) total_strength: [f32; 3],
     pub(crate) hash: u64,
+    pub(crate) scatter_core_um: [f64; 3],
+    pub(crate) scatter_tail_um: [f64; 3],
+    pub(crate) scatter_tail_weight: [f32; 3],
+    pub(crate) bounce_weights: [f32; optics::HALATION_MAX_BOUNCES],
+    pub(crate) bounce_count: u32,
+    pub(crate) schedule_flags: u32,
 }
 
-const _: () = assert!(size_of::<FjHalationRecipe>() == 56 && align_of::<FjHalationRecipe>() == 8);
+const _: () = assert!(size_of::<FjHalationRecipe>() == 144 && align_of::<FjHalationRecipe>() == 8);
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FjSpatialOpticsRecipe {
@@ -158,7 +178,7 @@ pub(crate) struct FjSpatialOpticsRecipe {
 }
 
 const _: () =
-    assert!(size_of::<FjSpatialOpticsRecipe>() == 288 && align_of::<FjSpatialOpticsRecipe>() == 8);
+    assert!(size_of::<FjSpatialOpticsRecipe>() == 376 && align_of::<FjSpatialOpticsRecipe>() == 8);
 #[repr(C)]
 #[derive(Clone, Copy)]
 #[cfg(feature = "test-support")]
@@ -315,6 +335,13 @@ impl Failure {
             optics::Field::ResolvedHash => FJ_OPTICS_FIELD_RESOLVED_HASH,
             optics::Field::SigmaUm => FJ_OPTICS_FIELD_SIGMA_UM,
             optics::Field::TotalStrength => FJ_OPTICS_FIELD_TOTAL_STRENGTH,
+            optics::Field::ScatterCore => FJ_OPTICS_FIELD_SCATTER_CORE,
+            optics::Field::ScatterTail => FJ_OPTICS_FIELD_SCATTER_TAIL,
+            optics::Field::ScatterTailWeight => FJ_OPTICS_FIELD_SCATTER_TAIL_WEIGHT,
+            optics::Field::FirstBounceSigma => FJ_OPTICS_FIELD_FIRST_BOUNCE_SIGMA,
+            optics::Field::ReflectionStrength => FJ_OPTICS_FIELD_REFLECTION_STRENGTH,
+            optics::Field::BounceCount => FJ_OPTICS_FIELD_BOUNCE_COUNT,
+            optics::Field::BounceDecay => FJ_OPTICS_FIELD_BOUNCE_DECAY,
         };
         Self {
             category: FJ_STATUS_PREPARATION_FAILURE,
@@ -376,18 +403,47 @@ fn project(v: &optics::Recipe) -> FjSpatialOpticsRecipe {
             sigma_um: lens.sigma_um(),
             hash: lens.hash(),
         },
-        scatter_halation: FjHalationRecipe {
-            scatter_active: u32::from(halation.scatter_active()),
-            back_reflection_active: u32::from(halation.back_reflection_active()),
-            scatter_amount: halation.scatter_amount(),
-            scatter_spatial_scale: halation.scatter_spatial_scale(),
-            halation_spatial_scale: halation.halation_spatial_scale(),
-            first_sigma_um: *halation.first_sigma_um(),
-            total_strength: *halation.total_strength(),
-            hash: halation.hash(),
-        },
+        scatter_halation: project_halation(halation),
         enlarger_diffusion: project_diffusion(v.enlarger_diffusion()),
         hash: v.hash(),
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+const RESOLVED_HALATION: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
+const LEGACY_SCATTER: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
+const LEGACY_REFLECTION: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
+const RENORMALIZE: u32 = 8;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn project_halation(halation: &optics::Halation) -> FjHalationRecipe {
+    let input = optics::HalationFrameInput::from(halation);
+    let schedule_flags = if input.recipe_hash != 0 {
+        RESOLVED_HALATION
+            | (u32::from(input.legacy_scatter) * LEGACY_SCATTER)
+            | (u32::from(input.legacy_reflection) * LEGACY_REFLECTION)
+            | (u32::from(input.renormalize) * RENORMALIZE)
+    } else {
+        0
+    };
+    FjHalationRecipe {
+        scatter_active: u32::from(input.scatter_active),
+        back_reflection_active: u32::from(input.back_reflection_active),
+        scatter_amount: input.scatter_amount,
+        scatter_spatial_scale: input.scatter_spatial_scale,
+        halation_spatial_scale: input.halation_spatial_scale,
+        first_sigma_um: input.first_sigma_um,
+        total_strength: input.total_strength,
+        hash: input.recipe_hash,
+        scatter_core_um: input.scatter_core_um,
+        scatter_tail_um: input.scatter_tail_um,
+        scatter_tail_weight: input.scatter_tail_weight,
+        bounce_weights: input.bounce_weights,
+        bounce_count: input.bounce_count as u32,
+        schedule_flags,
     }
 }
 /// # Safety
@@ -447,7 +503,10 @@ pub(crate) unsafe fn prepare(
                 halation_spatial_scale: h.halation_spatial_scale,
                 first_sigma_um: h.first_sigma_um,
                 primary_amount: h.primary_amount,
+                shape: optics::HalationShape::default(),
+                legacy_reflection: true,
             },
+            highlight_boost: None,
             enlarger_diffusion: diffusion_params(&input.enlarger_diffusion),
             print_domain: input.print_domain != 0,
         };
@@ -960,7 +1019,7 @@ pub(crate) struct FjHalationFrameFailure {
     pub(crate) sigma_px: f64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn halation_frame_none() -> FjHalationFrameFailure {
     FjHalationFrameFailure {
         reason: 0,
@@ -970,66 +1029,13 @@ fn halation_frame_none() -> FjHalationFrameFailure {
         sigma_px: 0.0,
     }
 }
-#[cfg(any(test, feature = "test-support"))]
-const HALATION_IDENTITY: crate::cuda::sys::FjHalationGaussian =
-    crate::cuda::sys::FjHalationGaussian {
-        kind: 0,
-        radius: 0,
-        fir_weights: [0.0; 19],
-        feedforward: 0.0,
-        feedback: [0.0; 3],
-    };
-#[cfg(any(test, feature = "test-support"))]
-fn empty_halation_frame() -> crate::cuda::sys::FjScatterHalation {
-    crate::cuda::sys::FjScatterHalation {
-        recipe_hash: 0,
-        scatter_amount: 0.0,
-        channels: [crate::cuda::sys::FjHalationChannel {
-            core: HALATION_IDENTITY,
-            tail: [HALATION_IDENTITY; 3],
-            bounce: [HALATION_IDENTITY; 3],
-            total_strength: 0.0,
-        }; 3],
-    }
-}
-#[cfg(any(test, feature = "test-support"))]
-fn halation_gaussian(v: &optics::HalationGaussian) -> crate::cuda::sys::FjHalationGaussian {
-    crate::cuda::sys::FjHalationGaussian {
-        kind: match v.kind() {
-            optics::HalationGaussianKind::Identity => 0,
-            optics::HalationGaussianKind::FirReflect => 1,
-            optics::HalationGaussianKind::YvvReplicate => 2,
-        },
-        radius: v.radius(),
-        fir_weights: *v.fir_weights(),
-        feedforward: v.yvv()[0],
-        feedback: [v.yvv()[1], v.yvv()[2], v.yvv()[3]],
-    }
-}
-#[cfg(any(test, feature = "test-support"))]
-fn halation_frame_projection(v: &optics::HalationFrame) -> crate::cuda::sys::FjScatterHalation {
-    crate::cuda::sys::FjScatterHalation {
-        recipe_hash: v.recipe_hash(),
-        scatter_amount: v.scatter_amount(),
-        channels: std::array::from_fn(|channel| {
-            let c = &v.channels()[channel];
-            crate::cuda::sys::FjHalationChannel {
-                core: halation_gaussian(c.core()),
-                tail: std::array::from_fn(|i| halation_gaussian(&c.tail()[i])),
-                bounce: std::array::from_fn(|i| halation_gaussian(&c.bounce()[i])),
-                total_strength: c.total_strength(),
-            }
-        }),
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 enum HalationFrameRejection {
     Raw,
     Core(optics::HalationFrameError),
     Panic,
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 impl HalationFrameRejection {
     fn fields(&self) -> (u32, FjHalationFrameFailure, &'static str) {
         let mut failure = halation_frame_none();
@@ -1047,6 +1053,34 @@ impl HalationFrameRejection {
                 (
                     FJ_STATUS_PREPARATION_FAILURE,
                     "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um",
+                )
+            }
+            Self::Core(optics::HalationFrameError::BounceCount) => {
+                failure.reason = 6;
+                failure.field = 5;
+                (
+                    FJ_STATUS_PREPARATION_FAILURE,
+                    "ResourceDescriptorMismatch component=scatter_halation field=bounce_count",
+                )
+            }
+            Self::Core(optics::HalationFrameError::AdvancedRadius {
+                field,
+                channel,
+                index,
+                sigma_px,
+            }) => {
+                failure.reason = 5;
+                failure.field = match field {
+                    optics::HalationFrameField::ScatterCore => 2,
+                    optics::HalationFrameField::ScatterTail => 3,
+                    optics::HalationFrameField::Bounce => 4,
+                };
+                failure.channel = channel as u32;
+                failure.index = index.map_or(5, |i| i as u32);
+                failure.sigma_px = sigma_px;
+                (
+                    FJ_STATUS_PREPARATION_FAILURE,
+                    "ResourceDescriptorMismatch component=scatter_halation reason=advanced_radius",
                 )
             }
             Self::Core(optics::HalationFrameError::Gaussian {
@@ -1091,7 +1125,7 @@ impl HalationFrameRejection {
 /// # Safety
 /// Independently numerically valid writable records authorize initialized/live,
 /// aligned exclusive storage disjoint from all other records and backing.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 unsafe fn clear_halation_frame(
     out: *mut crate::cuda::sys::FjScatterHalation,
     failure: *mut FjHalationFrameFailure,
@@ -1099,7 +1133,7 @@ unsafe fn clear_halation_frame(
     // SAFETY: Each peer's numeric admission is independent; provenance is a caller obligation.
     unsafe {
         if valid_extent(out, 1) {
-            out.write(empty_halation_frame());
+            out.write(crate::cuda::empty_halation());
         }
         if valid_extent(failure, 1) {
             failure.write(halation_frame_none());
@@ -1109,7 +1143,7 @@ unsafe fn clear_halation_frame(
 
 /// # Safety
 /// Same initialized/live/exclusive/disjoint obligations as halation_frame_prepare.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 unsafe fn halation_frame_body(
     input: *const FjHalationFrameInput,
     out: *mut crate::cuda::sys::FjScatterHalation,
@@ -1136,9 +1170,8 @@ unsafe fn halation_frame_body(
         if h.scatter_active > 1 || h.back_reflection_active > 1 {
             return Err(HalationFrameRejection::Raw);
         }
-        #[cfg(feature = "test-support")]
         let fault = halation_frame_faults::take();
-        let input_recipe = optics::HalationFrameInput {
+        let mut input_recipe = optics::HalationFrameInput {
             scatter_active: h.scatter_active != 0,
             back_reflection_active: h.back_reflection_active != 0,
             scatter_amount: h.scatter_amount,
@@ -1147,22 +1180,30 @@ unsafe fn halation_frame_body(
             first_sigma_um: h.first_sigma_um,
             total_strength: h.total_strength,
             recipe_hash: h.hash,
+            ..optics::HalationFrameInput::default()
         };
-        let frame = checked_halation_frame(input_recipe, input.pixel_size_um, {
-            #[cfg(feature = "test-support")]
+        if h.schedule_flags != 0 {
+            const SCHEDULE_FLAGS: u32 =
+                RESOLVED_HALATION | LEGACY_SCATTER | LEGACY_REFLECTION | RENORMALIZE;
+            if h.schedule_flags & !SCHEDULE_FLAGS != 0 || h.schedule_flags & RESOLVED_HALATION == 0
             {
-                fault
+                return Err(HalationFrameRejection::Raw);
             }
-            #[cfg(not(feature = "test-support"))]
-            {
-                0
-            }
-        })
-        .map_err(HalationFrameRejection::Core)?;
-        let wire = frame
-            .as_ref()
-            .map_or_else(empty_halation_frame, halation_frame_projection);
-        #[cfg(feature = "test-support")]
+            input_recipe.scatter_core_um = h.scatter_core_um;
+            input_recipe.scatter_tail_um = h.scatter_tail_um;
+            input_recipe.scatter_tail_weight = h.scatter_tail_weight;
+            input_recipe.bounce_weights = h.bounce_weights;
+            input_recipe.bounce_count = h.bounce_count as usize;
+            input_recipe.legacy_scatter = h.schedule_flags & LEGACY_SCATTER != 0;
+            input_recipe.legacy_reflection = h.schedule_flags & LEGACY_REFLECTION != 0;
+            input_recipe.renormalize = h.schedule_flags & RENORMALIZE != 0;
+        }
+        let frame = checked_halation_frame(input_recipe, input.pixel_size_um, fault)
+            .map_err(HalationFrameRejection::Core)?;
+        let wire = frame.as_ref().map_or_else(
+            crate::cuda::empty_halation,
+            crate::cuda::halation_projection,
+        );
         let wire = halation_frame_faults::corrupt(wire, fault);
         Ok(wire)
     })();
@@ -1209,7 +1250,7 @@ pub(crate) fn checked_halation_frame(
 /// Required records are initialized/aligned/live. Writable records and optional
 /// diagnostic backing are exclusive, mutually disjoint and disjoint from input.
 /// Numeric checks do not prove arbitrary pointer provenance. No borrow escapes.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn halation_frame_prepare(
     input: *const FjHalationFrameInput,
     out: *mut crate::cuda::sys::FjScatterHalation,
@@ -1274,9 +1315,9 @@ pub(crate) mod halation_frame_faults {
 }
 
 const _: () = {
-    assert!(size_of::<FjHalationFrameInput>() == 64 && align_of::<FjHalationFrameInput>() == 8);
+    assert!(size_of::<FjHalationFrameInput>() == 152 && align_of::<FjHalationFrameInput>() == 8);
     assert!(std::mem::offset_of!(FjHalationFrameInput, recipe) == 0);
-    assert!(std::mem::offset_of!(FjHalationFrameInput, pixel_size_um) == 56);
+    assert!(std::mem::offset_of!(FjHalationFrameInput, pixel_size_um) == 144);
     assert!(size_of::<FjHalationFrameFailure>() == 24 && align_of::<FjHalationFrameFailure>() == 8);
     assert!(std::mem::offset_of!(FjHalationFrameFailure, reason) == 0);
     assert!(std::mem::offset_of!(FjHalationFrameFailure, field) == 4);
@@ -1302,13 +1343,16 @@ const _: fn(
     let _: u32 = gaussian.kind;
     let _: i32 = gaussian.radius;
     let _: [f32; 19] = gaussian.fir_weights;
-    let _: f32 = gaussian.feedforward;
-    let _: [f32; 3] = gaussian.feedback;
+    let _: [f32; 4] = gaussian.yvv;
     let _: crate::cuda::sys::FjHalationGaussian = channel.core;
     let _: [crate::cuda::sys::FjHalationGaussian; 3] = channel.tail;
-    let _: [crate::cuda::sys::FjHalationGaussian; 3] = channel.bounce;
+    let _: [crate::cuda::sys::FjHalationGaussian; optics::HALATION_MAX_BOUNCES] = channel.bounce;
     let _: f32 = channel.total_strength;
+    let _: f32 = channel.tail_weight;
     let _: u64 = frame.recipe_hash;
     let _: f32 = frame.scatter_amount;
+    let _: u32 = frame.bounce_count;
+    let _: [f32; optics::HALATION_MAX_BOUNCES] = frame.bounce_weights;
+    let _: u32 = frame.renormalize;
     let _: [crate::cuda::sys::FjHalationChannel; 3] = frame.channels;
 };

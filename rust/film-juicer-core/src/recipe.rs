@@ -182,6 +182,7 @@ pub struct Params {
     pub camera_auto_exposure_enabled: i32,
     pub camera_metering_method: i32,
     pub scatter_halation: HalationControls,
+    pub highlight_boost: optics::highlight_boost::Controls,
     pub scanner_black_correction: i32,
     pub scanner_white_correction: i32,
     pub scanner_lut_resolution: i32,
@@ -198,13 +199,62 @@ pub struct Params {
     pub camera_filter_override: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct HalationControls {
     pub active: bool,
     pub scatter_amount: f32,
     pub scatter_spatial_scale: f32,
     pub halation_amount: f32,
     pub halation_spatial_scale: f32,
+    pub shape: optics::HalationShape,
+    pub reflection: HalationReflectionSource,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum HalationReflectionSource {
+    #[default]
+    Profile,
+    Custom {
+        strength: [f64; 3],
+        first_sigma_um: [f64; 3],
+    },
+}
+
+impl HalationReflectionSource {
+    pub fn validate(self) -> Result<Self, optics::Error> {
+        match self {
+            Self::Profile => Ok(self),
+            Self::Custom {
+                strength,
+                first_sigma_um,
+            } => Ok(Self::Custom {
+                strength: optics::halation_triplet(
+                    strength,
+                    optics::HALATION_MAX_AUTHORED,
+                    optics::Field::ReflectionStrength,
+                )?,
+                first_sigma_um: optics::halation_triplet(
+                    first_sigma_um,
+                    optics::HALATION_MAX_AUTHORED,
+                    optics::Field::FirstBounceSigma,
+                )?,
+            }),
+        }
+    }
+
+    fn resolve(
+        self,
+        profile_sigma_um: [f32; 3],
+        profile_strength: [f32; 3],
+    ) -> Result<([f32; 3], [f32; 3]), optics::Error> {
+        match self.validate()? {
+            Self::Profile => Ok((profile_sigma_um, profile_strength)),
+            Self::Custom {
+                strength,
+                first_sigma_um,
+            } => Ok((first_sigma_um.map(|v| v as f32), strength.map(|v| v as f32))),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,6 +316,7 @@ pub enum PrepareError {
     Control(ControlError),
     Input(input::Error),
     Optics(optics::Error),
+    HighlightBoost(optics::highlight_boost::Error),
     Minimum(density::Error),
     Grain(grain::Error),
     Effects(effects::Error),
@@ -321,6 +372,7 @@ impl fmt::Display for PrepareError {
             Self::Control(error) => error.fmt(f),
             Self::Input(error) => error.fmt(f),
             Self::Optics(error) => optics_diagnostic(*error, f),
+            Self::HighlightBoost(error) => f.write_str(error.diagnostic()),
             Self::Minimum(_) => {
                 f.write_str("MalformedRequiredProfileData phase=9A field=grain_contract")
             }
@@ -419,11 +471,12 @@ fn exposure_boundary_diagnostic(error: exposure::BoundaryError) -> &'static str 
 }
 
 fn optics_diagnostic(error: optics::Error, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    use optics::{Component, Field};
+    use optics::Component;
+    let field = error.field().name();
     if error.component() == Component::ScatterHalation {
         return write!(
             f,
-            "ResourceDescriptorMismatch component=scatter_halation field=total_strength channel={}",
+            "ResourceDescriptorMismatch component=scatter_halation field={field} channel={}",
             error.channel().unwrap_or(3)
         );
     }
@@ -432,24 +485,6 @@ fn optics_diagnostic(error: optics::Error, f: &mut fmt::Formatter<'_>) -> fmt::R
         Component::EnlargerDiffusion => "enlarger_diffusion",
         Component::CameraLensBlur => "camera_lens_blur",
         Component::ScatterHalation => unreachable!(),
-    };
-    let field = match error.field() {
-        Field::Family => "family",
-        Field::Strength => "strength",
-        Field::SpatialScale => "spatial_scale",
-        Field::HaloWarmth => "halo_warmth",
-        Field::CoreIntensity => "core_intensity",
-        Field::CoreSize => "core_size",
-        Field::HaloIntensity => "halo_intensity",
-        Field::HaloSize => "halo_size",
-        Field::BloomIntensity => "bloom_intensity",
-        Field::BloomSize => "bloom_size",
-        Field::ScatterFraction => "scatter_fraction",
-        Field::GroupWeights => "group_weights",
-        Field::GroupCenters => "group_centers_um",
-        Field::ResolvedHash => "resolved_hash",
-        Field::SigmaUm => "sigma_um",
-        Field::TotalStrength => "total_strength",
     };
     write!(
         f,
@@ -1603,6 +1638,17 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     .map_err(PrepareError::Input)?;
     let defaults = film.processing_defaults();
     let controls = params.scatter_halation;
+    let reflection = if controls.active {
+        controls.reflection
+    } else {
+        HalationReflectionSource::Profile
+    };
+    let (first_sigma_um, primary_amount) = reflection
+        .resolve(
+            defaults.halation_first_sigma_um,
+            defaults.halation_primary_amount,
+        )
+        .map_err(PrepareError::Optics)?;
     let optics = optics::Recipe::new(optics::Params {
         camera_diffusion: params.camera_diffusion,
         camera_lens_blur_um: 0.0,
@@ -1612,9 +1658,13 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
             scatter_spatial_scale: controls.scatter_spatial_scale,
             halation_amount: controls.halation_amount,
             halation_spatial_scale: controls.halation_spatial_scale,
-            first_sigma_um: defaults.halation_first_sigma_um,
-            primary_amount: defaults.halation_primary_amount,
+            first_sigma_um,
+            primary_amount,
+            shape: controls.shape,
+            legacy_reflection: crate::profile::is_legacy_halation(first_sigma_um, primary_amount),
         },
+        highlight_boost: optics::highlight_boost::Recipe::new(params.highlight_boost)
+            .map_err(PrepareError::HighlightBoost)?,
         enlarger_diffusion: params.enlarger_diffusion,
         print_domain: selected_print.is_some(),
     })
@@ -2213,7 +2263,9 @@ pub(crate) mod test_support {
                 scatter_spatial_scale: 1.0,
                 halation_amount: 1.0,
                 halation_spatial_scale: 1.0,
+                ..HalationControls::default()
             },
+            highlight_boost: optics::highlight_boost::Controls::default(),
             scanner_black_correction: 0,
             scanner_white_correction: 0,
             scanner_lut_resolution: 17,

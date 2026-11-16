@@ -2,6 +2,7 @@
 #include "integration_test.h"
 
 #include "../ffi/case_results.h"
+#include "../ffi/prepared_product_fixture.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <cuda.h>
@@ -30,6 +32,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
+#include "Cuda/Film/JuicerCudaHighlightBoost.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "ProcessRoot.h"
@@ -69,6 +72,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
 namespace {
     using ScatterHalationValidation::Arguments;
     using ScatterHalationValidation::build_prepared_route_inputs;
+    using ScatterHalationValidation::ImageExtent;
     using ScatterHalationValidation::PreparedRouteInputs;
     using ScatterHalationValidation::Results;
 
@@ -314,6 +318,88 @@ namespace {
         return std::bit_cast<float>(parse_bits(value));
     }
 
+    nlohmann::json advanced_manifest(const Arguments& arguments) {
+        std::ifstream stream(arguments.fixtureRoot.parent_path() / "parity-fixtures/manifest.json");
+        auto manifest = nlohmann::json::parse(stream);
+        const auto& references = manifest.at("references");
+        if (manifest.at("schema") != "spektrafilm-halation-feature-parity.v1" ||
+            references.at("main").at("revision") != "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc" ||
+            references.at("experimental").at("revision") != "28bf883e1672e884307edc75852549376e13644e" ||
+            references.at("main").at("original_binary_sha256") != references.at("experimental").at("original_binary_sha256")) {
+            throw std::runtime_error("advanced halation oracle identity mismatch");
+        }
+        return manifest;
+    }
+
+    std::vector<std::string> parity_ids(const nlohmann::json& manifest, bool spatial) {
+        std::vector<std::string> ids;
+        for (const auto& row : manifest.at("rows")) {
+            if (row.contains("pixel_size_um") == spatial) {
+                ids.push_back(row.at("id").get<std::string>());
+            }
+        }
+        return ids;
+    }
+
+    std::vector<std::uint8_t> load_parity_binary(const Arguments& arguments, const nlohmann::json& manifest) {
+        const auto& payload = manifest.at("binary");
+        auto binary = read_binary(arguments.fixtureRoot.parent_path() / "parity-fixtures" / payload.at("file").get<std::string>());
+        if (binary.size() != payload.at("size").get<std::size_t>() ||
+            sha256(binary.data(), binary.size()) != payload.at("sha256").get_ref<const std::string&>()) {
+            throw std::runtime_error("advanced halation payload checksum mismatch");
+        }
+        return binary;
+    }
+
+    template <typename Sample, typename Stored = double>
+    SemanticPlanes<Sample> read_parity_planes(
+        const nlohmann::json& record,
+        const std::vector<std::uint8_t>& binary,
+        ImageExtent extent) {
+        const auto count = static_cast<std::size_t>(extent.width) * extent.height;
+        const auto offset = record.at("offset").get<std::size_t>();
+        const auto size = record.at("size").get<std::size_t>();
+        constexpr auto dtype = std::is_same_v<Stored, float> ? "<f4" : "<f8";
+        if (record.at("dtype") != dtype || size != count * 3 * sizeof(Stored) ||
+            offset > binary.size() || size > binary.size() - offset ||
+            sha256(binary.data() + offset, size) != record.at("sha256").get_ref<const std::string&>()) {
+            throw std::runtime_error("advanced halation plane checksum or extent mismatch");
+        }
+        SemanticPlanes<Sample> planes;
+        for (std::size_t channel = 0; channel < planes.size(); ++channel) {
+            planes[channel].resize(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                Stored value{};
+                std::memcpy(&value, binary.data() + offset + (index * 3 + channel) * sizeof(Stored), sizeof(Stored));
+                planes[channel][index] = static_cast<Sample>(value);
+            }
+        }
+        return planes;
+    }
+
+    FjPreparationHalation advanced_controls(const nlohmann::json& row) {
+        const auto& settings = row.at("parameters");
+        FjPreparationHalation result{};
+        result.active = settings.at("active").get<bool>();
+        result.scatter_amount = settings.at("scatter_amount").get<float>();
+        result.scatter_spatial_scale = settings.at("scatter_spatial_scale").get<float>();
+        result.halation_amount = settings.at("halation_amount").get<float>();
+        result.halation_spatial_scale = settings.at("halation_spatial_scale").get<float>();
+        result.reflection_source = 1;
+        result.shape.present = 1;
+        result.shape.bounce_count = settings.at("halation_n_bounces").get<std::int32_t>();
+        result.shape.bounce_decay = settings.at("halation_bounce_decay").get<double>();
+        result.shape.renormalize = settings.at("halation_renormalize").get<bool>();
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            result.reflection_strength[channel] = settings.at("halation_strength").at(channel).get<double>();
+            result.first_sigma_um[channel] = settings.at("halation_first_sigma_um").at(channel).get<double>();
+            result.shape.scatter_core_um[channel] = settings.at("scatter_core_um").at(channel).get<double>();
+            result.shape.scatter_tail_um[channel] = settings.at("scatter_tail_um").at(channel).get<double>();
+            result.shape.scatter_tail_weight[channel] = settings.at("scatter_tail_weight").at(channel).get<double>();
+        }
+        return result;
+    }
+
     std::uint64_t parse_hash(const nlohmann::json& value) {
         const std::string text = value.get<std::string>();
         if (text.size() != 16 ||
@@ -452,6 +538,24 @@ namespace {
         cudaStream_t _stream = nullptr;
     };
 
+    class CudaTimingEvent final {
+    public:
+        CudaTimingEvent() {
+            require_cuda(cudaEventCreate(&_event), "create benchmark timing event");
+        }
+        ~CudaTimingEvent() {
+            cudaEventDestroy(_event);
+        }
+        CudaTimingEvent(const CudaTimingEvent&) = delete;
+        CudaTimingEvent& operator=(const CudaTimingEvent&) = delete;
+        [[nodiscard]] cudaEvent_t get() const noexcept {
+            return _event;
+        }
+
+    private:
+        cudaEvent_t _event = nullptr;
+    };
+
     struct CandidateOutput {
         SemanticPlanes<float> finalExposure;
         std::optional<SemanticPlanes<float>> downstreamLog;
@@ -505,8 +609,7 @@ namespace {
         view.currentCarrier.rowStrideFloats = carrierStride;
         view.filterTemp = temporary;
         view.weightedAccumulation = accumulation;
-        const JuicerCuda::ScatterHalationLaunchResult launch =
-            JuicerCuda::launch_scatter_halation(view, stream.get());
+        const JuicerCuda::ScatterHalationLaunchResult launch = JuicerCuda::launch_scatter_halation(view, stream.get());
         if (launch.status != cudaSuccess) {
             std::ostringstream detail;
             detail << "halation launch status=" << cudaGetErrorString(launch.status)
@@ -618,6 +721,64 @@ namespace {
             scale = std::max(scale, std::abs(static_cast<double>(value)));
         }
         return scale;
+    }
+
+    bool compare_large_gain(
+        const SemanticPlanes<float>& source,
+        const SemanticPlanes<double>& expected,
+        const SemanticPlanes<float>& actual,
+        const FjPreparationHalation& controls,
+        std::string& detail) {
+        if (controls.scatter_amount != 0.0f || controls.shape.renormalize != 0) {
+            return false;
+        }
+        const auto ulps = [](float left, float right) {
+            const auto a = std::bit_cast<std::uint32_t>(left);
+            const auto b = std::bit_cast<std::uint32_t>(right);
+            return std::max(a, b) - std::min(a, b);
+        };
+        constexpr std::array channels{'R', 'G', 'B'};
+        std::ostringstream report;
+        report << std::scientific;
+        bool passed = true;
+        for (std::size_t channel = 0; channel < channels.size(); ++channel) {
+            const auto& input = source[channel];
+            const auto& reference = expected[channel];
+            const auto& output = actual[channel];
+            if (input.empty() || reference.size() != input.size() ||
+                output.size() != input.size() ||
+                !std::all_of(input.begin(), input.end(), [&](float sample) {
+                    return sample == input.front();
+                })) {
+                return false;
+            }
+            const double amount = controls.reflection_strength[channel] * controls.halation_amount;
+            const float flatGain = static_cast<float>(input.front() * (1.0 + amount));
+            const double peak = *std::max_element(reference.begin(), reference.end());
+            const double scale = std::max(1.0, peak);
+            double squaredError = 0.0;
+            double maxRelative = 0.0;
+            std::uint32_t maxReferenceUlps = 0;
+            std::uint32_t maxGainUlps = 0;
+            for (std::size_t i = 0; i < output.size(); ++i) {
+                if (!std::isfinite(output[i]) || !std::isfinite(reference[i]) ||
+                    output[i] < 0.0f || reference[i] < 0.0) {
+                    return false;
+                }
+                maxReferenceUlps = std::max(maxReferenceUlps, ulps(output[i], static_cast<float>(reference[i])));
+                maxGainUlps = std::max(maxGainUlps, ulps(output[i], flatGain));
+                const double relative = std::abs(output[i] - reference[i]) / scale;
+                squaredError += relative * relative;
+                maxRelative = std::max(maxRelative, relative);
+            }
+            passed = passed && maxReferenceUlps <= 1 && maxGainUlps <= 1;
+            report << ' ' << channels[channel] << "(peak=" << peak
+                   << ",reference_ulps=" << maxReferenceUlps << ",flat_gain_ulps=" << maxGainUlps
+                   << ",relative_max=" << maxRelative
+                   << ",relative_rms=" << std::sqrt(squaredError / static_cast<double>(output.size())) << ')';
+        }
+        detail += report.str();
+        return passed;
     }
 
     bool source_is_impulse_like(const SemanticPlanes<float>& source) {
@@ -933,10 +1094,10 @@ namespace {
         bool extremePassed = extreme.recipeHash != 0;
         for (const auto& channel : extreme.channels) {
             extremePassed = extremePassed &&
-                            std::isfinite(channel.core.B) &&
-                            std::isfinite(channel.core.B1) &&
-                            std::isfinite(channel.core.B2) &&
-                            std::isfinite(channel.core.B3);
+                            std::isfinite(channel.core.yvv[0]) &&
+                            std::isfinite(channel.core.yvv[1]) &&
+                            std::isfinite(channel.core.yvv[2]) &&
+                            std::isfinite(channel.core.yvv[3]);
         }
         results.record(
             "reference/descriptor/min-positive-pixel-finite-schedule",
@@ -1338,6 +1499,9 @@ namespace ScatterHalationValidation {
             list_ids("scatter_halation.reference_operator", operatorIds);
             list_ids("scatter_halation.reference_downstream", downstreamIds);
             list_ids("scatter_halation.reference_descriptor_input", descriptorIds);
+            const auto parity = advanced_manifest(arguments);
+            list_ids("scatter_halation.advanced_operator", parity_ids(parity, true));
+            list_ids("scatter_halation.highlight_boost_operator", parity_ids(parity, false));
             if (hasBackReflectionOnly) {
                 JuicerTests::list_case(
                     "scatter_halation.reference_launch_schedule",
@@ -1513,6 +1677,16 @@ namespace {
         return visual;
     }
 
+    std::string carrier_sha256(const SemanticPlanes<float>& planes) {
+        Sha256 digest;
+        for (const auto& plane : planes) {
+            digest.update(
+                reinterpret_cast<const std::uint8_t*>(plane.data()),
+                plane.size() * sizeof(float));
+        }
+        return digest.finish();
+    }
+
     void run_captured_route(
         JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
@@ -1611,6 +1785,8 @@ namespace {
             passed,
             "captured_e0_reused_sample_identically=1 seed_to_e0_max_delta=" +
                 std::to_string(capturedSourceMaximumDelta) + " " +
+                "post_diffusion_rgb_sha256=" + carrier_sha256(capturedSource) + " " +
+                "post_spatial_rgb_sha256=" + carrier_sha256(candidate.finalExposure) + " " +
                 comparisonDetail + " " + finishDiagnostic.diagnostic);
         route_event.complete(passed);
         (void)binary;
@@ -1623,17 +1799,30 @@ namespace {
     };
     static_assert(sizeof(AsymmetricHdrRgb) == 3 * sizeof(float));
 
+    enum class HighlightDensity : std::uint8_t {
+        Spatial,
+        Sparse,
+        Dense
+    };
+
     AsymmetricHdrRgb asymmetric_hdr_rgb(
-        std::size_t index) {
+        std::size_t index, HighlightDensity density) {
         const float ramp = static_cast<float>((index * 37u) % 1021u) /
                            1020.0f;
-        return {
+        const AsymmetricHdrRgb rgb{
             (index % 257u == 0u) ? 8.0f : 0.05f + 1.35f * ramp,
             (index % 383u == 0u) ? 4.0f : 0.02f + 0.95f * (1.0f - ramp),
             (index % 509u == 0u) ? 2.5f : -0.05f + 0.75f * ramp};
+        if (density == HighlightDensity::Dense) {
+            return {3.0f + 4.0f * rgb.red, 3.0f + 4.0f * rgb.green, 3.0f + 4.0f * std::max(0.0f, rgb.blue)};
+        }
+        if (density == HighlightDensity::Sparse) {
+            return {rgb.red, rgb.green, std::max(0.0f, rgb.blue)};
+        }
+        return rgb;
     }
 
-    std::string asymmetric_hdr_source_checksum(std::size_t elements) {
+    std::string asymmetric_hdr_source_checksum(std::size_t elements, HighlightDensity density) {
         constexpr std::size_t kChunkElements = 4096;
         Sha256 checksum;
         std::vector<AsymmetricHdrRgb> chunk(
@@ -1643,7 +1832,7 @@ namespace {
             const std::size_t count = std::min(
                 elements - offset, kChunkElements);
             for (std::size_t index = 0; index < count; ++index) {
-                chunk[index] = asymmetric_hdr_rgb(offset + index);
+                chunk[index] = asymmetric_hdr_rgb(offset + index, density);
             }
             checksum.update(
                 reinterpret_cast<const std::uint8_t*>(chunk.data()),
@@ -1666,6 +1855,268 @@ namespace {
 } // namespace
 
 namespace ScatterHalationValidation {
+    void run_advanced_spatial_rows(const Arguments& arguments, Results& results) {
+        const auto manifest = advanced_manifest(arguments);
+        const auto ids = parity_ids(manifest, true);
+        JuicerTests::Cohort cohort("scatter_halation.advanced_operator", ids);
+        const auto binary = load_parity_binary(arguments, manifest);
+        if (!arguments.runtimeOwner) {
+            throw std::runtime_error("advanced halation runtime unavailable");
+        }
+        auto& runtime = *arguments.runtimeOwner;
+        const auto context = current_context_key(0);
+        const JuicerTestSupport::PreparationInput defaults;
+        CudaStream stream;
+        std::uint64_t identity = 0x4300;
+        for (const auto& row : manifest.at("rows")) {
+            if (!row.contains("pixel_size_um")) {
+                continue;
+            }
+            const auto id = row.at("id").get<std::string>();
+            auto event = cohort.case_event(id);
+            try {
+                const auto shape = row.at("shape").get<std::array<int, 3>>();
+                if (shape[0] <= 0 || shape[1] <= 0 || shape[2] != 3) {
+                    throw std::runtime_error("invalid advanced halation RGB extent");
+                }
+                const ImageExtent extent{shape[1], shape[0]};
+                const auto source = read_parity_planes<float>(row.at("input"), binary, extent);
+                auto controls = advanced_controls(row);
+                const float pixelSize = row.at("pixel_size_um").get<float>();
+                if (id == "wide-yvv-1024-above") {
+                    JuicerTestSupport::PreparationInput params;
+                    params.values.scatter_halation = controls;
+                    auto state = JuicerTestSupport::prepare_product(runtime.borrow().assets, params);
+                    FjPreparedStateView view{};
+                    FjErrorBuffer error{};
+                    if (state.view(view, error).category != FJ_STATUS_SUCCESS) {
+                        throw std::runtime_error("wide radius fixture state unavailable");
+                    }
+                    const FjHalationFrameInput input{view.optics.scatter_halation, pixelSize};
+                    FjScatterHalation unused{};
+                    FjHalationFrameFailure failure{};
+                    const auto status = fj_test_scatter_halation_frame_prepare(&input, &unused, &failure, &error);
+                    const bool passed = status.category == FJ_STATUS_PREPARATION_FAILURE &&
+                                        failure.reason == FJ_HALATION_FRAME_ADVANCED_RADIUS &&
+                                        failure.field == FJ_HALATION_FRAME_FIELD_SCATTER_CORE &&
+                                        failure.channel == 0 && failure.sigma_px > 1024.0 &&
+                                        unused.recipe_hash == 0;
+                    event.complete(passed);
+                    results.record(id, passed, "typed preparation rejection above the proposed radius");
+                    continue;
+                }
+                bool passed = true;
+                std::string details;
+                const auto comparison = row.at("comparison").get<std::string>();
+                for (const char* stage : {"post_reflection", "post_scatter"}) {
+                    if (std::string_view(stage) == "post_scatter") {
+                        if (controls.scatter_amount == 0.0f || controls.halation_amount == 0.0f) {
+                            continue;
+                        }
+                        controls.halation_amount = 0.0f;
+                    }
+                    auto prepared = build_prepared_route_inputs(
+                        runtime, Spektrafilm::ScanRoute::NegativeDirectScan, {}, {}, defaults.values.dir_couplers, pixelSize, extent, 1.0f, {}, &controls);
+                    JuicerCuda::Failure failure;
+                    auto frame = prepared.prepare_frame(context, ++identity, extent, stream.get(), failure);
+                    if (!frame.active()) {
+                        throw std::runtime_error(failure.diagnostic);
+                    }
+                    auto actual = source;
+                    if (const auto* descriptor = prepared.scatter_descriptor()) {
+                        ResolvedRow candidate{};
+                        candidate.width = extent.width;
+                        candidate.height = extent.height;
+                        candidate.descriptor = *descriptor;
+                        actual = run_candidate(candidate, source, false, 7).finalExposure;
+                        const auto compact = run_candidate(candidate, source, false).finalExposure;
+                        for (std::size_t channel = 0; channel < actual.size(); ++channel) {
+                            for (std::size_t sample = 0; sample < actual[channel].size(); ++sample) {
+                                if (std::bit_cast<std::uint32_t>(actual[channel][sample]) !=
+                                    std::bit_cast<std::uint32_t>(compact[channel][sample])) {
+                                    throw std::runtime_error("advanced halation compact/padded mismatch");
+                                }
+                            }
+                        }
+                    } else if (comparison != "identity") {
+                        throw std::runtime_error("active advanced halation descriptor missing");
+                    }
+                    const auto expected = read_parity_planes<double>(row.at(stage), binary, extent);
+                    if (comparison == "large-additive-gain") {
+                        const bool comparisonPassed = compare_large_gain(source, expected, actual, controls, details);
+                        passed = frame.finish(stream.get(), failure) && passed && comparisonPassed;
+                        if (!failure.diagnostic.empty()) {
+                            details += " " + failure.diagnostic;
+                        }
+                        continue;
+                    }
+                    std::array<ErrorStats, 3> stats{};
+                    for (std::size_t channel = 0; channel < stats.size(); ++channel) {
+                        const double peak = source_scale(source[channel]);
+                        const double scale = comparison == "combined" ? std::max(1.0, peak) : 1.0;
+                        stats[channel] = absolute_error(actual[channel], expected[channel], scale);
+                        const auto& error = stats[channel];
+                        const bool impulse = std::count_if(source[channel].begin(), source[channel].end(), [](float sample) {
+                                                 return sample != 0.0f;
+                                             }) == 1;
+                        const double maximum = comparison == "identity" ? 0.0 : comparison == "fir" ? 2.0e-5
+                                                                            : comparison == "yvv"   ? 2.0e-3
+                                                                                                    : 3.0e-3;
+                        const double mean = comparison == "combined" ? 3.0e-4 : comparison == "yvv" ? 2.0e-4
+                                                                                                    : maximum;
+                        passed = passed && error.finite && error.maximum <= maximum && error.mean <= mean &&
+                                 (!impulse || error.l1 / (peak / scale) <= maximum);
+                    }
+                    details += " " + std::string(stage) + " " + stats_detail(stats, std::nullopt);
+                    passed = frame.finish(stream.get(), failure) && passed;
+                    if (!failure.diagnostic.empty()) {
+                        details += " " + failure.diagnostic;
+                    }
+                }
+                event.complete(passed);
+                results.record(id, passed, details);
+            } catch (const std::exception& error) {
+                event.complete(false);
+                results.record(id, false, error.what());
+            }
+        }
+    }
+
+    void run_highlight_boost_rows(const Arguments& arguments, Results& results) {
+        using JuicerCuda::HighlightBoostDisposition;
+        const auto manifest = advanced_manifest(arguments);
+        const auto binary = load_parity_binary(arguments, manifest);
+        JuicerTests::Cohort cohort("scatter_halation.highlight_boost_operator", parity_ids(manifest, false));
+        CudaStream stream;
+        CudaAllocation workspaceStorage(sizeof(JuicerCuda::HighlightBoostWorkspace));
+        auto* workspace = reinterpret_cast<JuicerCuda::HighlightBoostWorkspace*>(workspaceStorage.floats());
+
+        for (const auto& row : manifest.at("rows")) {
+            if (row.contains("pixel_size_um")) {
+                continue;
+            }
+            const auto id = row.at("id").get<std::string>();
+            auto event = cohort.case_event(id);
+            try {
+                const auto shape = row.at("shape").get<std::array<int, 3>>();
+                if (shape[0] <= 0 || shape[1] <= 0 || shape[2] != 3) {
+                    throw std::runtime_error("invalid highlight boost RGB extent");
+                }
+                const ImageExtent extent{shape[1], shape[0]};
+                const auto source = read_parity_planes<float, float>(row.at("input"), binary, extent);
+                const auto& parameters = row.at("parameters");
+                const double boostEv = parameters.at("boost_ev").get<double>();
+                const JuicerCuda::HighlightBoostDescriptor descriptor{
+                    boostEv == 0.0 ? 0U : 1U,
+                    0.184 * std::exp2(parameters.at("protect_ev").get<double>()),
+                    std::pow(28.0, 1.0 - parameters.at("boost_range").get<double>()),
+                    std::exp2(boostEv)};
+                const float maximum = parse_float(row.at("maximum_f32_bits"));
+                const auto comparison = row.at("comparison").get<std::string>();
+                const auto expectedStatus = comparison == "nonfinite"          ? HighlightBoostDisposition::InvalidCarrier
+                                            : comparison == "overflow"         ? HighlightBoostDisposition::PeakOverflow
+                                            : maximum <= descriptor.protection ? HighlightBoostDisposition::Bypass
+                                                                               : HighlightBoostDisposition::Applied;
+                const auto width = static_cast<std::size_t>(extent.width);
+                const auto stride = width + 7;
+                const auto planeElements = stride * static_cast<std::size_t>(extent.height);
+                const auto planeBytes = planeElements * sizeof(float);
+                constexpr float padding = std::numeric_limits<float>::max();
+                CudaAllocation planes(planeBytes * 3);
+                const std::array channels{planes.floats(), planes.floats() + planeElements, planes.floats() + 2 * planeElements};
+                const JuicerCuda::CameraFilmLinearExposurePlanes carrier{channels[0], channels[1], channels[2], stride};
+                std::array<std::vector<float>, 3> original;
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    original[c].resize(planeElements, padding);
+                    for (std::size_t y = 0; y < static_cast<std::size_t>(extent.height); ++y) {
+                        std::copy_n(source[c].data() + y * width, width, original[c].data() + y * stride);
+                    }
+                }
+                SemanticPlanes<double> expected;
+                if (comparison == "continuation") {
+                    const auto values = row.at("decimal_continuation").get<std::array<std::string, 3>>();
+                    for (std::size_t c = 0; c < channels.size(); ++c) {
+                        expected[c].push_back(std::stod(values[c]));
+                    }
+                } else if (expectedStatus == HighlightBoostDisposition::Applied) {
+                    expected = read_parity_planes<double>(row.at("pinned_output"), binary, extent);
+                }
+
+                bool passed = true;
+                double maximumError = 0.0;
+                auto firstOutput = original;
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    for (std::size_t c = 0; c < channels.size(); ++c) {
+                        require_cuda(cudaMemcpy(channels[c], original[c].data(), planeBytes, cudaMemcpyHostToDevice), "boost input upload");
+                    }
+                    require_cuda(cudaMemsetAsync(workspace, 0xff, sizeof(*workspace), stream.get()), "boost status poison");
+                    const auto launch = JuicerCuda::launch_highlight_boost(
+                        descriptor, carrier, extent.width, extent.height, workspace, stream.get(), attempt == 0 ? 1 : JuicerCuda::kHighlightBoostMaxBlocks);
+                    require_cuda(launch.status, "highlight boost kernels");
+                    require_cuda(cudaStreamSynchronize(stream.get()), "highlight boost completion");
+                    HighlightBoostDisposition status{};
+                    require_cuda(cudaMemcpy(&status, &workspace->disposition, sizeof(status), cudaMemcpyDeviceToHost), "highlight boost status");
+                    float observedMaximum = 0.0f;
+                    require_cuda(cudaMemcpy(&observedMaximum, &workspace->maximum, sizeof(observedMaximum), cudaMemcpyDeviceToHost), "highlight boost maximum");
+                    if (boostEv == 0.0) {
+                        passed = passed && static_cast<std::uint8_t>(status) == UINT8_MAX &&
+                                 std::bit_cast<std::uint32_t>(observedMaximum) == UINT32_MAX;
+                    } else {
+                        passed = passed && status == expectedStatus &&
+                                 (expectedStatus == HighlightBoostDisposition::InvalidCarrier ||
+                                  std::bit_cast<std::uint32_t>(observedMaximum) == std::bit_cast<std::uint32_t>(maximum));
+                    }
+                    for (std::size_t c = 0; c < channels.size(); ++c) {
+                        std::vector<float> downloaded(planeElements);
+                        require_cuda(cudaMemcpy(downloaded.data(), channels[c], planeBytes, cudaMemcpyDeviceToHost), "highlight boost output");
+                        if (attempt == 0) {
+                            firstOutput[c] = downloaded;
+                        } else {
+                            passed = passed && std::memcmp(downloaded.data(), firstOutput[c].data(), planeBytes) == 0;
+                        }
+                        std::vector<std::pair<float, float>> monotonic;
+                        for (std::size_t i = 0; i < planeElements; ++i) {
+                            const float raw = original[c][i];
+                            const float sample = downloaded[i];
+                            if (i % stride >= width || boostEv == 0.0 || expectedStatus != HighlightBoostDisposition::Applied ||
+                                static_cast<double>(raw) <= descriptor.protection) {
+                                passed = passed && std::bit_cast<std::uint32_t>(sample) == std::bit_cast<std::uint32_t>(raw);
+                            } else {
+                                const double reference = expected[c][i / stride * width + i % stride];
+                                const float rounded = static_cast<float>(reference);
+                                const auto a = std::bit_cast<std::uint32_t>(sample);
+                                const auto b = std::bit_cast<std::uint32_t>(rounded);
+                                const auto ulps = a >= b ? a - b : b - a;
+                                const double difference = std::abs(static_cast<double>(sample) - reference);
+                                maximumError = std::max(maximumError, difference);
+                                const bool accurate = raw == maximum ? ulps <= 1 : ulps <= 4 || difference <= 2e-6 * std::abs(reference);
+                                passed = passed && std::isfinite(sample) && accurate && sample >= raw;
+                            }
+                            if (i % stride < width && std::isfinite(raw)) {
+                                monotonic.emplace_back(raw, sample);
+                            }
+                        }
+                        if (expectedStatus == HighlightBoostDisposition::Applied) {
+                            std::sort(monotonic.begin(), monotonic.end());
+                            passed = passed && std::is_sorted(monotonic.begin(), monotonic.end(), [](const auto& a, const auto& b) {
+                                         return a.second < b.second;
+                                     });
+                        }
+                    }
+                }
+                std::ostringstream detail;
+                detail << "expected_max=" << maximum << " max_error=" << maximumError
+                       << " disposition=" << static_cast<std::uint32_t>(expectedStatus)
+                       << " padded_stride=" << stride;
+                event.complete(passed);
+                results.record(id, passed, detail.str());
+            } catch (const std::exception& error) {
+                event.complete(false);
+                results.record(id, false, error.what());
+            }
+        }
+    }
+
     void run_captured_carrier_rows(
         const Arguments& arguments,
         Results& results) {
@@ -1748,120 +2199,160 @@ namespace ScatterHalationValidation {
             }
             const ResolvedRow fixtureRow = resolve_row(
                 fixture->at("descriptorInput"));
-            const bool active = arguments.performanceMode == "active";
-            const ScatterHalationControls controls =
-                active ? fixtureRow.controls : ScatterHalationControls{};
-            const float pixelSizeUm = static_cast<float>(
-                35000.0 / static_cast<double>(
-                              std::max(arguments.performanceWidth,
-                                       arguments.performanceHeight)));
+            const auto& mode = arguments.performanceMode;
+            const bool reflection = mode == "reflection-3" || mode == "reflection-5";
+            const bool spatial = mode == "active" || reflection;
+            const bool boost = mode == "boost-dense" || mode == "boost-sparse";
+            const auto density = mode == "boost-dense" ? HighlightDensity::Dense
+                                 : boost               ? HighlightDensity::Sparse
+                                                       : HighlightDensity::Spatial;
+            const ImageExtent extent{arguments.performanceWidth, arguments.performanceHeight};
+            const float pixelSizeUm = static_cast<float>(35000.0 / static_cast<double>(std::max(extent.width, extent.height)));
+            const ScatterHalationControls controls = mode == "active" ? fixtureRow.controls : ScatterHalationControls{};
+            FjPreparationHalation reflectionControls{};
+            if (reflection) {
+                reflectionControls.active = 1;
+                reflectionControls.halation_amount = 1.0f;
+                reflectionControls.halation_spatial_scale = 1.0f;
+                reflectionControls.reflection_source = 1;
+                reflectionControls.shape.present = 1;
+                reflectionControls.shape.bounce_count = mode == "reflection-5" ? 5 : 3;
+                reflectionControls.shape.bounce_decay = 0.5;
+                reflectionControls.shape.renormalize = 1;
+                constexpr std::array strengths{0.6, 0.3, 0.1};
+                constexpr std::array sigmaUm{64.0, 66.0, 68.0};
+                std::ranges::copy(strengths, reflectionControls.reflection_strength);
+                std::ranges::copy(sigmaUm, reflectionControls.first_sigma_um);
+            }
             PreparedRouteInputs inputs = build_prepared_route_inputs(
-                *arguments.runtimeOwner,
-                Spektrafilm::ScanRoute::NegativeDirectScan,
-                controls,
-                {},
-                pixelSizeUm,
-                {arguments.performanceWidth, arguments.performanceHeight});
+                *arguments.runtimeOwner, Spektrafilm::ScanRoute::NegativeDirectScan, controls, {}, JuicerTestSupport::PreparationInput{}.values.dir_couplers, pixelSizeUm, extent, 1.0f, {}, reflection ? &reflectionControls : nullptr, boost ? std::optional{HighlightBoostSettings{4.0, 4.0, 0.3}} : std::nullopt);
             CudaStream stream;
             const auto contextKey = current_context_key(arguments.deviceIndex);
+            std::uint64_t identity = 0x50455246;
             JuicerCuda::Failure diagnostic;
-            auto frame = inputs.prepare_frame(
-                contextKey,
-                0x50455246,
-                {arguments.performanceWidth, arguments.performanceHeight},
-                stream.get(),
-                diagnostic);
-            if (!frame.active()) {
-                throw std::runtime_error(diagnostic.diagnostic);
-            }
-            const std::size_t elements =
-                static_cast<std::size_t>(arguments.performanceWidth) *
-                arguments.performanceHeight;
-            const std::uint64_t planeBytes =
-                static_cast<std::uint64_t>(elements) * sizeof(float);
+            auto prepare = [&] {
+                auto frame = inputs.prepare_frame(contextKey, ++identity, extent, stream.get(), diagnostic);
+                if (!frame.active()) {
+                    throw std::runtime_error(diagnostic.diagnostic);
+                }
+                return frame;
+            };
+            auto finish = [&](JuicerProcess::Root::PreparedCudaFrame& frame) {
+                if (!frame.finish(stream.get(), diagnostic)) {
+                    throw std::runtime_error(diagnostic.diagnostic);
+                }
+            };
+            auto hold_residency = [&] {
+                if (arguments.holdMilliseconds > 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(arguments.holdMilliseconds));
+                }
+            };
+            const std::size_t elements = static_cast<std::size_t>(extent.width) * static_cast<std::size_t>(extent.height);
+            const std::size_t planeBytes = elements * sizeof(float);
             std::vector<float> samples;
-            if (active) {
-                const auto view = frame.scatter_halation_resources();
-                if (!view.descriptor ||
-                    view.carrierSource !=
-                        JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes) {
-                    throw std::runtime_error("performance prepared view unavailable");
+            std::vector<double> statusWaitMs;
+            std::vector<double> preparationMs;
+            float coldStageMs = 0.0f;
+            if (spatial || boost) {
+                const CudaTimingEvent start;
+                const CudaTimingEvent stop;
+                SemanticPlanes<float> source;
+                for (auto& plane : source) {
+                    plane.resize(elements);
                 }
-                std::vector<float> sourceRed(elements);
-                std::vector<float> sourceGreen(elements);
-                std::vector<float> sourceBlue(elements);
                 for (std::size_t index = 0; index < elements; ++index) {
-                    const AsymmetricHdrRgb source = asymmetric_hdr_rgb(index);
-                    sourceRed[index] = source.red;
-                    sourceGreen[index] = source.green;
-                    sourceBlue[index] = source.blue;
+                    const auto sample = asymmetric_hdr_rgb(index, density);
+                    source[0][index] = sample.red;
+                    source[1][index] = sample.green;
+                    source[2][index] = sample.blue;
                 }
-                const auto reset_source = [&] {
-                    require_cuda(cudaMemcpyAsync(
-                                     view.currentCarrier.redSensitive,
-                                     sourceRed.data(),
-                                     planeBytes,
-                                     cudaMemcpyHostToDevice,
-                                     stream.get()),
-                                 "reset performance red source");
-                    require_cuda(cudaMemcpyAsync(
-                                     view.currentCarrier.greenSensitive,
-                                     sourceGreen.data(),
-                                     planeBytes,
-                                     cudaMemcpyHostToDevice,
-                                     stream.get()),
-                                 "reset performance green source");
-                    require_cuda(cudaMemcpyAsync(
-                                     view.currentCarrier.blueSensitive,
-                                     sourceBlue.data(),
-                                     planeBytes,
-                                     cudaMemcpyHostToDevice,
-                                     stream.get()),
-                                 "reset performance blue source");
+                const auto reset_source = [&](JuicerCuda::CameraFilmLinearExposurePlanes carrier) {
+                    const std::array destinations{carrier.redSensitive, carrier.greenSensitive, carrier.blueSensitive};
+                    for (std::size_t channel = 0; channel < source.size(); ++channel) {
+                        require_cuda(cudaMemcpyAsync(destinations[channel], source[channel].data(), planeBytes, cudaMemcpyHostToDevice, stream.get()), "reset benchmark source");
+                    }
+                    require_cuda(cudaStreamSynchronize(stream.get()), "complete benchmark source reset");
                 };
-                for (int index = 0; index < arguments.warmupCount; ++index) {
-                    reset_source();
-                    const auto launch =
-                        JuicerCuda::launch_scatter_halation(view, stream.get());
-                    if (launch.status != cudaSuccess) {
-                        throw std::runtime_error("performance warmup launch failed");
-                    }
-                }
-                require_cuda(
-                    cudaStreamSynchronize(stream.get()),
-                    "performance warmup completion");
-                cudaEvent_t start = nullptr;
-                cudaEvent_t stop = nullptr;
-                require_cuda(cudaEventCreate(&start), "cudaEventCreate(start)");
-                require_cuda(cudaEventCreate(&stop), "cudaEventCreate(stop)");
-                for (int index = 0; index < arguments.sampleCount; ++index) {
-                    reset_source();
-                    require_cuda(
-                        cudaEventRecord(start, stream.get()),
-                        "cudaEventRecord(start)");
-                    const auto launch =
-                        JuicerCuda::launch_scatter_halation(view, stream.get());
-                    if (launch.status != cudaSuccess) {
-                        throw std::runtime_error("performance timed launch failed");
-                    }
-                    require_cuda(
-                        cudaEventRecord(stop, stream.get()),
-                        "cudaEventRecord(stop)");
-                    require_cuda(
-                        cudaEventSynchronize(stop),
-                        "cudaEventSynchronize(stop)");
+                const auto stage_duration = [&] {
+                    require_cuda(cudaEventSynchronize(stop.get()), "wait for benchmark stage event");
                     float elapsed = 0.0f;
-                    require_cuda(
-                        cudaEventElapsedTime(&elapsed, start, stop),
-                        "cudaEventElapsedTime");
-                    samples.push_back(elapsed);
+                    require_cuda(cudaEventElapsedTime(&elapsed, start.get(), stop.get()), "time benchmark stage");
+                    return elapsed;
+                };
+                const auto collect_samples = [&](auto&& sample) {
+                    coldStageMs = sample(false);
+                    for (int index = 0; index < arguments.warmupCount; ++index) {
+                        (void)sample(false);
+                    }
+                    for (int index = 0; index < arguments.sampleCount; ++index) {
+                        samples.push_back(sample(true));
+                    }
+                };
+                if (spatial) {
+                    auto frame = prepare();
+                    const auto view = frame.scatter_halation_resources();
+                    if (!view.descriptor || view.carrierSource != JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes) {
+                        throw std::runtime_error("performance prepared spatial view unavailable");
+                    }
+                    if (reflection) {
+                        const auto count = static_cast<std::uint32_t>(reflectionControls.shape.bounce_count);
+                        bool matched = view.descriptor->bounceCount == count && view.descriptor->scatterAmount == 0.0f;
+                        for (const auto& channel : view.descriptor->channels) {
+                            for (std::size_t bounce = 0; bounce < count; ++bounce) {
+                                matched &= channel.bounce[bounce].kind == ScatterHalationGaussianKind::YvvReplicateFactored;
+                            }
+                        }
+                        if (!matched) {
+                            throw std::runtime_error("reflection comparison requires matching advanced YVV dispatch for every bounce");
+                        }
+                    }
+                    collect_samples([&](bool) {
+                        reset_source(view.currentCarrier);
+                        require_cuda(cudaEventRecord(start.get(), stream.get()), "start spatial stage timing");
+                        require_cuda(JuicerCuda::launch_scatter_halation(view, stream.get()).status, "launch spatial benchmark stage");
+                        require_cuda(cudaEventRecord(stop.get(), stream.get()), "stop spatial stage timing");
+                        return stage_duration();
+                    });
+                    hold_residency();
+                    finish(frame);
+                } else {
+                    using Clock = std::chrono::steady_clock;
+                    using Milliseconds = std::chrono::duration<double, std::milli>;
+                    collect_samples([&](bool record) {
+                        const auto preparationStart = Clock::now();
+                        auto frame = prepare();
+                        const auto preparationElapsed = Milliseconds(Clock::now() - preparationStart).count();
+                        const auto carrier = frame.camera_film_linear_carrier();
+                        if (frame.scatter_halation_resources().descriptor || carrier.rowStrideFloats != static_cast<std::size_t>(extent.width)) {
+                            throw std::runtime_error("boost-only benchmark requires compact carrier without spatial scratch");
+                        }
+                        reset_source(carrier);
+                        require_cuda(cudaEventRecord(start.get(), stream.get()), "start boost stage timing");
+                        if (!frame.enqueue_highlight_boost(carrier, stream.get(), diagnostic)) {
+                            throw std::runtime_error(diagnostic.diagnostic);
+                        }
+                        require_cuda(cudaEventRecord(stop.get(), stream.get()), "stop boost stage timing");
+                        const auto waitStart = Clock::now();
+                        if (!frame.check_highlight_boost(diagnostic)) {
+                            throw std::runtime_error(diagnostic.diagnostic);
+                        }
+                        const auto waitElapsed = Milliseconds(Clock::now() - waitStart).count();
+                        const float stageMs = stage_duration();
+                        if (record && samples.size() + 1 == static_cast<std::size_t>(arguments.sampleCount)) {
+                            hold_residency();
+                        }
+                        finish(frame);
+                        if (record) {
+                            statusWaitMs.push_back(waitElapsed);
+                            preparationMs.push_back(preparationElapsed);
+                        }
+                        return stageMs;
+                    });
                 }
-                require_cuda(cudaEventDestroy(stop), "cudaEventDestroy(stop)");
-                require_cuda(cudaEventDestroy(start), "cudaEventDestroy(start)");
-            }
-            if (arguments.holdMilliseconds > 0) {
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(arguments.holdMilliseconds));
+            } else {
+                auto frame = prepare();
+                hold_residency();
+                finish(frame);
             }
             std::vector<float> sorted = samples;
             std::sort(sorted.begin(), sorted.end());
@@ -1900,7 +2391,10 @@ namespace ScatterHalationValidation {
                 {"height", arguments.performanceHeight},
                 {"pixelSizeUm", pixelSizeUm},
                 {"warmupCount", arguments.warmupCount},
-                {"sampleCount", active ? arguments.sampleCount : 0},
+                {"sampleCount", samples.size()},
+                {"coldStageMs", coldStageMs},
+                {"statusWaitMs", statusWaitMs},
+                {"preparationMs", preparationMs},
                 {"samplesMs", samples},
                 {"medianMs", percentile(0.5)},
                 {"p95Ms", percentile(0.95)},
@@ -1908,21 +2402,19 @@ namespace ScatterHalationValidation {
                  inputs.scatter_descriptor()
                      ? inputs.scatter_descriptor()->recipeHash
                      : 0},
-                {"sourceChecksum", asymmetric_hdr_source_checksum(elements)},
-                {"sourceChecksumEncoding",
-                 "Float32 index-major semantic RGB asymmetric-hdr-v1"},
-                {"ledgerRecords", active ? 2 : 0},
-                {"filterBytes", active ? 2 * planeBytes : 0},
-                {"carrierBytes", active ? 3 * planeBytes : 0},
-                {"admittedBytes", active ? 5 * planeBytes : 0}};
+                {"sourceChecksum", asymmetric_hdr_source_checksum(elements, density)},
+                {"sourceChecksumEncoding", mode == "boost-dense" ? "Float32 index-major semantic RGB dense above-onset" : boost ? "Float32 index-major semantic RGB sparse above-onset"
+                                                                                                                                : "Float32 index-major semantic RGB asymmetric-hdr-v1"},
+                {"ledgerRecords", spatial || boost ? 2 : 0},
+                {"filterBytes", spatial ? 2 * planeBytes : 0},
+                {"carrierBytes", spatial || boost ? 3 * planeBytes : 0},
+                {"boostWorkspaceBytes", boost ? sizeof(JuicerCuda::HighlightBoostWorkspace) : 0},
+                {"boostPinnedStatusBytes", boost ? sizeof(JuicerCuda::HighlightBoostDisposition) : 0},
+                {"boostStatusEvents", boost ? 1 : 0},
+                {"admittedBytes", spatial ? 5 * planeBytes : boost ? 3 * planeBytes + sizeof(JuicerCuda::HighlightBoostWorkspace)
+                                                                   : 0}};
             write_performance_report(arguments, report);
-            JuicerCuda::Failure finishDiagnostic;
-            const bool finished = frame.finish(stream.get(), finishDiagnostic);
-            results.record(
-                "performance/" + arguments.performanceMode + "/" +
-                    std::to_string(arguments.performanceWidth),
-                finished,
-                finishDiagnostic.diagnostic);
+            results.record("performance/" + mode + "/" + std::to_string(extent.width), true, "");
         } catch (const std::exception& error) {
             results.record("performance/fatal", false, error.what());
         }

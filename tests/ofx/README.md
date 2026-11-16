@@ -108,6 +108,62 @@ The expected result is normal inferior exit without the breakpoint being hit.
 
 ## CUDA render baselines
 
+### Supplied production halation comparison
+
+`compare.py` compares two explicitly identified production modules through their
+ordinary OFX exports. Prepare `JuicerHalationComparisonProbe` with
+`scripts/verify.py prepare --preset <native-release> --testing OFF --targets
+JuicerHalationComparisonProbe --run-id <name>`. This target links no Rust archive
+and has no product build or staging dependency. It shares the production probe's
+host and image/lifetime checks. Its explicit `--halation-capture` mode does not
+read or update pixel fixtures; ordinary production-contract fixture mode remains
+unchanged.
+
+Run with the platform's maintained test environment (NumPy from
+`tests/requirements.txt`):
+
+```sh
+python -B tests/ofx/compare.py run --run-id halation-shipping-comparison \
+  --reference /absolute/rollback.bundle/Contents/ARCH/juicer.ofx \
+  --reference-sha256 SHA256 \
+  --candidate /absolute/candidate.bundle/Contents/ARCH/juicer.ofx \
+  --candidate-sha256 SHA256
+python -B tests/ofx/compare.py collect \
+  out/validation/NATIVE-RELEASE/results/halation-shipping-comparison
+```
+
+Use the qualified native build environment for `run`. The runner holds the
+existing native build and shared GPU leases, incrementally refreshes only the
+comparison probe, supervises one process per module without an elapsed deadline,
+and retains original process
+receipts, harness source, whole bundle inventories, authored OFX values and
+logical little-endian FP32 RGBA input/output files. It checks the supplied hashes
+and equal bundled resources before use and unchanged bundles after use. Module
+production provenance belongs to the supplied artifacts' existing build records;
+this tool neither rebuilds nor installs them. A fresh harness snapshot does not
+replace their production source identity.
+
+The fixed matrix uses 1920×1080 full frames, render scale/PAR 1, 35 mm, time 37,
+Hanatos, Rec. 2020, and active legacy halation with all four sliders at one.
+Portra 400 and Provia 100F each cover direct/print, AE off/on, cold/warm: eight
+scenarios, sixteen renders per module. Candidate advanced controls are untouched
+descriptor defaults (Profile, three bounces, decay 0.5, renormalize, zero boost);
+the comparator requires them and compares all common authored parameter values.
+Other controls use `production_images.cpp`'s explicit settings, including grain
+and diffusion off, scanner unsharp off and print glare on. Input uses its existing
+deterministic modulo-19 RGB pattern and varying alpha, with padded rows.
+
+Any FP32 bit change fails; no photographic tolerance is applied. Each module
+also requires cold/warm identity, finite output, alpha/source/padding preservation,
+one release per acquired image, context preservation and complete teardown.
+The offline command rechecks membership, retained hashes and all pixel comparisons.
+No saved project, proxy selection, source decoder or Resolve export is exercised.
+These synthetic results do not replace a controlled repeat-export host comparison.
+
+Comparator negative tests run without a GPU via the maintained verifier:
+`scripts/verify.py python-tests --preset <native-release> --key ofx-comparison --
+<same-python> -m unittest discover -s tests/ofx -p test_compare.py -v`.
+
 `Ofx.Gpu.ProcessorReference` checks the seven small procedural scenarios against
 `processor_rust_pixels_{linux,windows}.dat`. These are Film-Juicer characterization
 fixtures under the owner-accepted Rust `libm` 0.2.15 density policy, rather than
@@ -170,3 +226,53 @@ check inactive absence and every active descriptor field against the independent
 captured native frame cohort. Diffusion failure precedes halation; a halation
 pixel failure precedes the conditional effects query. Existing cached-image,
 live-query and image-lease assertions still apply.
+
+## Actual-host boundary capture and replay
+
+`capture.py` and `capture-agent.js` observe one Windows OFX render in an unchanged
+supplied module. This optional diagnostic uses Frida (17.26.3 was exercised) in a
+separate capture environment; it is not an ordinary CI prerequisite. Start the
+observer before plug-in discovery and instance creation. It records the exact
+module/bundle identities, typed current-value snapshots, actual getter history,
+render and image geometry, and tightly packed little-endian FP32 source/output
+rows in ascending logical y. Binary64 parameter words are retained separately
+from JSON numbers. CUDA copies occur within the image lease and synchronize the
+actual host stream; this changes timing and requires an unchanged paired export
+as an observation witness.
+
+Run `capture.py run --help` for the supplied executable/module/bundle and result
+arguments. The tool holds the shared GPU lease until the observed process exits.
+Write `control.json` in its result directory with `{"action":"arm","width":6048,
+"height":4032}` after the disposable project is ready; optional `time` and
+`effect` keys narrow the render. `{"action":"stop"}` unloads the observer without
+closing the application. Partial chunks and failed attempts remain retained.
+Never edit observer inputs while a session is live, or claim success from the
+process exit alone: inspect the final manifest, complete capture and image hashes.
+
+`resolve_capture.lua` is a companion for the installed Resolve scripting API.
+It exports a named original without saving it and imports a separately named
+copy. Its `copy`, `load`, `inspect`, `export` and `close` actions use
+`JUICER_RESOLVE_CAPTURE_ACTION`, `JUICER_RESOLVE_CAPTURE_DIR`,
+`JUICER_RESOLVE_ORIGINAL_PROJECT` and `JUICER_RESOLVE_CAPTURE_PROJECT`; all edits
+and exports assert the copy's name. First-frame selection currently requires a
+24 fps timeline and the second video-track item. Close uses the API's explicit
+close-without-saving operation before quitting Resolve.
+
+`compare.py run --frame <capture-directory>` extends the supplied-binary Release
+OFF comparison with an actual frame. It uses the standalone
+`JuicerHalationComparisonProbe --frame-replay` mode, restores recorded controls
+and geometry, and retains cold/warm FP32 output from both exact modules. The
+diagnostic result distinguishes successful execution from pixel equality and
+compares the rollback replay with the actual host output first. It reports
+snapshot/latest-read disagreements; arbitrary reentrant parameter history and
+production session/clip-pointer seeds are not recreated. A host/replay mismatch
+therefore prevents a claim that the captured state was fully reproduced. Whole
+output-frame comparison currently requires a full output render window. Neither
+this tool nor the observer changes installed bundles or checked-in fixtures.
+
+For explicit diagnostic counterfactuals, add `--parameter-overrides <json>` to
+the comparator. The dictionary maps captured names to full typed parameter
+objects, including binary64 words. The replay records original/overridden values
+and names absent from the legacy module; its receipt hashes the override file.
+This does not mutate or relabel the original host capture. A counterfactual
+measurement is distinct from host observation or fixture acceptance.

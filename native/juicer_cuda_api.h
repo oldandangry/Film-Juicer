@@ -434,6 +434,7 @@ typedef struct FjPrint {
 #define FJ_OPTICS_CAMERA_DIFFUSION 1U
 #define FJ_OPTICS_ENLARGER_DIFFUSION 2U
 #define FJ_OPTICS_SCATTER_HALATION 4U
+#define FJ_OPTICS_HIGHLIGHT_BOOST 8U
 
 typedef struct FjDiffusion {
     uint32_t family; /* FJ_DIFFUSION_* */
@@ -451,26 +452,40 @@ typedef struct FjDiffusion {
 #define FJ_HALATION_IDENTITY 0U
 #define FJ_HALATION_FIR_REFLECT 1U
 #define FJ_HALATION_YVV_REPLICATE 2U
+#define FJ_HALATION_YVV_REPLICATE_FACTORED 3U
+#define FJ_HALATION_TAIL_COMPONENTS 3U
+#define FJ_HALATION_MAX_BOUNCES 5U
 typedef struct FjHalationGaussian {
     uint32_t kind; /* FJ_HALATION_* */
     int32_t radius;
     float fir_weights[19];
-    float feedforward;
-    float feedback[3]; /* B1, B2, B3 */
+    /* Legacy: B, B1, B2, B3. Factored: h, g, t, zero. */
+    float yvv[4];
 } FjHalationGaussian;
 
 typedef struct FjHalationChannel {
     FjHalationGaussian core;
-    FjHalationGaussian tail[3];
-    FjHalationGaussian bounce[3];
+    FjHalationGaussian tail[FJ_HALATION_TAIL_COMPONENTS];
+    FjHalationGaussian bounce[FJ_HALATION_MAX_BOUNCES];
     float total_strength;
+    float tail_weight;
 } FjHalationChannel;
 
 typedef struct FjScatterHalation {
     uint64_t recipe_hash;
     float scatter_amount;
+    uint32_t bounce_count;
+    float bounce_weights[FJ_HALATION_MAX_BOUNCES];
+    uint32_t renormalize;
     FjHalationChannel channels[3]; /* RGB, matching the frame descriptor. */
 } FjScatterHalation;
+
+typedef struct FjHighlightBoost {
+    uint64_t recipe_hash;
+    double protection;
+    double sharpness;
+    double peak_gain;
+} FjHighlightBoost;
 
 typedef struct FjOptics {
     uint32_t flags; /* FJ_OPTICS_* */
@@ -479,6 +494,7 @@ typedef struct FjOptics {
     FjDiffusion enlarger;
     uint64_t diffusion_hash;
     FjScatterHalation scatter_halation;
+    FjHighlightBoost highlight_boost;
 } FjOptics;
 
 #define FJ_DIR_OPERATOR_NONE 0U

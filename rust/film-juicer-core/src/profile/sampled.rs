@@ -494,17 +494,28 @@ fn film_processing_defaults(info: &ProfileInfo) -> FilmProcessingDefaults {
         gamma_interlayer_g_to_rb: green,
         gamma_interlayer_b_to_rg: blue,
         halation_first_sigma_um: if info.usage == ProfileUse::Cine {
-            [50.0; 3]
+            CINE_HALATION_SIGMA_UM
         } else {
-            [65.0; 3]
+            STILL_HALATION_SIGMA_UM
         },
         halation_primary_amount: match info.antihalation {
-            Antihalation::Strong => [0.015, 0.005, 0.0],
-            Antihalation::Weak => [0.08, 0.02, 0.0],
-            Antihalation::No => [0.30, 0.10, 0.015],
+            Antihalation::Strong => STRONG_ANTIHALATION,
+            Antihalation::Weak => WEAK_ANTIHALATION,
+            Antihalation::No => NO_ANTIHALATION,
         },
         hanatos_spectral_gaussian_blur_default: 0.0,
     }
+}
+
+const CINE_HALATION_SIGMA_UM: [f32; 3] = [50.0; 3];
+const STILL_HALATION_SIGMA_UM: [f32; 3] = [65.0; 3];
+const STRONG_ANTIHALATION: [f32; 3] = [0.015, 0.005, 0.0];
+const WEAK_ANTIHALATION: [f32; 3] = [0.08, 0.02, 0.0];
+const NO_ANTIHALATION: [f32; 3] = [0.30, 0.10, 0.015];
+
+pub(crate) fn is_legacy_halation(first_sigma_um: [f32; 3], strength: [f32; 3]) -> bool {
+    [CINE_HALATION_SIGMA_UM, STILL_HALATION_SIGMA_UM].contains(&first_sigma_um)
+        && [STRONG_ANTIHALATION, WEAK_ANTIHALATION, NO_ANTIHALATION].contains(&strength)
 }
 
 fn tagged_samples(token: &mut u64, tag: &str, samples: &[f32]) {

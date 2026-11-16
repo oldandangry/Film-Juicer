@@ -664,6 +664,16 @@ namespace JuicerProcess {
             int capturePolarity = 0;
         };
 
+        struct HighlightBoostFrameStage {
+            JuicerCuda::HighlightBoostDescriptor descriptor{};
+            JuicerCuda::HighlightBoostWorkspace* workspace = nullptr;
+            JuicerCuda::HighlightBoostDisposition* hostStatus = nullptr;
+            void* eventOpaque = nullptr;
+            bool copyPending = false;
+            bool eventRecorded = false;
+            bool accepted = false;
+        };
+
         struct FrameScratchWorkspace {
             std::optional<WorkspaceLayout> admittedLayout;
             std::optional<WorkspaceLayout> postFrameLayout;
@@ -699,6 +709,7 @@ namespace JuicerProcess {
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
         WorkspaceDerivation requestedWorkspace;
         ScanErrorFrameStage scanErrorStage{};
+        HighlightBoostFrameStage highlightBoostStage{};
         std::array<JuicerCuda::VisualGrainPreparedGaussianView, 3>
             preparedGrainCorrelation{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
@@ -762,9 +773,13 @@ namespace JuicerProcess {
             const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
             const Root::PreparationIdentity& identity,
             const ScatterHalationFrameDescriptor* descriptor,
+            const JuicerCuda::HighlightBoostDescriptor* boost,
             const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
             int requestedWidth,
             int requestedHeight,
+            JuicerCuda::Failure& outError);
+        bool prepare_highlight_boost(
+            const JuicerCuda::HighlightBoostDescriptor& descriptor,
             JuicerCuda::Failure& outError);
         bool release_scatter_halation_resources(
             void* cudaStreamOpaque,
@@ -904,15 +919,13 @@ namespace JuicerProcess {
         int width,
         int height,
         JuicerCuda::ScatterHalationCarrierSource carrierSource,
+        bool spatial,
         ScatterHalationAllocationShape& out,
         const char*& failedFact) noexcept {
         out = ScatterHalationAllocationShape{};
         failedFact = nullptr;
-        out.physicalAllocationCount =
-            carrierSource ==
-                    JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes
-                ? 2u
-                : 1u;
+        out.physicalAllocationCount = static_cast<std::size_t>(spatial) +
+                                      static_cast<std::size_t>(carrierSource == JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes);
 
         std::size_t pixelCount = 0;
         if (!checked_size_multiply(
@@ -926,19 +939,12 @@ namespace JuicerProcess {
             failedFact = "plane_bytes";
             return false;
         }
-        out.filterSecondPlaneOffset = out.planeBytes;
-        if (!checked_size_multiply(2u, out.planeBytes, out.filterBytes)) {
-            failedFact = "filter_bytes";
-            return false;
-        }
-        std::size_t filterEnd = 0;
-        if (!checked_size_add(
-                out.filterSecondPlaneOffset,
-                out.planeBytes,
-                filterEnd) ||
-            filterEnd != out.filterBytes) {
-            failedFact = "filter_second_plane_offset";
-            return false;
+        if (spatial) {
+            out.filterSecondPlaneOffset = out.planeBytes;
+            if (!checked_size_multiply(2u, out.planeBytes, out.filterBytes)) {
+                failedFact = "filter_bytes";
+                return false;
+            }
         }
 
         if (carrierSource ==
@@ -1133,6 +1139,7 @@ namespace JuicerProcess {
                     requestedWidth,
                     requestedHeight,
                     carrierSource,
+                    true,
                     shape,
                     failedFact)) {
                 set_scatter_halation_exact_admission_failure(
@@ -1588,12 +1595,13 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
         const Root::PreparationIdentity& identity,
         const ScatterHalationFrameDescriptor* descriptor,
+        const JuicerCuda::HighlightBoostDescriptor* boost,
         const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
         int requestedWidth,
         int requestedHeight,
         JuicerCuda::Failure& outError) {
         outError = {};
-        if (!descriptor) {
+        if (!descriptor && !boost) {
             return true;
         }
         if (!resources || !transaction.active || transaction.committed ||
@@ -1612,27 +1620,28 @@ namespace JuicerProcess {
                 : JuicerCuda::ScatterHalationCarrierSource::
                       DedicatedPreparedPlanes;
         ScatterHalationAllocationShape shape{};
+        const auto fail_admission = [&](const char* fact, std::size_t allocated, const JuicerCuda::Failure& underlying) {
+            outError.status = underlying.status;
+            if (descriptor) {
+                set_scatter_halation_exact_admission_failure(
+                    identity, *descriptor, requestedWidth, requestedHeight, carrierSource, shape, allocated, contextKey, transaction.contextEpoch, fact, underlying.diagnostic, outError.diagnostic);
+            } else {
+                outError.diagnostic = "HighlightBoostAdmissionFailure field=" + std::string(fact);
+                if (!underlying.diagnostic.empty()) {
+                    outError.diagnostic += " | " + underlying.diagnostic;
+                }
+            }
+            return false;
+        };
         const char* failedFact = nullptr;
         if (!derive_scatter_halation_allocation_shape(
                 requestedWidth,
                 requestedHeight,
                 carrierSource,
+                descriptor != nullptr,
                 shape,
                 failedFact)) {
-            set_scatter_halation_exact_admission_failure(
-                identity,
-                *descriptor,
-                requestedWidth,
-                requestedHeight,
-                carrierSource,
-                shape,
-                0,
-                contextKey,
-                transaction.contextEpoch,
-                failedFact,
-                {},
-                outError.diagnostic);
-            return false;
+            return fail_admission(failedFact, 0, {});
         }
 
         if (cameraCarrier) {
@@ -1645,45 +1654,18 @@ namespace JuicerProcess {
                     frameSet->hash ||
                 resources->ownerContextKey != contextKey ||
                 resources->contextEpoch != transaction.contextEpoch) {
-                set_scatter_halation_exact_admission_failure(
-                    identity,
-                    *descriptor,
-                    requestedWidth,
-                    requestedHeight,
-                    carrierSource,
-                    shape,
-                    0,
-                    contextKey,
-                    transaction.contextEpoch,
-                    "camera_diffusion_exact_context_lease",
-                    {},
-                    outError.diagnostic);
-                return false;
+                return fail_admission("camera_diffusion_exact_context_lease", 0, {});
             }
         }
 
         void* filterBlock = nullptr;
         JuicerCuda::Failure allocationError;
-        if (!allocate_device_bytes(
-                &filterBlock,
-                shape.filterBytes,
-                "scatter halation filter scratch",
-                allocationError)) {
-            outError.status = allocationError.status;
-            set_scatter_halation_exact_admission_failure(
-                identity,
-                *descriptor,
-                requestedWidth,
-                requestedHeight,
-                carrierSource,
-                shape,
-                0,
-                contextKey,
-                transaction.contextEpoch,
-                "filter_allocation_block",
-                allocationError.diagnostic,
-                outError.diagnostic);
-            return false;
+        if (descriptor && !allocate_device_bytes(
+                              &filterBlock,
+                              shape.filterBytes,
+                              "scatter halation filter scratch",
+                              allocationError)) {
+            return fail_admission("filter_allocation_block", 0, allocationError);
         }
 
         void* carrierBlock = nullptr;
@@ -1693,30 +1675,18 @@ namespace JuicerProcess {
             !allocate_device_bytes(
                 &carrierBlock,
                 shape.carrierBytes,
-                "scatter halation dedicated carrier",
+                descriptor ? "scatter halation dedicated carrier" : "highlight boost dedicated carrier",
                 allocationError)) {
-            set_scatter_halation_exact_admission_failure(
-                identity,
-                *descriptor,
-                requestedWidth,
-                requestedHeight,
-                carrierSource,
-                shape,
-                shape.filterBytes,
-                contextKey,
-                transaction.contextEpoch,
-                "carrier_allocation_block",
-                allocationError.diagnostic,
-                outError.diagnostic);
-            outError.status = allocationError.status;
-            return false;
+            return fail_admission("carrier_allocation_block", shape.filterBytes, allocationError);
         }
 
-        auto* filterBytes = static_cast<std::byte*>(filterBlock);
-        scatterHalationFilterBlock = filterBlock;
-        scatterHalationFilterTemp = reinterpret_cast<float*>(filterBytes);
-        scatterHalationWeightedAccumulation = reinterpret_cast<float*>(
-            filterBytes + shape.filterSecondPlaneOffset);
+        if (filterBlock) {
+            auto* filterBytes = static_cast<std::byte*>(filterBlock);
+            scatterHalationFilterBlock = filterBlock;
+            scatterHalationFilterTemp = reinterpret_cast<float*>(filterBytes);
+            scatterHalationWeightedAccumulation = reinterpret_cast<float*>(
+                filterBytes + shape.filterSecondPlaneOffset);
+        }
         scatterHalationCarrierSource = carrierSource;
         if (carrierBlock) {
             auto* carrierBytes = static_cast<std::byte*>(carrierBlock);
@@ -1732,7 +1702,38 @@ namespace JuicerProcess {
         }
         scatterHalationFrameWidth = requestedWidth;
         scatterHalationFrameHeight = requestedHeight;
-        scatterHalationDescriptor = *descriptor;
+        if (descriptor) {
+            scatterHalationDescriptor = *descriptor;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::prepare_highlight_boost(
+        const JuicerCuda::HighlightBoostDescriptor& descriptor,
+        JuicerCuda::Failure& outError) {
+        auto& stage = highlightBoostStage;
+        void* workspace = nullptr;
+        if (!allocate_device_bytes(&workspace, sizeof(JuicerCuda::HighlightBoostWorkspace), "highlight boost reduction and status", outError)) {
+            return false;
+        }
+        stage.workspace = static_cast<JuicerCuda::HighlightBoostWorkspace*>(workspace);
+        cudaEvent_t event = nullptr;
+        if (const auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming); status != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(status), "highlight boost status event allocation failed");
+            return false;
+        }
+        stage.eventOpaque = event;
+        void* pinned = nullptr;
+        if (const auto status = cudaMallocHost(&pinned, sizeof(JuicerCuda::HighlightBoostDisposition)); status != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(status), "highlight boost status staging allocation failed");
+            return false;
+        }
+        if (!JuicerCuda::register_frame_status_staging(*resources, pinned, sizeof(JuicerCuda::HighlightBoostDisposition), outError)) {
+            (void)cudaFreeHost(pinned);
+            return false;
+        }
+        stage.hostStatus = static_cast<JuicerCuda::HighlightBoostDisposition*>(pinned);
+        stage.descriptor = descriptor;
         return true;
     }
 
@@ -1740,8 +1741,9 @@ namespace JuicerProcess {
         void* cudaStreamOpaque,
         JuicerCuda::Failure& outError) {
         outError = {};
+        auto& boost = highlightBoostStage;
         if (!scatterHalationDescriptor && !scatterHalationFilterBlock &&
-            !scatterHalationCarrierBlock) {
+            !scatterHalationCarrierBlock && !boost.workspace) {
             return true;
         }
         if (!resources) {
@@ -1753,12 +1755,50 @@ namespace JuicerProcess {
         remember_stream(cudaStreamOpaque);
         void* retireStreamOpaque =
             cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+        if (boost.hostStatus) {
+            // Move the status event to the end of this frame's use before
+            // transferring it. Freeing pinned memory can wait on later work.
+            auto* const retireStream = reinterpret_cast<cudaStream_t>(retireStreamOpaque);
+            cudaEvent_t retirementEvent = nullptr;
+            cudaError_t recordStatus = cudaSuccess;
+            if (boost.eventRecorded || boost.copyPending) {
+                retirementEvent = reinterpret_cast<cudaEvent_t>(boost.eventOpaque);
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+                recordStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(JuicerCuda::TestSupport::HighlightBoostFault::RetirementEvent);
+#endif
+                if (recordStatus == cudaSuccess) {
+                    recordStatus = cudaEventRecord(retirementEvent, retireStream);
+                }
+            }
+            if (!JuicerCuda::retire_frame_status_staging(
+                    *resources, boost.hostStatus, retirementEvent, recordStatus != cudaSuccess, outError)) {
+                return false;
+            }
+            boost.hostStatus = nullptr;
+            if (retirementEvent) {
+                boost.eventOpaque = nullptr;
+            }
+            if (recordStatus != cudaSuccess) {
+                JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(recordStatus), "highlight boost retirement event record failed");
+                return false;
+            }
+        }
+        if (boost.eventOpaque) {
+            (void)cudaEventDestroy(reinterpret_cast<cudaEvent_t>(boost.eventOpaque));
+        }
+        boost.eventOpaque = nullptr;
+        if (boost.workspace) {
+            if (!retire_device_bytes(boost.workspace, retireStreamOpaque, "highlight boost reduction and status", outError)) {
+                return false;
+            }
+            boost = {};
+        }
         if (scatterHalationCarrierBlock) {
             void* carrierBlock = scatterHalationCarrierBlock;
             if (!retire_device_bytes(
                     carrierBlock,
                     retireStreamOpaque,
-                    "scatter halation dedicated carrier",
+                    scatterHalationDescriptor ? "scatter halation dedicated carrier" : "highlight boost dedicated carrier",
                     outError)) {
                 return false;
             }
@@ -2340,6 +2380,10 @@ namespace JuicerProcess {
         outError = {};
         if (!_state || !_state->root || !_state->transaction.active || _state->transaction.committed) {
             outError.diagnostic = "prepared frame is not active";
+            return false;
+        }
+        if (_state->highlightBoostStage.workspace && !_state->highlightBoostStage.accepted) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "highlight boost status was not accepted");
             return false;
         }
         _state->remember_stream(cudaStreamOpaque);
@@ -3940,6 +3984,117 @@ namespace JuicerProcess {
             outError);
     }
 
+    JuicerCuda::CameraFilmLinearExposurePlanes Root::PreparedCudaFrame::camera_film_linear_carrier() const noexcept {
+        return active() ? _state->scatterHalationCarrier : JuicerCuda::CameraFilmLinearExposurePlanes{};
+    }
+
+    bool Root::PreparedCudaFrame::enqueue_highlight_boost(
+        JuicerCuda::CameraFilmLinearExposurePlanes carrier,
+        void* cudaStreamOpaque,
+        JuicerCuda::Failure& outError) {
+        if (!active()) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "highlight boost frame is inactive");
+            return false;
+        }
+        auto& stage = _state->highlightBoostStage;
+        if (!stage.workspace) {
+            return true;
+        }
+        if (!stage.hostStatus || !stage.eventOpaque || stage.eventRecorded || stage.copyPending) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "highlight boost frame status staging is invalid");
+            return false;
+        }
+        _state->remember_stream(cudaStreamOpaque);
+        auto* const stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        const auto launch = JuicerCuda::launch_highlight_boost(
+            stage.descriptor, carrier, _state->scatterHalationFrameWidth, _state->scatterHalationFrameHeight, stage.workspace, stream);
+        if (launch.status != cudaSuccess) {
+            using JuicerCuda::HighlightBoostLaunchStage;
+            const char* label = "highlight boost launch failed";
+            switch (launch.stage) {
+                case HighlightBoostLaunchStage::Binding:
+                    label = "highlight boost carrier binding failed";
+                    break;
+                case HighlightBoostLaunchStage::PartialReduction:
+                    label = "highlight boost block reduction failed";
+                    break;
+                case HighlightBoostLaunchStage::FinalReduction:
+                    label = "highlight boost final reduction failed";
+                    break;
+                case HighlightBoostLaunchStage::Apply:
+                    label = "highlight boost apply failed";
+                    break;
+                case HighlightBoostLaunchStage::None:
+                    break;
+            }
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(launch.status), label);
+            return false;
+        }
+        // Publish the staging dependency before the copy. After an API error,
+        // retirement still needs a completion witness for that stream.
+        stage.copyPending = true;
+        cudaError_t copyStatus = cudaSuccess;
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+        using JuicerCuda::TestSupport::HighlightBoostFault;
+        copyStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(HighlightBoostFault::Readback);
+#endif
+        if (copyStatus == cudaSuccess) {
+            copyStatus = cudaMemcpyAsync(stage.hostStatus, &stage.workspace->disposition, sizeof(*stage.hostStatus), cudaMemcpyDeviceToHost, stream);
+        }
+        if (copyStatus != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(copyStatus), "highlight boost status readback failed");
+            return false;
+        }
+        cudaError_t eventStatus = cudaSuccess;
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+        eventStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(HighlightBoostFault::StatusEvent);
+#endif
+        if (eventStatus == cudaSuccess) {
+            eventStatus = cudaEventRecord(reinterpret_cast<cudaEvent_t>(stage.eventOpaque), stream);
+        }
+        if (eventStatus != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(eventStatus), "highlight boost status event record failed");
+            return false;
+        }
+        stage.eventRecorded = true;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::check_highlight_boost(JuicerCuda::Failure& outError) {
+        if (!active()) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "highlight boost frame is inactive");
+            return false;
+        }
+        auto& stage = _state->highlightBoostStage;
+        if (!stage.workspace) {
+            return true;
+        }
+        if (!stage.hostStatus || !stage.eventRecorded) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "highlight boost status was not submitted");
+            return false;
+        }
+        if (const auto status = cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(stage.eventOpaque)); status != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(status), "highlight boost status event wait failed");
+            return false;
+        }
+        stage.copyPending = false;
+        using JuicerCuda::HighlightBoostDisposition;
+        switch (*stage.hostStatus) {
+            case HighlightBoostDisposition::Applied:
+            case HighlightBoostDisposition::Bypass:
+                stage.accepted = true;
+                return true;
+            case HighlightBoostDisposition::InvalidCarrier:
+                JuicerCuda::set_failure(outError, {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "HighlightBoostInvalidCarrier");
+                return false;
+            case HighlightBoostDisposition::PeakOverflow:
+                JuicerCuda::set_failure(outError, {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "HighlightBoostPeakOverflow");
+                return false;
+        }
+        JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid highlight boost disposition");
+        return false;
+    }
+
     Root::PreparedCudaFrame::PrintPreparedView Root::PreparedCudaFrame::print_resources() const noexcept {
         PrintPreparedView view{};
         if (!_state || !_state->resources || !Spektrafilm::scan_route_is_print(_state->scanRoute) ||
@@ -5070,6 +5225,13 @@ namespace JuicerProcess {
                 "CUDA frame preparation request validation failed");
             return frame;
         }
+        if (request.highlightBoostDescriptor
+                ? request.highlightBoostDescriptor->recipeHash == 0 || request.highlightBoostDescriptor->recipeHash != request.identity.highlightBoostHash
+                : request.identity.highlightBoostHash != 0) {
+            outError.diagnostic = "ResourceDescriptorMismatch component=highlight_boost field=recipe_hash";
+            recordFailure("validate_highlight_boost", "CUDA highlight boost request validation failed");
+            return frame;
+        }
         if (request.focused.outputGamut.enabled != outputGamut.enabled ||
             request.focused.outputGamut.recipeHash != outputGamut.hash ||
             (outputGamut.enabled && request.focused.outputGamut.cmax.empty()) ||
@@ -5188,6 +5350,7 @@ namespace JuicerProcess {
                 deviceContextKey,
                 request.identity,
                 request.scatterHalationDescriptor,
+                request.highlightBoostDescriptor,
                 request.diffusionFrameSetDescriptor,
                 request.requestedWidth,
                 request.requestedHeight,
@@ -5195,6 +5358,12 @@ namespace JuicerProcess {
             recordFailure(
                 "prepare_scatter_halation_resources",
                 "CUDA scatter-halation resource preparation failed");
+            frame.abort();
+            return frame;
+        }
+        if (request.highlightBoostDescriptor &&
+            !frame._state->prepare_highlight_boost(*request.highlightBoostDescriptor, outError)) {
+            recordFailure("prepare_highlight_boost", "CUDA highlight boost resource preparation failed");
             frame.abort();
             return frame;
         }

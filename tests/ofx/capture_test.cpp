@@ -754,12 +754,14 @@ namespace {
             });
         }
         {
-            JuicerTests::Cohort rows("capture.optics", {"disabled-skips", "active-bounds", "diffusion-nan", "signed-zero"});
+            JuicerTests::Cohort rows("capture.optics", {"disabled-skips", "active-bounds", "profile-custom", "advanced-invalid", "highlight-boost", "diffusion-nan", "signed-zero"});
             row(rows, "disabled-skips", [&] {
                 integer("HalationActive", 0);
                 host.clear_calls();
                 capture();
-                require(status() == 4 && !read("HalationScatterAmount"), "disabled scatter getter");
+                require(status() == 4 && !read("HalationScatterAmount") && !read("HalationReflectionSource") &&
+                            !read("HalationScatterCoreSigmaUm") && !read("HalationBounceCount") && !read("HalationStrengthRgb"),
+                        "disabled spatial getters");
             });
             row(rows, "active-bounds", [&] {
                 integer("HalationActive", 1);
@@ -772,6 +774,150 @@ namespace {
                 capture();
                 require(status() == 5, "scatter invalid");
                 integer("HalationActive", 0);
+            });
+            row(rows, "profile-custom", [&] {
+                const auto enabled = [&](std::string_view name, bool value) {
+                    const auto target = std::string(name) + ".presentation";
+                    return std::any_of(host.calls().begin(), host.calls().end(), [&](const auto& call) {
+                        return call.operation == "set_int" && call.target == target && call.property == kOfxParamPropEnabled &&
+                               call.values == std::vector<ofx_test::InstanceValue>{static_cast<int>(value)};
+                    });
+                };
+                const auto expect_ui = [&](const char* changed, bool spatial, bool custom) {
+                    host.clear_calls();
+                    change(plugin, host, effect, changed, kOfxChangeUserEdited);
+                    require(enabled("HalationScatterCoreSigmaUm", spatial) && enabled("HalationReflectionSource", spatial) &&
+                                enabled("HalationStrengthRgb", custom) && enabled("HalationFirstBounceSigmaUm", custom),
+                            "spatial halation control enablement");
+                    require(std::none_of(host.calls().begin(), host.calls().end(), [](const auto& call) {
+                                return call.operation == "param_set" && call.target.starts_with("Halation");
+                            }),
+                            "halation presentation must preserve authored values");
+                };
+                real("HalationScatterAmount", 1);
+                text("FilmProfileKey", "kodak_portra_400");
+                integer("HalationActive", 1);
+                host.set_value(effect, "HalationStrengthRgb", {nan, 0.0, 0.0});
+                expect_ui("HalationActive", true, false);
+                require(!read("HalationStrengthRgb") && !read("HalationFirstBounceSigmaUm"), "Profile ignores stored Custom values");
+                Admission portra(effect);
+                const auto& still = portra.view.optics.scatter_halation;
+                require(still.first_sigma_um[0] == 65.0f && still.total_strength[0] == 0.015f, "Portra Profile resolution");
+                integer("HalationReflectionSource", 1);
+                host.set_value(effect, "HalationStrengthRgb", {0.015, 0.005, -0.0});
+                expect_ui("HalationReflectionSource", true, true);
+                Admission equivalent(effect);
+                require(equivalent.view.recipe_hash == portra.view.recipe_hash &&
+                            equivalent.view.optics.scatter_halation.schedule_flags == still.schedule_flags,
+                        "stock-equivalent Custom preserves the legacy schedule and recipe identity");
+                integer("HalationReflectionSource", 0);
+                text("FilmProfileKey", "kodak_vision3_500t");
+                capture();
+                Admission vision(effect);
+                require(vision.view.optics.scatter_halation.first_sigma_um[0] == 50.0f, "Profile follows cine stock");
+
+                const std::vector<ofx_test::InstanceValue> strength{0.125, 0.0, 0.25};
+                const std::vector<ofx_test::InstanceValue> sigma{60.0, 70.0, 45.0};
+                host.set_value(effect, "HalationStrengthRgb", strength);
+                host.set_value(effect, "HalationFirstBounceSigmaUm", sigma);
+                integer("HalationReflectionSource", 1);
+                expect_ui("HalationReflectionSource", true, true);
+                Admission custom(effect);
+                const auto& reflection = custom.view.optics.scatter_halation;
+                require(reflection.total_strength[0] == 0.125f && reflection.total_strength[1] == 0.0f &&
+                            reflection.total_strength[2] == 0.25f && reflection.first_sigma_um[2] == 45.0f,
+                        "Custom absolute RGB resolution");
+
+                text("FilmProfileKey", "kodak_portra_400");
+                change(plugin, host, effect, "FilmProfileKey", kOfxChangeUserEdited);
+                Admission edited(effect);
+                require(edited.view.optics.scatter_halation.hash == reflection.hash, "Custom survives stock edit");
+                integer("HalationReflectionSource", 0);
+                expect_ui("HalationReflectionSource", true, false);
+                Admission profile(effect);
+                require(profile.view.optics.scatter_halation.hash == still.hash, "Profile reuses stock math");
+                integer("HalationActive", 0);
+                expect_ui("HalationActive", false, false);
+                integer("HalationReflectionSource", 1);
+                integer("HalationActive", 1);
+                expect_ui("HalationActive", true, true);
+                Admission restored(effect);
+                require(restored.view.optics.scatter_halation.hash == reflection.hash &&
+                            host.value(effect, "HalationStrengthRgb") == strength &&
+                            host.value(effect, "HalationFirstBounceSigmaUm") == sigma,
+                        "Custom survives Profile and spatial toggles");
+
+                // Model a host restoring saved parameters before its create action.
+                auto* restored_effect = host.create_effect();
+                host.set_value(restored_effect, "HalationReflectionSource", {1});
+                host.set_value(restored_effect, "HalationStrengthRgb", strength);
+                host.set_value(restored_effect, "HalationFirstBounceSigmaUm", sigma);
+                host.clear_calls();
+                require(action(plugin, kOfxActionCreateInstance, restored_effect) == kOfxStatOK &&
+                            enabled("HalationStrengthRgb", true) && enabled("HalationFirstBounceSigmaUm", true),
+                        "restored Custom presentation");
+                change(plugin, host, restored_effect, "Exposure", kOfxChangeTime);
+                Admission reopened(restored_effect);
+                require(reopened.view.optics.scatter_halation.hash == reflection.hash &&
+                            host.value(restored_effect, "HalationStrengthRgb") == strength &&
+                            host.value(restored_effect, "HalationFirstBounceSigmaUm") == sigma,
+                        "restored Custom capture");
+                require(action(plugin, kOfxActionDestroyInstance, restored_effect) == kOfxStatOK, "destroy restored instance");
+
+                integer("HalationReflectionSource", 0);
+                integer("HalationActive", 0);
+            });
+            row(rows, "advanced-invalid", [&] {
+                integer("HalationActive", 1);
+                integer("HalationReflectionSource", 2);
+                capture();
+                require(status() == 5 && !read("HalationStrengthRgb"), "invalid reflection source");
+                integer("HalationReflectionSource", 1);
+                host.set_value(effect, "HalationFirstBounceSigmaUm", {65.0, 65.0, -1.0});
+                capture();
+                require(status() == 5, "negative Custom blue width");
+                integer("HalationBounceCount", 6);
+                integer("HalationActive", 0);
+                capture();
+                require(status() == 4, "disabled advanced values remain opaque");
+                integer("HalationActive", 1);
+                integer("HalationReflectionSource", 0);
+                capture();
+                require(status() == 5 && !read("HalationStrengthRgb"), "invalid active bounce count");
+                integer("HalationBounceCount", 3);
+                integer("HalationActive", 0);
+            });
+            row(rows, "highlight-boost", [&] {
+                real("HalationHighlightProtectionEv", nan);
+                real("HalationHighlightBoostRange", inf);
+                real("HalationHighlightBoostEv", -0.0);
+                capture();
+                require(status() == 4 && read("HalationHighlightBoostEv") && !read("HalationHighlightProtectionEv") &&
+                            !read("HalationHighlightBoostRange"),
+                        "zero boost skips dependent getters");
+                real("HalationHighlightBoostEv", -1.0);
+                capture();
+                require(status() == 5 && !read("HalationHighlightProtectionEv"), "invalid boost EV precedes read of dependent fields");
+                real("HalationHighlightBoostEv", 2.0);
+                capture();
+                require(status() == 5 && read("HalationHighlightProtectionEv") && read("HalationHighlightBoostRange"),
+                        "active boost validates both dependent fields");
+                real("HalationHighlightProtectionEv", 0.0);
+                real("HalationHighlightBoostRange", 0.75);
+                host.clear_calls();
+                change(plugin, host, effect, "HalationHighlightBoostEv", kOfxChangeUserEdited);
+                Observation boost(effect);
+                require(boost.view.pending_kind == 4 && !boost.view.captured.scatter_halation.active &&
+                            boost.view.captured.highlight_boost_ev == 2.0 && boost.view.captured.highlight_boost_range == 0.75,
+                        "boost capture independent of spatial halation");
+                require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& call) {
+                            return call.operation == "set_int" && call.target == "HalationHighlightProtectionEv.presentation" &&
+                                   call.property == kOfxParamPropEnabled && call.values == std::vector<ofx_test::InstanceValue>{1};
+                        }),
+                        "active boost enables protection");
+                real("HalationHighlightBoostEv", 0.0);
+                change(plugin, host, effect, "HalationHighlightBoostEv", kOfxChangeUserEdited);
+                require(status() == 4 && !read("HalationHighlightProtectionEv"), "zero boost restores getter isolation");
             });
             row(rows, "diffusion-nan", [&] {
                 real("CameraDiffusionStrength", nan);

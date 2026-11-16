@@ -21,6 +21,7 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
+#include "Cuda/Film/JuicerCudaHighlightBoost.h"
 
 struct FjCuda;
 struct FjHostPreparation;
@@ -116,6 +117,7 @@ namespace JuicerProcess {
             bool grainActive = false;
             std::uint64_t effectsHash = 0;
             bool effectsActive = false;
+            std::uint64_t highlightBoostHash = 0;
         };
 
         // Resolved invocation-local inputs borrowed through frame preparation.
@@ -135,6 +137,7 @@ namespace JuicerProcess {
             const JuicerCuda::StaticNoiseInput* noise = nullptr;
             int requestedWidth = 0;
             int requestedHeight = 0;
+            const JuicerCuda::HighlightBoostDescriptor* highlightBoostDescriptor = nullptr;
         };
 
         class PreparedCudaFrame final {
@@ -313,6 +316,12 @@ namespace JuicerProcess {
             diffusion_resources() const noexcept;
             JuicerCuda::ScatterHalationPreparedView
             scatter_halation_resources() const noexcept;
+            JuicerCuda::CameraFilmLinearExposurePlanes camera_film_linear_carrier() const noexcept;
+            bool enqueue_highlight_boost(
+                JuicerCuda::CameraFilmLinearExposurePlanes carrier,
+                void* cudaStreamOpaque,
+                JuicerCuda::Failure& outError);
+            bool check_highlight_boost(JuicerCuda::Failure& outError);
             void mark_diffusion_work_enqueued() noexcept;
             bool release_diffusion_resources_after_use(
                 void* cudaStreamOpaque,

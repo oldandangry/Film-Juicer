@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <variant>
 #include <utility>
 
@@ -33,6 +34,7 @@
 #include <cuda_runtime.h>
 
 #include "Cuda/JuicerCudaFailure.h"
+#include "Cuda/Film/JuicerCudaHighlightBoost.h"
 
 #include "Hash.h"
 #include "prepared_product_fixture.h"
@@ -50,6 +52,24 @@
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "nlohmann/json.hpp"
+
+namespace JuicerCuda::TestSupport {
+    namespace {
+        thread_local HighlightBoostFault nextHighlightBoostFault = HighlightBoostFault::None;
+    }
+
+    void fail_next_highlight_boost(HighlightBoostFault fault) noexcept {
+        nextHighlightBoostFault = fault;
+    }
+
+    cudaError_t consume_highlight_boost_fault(HighlightBoostFault fault) noexcept {
+        if (nextHighlightBoostFault != fault) {
+            return cudaSuccess;
+        }
+        nextHighlightBoostFault = HighlightBoostFault::None;
+        return cudaErrorInvalidValue;
+    }
+} // namespace JuicerCuda::TestSupport
 
 namespace JuicerProcess::TestSupport {
 
@@ -73,6 +93,7 @@ namespace JuicerProcess::TestSupport {
             int pendingScanErrorValue = 0;
             std::size_t retireQueueCount = 0;
             std::size_t retireBytes = 0;
+            std::size_t retainedPinnedStatusCount = 0;
             bool expectedRetireAddressPresent = false;
             JuicerCuda::DeviceLedgerSnapshot ledger{};
             std::uint64_t contextLedgerRecordCount = 0;
@@ -129,6 +150,10 @@ namespace JuicerProcess::TestSupport {
                         result.retireQueueCount =
                             entry.frameOwner->retireQueue.size();
                         result.retireBytes = entry.frameOwner->retireBytes;
+                        result.retainedPinnedStatusCount = static_cast<std::size_t>(std::count_if(
+                            entry.frameOwner->retireQueue.begin(), entry.frameOwner->retireQueue.end(), [](const auto& retired) {
+                                return retired.kind == JuicerCuda::Resources::RetireKind::HostPinnedFree;
+                            }));
                         result.expectedRetireAddressPresent =
                             expectedRetireAddress != 0 &&
                             std::any_of(
@@ -227,7 +252,11 @@ namespace {
         const bool performanceArgumentsValid =
             arguments.caseGroup != "performance" ||
             ((arguments.performanceMode == "active" ||
-              arguments.performanceMode == "inactive-baseline") &&
+              arguments.performanceMode == "inactive-baseline" ||
+              arguments.performanceMode == "reflection-3" ||
+              arguments.performanceMode == "reflection-5" ||
+              arguments.performanceMode == "boost-sparse" ||
+              arguments.performanceMode == "boost-dense") &&
              arguments.deviceIndex >= 0 &&
              arguments.performanceWidth > 0 &&
              arguments.performanceHeight > 0 &&
@@ -1039,6 +1068,26 @@ namespace {
                 descriptor->recipeHash != 0,
             diagnostic);
 
+        results.record(
+            "constants/retained-float-bits",
+            descriptor && descriptor->bounceCount == 3 && descriptor->renormalize &&
+                float_bits(descriptor->channels[0].tailWeight) == float_bits(0.78f) &&
+                float_bits(descriptor->channels[1].tailWeight) == float_bits(0.65f) &&
+                float_bits(descriptor->channels[2].tailWeight) == float_bits(0.67f) &&
+                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[0]) ==
+                    float_bits(0.1633f) &&
+                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[1]) ==
+                    float_bits(0.6496f) &&
+                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[2]) ==
+                    float_bits(0.1870f) &&
+                float_bits(descriptor->bounceWeights[0]) ==
+                    float_bits(4.0f / 7.0f) &&
+                float_bits(descriptor->bounceWeights[1]) ==
+                    float_bits(2.0f / 7.0f) &&
+                float_bits(descriptor->bounceWeights[2]) ==
+                    float_bits(1.0f / 7.0f),
+            "fixed CUDA-visible constants retain frozen Float32 bit patterns");
+
         ScatterHalationOpticsRecipe identity;
         descriptor.emplace();
         diagnostic.clear();
@@ -1051,25 +1100,6 @@ namespace {
             "descriptor/hash-zero-absence-before-pixel-validation",
             absent && !descriptor,
             diagnostic);
-
-        results.record(
-            "constants/retained-float-bits",
-            float_bits(Spektrafilm::kScatterHalationTailWeights[0]) == float_bits(0.78f) &&
-                float_bits(Spektrafilm::kScatterHalationTailWeights[1]) == float_bits(0.65f) &&
-                float_bits(Spektrafilm::kScatterHalationTailWeights[2]) == float_bits(0.67f) &&
-                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[0]) ==
-                    float_bits(0.1633f) &&
-                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[1]) ==
-                    float_bits(0.6496f) &&
-                float_bits(Spektrafilm::kScatterHalationExponentialAmplitudes[2]) ==
-                    float_bits(0.1870f) &&
-                float_bits(Spektrafilm::kScatterHalationBounceWeights[0]) ==
-                    float_bits(4.0f / 7.0f) &&
-                float_bits(Spektrafilm::kScatterHalationBounceWeights[1]) ==
-                    float_bits(2.0f / 7.0f) &&
-                float_bits(Spektrafilm::kScatterHalationBounceWeights[2]) ==
-                    float_bits(1.0f / 7.0f),
-            "fixed CUDA-visible constants retain frozen Float32 bit patterns");
     }
 
     JuicerTestSupport::PreparationInput direct_snapshot() {
@@ -3476,6 +3506,162 @@ namespace {
         }
     }
 
+    void run_highlight_lifetime_rows(Results& results, JuicerTestSupport::RuntimeFixture* owner) {
+        if (results.expect("scatter_halation.highlight_lifetime", {"highlight/status-before-downstream", "highlight/abort-retains-status", "highlight/nonfinite", "highlight/peak-overflow", "highlight/fault-partial", "highlight/fault-final", "highlight/fault-apply", "highlight/fault-readback", "highlight/fault-status-event", "highlight/fault-retirement-event"})) {
+            return;
+        }
+        if (!owner) {
+            throw std::runtime_error("highlight lifetime rows require the process Runtime");
+        }
+        CudaPreparedFixture fixture(*owner);
+        JuicerCuda::Failure failure;
+        if (!fixture.initialize(failure.diagnostic)) {
+            throw std::runtime_error(failure.diagnostic);
+        }
+        auto& root = JuicerCuda::borrow_root(owner->borrow().cuda);
+        constexpr ScatterHalationValidation::ImageExtent extent{17, 5};
+        constexpr auto count = static_cast<std::size_t>(extent.width) * static_cast<std::size_t>(extent.height);
+        auto prepared = ScatterHalationValidation::build_prepared_route_inputs(
+            *owner, Spektrafilm::ScanRoute::NegativeDirectScan, {}, {}, JuicerTestSupport::PreparationInput{}.values.dir_couplers, 35000.0f / extent.width, extent, 1.0f, {}, nullptr, ScatterHalationValidation::HighlightBoostSettings{2.0, 0.0, 1.0});
+        std::uint64_t frameId = 0x626f6f7374;
+        const auto context = fixture.context_key();
+        auto* const stream = reinterpret_cast<cudaStream_t>(fixture.stream_opaque());
+        const auto seed = [&](const JuicerCuda::CameraFilmLinearExposurePlanes& carrier, float sample) {
+            const std::vector<float> source(count, sample);
+            for (float* plane : {carrier.redSensitive, carrier.greenSensitive, carrier.blueSensitive}) {
+                if (cudaMemcpy(plane, source.data(), count * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+                    throw std::runtime_error("highlight lifetime carrier seed failed");
+                }
+            }
+        };
+        const auto prepare = [&] {
+            auto frame = prepared.prepare_frame(context, ++frameId, extent, stream, failure);
+            if (!frame.active() || frame.scatter_halation_resources().descriptor || !frame.camera_film_linear_carrier().redSensitive ||
+                frame.camera_film_linear_carrier().rowStrideFloats != static_cast<std::size_t>(extent.width)) {
+                throw std::runtime_error("boost-only prepared carrier missing or incorrectly uses spatial resources " + failure.diagnostic);
+            }
+            return frame;
+        };
+        {
+            auto frame = prepare();
+            const auto carrier = frame.camera_film_linear_carrier();
+            seed(carrier, 1.0f);
+            int* scanError = nullptr;
+            const bool scanReady = frame.prepare_scan_error_stage(scanError, stream, failure) ==
+                                   JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
+            FinitePostPrepareUpload downstream;
+            const std::vector<float> source(count, 0.5f);
+            const bool enqueued = scanReady && frame.enqueue_highlight_boost(carrier, stream, failure) &&
+                                  downstream.enqueue(stream, carrier.redSensitive, source, failure.diagnostic) &&
+                                  frame.finalize_scan_error_stage(scanError, stream, failure);
+            const bool checked = enqueued && frame.check_highlight_boost(failure);
+            const bool pending = checked && downstream.query() == cudaErrorNotReady;
+            const bool finished = pending && frame.finish(stream, failure);
+            const auto held = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, context, reinterpret_cast<std::uintptr_t>(carrier.redSensitive));
+            const bool pendingAfterFinish = finished && downstream.query() == cudaErrorNotReady;
+            downstream.release();
+            const bool completed = downstream.wait(std::chrono::seconds(12));
+            std::ostringstream detail;
+            detail << "enqueued=" << enqueued << " status_checked=" << checked << " pending_before_finish=" << pending
+                   << " finished=" << finished << " pending_after_finish=" << pendingAfterFinish
+                   << " carrier_retiring=" << held.expectedRetireAddressPresent << " pinned_status=" << held.retainedPinnedStatusCount
+                   << " gate_self_released=" << downstream.self_released() << " completed=" << completed << ' ' << failure.diagnostic;
+            results.record("highlight/status-before-downstream",
+                           pendingAfterFinish && held.expectedRetireAddressPresent && held.retainedPinnedStatusCount == 1 &&
+                               completed && !downstream.self_released(),
+                           detail.str());
+        }
+        {
+            auto frame = prepare();
+            const auto carrier = frame.camera_film_linear_carrier();
+            seed(carrier, 1.0f);
+            int* scanError = nullptr;
+            const bool scanReady = frame.prepare_scan_error_stage(scanError, stream, failure) ==
+                                   JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
+            FinitePostPrepareUpload blocked;
+            const std::vector<float> source(count, 1.0f);
+            const bool enqueued = scanReady && blocked.enqueue(stream, carrier.redSensitive, source, failure.diagnostic) &&
+                                  frame.enqueue_highlight_boost(carrier, stream, failure) &&
+                                  frame.finalize_scan_error_stage(scanError, stream, failure);
+            frame.abort();
+            const auto held = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, context, reinterpret_cast<std::uintptr_t>(carrier.redSensitive));
+            const bool pending = blocked.query() == cudaErrorNotReady;
+            blocked.release();
+            const bool drained = blocked.wait(std::chrono::seconds(12)) && fixture.synchronize(failure.diagnostic);
+            std::ostringstream detail;
+            detail << "enqueued=" << enqueued << " pending=" << pending << " carrier_retiring=" << held.expectedRetireAddressPresent
+                   << " pinned_status=" << held.retainedPinnedStatusCount << " gate_self_released=" << blocked.self_released()
+                   << " drained=" << drained << ' ' << failure.diagnostic;
+            results.record("highlight/abort-retains-status",
+                           enqueued && pending && held.expectedRetireAddressPresent && held.retainedPinnedStatusCount == 1 &&
+                               drained && !blocked.self_released(),
+                           detail.str());
+        }
+        for (const auto& [id, sample, expected] : {
+                 std::tuple{"highlight/nonfinite", std::numeric_limits<float>::quiet_NaN(), "HighlightBoostInvalidCarrier"},
+                 std::tuple{"highlight/peak-overflow", std::numeric_limits<float>::max(), "HighlightBoostPeakOverflow"}}) {
+            auto frame = prepare();
+            const auto carrier = frame.camera_film_linear_carrier();
+            seed(carrier, sample);
+            const bool rejected = frame.enqueue_highlight_boost(carrier, stream, failure) &&
+                                  !frame.check_highlight_boost(failure) &&
+                                  failure.status.category == FJ_STATUS_UNSUPPORTED_INPUT &&
+                                  failure.diagnostic == expected;
+            JuicerCuda::Failure finish;
+            const bool blocked = !frame.finish(stream, finish) && finish.status.category == FJ_STATUS_INTERNAL_FAILURE;
+            frame.abort();
+            const bool drained = fixture.synchronize(finish.diagnostic);
+            results.record(id, rejected && blocked && drained, failure.diagnostic);
+        }
+        using JuicerCuda::TestSupport::fail_next_highlight_boost;
+        using JuicerCuda::TestSupport::HighlightBoostFault;
+        const auto injectedStatus = JuicerCuda::runtime_failure_status(cudaErrorInvalidValue);
+        const auto matches_failure = [&](std::string_view expected) {
+            return failure.status.category == injectedStatus.category && failure.status.api == injectedStatus.api &&
+                   failure.status.native_code == injectedStatus.native_code && failure.diagnostic == expected;
+        };
+        for (const auto& [id, fault, diagnostic] : {
+                 std::tuple{"highlight/fault-partial", HighlightBoostFault::PartialReduction, "highlight boost block reduction failed"},
+                 std::tuple{"highlight/fault-final", HighlightBoostFault::FinalReduction, "highlight boost final reduction failed"},
+                 std::tuple{"highlight/fault-apply", HighlightBoostFault::Apply, "highlight boost apply failed"},
+                 std::tuple{"highlight/fault-readback", HighlightBoostFault::Readback, "highlight boost status readback failed"},
+                 std::tuple{"highlight/fault-status-event", HighlightBoostFault::StatusEvent, "highlight boost status event record failed"}}) {
+            auto frame = prepare();
+            const auto carrier = frame.camera_film_linear_carrier();
+            seed(carrier, 1.0f);
+            fail_next_highlight_boost(fault);
+            const bool rejected = !frame.enqueue_highlight_boost(carrier, stream, failure) && matches_failure(diagnostic);
+            fail_next_highlight_boost(HighlightBoostFault::None);
+            JuicerCuda::Failure finish;
+            const bool blocked = !frame.finish(stream, finish) && finish.status.category == FJ_STATUS_INTERNAL_FAILURE;
+            frame.abort();
+            const bool drained = fixture.synchronize(finish.diagnostic);
+            results.record(id, rejected && blocked && drained, failure.diagnostic);
+        }
+        {
+            auto frame = prepare();
+            const auto carrier = frame.camera_film_linear_carrier();
+            const auto initialEpoch = frame.admitted_context_epoch();
+            seed(carrier, 1.0f);
+            const bool enqueued = frame.enqueue_highlight_boost(carrier, stream, failure) && frame.check_highlight_boost(failure);
+            fail_next_highlight_boost(HighlightBoostFault::RetirementEvent);
+            const bool rejected = enqueued && !frame.finish(stream, failure) && matches_failure("highlight boost retirement event record failed");
+            fail_next_highlight_boost(HighlightBoostFault::None);
+            frame.abort();
+            const auto held = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, context);
+            std::string retirementError;
+            const bool retired = root.retire_idle_context(context.deviceId, context.contextOpaque, retirementError);
+            const auto clean = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, context);
+            auto renewal = prepare();
+            const bool renewed = renewal.admitted_context_epoch() != initialEpoch;
+            renewal.abort();
+            results.record("highlight/fault-retirement-event",
+                           rejected && held.contextEpoch == initialEpoch && held.retainedPinnedStatusCount == 1 &&
+                               retired && !clean.contextEntryPresent && clean.ledger.chargedBytes == 0 && renewed,
+                           failure.diagnostic + " " + retirementError);
+        }
+    }
+
 } // namespace
 
 namespace ScatterHalationValidation {
@@ -3485,6 +3671,7 @@ namespace ScatterHalationValidation {
         std::optional<JuicerTestSupport::PreparedStateHold> state;
         JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
+        std::optional<JuicerCuda::HighlightBoostDescriptor> boostDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
         bool requiresCameraDiffusion = false;
     };
@@ -3521,6 +3708,10 @@ namespace ScatterHalationValidation {
                 return false;
             }
             auto preparation = prepared.preparation;
+            if (call.owner->boostDescriptor) {
+                preparation.highlightBoostDescriptor = &*call.owner->boostDescriptor;
+                preparation.identity.highlightBoostHash = call.owner->boostDescriptor->recipeHash;
+            }
             preparation.requestedWidth = call.extent.width;
             preparation.requestedHeight = call.extent.height;
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
@@ -3628,7 +3819,9 @@ namespace ScatterHalationValidation {
         float pixelSizeUm,
         ImageExtent extent,
         float filmGammaFactor,
-        const std::string& filmProfileKey) {
+        const std::string& filmProfileKey,
+        const FjPreparationHalation* halation,
+        std::optional<HighlightBoostSettings> boost) {
         JuicerTestSupport::PreparationInput snapshot;
         snapshot.values.scan_route = static_cast<std::uint32_t>(route);
         if (!filmProfileKey.empty()) {
@@ -3639,6 +3832,13 @@ namespace ScatterHalationValidation {
         snapshot.values.scatter_halation.scatter_spatial_scale = controls.scatterSpatialScale;
         snapshot.values.scatter_halation.halation_amount = controls.halationAmount;
         snapshot.values.scatter_halation.halation_spatial_scale = controls.halationSpatialScale;
+        if (halation)
+            snapshot.values.scatter_halation = *halation;
+        if (boost) {
+            snapshot.values.highlight_boost_ev = boost->boostEv;
+            snapshot.values.highlight_protection_ev = boost->protectionEv;
+            snapshot.values.highlight_boost_range = boost->range;
+        }
         snapshot.values.camera_diffusion.active = cameraDiffusion.active;
         snapshot.values.camera_diffusion.family = static_cast<std::uint32_t>(cameraDiffusion.family);
         snapshot.values.camera_diffusion.strength = cameraDiffusion.strength;
@@ -3656,6 +3856,17 @@ namespace ScatterHalationValidation {
         auto impl = std::make_unique<PreparedRouteInputs::Impl>();
         impl->runtimeOwner = &runtime;
         impl->state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot));
+        if (boost) {
+            const FjExtent full{0, 0, extent.width, extent.height};
+            FjPreparedFramePolicy policy{};
+            if (fj_test_prepared_state_frame_policy(impl->state->borrow(), &full, &policy, nullptr).category != FJ_STATUS_SUCCESS ||
+                (policy.optics.flags & FJ_OPTICS_HIGHLIGHT_BOOST) == 0) {
+                throw std::runtime_error("prepared highlight boost projection unavailable");
+            }
+            const auto& projected = policy.optics.highlight_boost;
+            impl->boostDescriptor = JuicerCuda::HighlightBoostDescriptor{
+                projected.recipe_hash, projected.protection, projected.sharpness, projected.peak_gain};
+        }
         impl->frameFacts.renderExtent = {0, 0, extent.width, extent.height};
         impl->frameFacts.fullFrameExtent = impl->frameFacts.renderExtent;
         impl->frameFacts.pixelDefinition = impl->frameFacts.renderExtent;
@@ -3724,6 +3935,7 @@ namespace ScatterHalationValidation {
         }
         run_prepared_frame_rows(results, arguments.runtimeOwner, "scatter_halation.lifecycle_prepared");
         run_route_lifecycle_rows_impl(results, arguments.runtimeOwner);
+        run_highlight_lifetime_rows(results, arguments.runtimeOwner);
     }
 
 } // namespace ScatterHalationValidation
@@ -3792,8 +4004,10 @@ namespace {
             run_prepared_frame_rows(listed, nullptr, "scatter_halation.lifecycle_prepared");
         if (group == "terminal-retention")
             terminal_retention_membership(listed);
-        if (group == "lifecycle")
+        if (group == "lifecycle") {
             run_route_lifecycle_rows_impl(listed, nullptr);
+            run_highlight_lifetime_rows(listed, nullptr);
+        }
     }
 } // namespace
 
@@ -3863,6 +4077,8 @@ int main(int argc, char** argv) noexcept {
         } else if (arguments.caseGroup == "focused-cuda-reference") {
             run_mode(arguments.caseGroup, [&] {
                 ScatterHalationValidation::run_focused_cuda_reference_rows(arguments, results);
+                ScatterHalationValidation::run_advanced_spatial_rows(arguments, results);
+                ScatterHalationValidation::run_highlight_boost_rows(arguments, results);
             });
         } else if (arguments.caseGroup == "route-boundaries") {
             run_mode(arguments.caseGroup, [&] {
@@ -3891,6 +4107,8 @@ int main(int argc, char** argv) noexcept {
             });
             run_mode("focused-cuda-reference", [&] {
                 ScatterHalationValidation::run_focused_cuda_reference_rows(arguments, results);
+                ScatterHalationValidation::run_advanced_spatial_rows(arguments, results);
+                ScatterHalationValidation::run_highlight_boost_rows(arguments, results);
             });
             run_mode("route-boundaries", [&] {
                 ScatterHalationValidation::run_route_boundary_rows(arguments, results);
