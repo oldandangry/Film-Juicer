@@ -40,7 +40,7 @@ and Windows paths with the same arguments.
 
 ### Film grain reference prototype
 
-The nonshipping G1 target compares the Film reference sampler with Current grain.
+The nonshipping prototype compares the Film reference sampler with Current grain.
 Prepare it on `linux-release` or `windows-clang-release`. The ordinary CTest
 registrations exercise synthetic fixtures using the independent double-precision
 oracle.
@@ -55,7 +55,9 @@ Explicit `python -B tests/benchmarks/grain.py` operations take a native
 `--preset` and a fresh `--run-id`. They write original results under
 `out/validation/<preset>/results/<run-id>/`.
 
-1. Run `response` to export the Portra 400 CDF3 response in `response.log`.
+1. Run `response` to export completed current CDF3 knots in `response.log`.
+   It defaults to Portra 400. Use `--stock kodak_gold_200` or
+   `--stock fujifilm_provia_100f` for G2.
    In a temporary copy of the [pinned Fotufilm package](../grain/fotufilm-notice.md),
    place [capture_film_probe.swift](../grain/capture_film_probe.swift) in
    `Sources/FotufilmCore/` and [capture_film_reference.swift](../grain/capture_film_reference.swift)
@@ -63,9 +65,11 @@ Explicit `python -B tests/benchmarks/grain.py` operations take a native
    target with the `FotufilmCore` dependency to the temporary package manifest.
    Build with Swift 6.1.2 using
    `FOTUFILM_DISABLE_HALIDE=1 swift build -c release --product graincapture`.
-   Run the executable with the response log and an empty output directory.
-   Preserve the bank and probe file hashes. The bank uses synthetic calibration
-   and belongs in local research output.
+   Run `graincapture gold <response.log> <empty-output-directory>` or
+   `graincapture provia <response.log> <empty-output-directory>`. Keep the G1
+   Portra bank and its original capture inputs. Its original two-argument
+   command remains available. Preserve all bank and probe
+   hashes. Stock-derived banks belong in local research output.
 2. Run `reference --bank <directory>` to compare CUDA, the independent oracle
    and the pinned Swift outputs on the frozen bank.
 3. Run `capture --input <new-file>` once to write the immutable
@@ -79,6 +83,67 @@ in each of three alternating pairs. Timing includes Current's filters and Film's
 density write. Cold applications, setup, input reset and upload are reported
 separately. The script retains the raw samples and reports per-platform medians
 and nearest-rank p90. These describe the unmatched G1 stage workload.
+
+#### G2 calibration and stage quality
+
+For independent G2 agreement, use `reference-g2 --bank <canonical-Portra-bank>
+--tables <table-directory> --probes <reference-g2.tsv>`. In the Swift adapter,
+`FROZEN_FILM_BANK` selects an existing SAT and captures signed-coordinate
+probes for each extra footprint argument. Use the explicit `portra` stock,
+its original CDF3 log and `0.25 0.78125 3.17 37.5` for the maintained G2
+reference comparison. The
+footprint tables contain density means and adjacent-level correlations for the
+same bank and can be captured without preparing another emulsion. Copy the
+canonical `records.f32` alongside any separate table directory and retain its
+identity.
+
+Run the explicit research operations with NumPy and SciPy installed. `freeze`
+records the complete stock paths and vectors, frame split, geometry, looks and
+size grid. It expects the stock banks and footprint tables in the experiment
+directory and the completed CDF3 response logs in their declared result paths.
+
+```sh
+experiment=out/validation/grain-g2-2026-11-16/experiment.json
+python -B tests/benchmarks/grain.py freeze --experiment "$experiment"
+python -B tests/benchmarks/grain.py calibrate --experiment "$experiment" \
+  --preset linux-release --run-id grain-g2-calibration
+```
+
+`calibrate` renders full frames and retains the central 1024-square crop plus
+the aperture halo. A match requires all three per-record transmission-aperture
+RMS residuals within 2% and the pooled raw-density correlation length within
+5%, in both the calibration and held-out sets. The capture manifests record
+resolved per-frame controls and seeds. The separate half-frame residuals have
+their own disposition. `research --input <request.json>` captures an explicit
+frame sequence via the same native owner. `grain_quality.py` reads completed
+captures offline and adds density, spatial, temporal and preview observations.
+
+```sh
+quality=out/validation/grain-g2-2026-11-16/quality-requests.json
+python -B tests/benchmarks/grain.py freeze --experiment "$experiment" --input "$quality"
+python -B tests/benchmarks/grain.py quality --experiment "$experiment" --input "$quality" \
+  --preset linux-release --run-id grain-g2-quality
+python -B -m unittest discover -s tests/benchmarks -p test_grain_analysis.py
+```
+
+The offline reader also requires Pillow. Use `grain_quality.py patches OUTPUT
+CAPTURE...` for density atlases, `grain_quality.py scale OUTPUT CAPTURE...` for
+one engine's physical-pitch series, and `grain_quality.py OUTPUT CAPTURE...`
+for flat fields and animation. Add `--preview --ffmpeg <encoder>` to the
+last form for a randomized two-engine developed-density still and clip. The
+clip uses lossless H.264 RGB and verifies the decoded pixel hash. Use
+`--preview-only` to repeat the presentation from existing captures.
+
+The reduced-chroma G2 variant takes `chroma_fraction` in a Film research
+request. It preserves the scalar preview luminance while scaling the
+same-luminance chromatic residual in transmission. Omit the field for the
+original full-chroma reference. For reduced-chroma `calibrate`, set
+`chroma_fraction` in the experiment to `0.2406350076198578` for the G2 comparison.
+Set `reference_calibration` to identify the original full-chroma native result
+path and its SHA-256. The search uses
+those original calibration fields and recomputes the matched statistics from
+fresh reduced-chroma CUDA frames. It freezes the same controls for the
+disjoint integer and half-frame checks.
 
 ### Production highlight boost check
 

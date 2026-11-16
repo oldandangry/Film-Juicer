@@ -44,14 +44,18 @@ namespace GrainPrototype {
     };
 
     struct FilmFrame {
-        float pitch;
-        int originX;
-        int originY;
-        int width;
-        int height;
-        int stride;
-        std::uint32_t seed;
-        bool enabled;
+        float pitch = 0.F;
+        int originX = 0;
+        int originY = 0;
+        int width = 0;
+        int height = 0;
+        int stride = 0;
+        std::uint32_t seed = 0;
+        bool enabled = false;
+        float amounts[kRecords]{1.F, 1.F, 1.F};
+        std::uint32_t nextSeed = 0;
+        float temporalFraction = 0.F;
+        float chromaFraction = 1.F;
     };
 
     struct FilmPlanes {
@@ -92,6 +96,10 @@ namespace GrainPrototype {
     // Only the three density planes are written. A disabled frame needs neither
     // a CUDA context nor an uploaded bank.
     cudaError_t apply_film_reference(const DeviceFilmBank& bank, FilmFrame frame, FilmPlanes planes, cudaStream_t stream);
+
+    cudaError_t apply_film_reference(const DeviceFilmBank& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream);
+
+    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint);
 
     // Fixed little-endian research capture. Throws on I/O or representation failure.
     FilmBank read_film_bank(const std::filesystem::path& directory, float footprint);

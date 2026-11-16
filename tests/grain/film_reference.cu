@@ -5,6 +5,7 @@
 #include "Cuda/JuicerCudaDriver.h"
 
 #include <string>
+#include <cmath>
 
 #include <cuda_runtime.h>
 
@@ -101,7 +102,6 @@ namespace GrainPrototype {
             const int firstY = static_cast<int>(floorf((cy - kSeam) / kPlacementBlock));
             const int lastY = static_cast<int>(floorf((cy + kSeam) / kPlacementBlock));
             const float half = footprint * 0.5F;
-            const float area = footprint * footprint;
             float value = 0;
             float normSquared = 0;
             for (int by = firstY; by <= lastY; ++by) {
@@ -112,8 +112,13 @@ namespace GrainPrototype {
                     const float weight = seam_weight(cx, left) * weightY;
                     if (weight == 0)
                         continue;
-                    // Admitted footprints fit entirely in every contributing placement.
-                    const FilmBox local{cx - half - left, cx + half - left, cy - half - top, cy + half - top};
+                    // A contributing center extends at most 16 beyond a block;
+                    // half of the largest footprint is 18.75, below the 64 margin.
+                    // Offsets therefore remain in [0, 512), so one wrap suffices.
+                    const float x0 = cx - half;
+                    const float y0 = cy - half;
+                    const FilmBox local{x0 - left, (x0 + footprint) - left, y0 - top, (y0 + footprint) - top};
+                    const float area = fmaxf((local.right - local.left) * (local.bottom - local.top), 1e-6F);
                     const FilmBox box = place_box(local, placement_hash(bx, by, seed, laying, record));
                     const float low = density_delta(lowSums, box, area, levels[0]);
                     const float high = density_delta(lowSums + kTileEntries, box, area, levels[1]);
@@ -149,6 +154,28 @@ namespace GrainPrototype {
             return sum / sqrtf(fmaxf(kept * kLayings, 1e-12F));
         }
 
+        __device__ void reduce_chroma(const float (&input)[kRecords], float (&grained)[kRecords], float fraction) {
+            // The G2 stills use the scalar CMY transmission as linear display RGB.
+            // Mix toward the input's chromaticity at the sampled luminance. Separate
+            // density pivots keep each set of transmission weights well scaled.
+            constexpr float weights[kRecords]{0.2126F, 0.7152F, 0.0722F};
+            const float inputPivot = fminf(input[0], fminf(input[1], input[2]));
+            const float grainPivot = fminf(grained[0], fminf(grained[1], grained[2]));
+            float inputLight[kRecords];
+            float grainLight[kRecords];
+            float inputLuminance = 0.F;
+            float grainLuminance = 0.F;
+            for (int record = 0; record < kRecords; ++record) {
+                inputLight[record] = exp10f(inputPivot - input[record]);
+                grainLight[record] = exp10f(grainPivot - grained[record]);
+                inputLuminance += weights[record] * inputLight[record];
+                grainLuminance += weights[record] * grainLight[record];
+            }
+            const float sharedScale = (1.F - fraction) * grainLuminance / inputLuminance;
+            for (int record = 0; record < kRecords; ++record)
+                grained[record] = grainPivot - log10f(fraction * grainLight[record] + sharedScale * inputLight[record]);
+        }
+
         __global__ void apply_reference(const float* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes) {
             const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
             const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
@@ -157,21 +184,40 @@ namespace GrainPrototype {
             const auto index = static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.stride) +
                                static_cast<std::size_t>(x);
             float* records[] = {planes.cyan, planes.magenta, planes.yellow};
-            // With all G1 controls at 1, the pinned mix is 1 own, 0 shared.
+            float input[kRecords];
+            float grained[kRecords];
+            bool changed = false;
             for (int record = 0; record < kRecords; ++record) {
-                float& density = records[record][index];
+                const float density = records[record][index];
+                input[record] = density;
                 const float delta = sample_record(sums, tables, frame, record, x + frame.originX, y + frame.originY, density);
-                if (delta != 0)
-                    density += delta;
+                float blended = delta;
+                if (frame.temporalFraction != 0.F) {
+                    FilmFrame next = frame;
+                    next.seed = frame.nextSeed;
+                    const float other = sample_record(sums, tables, next, record, x + frame.originX, y + frame.originY, density);
+                    const float t = frame.temporalFraction;
+                    const float weight = 1.F - t;
+                    blended = (weight * delta + t * other) / sqrtf(weight * weight + t * t);
+                }
+                grained[record] = density;
+                if (blended != 0.F && frame.amounts[record] != 0.F) {
+                    grained[record] += frame.amounts[record] * blended;
+                    changed = changed || grained[record] != density;
+                }
             }
+            if (changed && frame.chromaFraction < 1.F)
+                reduce_chroma(input, grained, frame.chromaFraction);
+            for (int record = 0; record < kRecords; ++record)
+                records[record][index] = grained[record];
         }
 
         bool supported_pitch(float pitch) {
-            return pitch == 1.F || pitch == 9.375F || pitch == 32.F || pitch == 128.F;
+            return std::isfinite(pitch) && ((pitch >= 0.25F && pitch <= 37.5F) || pitch == 128.F);
         }
 
         bool supported_footprint(float width) {
-            return width == 1.F || width == 9.375F || width == 32.F;
+            return std::isfinite(width) && width >= 0.25F && width <= 37.5F;
         }
 
         bool supported_axis(int origin, int size) {
@@ -208,9 +254,17 @@ namespace GrainPrototype {
     }
 
     cudaError_t apply_film_reference(const DeviceFilmBank& bank, FilmFrame frame, FilmPlanes planes, cudaStream_t stream) {
+        return apply_film_reference(bank, bank.tables(), frame, planes, stream);
+    }
+
+    cudaError_t apply_film_reference(const DeviceFilmBank& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream) {
         if (!frame.enabled)
             return cudaSuccess;
-        if (!bank.resident() || !supported_pitch(frame.pitch) || !supported_axis(frame.originX, frame.width) ||
+        if (!bank.resident() || !supported_footprint(tables.footprint) ||
+            !std::isfinite(frame.temporalFraction) || frame.temporalFraction < 0.F || frame.temporalFraction >= 1.F ||
+            !std::isfinite(frame.chromaFraction) || frame.chromaFraction < 0.F || frame.chromaFraction > 1.F ||
+            !std::isfinite(frame.amounts[0]) || !std::isfinite(frame.amounts[1]) || !std::isfinite(frame.amounts[2]) ||
+            frame.amounts[0] < 0.F || frame.amounts[1] < 0.F || frame.amounts[2] < 0.F || !supported_pitch(frame.pitch) || !supported_axis(frame.originX, frame.width) ||
             !supported_axis(frame.originY, frame.height) || frame.stride < frame.width || planes.cyan == nullptr ||
             planes.magenta == nullptr || planes.yellow == nullptr)
             return cudaErrorInvalidValue;
@@ -222,7 +276,7 @@ namespace GrainPrototype {
         constexpr unsigned int blockY = 4;
         const dim3 blocks{(static_cast<unsigned int>(frame.width) + blockX - 1) / blockX,
                           (static_cast<unsigned int>(frame.height) + blockY - 1) / blockY};
-        apply_reference<<<blocks, dim3{blockX, blockY}, 0, stream>>>(bank.sums(), bank.tables(), frame, planes);
+        apply_reference<<<blocks, dim3{blockX, blockY}, 0, stream>>>(bank.sums(), tables, frame, planes);
         return cudaGetLastError();
     }
 } // namespace GrainPrototype

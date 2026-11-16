@@ -43,3 +43,29 @@ extension FilmGrain {
         return Float(total / Double(Self.tileLayers).squareRoot())
     }
 }
+
+
+extension FilmGrain.Tiles {
+    // Rehydrate the frozen bank for independent footprint-table measurements.
+    public static func captureFrozen(directory: URL) throws -> FilmGrain.Tiles {
+        func floats(_ name: String) throws -> [Float] {
+            let data = try Data(contentsOf: directory.appendingPathComponent(name))
+            precondition(data.count % 4 == 0)
+            return stride(from: 0, to: data.count, by: 4).map { i in
+                let word = UInt32(data[i]) | UInt32(data[i + 1]) << 8 | UInt32(data[i + 2]) << 16 | UInt32(data[i + 3]) << 24
+                return Float(bitPattern: word)
+            }
+        }
+        let records = try floats("records.f32"), sums = try floats("sums.f32")
+        let entries = (FilmGrain.tileSide + 1) * (FilmGrain.tileSide + 1)
+        precondition(records.count == 3 * 20 && sums.count == 3 * FilmGrain.tileLevels * entries)
+        let levels = (0..<3).map { r in
+            (0..<FilmGrain.tileLevels).map { k in
+                let start = (r * FilmGrain.tileLevels + k) * entries
+                return FilmGrain.TileLevel(sums: Array(sums[start..<(start + entries)]), meanLight: records[r * 20 + 3 + k])
+            }
+        }
+        return FilmGrain.Tiles(levels: levels, dMin: (0..<3).map { records[$0 * 20] },
+                              dMax: (0..<3).map { records[$0 * 20 + 1] })
+    }
+}

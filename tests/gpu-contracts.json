@@ -201,9 +201,11 @@
   },
   "native_membership": {
     "Grain.Gpu.FilmReference": {
-      "listed": 6,
-      "terminal": 6,
+      "listed": 8,
+      "terminal": 8,
       "required": [
+        ["film-reference", "g2-geometry-and-temporal"],
+        ["film-reference", "chroma-projection"],
         ["film-reference", "rectangles-wrap-and-seams"],
         ["film-reference", "dense-minimum-footprint"],
         ["film-reference", "endpoints-seed-roi-alpha-padding"],

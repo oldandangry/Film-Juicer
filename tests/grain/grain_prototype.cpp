@@ -208,7 +208,18 @@ namespace GrainPrototype {
                             const int column = frame.originX + x;
                             const int row = frame.originY + y;
                             const auto expected = evaluate_sample(bank, {frame.pitch, column, row, frame.seed, channel, initial[at]});
-                            errors.measure(output[at], initial[at] + expected.delta, expected.roundingBound, column, row, channel);
+                            double delta = expected.delta;
+                            double bound = expected.roundingBound;
+                            if (frame.temporalFraction != 0.F) {
+                                const auto next = evaluate_sample(bank, {frame.pitch, column, row, frame.nextSeed, channel, initial[at]});
+                                const double t = frame.temporalFraction;
+                                const double norm = std::sqrt((1 - t) * (1 - t) + t * t);
+                                delta = ((1 - t) * delta + t * next.delta) / norm;
+                                bound = ((1 - t) * bound + t * next.roundingBound) / norm;
+                            }
+                            delta *= frame.amounts[channel];
+                            bound = bound * frame.amounts[channel] + 8 * std::numeric_limits<float>::epsilon() * (1 + std::abs(delta) + std::abs(initial[at]));
+                            errors.measure(output[at], initial[at] + delta, bound, column, row, channel);
                         }
                     }
                 }
@@ -233,6 +244,83 @@ namespace GrainPrototype {
             errors.report("dense-footprints");
         }
 
+        void g2_geometry_and_temporal() {
+            Errors errors;
+            for (const float footprint : {0.25F, 0.78125F, 3.17F, 37.5F}) {
+                const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, footprint);
+                FilmFrame frame{footprint, -17, 197, 9, 7, 12, 0x62345678U, true};
+                frame.nextSeed = 0x90123456U;
+                frame.temporalFraction = 0.5F;
+                frame.amounts[0] = 0.125F;
+                frame.amounts[1] = 2.F;
+                frame.amounts[2] = 8.F;
+                static_cast<void>(check_carrier(bank, frame, false, errors));
+            }
+            errors.report("g2-geometry-and-temporal");
+        }
+
+        void chroma_projection() {
+            const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, kUhdPitch);
+            DeviceFilmBank resident;
+            check_cuda(resident.upload(bank));
+            FilmFrame frame{kUhdPitch, -17, 197, 9, 7, 12, 0x62345678U, true};
+            frame.nextSeed = 0x90123456U;
+            const auto stride = static_cast<std::size_t>(frame.stride);
+            const auto planeWords = stride * static_cast<std::size_t>(frame.height);
+            DeviceCarrier carrier(planeWords);
+            std::vector<float> input(4 * planeWords, -17.F);
+            for (std::size_t record = 0; record < kRecords; ++record)
+                for (int row = 0; row < frame.height; ++row)
+                    for (int column = 0; column < frame.width; ++column)
+                        input[record * planeWords + static_cast<std::size_t>(row) * stride + static_cast<std::size_t>(column)] =
+                            -.25F + static_cast<float>(record * 3 + static_cast<std::size_t>(column % 3)) * .375F;
+            const auto render = [&](float chroma) {
+                auto request = frame;
+                request.chromaFraction = chroma;
+                carrier.write(input);
+                check_cuda(apply_film_reference(resident, request, carrier.planes(), nullptr));
+                return carrier.read();
+            };
+            Errors errors;
+            for (float time : {0.F, .5F}) {
+                frame.temporalFraction = time;
+                const auto reference = render(1.F);
+                for (float fraction : {0.F, .240635F}) {
+                    const auto revised = render(fraction);
+                    require(!std::equal(revised.begin(), revised.end(), reference.begin(), same_words), "reduced chroma had no effect");
+                    constexpr std::array weights{.2126, .7152, .0722};
+                    for (int row = 0; row < frame.height; ++row) {
+                        for (int column = 0; column < frame.stride; ++column) {
+                            const auto pixel = static_cast<std::size_t>(row) * stride + static_cast<std::size_t>(column);
+                            require(same_words(input[3 * planeWords + pixel], revised[3 * planeWords + pixel]), "chroma changed alpha");
+                            if (column >= frame.width) {
+                                for (std::size_t record = 0; record < kRecords; ++record)
+                                    require(same_words(input[record * planeWords + pixel], revised[record * planeWords + pixel]), "chroma changed padding");
+                                continue;
+                            }
+                            std::array<double, kRecords> before{}, after{};
+                            double beforeY = 0, afterY = 0;
+                            for (std::size_t record = 0; record < kRecords; ++record) {
+                                before[record] = std::pow(10.0, -static_cast<double>(input[record * planeWords + pixel]));
+                                after[record] = std::pow(10.0, -static_cast<double>(reference[record * planeWords + pixel]));
+                                beforeY += weights[record] * before[record];
+                                afterY += weights[record] * after[record];
+                            }
+                            for (std::size_t record = 0; record < kRecords; ++record) {
+                                const double gray = before[record] * (afterY / beforeY);
+                                const double expected = -std::log10(std::lerp(gray, after[record], static_cast<double>(fraction)));
+                                // For these finite densities, the pivot differences and
+                                // positive weighted sums admit a 32-u density bound.
+                                const double budget = 16 * std::numeric_limits<float>::epsilon() * (1 + std::abs(expected));
+                                errors.measure(revised[record * planeWords + pixel], expected, budget, column, row, static_cast<int>(record));
+                            }
+                        }
+                    }
+                }
+            }
+            errors.report("chroma-projection");
+        }
+
         void repeat_padded_roi() {
             Errors errors;
             const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, kUhdPitch);
@@ -251,6 +339,9 @@ namespace GrainPrototype {
             Errors errors;
             const auto bank = make_synthetic_bank(SyntheticBank::Constant, 32.F);
             static_cast<void>(check_carrier(bank, {128, -1, 0, 8, 7, 13, 0, true}, true, errors));
+            FilmFrame reduced{128, -1, 0, 8, 7, 13, 0, true};
+            reduced.chromaFraction = .240635F;
+            static_cast<void>(check_carrier(bank, reduced, true, errors));
         }
 
         void disabled() {
@@ -269,10 +360,16 @@ namespace GrainPrototype {
             require(apply_film_reference(resident, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "out-of-range ROI was admitted");
             frame.originX = 0;
-            frame.pitch = 0.5F;
+            frame.pitch = 0.125F;
             require(apply_film_reference(resident, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "unsupported pitch was admitted");
             frame.pitch = kUhdPitch;
+            for (float chroma : {-0.1F, 1.1F, std::numeric_limits<float>::quiet_NaN()}) {
+                frame.chromaFraction = chroma;
+                require(apply_film_reference(resident, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
+                        "invalid chroma fraction was admitted");
+            }
+            frame.chromaFraction = 1.F;
             require(apply_film_reference({}, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "enabled frame accepted missing bank");
         }
@@ -284,7 +381,7 @@ namespace GrainPrototype {
 
         constexpr std::array kHostCases{Case{"known-rectangles-and-constant", known_rectangles}};
         constexpr std::array kGpuCases{
-            Case{"rectangles-wrap-and-seams", rectangles_and_seams}, Case{"dense-minimum-footprint", dense_footprints}, Case{"endpoints-seed-roi-alpha-padding", repeat_padded_roi}, Case{"zero-noise-identity", zero_noise}, Case{"disabled-no-bank", disabled}, Case{"unsupported-frame", unsupported_frame}};
+            Case{"g2-geometry-and-temporal", g2_geometry_and_temporal}, Case{"chroma-projection", chroma_projection}, Case{"rectangles-wrap-and-seams", rectangles_and_seams}, Case{"dense-minimum-footprint", dense_footprints}, Case{"endpoints-seed-roi-alpha-padding", repeat_padded_roi}, Case{"zero-noise-identity", zero_noise}, Case{"disabled-no-bank", disabled}, Case{"unsupported-frame", unsupported_frame}};
 
         void run_cases(const auto& cases, bool list) {
             if (list) {
@@ -313,7 +410,7 @@ namespace GrainPrototype {
             double expected;
         };
 
-        std::vector<ReferenceProbe> read_probes(const std::filesystem::path& path) {
+        std::vector<ReferenceProbe> read_probes(const std::filesystem::path& path, bool g2 = false) {
             std::ifstream input(path);
             require(static_cast<bool>(input), "cannot open pinned reference probes");
             std::vector<ReferenceProbe> probes;
@@ -324,7 +421,9 @@ namespace GrainPrototype {
                         "invalid pinned reference probe");
                 row >> std::ws;
                 require(row.eof() && p.record >= 0 && p.record < kRecords && std::isfinite(p.net) &&
-                            std::isfinite(p.expected) && (p.footprint == 1 || p.footprint == kUhdPitch || p.footprint == 32),
+                            std::isfinite(p.expected) && std::isfinite(p.pitch) &&
+                            (g2 ? (p.footprint == 0.25F || p.footprint == 0.78125F || p.footprint == 3.17F || p.footprint == 37.5F)
+                                : (p.footprint == 1 || p.footprint == kUhdPitch || p.footprint == 32)),
                         "pinned reference probe outside the supported domain");
                 probes.push_back(p);
             }
@@ -367,8 +466,51 @@ namespace GrainPrototype {
             }
         }
 
-        void capture_response(std::string_view resources) {
-            constexpr std::string_view key = "kodak_portra_400";
+        // The immutable SAT and the independently captured footprint tables may
+        // reside in separate directories. Each probe is compared three ways.
+        // The arguments follow the explicit bank, tables, probes command order.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        void compare_g2_capture(const std::filesystem::path& bankDirectory,
+                                const std::filesystem::path& tableDirectory,
+                                const std::filesystem::path& probeFile) {
+            const auto probes = read_probes(probeFile, true);
+            require(probes.size() == 3360, "incomplete G2 pinned probe capture");
+            auto bank = read_film_bank(bankDirectory, 1.F);
+            DeviceFilmBank device;
+            check_cuda(device.upload(bank));
+            DeviceCarrier carrier(1);
+            for (const float footprint : {0.25F, 0.78125F, 3.17F, 37.5F}) {
+                bank.tables = read_film_tables(tableDirectory, footprint);
+                Errors oracleErrors;
+                Errors upstreamErrors;
+                Errors oracleUpstreamErrors;
+                for (const auto& probe : probes) {
+                    if (probe.footprint != footprint)
+                        continue;
+                    carrier.write(std::vector<float>(4, probe.net));
+                    const FilmFrame frame{probe.pitch, probe.x, probe.y, 1, 1, 1, probe.seed, true};
+                    check_cuda(apply_film_reference(device, bank.tables, frame, carrier.planes(), nullptr));
+                    const double output = carrier.read().at(static_cast<std::size_t>(probe.record));
+                    const auto oracle = evaluate_sample(bank, {probe.pitch, probe.x, probe.y, probe.seed, probe.record, probe.net});
+                    const double delta = output - probe.net;
+                    oracleErrors.measure(delta, oracle.delta, oracle.roundingBound, probe.x, probe.y, probe.record);
+                    oracleUpstreamErrors.measure(probe.expected, oracle.delta, oracle.roundingBound, probe.x, probe.y, probe.record);
+                    upstreamErrors.measure(delta, probe.expected, 2 * oracle.roundingBound, probe.x, probe.y, probe.record);
+                    std::cout << "probe," << probe.pitch << ',' << footprint << ',' << probe.x << ',' << probe.y << ','
+                              << probe.seed << ',' << probe.record << ',' << probe.net << ',' << probe.expected << ','
+                              << oracle.delta << ',' << delta << ',' << oracle.roundingBound << '\n';
+                }
+                require(oracleErrors.samples == 840, "incomplete G2 footprint probes");
+                std::cout << "footprint_um=" << footprint << '\n';
+                oracleErrors.report("CUDA/oracle");
+                oracleUpstreamErrors.report("Swift/oracle");
+                upstreamErrors.report("CUDA/Swift");
+            }
+        }
+
+        // Positional resource root and stock ID in the response command.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        void capture_response(std::string_view resources, std::string_view key) {
             constexpr auto release = [](FjFilmProfile* value) {
                 static_cast<void>(fj_test_film_profile_release(value, nullptr));
             };
@@ -378,13 +520,13 @@ namespace GrainPrototype {
                                                              &profile,
                                                              nullptr);
             const std::unique_ptr<FjFilmProfile, decltype(release)> owner(profile, release);
-            require(status.category == FJ_STATUS_SUCCESS && owner != nullptr, "cannot acquire Portra 400 response");
+            require(status.category == FJ_STATUS_SUCCESS && owner != nullptr, "cannot acquire stock response");
             FjFilmFixtureView view{};
             require(fj_test_film_profile_view(owner.get(), &view, nullptr).category == FJ_STATUS_SUCCESS,
-                    "cannot read Portra 400 response");
+                    "cannot read stock response");
             const auto count = view.log_exposure.count;
             require(count == 256 && view.density_curves_cmy.count == count * kRecords,
-                    "incomplete Portra 400 response");
+                    "incomplete stock response");
             auto axis = nlohmann::json::array();
             auto density = nlohmann::json::array();
             for (std::size_t i = 0; i < count; ++i) {
@@ -435,13 +577,22 @@ namespace GrainPrototype {
                 run_cases(kGpuCases, list);
                 return;
             }
+            if (mode == "research" && argc == 4) {
+                capture_research(argv[2], argv[3], std::cout);
+                return;
+            }
+            if (mode == "reference-g2" && argc == 5) {
+                open_cuda();
+                compare_g2_capture(argv[2], argv[3], argv[4]);
+                return;
+            }
             if (mode == "reference" && argc == 3) {
                 open_cuda();
                 compare_capture(argv[2]);
                 return;
             }
-            if (mode == "response" && argc == 3) {
-                capture_response(argv[2]);
+            if (mode == "response" && (argc == 3 || argc == 4)) {
+                capture_response(argv[2], argc == 4 ? argv[3] : "kodak_portra_400");
                 return;
             }
             if (mode == "capture" && argc == 4) {

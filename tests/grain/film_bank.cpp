@@ -3,6 +3,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <charconv>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -28,31 +29,31 @@ namespace GrainPrototype {
             }
         }
 
-        const char* footprint_file(float width) {
-            if (width == 1.F)
-                return "footprint-1.f32";
-            if (width == 9.375F)
-                return "footprint-9.375.f32";
-            if (width == 32.F)
-                return "footprint-32.f32";
-            throw std::invalid_argument("unsupported film footprint width");
+        std::string footprint_file(float width) {
+            if (!std::isfinite(width) || width < 0.25F || width > 37.5F)
+                throw std::invalid_argument("unsupported film footprint width");
+            std::array<char, 32> buffer{};
+            const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), width);
+            if (result.ec != std::errc{})
+                throw std::invalid_argument("invalid film footprint width");
+            return "footprint-" + std::string(buffer.data(), result.ptr) + ".f32";
         }
     } // namespace
 
-    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint) {
-        const auto* tableFile = footprint_file(footprint);
+    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint) {
+        const auto tableFile = footprint_file(footprint);
         constexpr std::size_t recordWords = 3 + kLevels;
         constexpr std::size_t footprintWords = std::size_t{2} * kLevels;
         std::array<float, kRecords * recordWords> records{};
         std::array<float, kRecords * footprintWords> pitch{};
         read_words(directory / "records.f32", records.data(), records.size());
         read_words(directory / tableFile, pitch.data(), pitch.size());
-        FilmBank bank{};
-        bank.tables.footprint = footprint;
+        FilmTables tables{};
+        tables.footprint = footprint;
         for (std::size_t channel = 0; channel < kRecords; ++channel) {
             const auto recordStart = channel * recordWords;
             const auto pitchStart = channel * footprintWords;
-            auto& record = bank.tables.records[channel];
+            auto& record = tables.records[channel];
             record.minimumGross = records.at(recordStart);
             record.maximumGross = records.at(recordStart + 1);
             record.offset = records.at(recordStart + 2);
@@ -68,6 +69,12 @@ namespace GrainPrototype {
                 record.levels[i] = level;
             }
         }
+        return tables;
+    }
+
+    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint) {
+        FilmBank bank{};
+        bank.tables = read_film_tables(directory, footprint);
         bank.sums.resize(kBankEntries);
         read_words(directory / "sums.f32", bank.sums.data(), bank.sums.size());
         return bank;

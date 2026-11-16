@@ -1,4 +1,5 @@
 #include "prototype_benchmark.h"
+#include "film_reference.h"
 
 #include <algorithm>
 #include <array>
@@ -14,8 +15,11 @@
 #include <ostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaFilmPayloads.h"
@@ -53,7 +57,8 @@ namespace GrainPrototype {
             return std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
         }
 
-        FjVisualGrainParams current_grain_defaults() {
+        FjVisualGrainParams current_grain_controls(std::string_view look) {
+            require(look == "default" || look == "expensive" || look == "simple", "unsupported Current grain look");
             ofx_test::InstanceHost host;
             auto* plugin = OfxGetPlugin(0);
             require(plugin != nullptr, "missing OFX test plugin");
@@ -73,6 +78,20 @@ namespace GrainPrototype {
                 static_cast<void>(plugin->mainEntry(kOfxActionDestroyInstance, handle, nullptr, nullptr));
             };
             std::unique_ptr<std::remove_pointer_t<OfxImageEffectHandle>, decltype(destroy)> instance(effect, destroy);
+            if (look == "expensive") {
+                host.set_value(effect, "GrainSublayersActive", {1});
+                host.set_value(effect, "GrainSizeMixWeight", {1.0 / 3.0});
+                host.set_value(effect, "GrainSizeMixWeightMid", {1.0 / 3.0});
+                host.set_value(effect, "GrainSizeMixScale", {4.0});
+                host.set_value(effect, "GrainChroma", {0.5});
+            } else if (look == "simple") {
+                host.set_value(effect, "GrainSublayersActive", {0});
+                host.set_value(effect, "GrainSizeMixWeight", {0.0});
+                host.set_value(effect, "GrainSizeMixWeightMid", {0.0});
+                host.set_value(effect, "GrainBlur", {0.0});
+                host.set_value(effect, "GrainBlurDyeCloudsUm", {0.0});
+                host.set_value(effect, "GrainChroma", {1.0});
+            }
             host.set_value(effect, "GrainActive", {1});
             auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainActive"});
             require(plugin->mainEntry(kOfxActionInstanceChanged, effect, args, nullptr) == kOfxStatReplyDefault,
@@ -133,12 +152,18 @@ namespace GrainPrototype {
 
             Run(const std::filesystem::path& resources, bool captureInput)
                 : controls(), state(prepare(resources, captureInput)) {}
+
+            Run(const std::filesystem::path& resources, const JuicerTestSupport::PreparationInput& input)
+                : controls(input) {
+                runtime.create(resources);
+                state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, controls));
+            }
             JuicerTestSupport::PreparedStateHold prepare(const std::filesystem::path& resources, bool captureInput) {
                 // The OFX module and the stage fixture each own the process
                 // Root while live. Close the defaults capture before opening
                 // the fixture's dedicated stage owner.
                 if (!captureInput)
-                    controls.values.grain = current_grain_defaults();
+                    controls.values.grain = current_grain_controls("default");
                 runtime.create(resources);
                 controls.film_key = "kodak_portra_400";
                 controls.values.camera_film_format_long_edge_mm = 36.0f;
@@ -409,7 +434,297 @@ namespace GrainPrototype {
             require(Fixture::with_prepared_frame_inputs(context.runtime.borrow().assets, *context.state, facts, &context, &execute, diagnostic), diagnostic);
             context.close();
         }
+
+        using Json = nlohmann::json;
+
+        struct CurrentCapture {
+            Run& run;
+            const Fixture::FrameFacts& facts;
+            std::uint64_t submission;
+            FilmPlanes planes;
+            Json resolved;
+        };
+
+        bool render_current(void* user, const Fixture::Inputs& prepared, std::string& diagnostic) {
+            auto& capture = *static_cast<CurrentCapture*>(user);
+            auto& run = capture.run;
+            require(prepared.state.dir_recipe.mode == FJ_DIR_INACTIVE, "research requires DIR off");
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = capture.facts.clipToken;
+            snapshot.frameToken.value = capture.submission;
+            snapshot.snapshotId = capture.submission;
+            snapshot.deviceContextKey = run.key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                prepared.state.upload_core_hash, prepared.state.dir_recipe.hash, prepared.state.scanner_hash, 0);
+            JuicerCuda::Failure failure;
+            auto frame = JuicerCuda::borrow_root(run.runtime.borrow().cuda).prepare_cuda_frame(run.key, snapshot, prepared.preparation, {}, run.stream, failure, prepared.hostPreparation);
+            if (!frame.active()) {
+                diagnostic = failure.diagnostic;
+                return false;
+            }
+            const auto lease = frame.workspace_lease();
+            if (!frame.stage_optical_workspace(lease, run.stream, failure)) {
+                diagnostic = failure.diagnostic;
+                frame.abort();
+                return false;
+            }
+            try {
+                const auto work = frame.visual_grain_workspace(lease);
+                JuicerCuda::GrainPayload grain;
+                JuicerCuda::GrainKernelPayload kernels;
+                const bool bound = work.active && JuicerCuda::pack_visual_grain_payload(prepared.grainPayload,
+                                                                                        frame.visual_grain_resources(),
+                                                                                        grain,
+                                                                                        kernels,
+                                                                                        diagnostic);
+                require(bound, "cannot bind Current grain: " + diagnostic);
+                grain.frameUniforms = work.frameUniforms;
+                const auto& extent = capture.facts.fullFrameExtent;
+                require(grain.active == 1 && grain.pixelSizeUm == capture.facts.pixelSizeUm, "incorrect Current frame geometry");
+                cuda_check(juicer_cuda_apply_visual_grain(&grain, &kernels, extent.width, extent.height, capture.planes.cyan, capture.planes.magenta, capture.planes.yellow, work.filterTemp, work.scaleWork, work.deltaAccum, work.layerWork, work.sharedDelta, run.stream));
+                const auto& recipe = prepared.state.grain;
+                auto& resolved = capture.resolved;
+                resolved = {
+                    {"recipe_hash", recipe.hash},
+                    {"layer_hash", recipe.layers_hash},
+                    {"seed", grain.seedBase},
+                    {"next_seed", grain.seedBaseNext},
+                    {"frame_index", grain.frameIndex},
+                    {"fraction", grain.timeAlpha},
+                    {"route", prepared.state.route},
+                    {"positive", grain.positiveFilm},
+                    {"origin", {grain.originX, grain.originY}},
+                    {"sublayers_active", grain.sublayersActive},
+                    {"sublayers", grain.nSubLayers},
+                    {"amount", grain.amplitude},
+                    {"debug_view", grain.debugView},
+                    {"particle_area_um2", recipe.particle_area_um2},
+                    {"dye_cloud_blur_um", recipe.dye_cloud_blur_um},
+                    {"correlation_sigma_px", recipe.correlation_sigma_px},
+                    {"chroma", {grain.chromaMix, grain.chromaSharedWeight, grain.chromaIndWeight}},
+                    {"band_weights", {grain.sizeMixWeightFine, grain.sizeMixWeightMid, grain.sizeMixWeight}},
+                    {"band_scale", grain.sizeMixScale},
+                    {"band_gain", grain.sizeMixGain},
+                    {"filter_radii", {kernels.blurRadius, kernels.blurRadiusMid, kernels.blurRadiusCoarse}},
+                    {"width_height_frames_stbn", {grain.stbnWidth, grain.stbnHeight, grain.stbnFrames}},
+                    {"offset_x_y_frame_stbn", {grain.stbnOffsetX, grain.stbnOffsetY, grain.stbnFrame}},
+                    {"wang", {grain.wangWidth, grain.wangHeight, grain.wangCount, grain.wangColors, grain.wangCellMm}},
+                    {"breathing", {grain.breathingPeriodFrames, grain.breathingAmplitude, grain.breathingCellUmSmall, grain.breathingCellUmLarge, grain.breathingMix, grain.breathingDriftUmPerFrame}},
+                    {"clump", {grain.microStructure[0], grain.microStructure[1], grain.clumpTemporalMix, grain.clumpMorphPeriodFrames, grain.pitchPx}},
+                    {"records", Json::array()},
+                };
+                for (int record = 0; record < kRecords; ++record) {
+                    Json layers = Json::array();
+                    for (int layer = 0; layer < 3; ++layer) {
+                        layers.push_back({grain.densityMinLayers[layer][record], grain.densityMaxLayers[layer][record], grain.nParticlesLayers[layer][record], grain.odParticleLayers[layer][record], kernels.dyeRadius[layer][record]});
+                    }
+                    resolved["records"].push_back({{"density_min_max", {grain.densityMin[record], grain.densityMax[record]}},
+                                                   {"uniformity", grain.uniformity[record]},
+                                                   {"particles", grain.nParticles[record]},
+                                                   {"particle_density", grain.odParticle[record]},
+                                                   {"layers", layers}});
+                }
+                require(frame.finish(run.stream, failure), failure.diagnostic);
+                cuda_check(cudaStreamSynchronize(run.stream));
+                return true;
+            } catch (...) {
+                frame.abort();
+                throw;
+            }
+        }
+
+        std::uint32_t film_seed(const Fixture::FrameFacts& facts, std::uint64_t index) {
+            // SplitMix64 permutation of frame/clip/session identity, truncated
+            // to the upstream placement seed width. Coordinates do not enter.
+            std::uint64_t word = (facts.sessionSeed ^ std::rotl(facts.clipToken, 17)) + (index + 1) * 0x9e3779b97f4a7c15ULL;
+            word = (word ^ (word >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            word = (word ^ (word >> 27)) * 0x94d049bb133111ebULL;
+            return static_cast<std::uint32_t>(word ^ (word >> 31));
+        }
+
+        JuicerTestSupport::PreparationInput research_controls(const Json& request) {
+            JuicerTestSupport::PreparationInput controls;
+            controls.values.grain = current_grain_controls(request.at("look").get<std::string>());
+            controls.film_key = request.at("stock").get<std::string>();
+            controls.values.camera_film_format_long_edge_mm = request.at("long_edge_mm").get<float>();
+            controls.values.film_gamma_factor = 1.0f;
+            controls.values.dir_couplers.amount = 0.0f;
+            controls.values.scatter_halation = {};
+            controls.values.scan_route = request.at("route").get<std::uint32_t>();
+            return controls;
+        }
+
+        void fill_research_input(std::vector<float>& host, const Fixture::FrameFacts& facts, const Json& sample) {
+            const auto densities = sample.at("density").get<std::array<float, kRecords>>();
+            const int w = facts.fullFrameExtent.width;
+            const int h = facts.fullFrameExtent.height;
+            const auto elements = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+            const auto stimulus = sample.value("stimulus", "flat");
+            require(stimulus == "flat" || stimulus == "edge" || stimulus == "patches", "invalid density stimulus");
+            if (stimulus == "patches") {
+                const auto values = sample.at("patches").get<std::vector<std::array<float, kRecords>>>();
+                const int columns = sample.at("columns").get<int>();
+                const int rows = sample.at("rows").get<int>();
+                require(columns > 0 && columns <= w && rows > 0 && rows <= h &&
+                            values.size() == static_cast<std::size_t>(columns) * static_cast<std::size_t>(rows),
+                        "invalid density patch layout");
+                for (int row = 0; row < rows; ++row) {
+                    for (int column = 0; column < columns; ++column) {
+                        const auto index = static_cast<std::size_t>(row) * static_cast<std::size_t>(columns) + static_cast<std::size_t>(column);
+                        const auto& cmy = values.at(index);
+                        const int begin = column * w / columns;
+                        const int end = (column + 1) * w / columns;
+                        for (std::size_t record = 0; record < cmy.size(); ++record) {
+                            require(std::isfinite(cmy[record]), "nonfinite patch density");
+                            auto* plane = host.data() + record * elements;
+                            for (int y = row * h / rows; y < (row + 1) * h / rows; ++y)
+                                std::fill(plane + static_cast<std::size_t>(y * w + begin),
+                                          plane + static_cast<std::size_t>(y * w + end),
+                                          cmy[record]);
+                        }
+                    }
+                }
+                return;
+            }
+            for (std::size_t record = 0; record < densities.size(); ++record) {
+                require(std::isfinite(densities[record]), "nonfinite input density");
+                auto* plane = host.data() + record * elements;
+                std::fill_n(plane, elements, densities[record]);
+                if (stimulus == "flat")
+                    continue;
+                const int edge = w / 2 - w / 8 + static_cast<int>(facts.frameTime) % (w / 4);
+                for (int y = 0; y < h; ++y) {
+                    auto* row = plane + static_cast<std::size_t>(y) * static_cast<std::size_t>(w);
+                    for (int x = 0; x < w; ++x) {
+                        const float ramp = static_cast<float>(y) / static_cast<float>(h);
+                        const float detail = ((x / 4 + y / 4) % 2 == 0) ? 0.05f : 0.0f;
+                        row[x] += x < edge ? ramp * 0.2f : (0.25f + 0.08f * static_cast<float>(record) + detail);
+                    }
+                }
+            }
+        }
     } // namespace
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void capture_research(const std::filesystem::path& resources, const std::filesystem::path& requestPath, std::ostream& results) {
+        std::ifstream requestFile(requestPath);
+        require(static_cast<bool>(requestFile), "cannot open research request");
+        auto request = Json::parse(requestFile);
+        const auto engine = request.at("engine").get<std::string>();
+        require(engine == "current" || engine == "film" || engine == "off", "invalid grain engine");
+        const auto w = request.at("width").get<int>();
+        const auto h = request.at("height").get<int>();
+        const auto cropWidth = request.at("crop_width").get<int>();
+        const auto cropHeight = request.at("crop_height").get<int>();
+        const auto cropX = (w - cropWidth) / 2;
+        const auto cropY = (h - cropHeight) / 2;
+        require(w >= 8 && h >= 8 && w <= 4096 && h <= 4096 && cropWidth > 0 && cropHeight > 0 &&
+                    cropWidth <= w && cropHeight <= h,
+                "unsupported research frame/crop");
+        Fixture::FrameFacts facts;
+        facts.renderExtent = {0, 0, w, h};
+        facts.fullFrameExtent = facts.renderExtent;
+        facts.pixelDefinition = facts.renderExtent;
+        facts.pixelSizeUm = request.at("pitch_um").get<float>();
+        facts.filmFormatLongEdgeMm = request.at("long_edge_mm").get<float>();
+        facts.frameRate = request.at("fps").get<double>();
+        facts.sessionSeed = request.at("session_seed").get<std::uint64_t>();
+        facts.clipToken = request.at("clip_token").get<std::uint64_t>();
+        require(facts.pixelSizeUm > 0.0f && facts.frameRate == 24.0 && facts.clipToken != 0, "invalid research frame identity");
+        const auto elements = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        const auto rowBytes = static_cast<std::size_t>(w) * sizeof(float);
+        const auto cropRowBytes = static_cast<std::size_t>(cropWidth) * sizeof(float);
+        const auto cropElements = static_cast<std::size_t>(cropWidth) * static_cast<std::size_t>(cropHeight);
+        const auto framesPath = requestPath.parent_path() / "frames.f32";
+        const auto manifestPath = requestPath.parent_path() / "manifest.json";
+        require(!std::filesystem::exists(framesPath) && !std::filesystem::exists(manifestPath), "research output exists");
+
+        std::optional<Run> current;
+        if (engine == "current") {
+            current.emplace(resources, research_controls(request));
+            current->open();
+        } else {
+            cuda_check(cudaSetDevice(0));
+            cuda_check(cudaFree(nullptr));
+        }
+        auto* const stream = current ? current->stream : nullptr;
+        DeviceFilmBank device;
+        FilmTables tables{};
+        FilmFrame film{};
+        film.width = w;
+        film.height = h;
+        film.stride = w;
+        film.enabled = engine == "film";
+        if (film.enabled) {
+            const auto size = request.at("size").get<float>();
+            const auto amounts = request.at("amounts").get<std::array<float, kRecords>>();
+            require(size >= 0.5f && size <= 4.0f, "Film size outside experiment");
+            film.chromaFraction = request.value("chroma_fraction", 1.F);
+            require(film.chromaFraction >= 0.F && film.chromaFraction <= 1.F, "Film chroma fraction outside experiment");
+            for (std::size_t record = 0; record < amounts.size(); ++record) {
+                require(amounts[record] >= 0.125f && amounts[record] <= 8.0f, "Film amount outside experiment");
+                film.amounts[record] = amounts[record] / size;
+            }
+            film.pitch = facts.pixelSizeUm / size;
+            const auto bankPath = request.at("bank").get<std::string>();
+            const auto bank = read_film_bank(bankPath, 1.0f);
+            tables = read_film_tables(request.value("tables", bankPath), film.pitch);
+            cuda_check(device.upload(bank));
+            request["footprint"] = film.pitch;
+            request["resolved_chroma_fraction"] = film.chromaFraction;
+            request["device_bank_bytes"] = bank.sums.size() * sizeof(float);
+        }
+        Buffer carrier(kRecords * elements * sizeof(float));
+        FilmPlanes planes{carrier.data, carrier.data + elements, carrier.data + 2 * elements};
+        std::vector<float> host(kRecords * elements);
+        std::vector<float> crop(kRecords * cropElements);
+        std::ofstream frames(framesPath, std::ios::binary);
+        require(static_cast<bool>(frames), "cannot open research frame output");
+        request["resolved"] = Json::array();
+        std::uint64_t submission = 0;
+        for (const auto& sample : request.at("requests")) {
+            facts.frameTime = sample.at("time").get<double>();
+            require(facts.frameTime >= 0.0 && facts.frameTime <= 1000000.0, "unsupported research frame time");
+            fill_research_input(host, facts, sample);
+            cuda_check(cudaMemcpyAsync(carrier.data, host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+            if (current) {
+                CurrentCapture capture{*current, facts, ++submission, planes, {}};
+                std::string diagnostic;
+                const bool rendered = Fixture::with_prepared_frame_inputs(current->runtime.borrow().assets, *current->state, facts, &capture, &render_current, diagnostic);
+                require(rendered, "Current research preparation: " + diagnostic);
+                request["resolved"].push_back(std::move(capture.resolved));
+            } else {
+                const auto index = static_cast<std::uint64_t>(std::floor(facts.frameTime));
+                film.temporalFraction = static_cast<float>(facts.frameTime - std::floor(facts.frameTime));
+                film.seed = film_seed(facts, index);
+                film.nextSeed = film.temporalFraction == 0.0f ? 0 : film_seed(facts, index + 1);
+                cuda_check(apply_film_reference(device, tables, film, planes, stream));
+                request["resolved"].push_back({{"seed", film.seed}, {"next_seed", film.nextSeed}, {"fraction", film.temporalFraction}});
+            }
+            for (std::size_t record = 0; record < kRecords; ++record) {
+                const auto origin = static_cast<std::size_t>(cropY) * static_cast<std::size_t>(w) + static_cast<std::size_t>(cropX);
+                cuda_check(cudaMemcpy2DAsync(crop.data() + record * cropElements, cropRowBytes, carrier.data + record * elements + origin, rowBytes, cropRowBytes, static_cast<std::size_t>(cropHeight), cudaMemcpyDeviceToHost, stream));
+            }
+            cuda_check(cudaStreamSynchronize(stream));
+            require(std::all_of(crop.begin(), crop.end(), [](float value) {
+                        return std::isfinite(value);
+                    }),
+                    "nonfinite research output");
+            frames.write(reinterpret_cast<const char*>(crop.data()), static_cast<std::streamsize>(crop.size() * sizeof(float)));
+            require(static_cast<bool>(frames), "cannot write research frame");
+        }
+        frames.close();
+        require(frames.good() && !request["resolved"].empty(), "incomplete research capture");
+        if (current)
+            current->close();
+        request["crop_x"] = cropX;
+        request["crop_y"] = cropY;
+        std::ofstream manifest(manifestPath);
+        manifest << request.dump(2) << '\n';
+        manifest.close();
+        require(manifest.good(), "cannot write research manifest");
+        results << "research captured " << request["resolved"].size() << " full frames\n";
+    }
 
     void capture_developed_input(const std::filesystem::path& resources, const std::filesystem::path& output) {
         run(resources, output, true, nullptr, nullptr, nullptr);

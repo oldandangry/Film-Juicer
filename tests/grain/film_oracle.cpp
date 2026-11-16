@@ -75,11 +75,10 @@ namespace GrainPrototype {
             return scale;
         }
 
-        IntegratedLight integrate_level(const FilmBank& bank, int record, int level, Interval x, Interval y) {
+        IntegratedLight integrate_level(const FilmBank& bank, int record, int level, Interval x, Interval y, double area) {
             const auto offset = (static_cast<std::size_t>(record) * kLevels + static_cast<std::size_t>(level)) * kTileEntries;
             const auto* table = bank.sums.data() + offset;
             const auto& means = bank.tables.records[record].levels[level];
-            const double area = (x.high - x.low) * (y.high - y.low);
             const double light = means.meanLight + integrate(table, x, y) / area;
             const double scale = wrapped_scale(table, x.low, y.low) + wrapped_scale(table, x.low, y.high) +
                                  wrapped_scale(table, x.high, y.low) + wrapped_scale(table, x.high, y.high);
@@ -112,10 +111,11 @@ namespace GrainPrototype {
 
         // The interval is centered at the placed pixel and spans the footprint.
         // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-        Interval tile_interval(double center, double width, bool flip, unsigned int offset) {
-            const double oriented = flip ? kPlacementBlock - center : center;
-            const double tileCenter = oriented + kPlacementMargin + offset;
-            return {tileCenter - width / 2, tileCenter + width / 2};
+        Interval tile_interval(float low, float high, bool flip, unsigned int offset) {
+            const float first = flip ? kPlacementBlock - high : low;
+            const float last = flip ? kPlacementBlock - low : high;
+            const float displacement = static_cast<float>(offset) + kPlacementMargin;
+            return {first + displacement, last + displacement};
         }
 
         double share(double centerWithinBlock) {
@@ -131,16 +131,16 @@ namespace GrainPrototype {
 
         OracleSample evaluate_laying(const FilmBank& bank, const FilmProbe& probe, LevelBlend blend, int field) {
             const double shift = static_cast<double>(kPlacementBlock * field) / kLayings;
-            const double centerX = (probe.x + 0.5) * probe.pitch + shift;
-            const double centerY = (probe.y + 0.5) * probe.pitch + shift;
+            const float centerX = (static_cast<float>(probe.x) + 0.5F) * probe.pitch + static_cast<float>(shift);
+            const float centerY = (static_cast<float>(probe.y) + 0.5F) * probe.pitch + static_cast<float>(shift);
             const int centralX = static_cast<int>(std::floor(centerX / kPlacementBlock));
             const int centralY = static_cast<int>(std::floor(centerY / kPlacementBlock));
             OracleSample result{};
             double norm = 0;
             for (int by = centralY - 1; by <= centralY + 1; ++by) {
-                const double y = centerY - by * kPlacementBlock;
+                const double y = centerY - static_cast<float>(by * kPlacementBlock);
                 for (int bx = centralX - 1; bx <= centralX + 1; ++bx) {
-                    const double x = centerX - bx * kPlacementBlock;
+                    const double x = centerX - static_cast<float>(bx * kPlacementBlock);
                     const double weight = share(x) * share(y);
                     if (weight == 0)
                         continue;
@@ -149,10 +149,15 @@ namespace GrainPrototype {
                     const bool swap = orientation >= 4U;
                     const auto offsetX = hash % 256U;
                     const auto offsetY = hash / 256U % 256U;
-                    const auto horizontal = tile_interval(x, bank.tables.footprint, orientation % 2U != 0, swap ? offsetY : offsetX);
-                    const auto vertical = tile_interval(y, bank.tables.footprint, orientation % 4U >= 2U, swap ? offsetX : offsetY);
-                    const auto a = integrate_level(bank, probe.record, blend.level, swap ? vertical : horizontal, swap ? horizontal : vertical);
-                    const auto b = integrate_level(bank, probe.record, blend.level + 1, swap ? vertical : horizontal, swap ? horizontal : vertical);
+                    const float x0 = centerX - bank.tables.footprint * 0.5F;
+                    const float y0 = centerY - bank.tables.footprint * 0.5F;
+                    const float left = static_cast<float>(bx * kPlacementBlock);
+                    const float top = static_cast<float>(by * kPlacementBlock);
+                    const auto horizontal = tile_interval(x0 - left, (x0 + bank.tables.footprint) - left, orientation % 2U != 0, swap ? offsetY : offsetX);
+                    const auto vertical = tile_interval(y0 - top, (y0 + bank.tables.footprint) - top, orientation % 4U >= 2U, swap ? offsetX : offsetY);
+                    const float area = ((x0 + bank.tables.footprint) - left - (x0 - left)) * ((y0 + bank.tables.footprint) - top - (y0 - top));
+                    const auto a = integrate_level(bank, probe.record, blend.level, swap ? vertical : horizontal, swap ? horizontal : vertical, area);
+                    const auto b = integrate_level(bank, probe.record, blend.level + 1, swap ? vertical : horizontal, swap ? horizontal : vertical, area);
                     result.delta += weight * std::lerp(a.delta, b.delta, blend.fraction);
                     result.roundingBound += weight * std::lerp(a.error, b.error, blend.fraction);
                     norm += weight * weight;
