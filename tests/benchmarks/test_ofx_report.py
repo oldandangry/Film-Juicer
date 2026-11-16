@@ -443,14 +443,16 @@ class MeasurementReportTests(unittest.TestCase):
         sample_path = run / "shipping-halation-1080p-direct-boost-zero-0-reference.json"
         original_sample = json.loads(sample_path.read_text())
         original_bytes = sample_path.read_bytes()
-        for field, value in (("halation_boost_ev", 4.0), ("controls", {"Exposure": [5.0]})):
+        cases = (("halation_boost_ev", 4.0), ("controls", {"Exposure": [5.0]}))
+        self.subtest_cases = tuple(field for field, _ in cases)
+        for field, value in cases:
             sample_data = dict(original_sample)
             sample_data[field] = value
             sample_path.write_text(json.dumps(sample_data))
             result = json.loads((run / "result.json").read_text())
             result["evidence"][sample_path.name] = ofx.execution.digest(sample_path)
             (run / "result.json").write_text(json.dumps(result))
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "exposure 6"):
+            with self.subTest(case=field), self.assertRaisesRegex(ValueError, "exposure 6"):
                 ofx.report_run(run)
             sample_path.write_bytes(original_bytes)
             result["evidence"][sample_path.name] = ofx.execution.digest(sample_path)
@@ -523,6 +525,9 @@ class MeasurementReportTests(unittest.TestCase):
         (windows / "result.json").write_text(json.dumps(result))
         with self.assertRaises(ValueError):
             ofx.offline_report([linux, windows])
+
+
+MeasurementReportTests.test_matched_highlight_rejects_missing_zero_control_and_wrong_exposure.required_subtests = True
 
 
 if __name__ == "__main__":
