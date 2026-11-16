@@ -32,10 +32,19 @@ namespace JuicerCuda {
         Partial partials[kHighlightBoostMaxBlocks];
         HighlightBoostDisposition disposition;
         float maximum;
-        double peak;
-        double inverseRange;
-        double shapeAtPeak;
-        double scaledAmplitude;
+        float protection;
+        float protectionResidual;
+        float onset;
+        float peak;
+        float peakResidual;
+        float range;
+        float rangeResidual;
+        float shape;
+        float shapeResidual;
+        float tailExpFactor;
+        float tailLinearFactor;
+        float delta;
+        float inverseShapeNormalization;
     };
 
     enum class HighlightBoostLaunchStage : std::uint8_t {

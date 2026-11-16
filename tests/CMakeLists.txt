@@ -1217,6 +1217,18 @@ set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
 add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp ofx/render_assertions.cpp
     scatter_halation/integration_test_cases.cpp)
+
+# Explicit maintenance experiment; it never substitutes a production kernel.
+add_executable(JuicerHighlightBoostPrecisionTests EXCLUDE_FROM_ALL
+    scatter_halation/highlight_precision.cpp
+    ../src/Cuda/Film/JuicerCudaHighlightBoost.cu)
+target_link_libraries(JuicerHighlightBoostPrecisionTests PRIVATE
+    juicer_settings CUDA::cudart)
+set_target_properties(JuicerHighlightBoostPrecisionTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    JUICER_RUST_VARIANT none
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+
 add_test(NAME Ofx.Gpu.StreamContract
     COMMAND JuicerAdapterTraceProbe --stream-contract "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
         --trace-output "${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract.log")
@@ -1602,7 +1614,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(juicer_without_cufft_targets
         JuicerHashContractTests JuicerScratchRequestTests JuicerProfileCudaSafetyTests
         JuicerGrainDeltaTests JuicerRenderAssertionTests JuicerProductionPreparedRenderProbe
-        JuicerOfxMeasurement JuicerOfxMeasurementTests)
+        JuicerOfxMeasurement JuicerOfxMeasurementTests JuicerHighlightBoostPrecisionTests)
     set(juicer_shared_cufft_targets)
     get_property(juicer_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS juicer_test_targets)

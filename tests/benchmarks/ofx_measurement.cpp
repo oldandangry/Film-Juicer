@@ -318,6 +318,7 @@ namespace {
         bool spatial;
         bool boost = false;
         bool diffusion = false;
+        bool aboveOnset = false;
     };
     constexpr std::array kHalationWorkloads{
         HalationWorkload{"halation-1080p-direct", 1920, 1080, false, false},
@@ -336,6 +337,8 @@ namespace {
         HalationWorkload{"halation-uhd-print-boost", 3840, 2160, true, false, true},
         HalationWorkload{"halation-uhd-direct-composed-boost", 3840, 2160, false, true, true, true},
         HalationWorkload{"halation-uhd-print-composed-boost", 3840, 2160, true, true, true, true},
+        HalationWorkload{"halation-1080p-direct-boost-zero", 1920, 1080, false, false, false, false, true},
+        HalationWorkload{"halation-uhd-direct-boost-zero", 3840, 2160, false, false, false, false, true},
     };
     struct RenderStep {
         const char* phase = nullptr;
@@ -560,6 +563,7 @@ namespace {
         if (pairedHalation) {
             report["advanced_halation_available"] = advancedHalation;
             report["halation_boost_ev"] = 0.0;
+            report["halation_protection_ev"] = 0.0;
         }
         for (const auto& definition : ofx_test::kInstanceParameters) {
             if (ofx_test::reference::advanced_halation_parameter(definition.name)) {
@@ -646,12 +650,14 @@ namespace {
                                     host.value(effect, "HalationRenormalize") == V{1},
                                 "halation comparison requires the legacy-compatible defaults");
                     }
-                    if (halation->boost) {
+                    if (halation->boost || halation->aboveOnset) {
                         host.set_value(effect, "Exposure", {6.0});
                         if (advancedHalation) {
-                            host.set_value(effect, "HalationHighlightBoostEv", {4.0});
+                            host.set_value(effect, "HalationHighlightBoostEv", {halation->boost ? 4.0 : 0.0});
                             host.set_value(effect, "HalationHighlightProtectionEv", {0.0});
                             report["halation_boost_ev"] = std::get<double>(host.value(effect, "HalationHighlightBoostEv").at(0));
+                            report["halation_protection_ev"] =
+                                std::get<double>(host.value(effect, "HalationHighlightProtectionEv").at(0));
                         }
                     }
                 }

@@ -111,6 +111,9 @@ FP32 after CPU factor construction; CUDA executes the factored recurrence in
 FP32. Legacy YVV keeps its original four coefficients and arithmetic.
 
 The same registration runs the boost rows through the production CUDA kernels.
+Per-pixel highlight application uses stable FP32 arithmetic. FP64 is confined
+to once-per-frame threshold, overflow and constant preparation after the maximum
+reduction; it is not a per-pixel fallback.
 It checks the exact image maximum over logical RGB samples, the one-ULP peak,
 fixed bypass values, finite carrier and peak rejection, and repeatability
 across different reduction block counts. The lifecycle registration checks
@@ -118,3 +121,9 @@ that the verdict is available while downstream use remains pending and that
 finish and abort transfer the carrier and pinned staging to the CUDA owner.
 Fixture generation is explicit reference maintenance outside ordinary builds
 and tests.
+
+The maintained [production highlight check](../benchmarks/README.md#production-highlight-boost-check)
+adds an independent high-precision oracle and supplemental boundary cases without
+changing the frozen fixtures. Legacy-default, zero-boost frame replay establishes
+compatibility for that path; it does not exercise advanced factored blur or active
+highlight reconstruction.

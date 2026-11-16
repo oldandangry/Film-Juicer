@@ -27,6 +27,22 @@ HALATION_EXTENTS = {
     for spatial in ("", "-spatial", "-boost", "-composed-boost")
     for route in ("direct", "print")
 }
+HALATION_EXTENTS.update(
+    {f"halation-{size}-direct-boost-zero": extent for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))}
+)
+MATCHED_HIGHLIGHT_WORKLOADS = (
+    "halation-1080p-direct-boost",
+    "halation-1080p-print-boost",
+    "halation-1080p-direct-composed-boost",
+    "halation-1080p-print-composed-boost",
+    "halation-uhd-direct-boost",
+    "halation-uhd-print-boost",
+    "halation-uhd-direct-composed-boost",
+    "halation-uhd-print-composed-boost",
+    "halation-1080p-direct-boost-zero",
+    "halation-uhd-direct-boost-zero",
+)
+COMPARISONS = ("standard", "matched-highlight")
 HALATION_REFERENCE = "31a4d5d94b1576a6b2dadc7f6eb8e918c62224e5"
 REFERENCE_PROOF = (
     ("reference-production-result.json", "result.json"),
@@ -75,6 +91,13 @@ def identities(inputs):
         if actual != entry["sha256"]:
             raise ValueError(f"{key} identity mismatch")
         result[key] = actual
+    if "matched_highlight_baseline" in inputs:
+        entry = inputs["matched_highlight_baseline"]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        if actual != entry.get("sha256"):
+            raise ValueError("matched highlight baseline manifest identity mismatch")
+        result["matched_highlight_baseline"] = actual
     for side in SIDES:
         result[side] = {}
         for key in ("shipping", "observed", "resources", "observed_resources"):
@@ -146,11 +169,169 @@ def candidate_qualification(
     }
 
 
-def reference_qualification(proof, preset, module_hash, *, check_inputs):
+def reference_qualification(proof, preset, module_hash, *, check_inputs, comparison="standard"):
     snapshot = json.loads(proof[2])
-    if snapshot.get("head") != HALATION_REFERENCE or snapshot.get("new_files_base64") or proof[3]:
+    if comparison == "standard" and (
+        snapshot.get("head") != HALATION_REFERENCE or snapshot.get("new_files_base64") or proof[3]
+    ):
         raise ValueError("halation reference must be the clean pinned revision")
-    return candidate_qualification(*proof, preset, module_hash, check_inputs=check_inputs)
+    if comparison not in COMPARISONS:
+        raise ValueError("unknown OFX comparison mode")
+    # A matched comparison intentionally binds the retained prior candidate.
+    # Its consumed source paths may now refer to candidate files changed by the
+    # implementation, so validate the copied closure and source proof instead.
+    return candidate_qualification(
+        *proof, preset, module_hash, check_inputs=check_inputs if comparison == "standard" else False
+    )
+
+
+def validate_matched_highlight_baseline(
+    inputs,
+    preset,
+    identities_result,
+    *,
+    manifest_bytes=None,
+    build_result_bytes=None,
+    build_snapshot_bytes=None,
+    build_patch_bytes=None,
+):
+    def require(condition, message):
+        if not condition:
+            raise ValueError(message)
+
+    baseline_input = inputs.get("matched_highlight_baseline")
+    if not isinstance(baseline_input, dict) or not isinstance(baseline_input.get("path"), str):
+        raise ValueError("matched-highlight comparison requires the retained baseline artifacts manifest")
+    manifest_path = Path(baseline_input["path"]).resolve(strict=manifest_bytes is None)
+    data = manifest_path.read_bytes() if manifest_bytes is None else manifest_bytes
+    if hashlib.sha256(data).hexdigest() != baseline_input.get("sha256"):
+        raise ValueError("matched-highlight baseline manifest hash mismatch")
+    manifest_hash = hashlib.sha256(data).hexdigest()
+    manifest = json.loads(data)
+    baseline = manifest.get(preset)
+    if not isinstance(baseline, dict):
+        raise ValueError("matched-highlight baseline manifest lacks this preset")
+    module_dir = "Win64" if preset.startswith("windows") else "Linux-x86-64"
+    shipping_relative = f"Contents/{module_dir}/juicer.ofx"
+    observed_relative = f"Contents/{module_dir}/JuicerOfxMeasurementModule.ofx"
+    resource_prefix = "Contents/Resources/"
+    members = baseline.get("members")
+    if not isinstance(members, dict):
+        raise ValueError("matched-highlight baseline member inventory missing")
+    resource_members = {
+        name[len(resource_prefix) :]: checksum for name, checksum in members.items() if name.startswith(resource_prefix)
+    }
+    require(resource_members, "matched-highlight baseline resources missing")
+    reference = inputs["reference"]
+    shipping_bundle = Path(baseline["shipping"]).resolve(strict=manifest_bytes is None)
+    observed_bundle = Path(baseline["observed"]).resolve(strict=manifest_bytes is None)
+    require(
+        Path(reference["shipping"]["path"]).resolve(strict=manifest_bytes is None)
+        == shipping_bundle / shipping_relative,
+        "matched-highlight reference shipping module path mismatch",
+    )
+    require(
+        Path(reference["observed"]["path"]).resolve(strict=manifest_bytes is None)
+        == observed_bundle / observed_relative,
+        "matched-highlight reference observed module path mismatch",
+    )
+    require(
+        identities_result["reference"]["shipping"] == members.get(shipping_relative),
+        "matched-highlight reference shipping module hash mismatch",
+    )
+    require(
+        identities_result["reference"]["observed"]
+        == baseline.get("observed_module_sha256")
+        == members.get(observed_relative),
+        "matched-highlight reference observed module hash mismatch",
+    )
+    require(
+        identities_result["reference"]["shipping"] != identities_result["candidate"]["shipping"]
+        and identities_result["reference"]["observed"] != identities_result["candidate"]["observed"],
+        "matched-highlight baseline and candidate modules must be distinct",
+    )
+    require(
+        identities_result["reference"]["resources"]
+        == identities_result["reference"]["observed_resources"]
+        == resource_members,
+        "matched-highlight reference resource identity mismatch",
+    )
+    require(
+        identities_result["candidate"]["resources"]
+        == identities_result["candidate"]["observed_resources"]
+        == resource_members,
+        "matched-highlight candidate resource identity mismatch",
+    )
+    for side in SIDES:
+        for module_key, resource_key in (("shipping", "resources"), ("observed", "observed_resources")):
+            module_path = Path(inputs[side][module_key]["path"]).resolve(strict=manifest_bytes is None)
+            resource_path = Path(inputs[side][resource_key]["path"]).resolve(strict=manifest_bytes is None)
+            require(
+                resource_path == module_path.parent.parent / "Resources",
+                "matched-highlight module-relative Resources path mismatch",
+            )
+    if manifest_bytes is None:
+        require(inventory(observed_bundle) == members, "matched-highlight observed bundle inventory mismatch")
+    build_result_path = Path(baseline.get("build_result", "")).resolve(strict=build_result_bytes is None)
+    build_directory = build_result_path.parent
+    build_data = build_result_path.read_bytes() if build_result_bytes is None else build_result_bytes
+    build_result = json.loads(build_data)
+    require(
+        build_result.get("schema") == "native-build-v1"
+        and build_result.get("status") == "passed"
+        and build_result.get("preset") == preset
+        and "JuicerOfxMeasurementModule" in build_result.get("targets", [])
+        and bool(build_result.get("commands"))
+        and all(
+            command.get("returncode") == 0
+            and command.get("drained") is True
+            and command.get("process_status") == "completed"
+            for command in build_result["commands"]
+        ),
+        "matched-highlight observed module build receipt is incomplete",
+    )
+    if build_result_bytes is None:
+        qualification = importlib.import_module("qualification")
+        require(
+            qualification.read_native_result(build_directory).get("status") == "passed",
+            "matched-highlight observed module build result is invalid",
+        )
+    snapshot_path = build_directory / "candidate.json"
+    patch_path = build_directory / "candidate.patch"
+    if build_snapshot_bytes is None:
+        require(snapshot_path.is_file(), "matched-highlight observed source snapshot missing")
+        snapshot_bytes = snapshot_path.read_bytes()
+    else:
+        snapshot_bytes = build_snapshot_bytes
+    if build_patch_bytes is None:
+        require(patch_path.is_file(), "matched-highlight observed source patch missing")
+        patch_bytes = patch_path.read_bytes()
+    else:
+        patch_bytes = build_patch_bytes
+    for name, content in (("candidate.json", snapshot_bytes), ("candidate.patch", patch_bytes)):
+        member = build_result.get("members", {}).get(name, {})
+        require(
+            member.get("sha256") == hashlib.sha256(content).hexdigest() and member.get("bytes") == len(content),
+            "matched-highlight observed source proof identity mismatch",
+        )
+    binding = {
+        "manifest_sha256": manifest_hash,
+        "shipping_module_sha256": identities_result["reference"]["shipping"],
+        "observed_module_sha256": identities_result["reference"]["observed"],
+        "observed_build_result_sha256": hashlib.sha256(build_data).hexdigest(),
+        "observed_build_source_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+        "observed_build_patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
+    }
+    return {
+        "binding": binding,
+        "manifest_bytes": data,
+        "build_result_bytes": build_data,
+        "build_snapshot_bytes": snapshot_bytes,
+        "build_patch_bytes": patch_bytes,
+        "build_result_sha256": hashlib.sha256(build_data).hexdigest(),
+        "build_snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+        "build_patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
+    }
 
 
 def nonnegative(value):
@@ -343,13 +524,34 @@ def workloads(value):
     return value
 
 
-def check_reference_workloads(selection, has_pinned_reference):
-    if any((row in HALATION_EXTENTS) != has_pinned_reference for row in selection):
-        raise ValueError("halation workloads require the pinned halation production reference")
+def check_reference_workloads(selection, has_reference_production_result):
+    if any((row in HALATION_EXTENTS) != has_reference_production_result for row in selection):
+        raise ValueError("halation workloads require a qualified reference production closure")
 
 
-def check_halation_side(sample, row, side):
+def validate_comparison(comparison, selected, has_reference_production_result):
+    if comparison not in COMPARISONS:
+        raise ValueError("unknown OFX comparison mode")
+    if comparison == "matched-highlight":
+        if not has_reference_production_result:
+            raise ValueError("matched-highlight comparison requires a reference production closure")
+        if tuple(selected) != MATCHED_HIGHLIGHT_WORKLOADS:
+            raise ValueError("matched-highlight comparison requires all eight boosted and two zero-boost workloads")
+
+
+def check_halation_side(sample, row, side, comparison="standard"):
     if row not in HALATION_EXTENTS:
+        return
+    if comparison == "matched-highlight":
+        if sample.get("advanced_halation_available") is not True:
+            raise ValueError("matched highlight comparison requires advanced controls on both modules")
+        expected_boost = 4.0 if row.endswith("-boost") else 0.0
+        if (
+            sample.get("controls", {}).get("Exposure") != [6.0]
+            or sample.get("halation_boost_ev") != expected_boost
+            or sample.get("halation_protection_ev") != 0.0
+        ):
+            raise ValueError("matched highlight comparison requires exposure 6, matching boost, and zero protection")
         return
     candidate = side == "candidate"
     if sample.get("advanced_halation_available") is not candidate:
@@ -391,10 +593,14 @@ def read_run(directory, mode):
             key: inputs[side][key]["files" if key in ("resources", "observed_resources") else "sha256"]
             for key in ("shipping", "observed", "resources", "observed_resources")
         }
+    comparison = result.get("comparison", "standard")
+    reference_binding = result.get("reference_qualification")
+    validate_comparison(comparison, selected, reference_binding is not None)
+    if comparison == "matched-highlight":
+        declared["matched_highlight_baseline"] = inputs.get("matched_highlight_baseline", {}).get("sha256")
     if declared != result["identities"]:
         raise ValueError("input identity evidence mismatch")
     preset = result.get("preset")
-    reference_binding = result.get("reference_qualification")
     check_reference_workloads(selected, reference_binding is not None)
     if preset not in SHIPPING:
         raise ValueError("unknown native Release preset")
@@ -404,13 +610,53 @@ def read_run(directory, mode):
     else:
         proof = tuple(evidence_file(directory, name, evidence[name]).read_bytes() for name, _ in REFERENCE_PROOF)
         if (
-            reference_qualification(proof, preset, declared["reference"]["shipping"], check_inputs=False)
+            reference_qualification(
+                proof,
+                preset,
+                declared["reference"]["shipping"],
+                check_inputs=False,
+                comparison=comparison,
+            )
             != reference_binding
         ):
             raise ValueError("offline halation reference differs from its production closure")
+    if comparison == "matched-highlight":
+        baseline_manifest = evidence_file(
+            directory,
+            "matched-highlight-baseline-artifacts.json",
+            result["matched_highlight_baseline_binding"]["manifest_sha256"],
+        ).read_bytes()
+        baseline_build_result = evidence_file(
+            directory,
+            "matched-highlight-observed-build-result.json",
+            result["matched_highlight_baseline_binding"]["observed_build_result_sha256"],
+        ).read_bytes()
+        baseline_build_snapshot = evidence_file(
+            directory,
+            "matched-highlight-observed-candidate.json",
+            result["matched_highlight_baseline_binding"]["observed_build_source_sha256"],
+        ).read_bytes()
+        baseline_build_patch = evidence_file(
+            directory,
+            "matched-highlight-observed-candidate.patch",
+            result["matched_highlight_baseline_binding"]["observed_build_patch_sha256"],
+        ).read_bytes()
+        actual_baseline_binding = validate_matched_highlight_baseline(
+            inputs,
+            preset,
+            declared,
+            manifest_bytes=baseline_manifest,
+            build_result_bytes=baseline_build_result,
+            build_snapshot_bytes=baseline_build_snapshot,
+            build_patch_bytes=baseline_build_patch,
+        )["binding"]
+        if actual_baseline_binding != result.get("matched_highlight_baseline_binding"):
+            raise ValueError("matched-highlight baseline artifact binding mismatch")
     binding = result.get("candidate_qualification")
-    if binding is None and declared["candidate"]["shipping"] != SHIPPING[preset]["candidate"]:
-        raise ValueError("offline candidate qualification missing")
+    if binding is None and (
+        comparison == "matched-highlight" or declared["candidate"]["shipping"] != SHIPPING[preset]["candidate"]
+    ):
+        raise ValueError("offline candidate production qualification missing")
     if binding is not None:
         production_result = evidence_file(
             directory, "candidate-production-result.json", evidence["candidate-production-result.json"]
@@ -490,7 +736,7 @@ def read_run(directory, mode):
             raise ValueError("incorrect sample file")
         sample = json.loads(evidence_file(directory, member["file"], evidence[member["file"]]).read_text())
         validate_sample(sample, mode, key[0], key[1])
-        check_halation_side(sample, key[1], key[3])
+        check_halation_side(sample, key[1], key[3], comparison)
         if platform_path(sample.get("resources", "")) != platform_path(expected_command[6]):
             raise ValueError("driver resource path mismatch")
         if key[1] in controls and controls[key[1]] != (sample["controls"], sample["control_types"]):
@@ -533,6 +779,9 @@ def offline_report(directories):
         raise ValueError("one native Release run per OS required")
     if len({tuple(result.get("workloads", ROWS)) for result, _ in runs}) != 1:
         raise ValueError("native reports require identical workloads")
+    comparisons = {result.get("comparison", "standard") for result, _ in runs}
+    if len(comparisons) != 1:
+        raise ValueError("native reports require identical comparison modes")
     summary = {}
     for directory, (result, samples) in zip(directories, runs):
         os_summary = {}
@@ -647,6 +896,7 @@ def offline_report(directories):
         summary[result["preset"]] = {"identities": result["identities"], "rows": os_summary}
     return {
         "schema": 1,
+        "comparison": next(iter(comparisons)),
         "comparisons": summary,
         "decision": "requires investigation and owner review",
         "limitations": "Stream intervals include host gaps, not pure kernel time. Process peaks include fixture and driver. Pinned values cover upload-pool staging only; scan-error pinned bytes and complete pinned drainage are not quantified. Cold means process/owner cold, not cold storage. Grain randomness remains production-owned. Observed timings include instrumentation overhead; inspect smaller repeatable regressions and retention separately.",
@@ -659,6 +909,8 @@ def campaign(args):
     if not args.preset.endswith("release"):
         raise ValueError("campaign requires Release")
     selected = workloads(args.workloads)
+    comparison = args.comparison
+    validate_comparison(comparison, selected, args.reference_production_result is not None)
     check_reference_workloads(selected, args.reference_production_result is not None)
     directory = (
         ROOT / "out/validation" / args.preset / "s7-b-performance-memory" / execution.name_component(args.run_id)
@@ -666,6 +918,11 @@ def campaign(args):
     with execution.OutputLease(ROOT, ROOT / "out/build" / args.preset), execution.OutputLease(ROOT):
         inputs = json.loads(Path(args.inputs).read_text())
         entry = identities(inputs)
+        matched_baseline = None
+        if comparison == "matched-highlight":
+            if not args.candidate_production_result:
+                raise ValueError("matched-highlight comparison requires both production closures")
+            matched_baseline = validate_matched_highlight_baseline(inputs, args.preset, entry)
         reference_binding = None
         reference_proof = ()
         if args.reference_production_result:
@@ -674,7 +931,11 @@ def campaign(args):
                 (result_path.parent / source).read_bytes() for _, source in REFERENCE_PROOF[1:]
             )
             reference_binding = reference_qualification(
-                reference_proof, args.preset, entry["reference"]["shipping"], check_inputs=True
+                reference_proof,
+                args.preset,
+                entry["reference"]["shipping"],
+                check_inputs=True,
+                comparison=comparison,
             )
             if not args.candidate_production_result:
                 raise ValueError("halation comparison requires the candidate production closure")
@@ -707,6 +968,17 @@ def campaign(args):
         execution.write_json(directory / "inputs.json", inputs)
         for (name, _), content in zip(REFERENCE_PROOF, reference_proof):
             (directory / name).write_bytes(content)
+        if matched_baseline is not None:
+            (directory / "matched-highlight-baseline-artifacts.json").write_bytes(matched_baseline["manifest_bytes"])
+            (directory / "matched-highlight-observed-build-result.json").write_bytes(
+                matched_baseline["build_result_bytes"]
+            )
+            (directory / "matched-highlight-observed-candidate.json").write_bytes(
+                matched_baseline["build_snapshot_bytes"]
+            )
+            (directory / "matched-highlight-observed-candidate.patch").write_bytes(
+                matched_baseline["build_patch_bytes"]
+            )
         if binding is not None:
             (directory / "candidate-production-result.json").write_bytes(production_result)
             (directory / "candidate-production-contract.json").write_bytes(production_contract)
@@ -724,6 +996,10 @@ def campaign(args):
             "commands": run.commands,
             "candidate_qualification": binding,
             "reference_qualification": reference_binding,
+            "comparison": comparison,
+            "matched_highlight_baseline_binding": (
+                matched_baseline["binding"] if matched_baseline is not None else None
+            ),
             "workloads": selected,
         }
         try:
@@ -753,6 +1029,7 @@ def campaign(args):
                     or check.get("source") != source
                     or check.get("candidate_qualification") != binding
                     or check.get("reference_qualification") != reference_binding
+                    or check.get("comparison", "standard") != comparison
                     or check.get("workloads", list(ROWS)) != selected
                 ):
                     raise ValueError("matching completed compatibility check required")
@@ -795,7 +1072,7 @@ def campaign(args):
                                 )
                             sample = json.loads(target.read_text())
                             validate_sample(sample, args.operation, lane, row)
-                            check_halation_side(sample, row, side)
+                            check_halation_side(sample, row, side, comparison)
                             if Path(sample.get("resources", "")).resolve() != Path(command[6]).resolve():
                                 raise ValueError("driver resource path mismatch")
                             if row in controls and controls[row] != (sample["controls"], sample["control_types"]):
@@ -810,9 +1087,18 @@ def campaign(args):
                 result["identities_unchanged"] = (
                     result["identities_unchanged"]
                     and reference_qualification(
-                        reference_proof, args.preset, entry["reference"]["shipping"], check_inputs=True
+                        reference_proof,
+                        args.preset,
+                        entry["reference"]["shipping"],
+                        check_inputs=True,
+                        comparison=comparison,
                     )
                     == reference_binding
+                )
+            if matched_baseline is not None:
+                final_baseline = validate_matched_highlight_baseline(inputs, args.preset, entry)
+                result["identities_unchanged"] = (
+                    result["identities_unchanged"] and final_baseline["binding"] == matched_baseline["binding"]
                 )
             if binding is not None:
                 result["identities_unchanged"] = (
@@ -838,6 +1124,13 @@ def campaign(args):
         evidence_names = ["candidate.patch", "candidate.json", "inputs.json"]
         if reference_binding is not None:
             evidence_names += [name for name, _ in REFERENCE_PROOF]
+        if matched_baseline is not None:
+            evidence_names += [
+                "matched-highlight-baseline-artifacts.json",
+                "matched-highlight-observed-build-result.json",
+                "matched-highlight-observed-candidate.json",
+                "matched-highlight-observed-candidate.patch",
+            ]
         if binding is not None:
             evidence_names += [
                 "candidate-production-result.json",
@@ -1046,6 +1339,7 @@ def main():
         command.add_argument("--run-id", required=True)
         command.add_argument("--candidate-production-result")
         command.add_argument("--reference-production-result")
+        command.add_argument("--comparison", choices=COMPARISONS, default="standard")
         command.add_argument("--workloads", nargs="+", choices=(*ROWS, *HALATION_EXTENTS), default=list(ROWS))
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):

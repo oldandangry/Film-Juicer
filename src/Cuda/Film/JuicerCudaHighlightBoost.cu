@@ -7,6 +7,7 @@
 #include <limits>
 
 #include <cuda_runtime.h>
+#include <math_constants.h>
 
 namespace {
     using JuicerCuda::CameraFilmLinearExposurePlanes;
@@ -96,32 +97,99 @@ namespace {
             workspace->disposition = HighlightBoostDisposition::PeakOverflow;
         } else {
             const double range = maximum - descriptor.protection;
+            const double shape = descriptor.sharpness * range / maximum;
+            const double normalization = normalized_exponential(shape);
             workspace->disposition = HighlightBoostDisposition::Applied;
-            workspace->peak = peak;
-            workspace->inverseRange = 1.0 / range;
-            workspace->shapeAtPeak = descriptor.sharpness * range / maximum;
-            workspace->scaledAmplitude = maximum * (descriptor.peakGain - 1.0) /
-                                         normalized_exponential(workspace->shapeAtPeak);
+            workspace->protection = __double2float_rn(descriptor.protection);
+            workspace->protectionResidual = __double2float_rn(descriptor.protection - static_cast<double>(workspace->protection));
+            // Strict onset is the first carrier float greater than the original double.
+            workspace->onset = static_cast<double>(workspace->protection) <= descriptor.protection
+                                   ? nextafterf(workspace->protection, CUDART_INF_F)
+                                   : workspace->protection;
+            workspace->peak = __double2float_rn(peak);
+            workspace->peakResidual = __double2float_rn(peak - static_cast<double>(workspace->peak));
+            workspace->range = __double2float_rn(range);
+            workspace->rangeResidual = __double2float_rn(range - static_cast<double>(workspace->range));
+            workspace->shape = __double2float_rn(shape);
+            workspace->shapeResidual = __double2float_rn(shape - static_cast<double>(workspace->shape));
+            // These factors are only used for shape >= 0.5, where the denominator is well conditioned.
+            if (workspace->shape >= 0.5f) {
+                const double denominator = shape * shape * normalization;
+                workspace->tailExpFactor = __double2float_rn(exp(shape) / denominator);
+                workspace->tailLinearFactor = __double2float_rn(1.0 / denominator);
+            }
+            workspace->delta = __double2float_rn(maximum * (descriptor.peakGain - 1.0));
+            workspace->inverseShapeNormalization = __double2float_rn(1.0 / normalization);
         }
     }
 
-    __device__ void boost_sample(float& sample, double protection, const HighlightBoostWorkspace& workspace) {
-        const double exposure = sample;
-        if (exposure <= protection) {
+    __device__ float normalized_float(float t, float residual) {
+        // Series avoids subtracting nearly equal floats.
+        if (t < 0.5f) {
+            return 0.5f + t * (1.0f / 6.0f + t * (1.0f / 24.0f + t * (1.0f / 120.0f + t * (1.0f / 720.0f +
+                                                                                           t * (1.0f / 5040.0f + t * (1.0f / 40320.0f + t * (1.0f / 362880.0f + t / 3628800.0f)))))));
+        }
+        // Preserve the low argument word through the exponential. Its square and
+        // higher terms are below FP32 significance for the bounded shape.
+        const float numerator = fmaf(expf(t), residual, expm1f(t) - t) - residual;
+        return numerator / (t * t);
+    }
+
+    __device__ void boost_sample(float& sample, const HighlightBoostWorkspace& workspace) {
+        if (sample < workspace.onset) {
             return;
         }
         if (sample == workspace.maximum) {
-            sample = __double2float_rn(workspace.peak);
+            sample = workspace.peak;
             return;
         }
-        const double fraction = (exposure - protection) * workspace.inverseRange;
-        const double normalized = fraction * fraction * normalized_exponential(workspace.shapeAtPeak * fraction);
-        sample = __double2float_rn(exposure + workspace.scaledAmplitude * normalized);
+        const float distance = sample - workspace.protection;
+        const float virtualProtection = distance - sample;
+        const float distanceResidual = ((sample - (distance - virtualProtection)) +
+                                        (-workspace.protection - virtualProtection)) -
+                                       workspace.protectionResidual;
+        // Division by the split range avoids a subnormal reciprocal for very large legal carriers.
+        const float quotient = distance / workspace.range;
+        const float correction = (fmaf(-quotient, workspace.range, distance) + distanceResidual -
+                                  quotient * workspace.rangeResidual) /
+                                 workspace.range;
+        // Renormalize both words: near onset the correction may dominate
+        // the quotient, including when the rounded protection equals sample.
+        const float fraction = quotient + correction;
+        const float virtualCorrection = fraction - quotient;
+        const float fractionResidual = (quotient - (fraction - virtualCorrection)) +
+                                       (correction - virtualCorrection);
+        const float t = workspace.shape * fraction;
+        const float tResidual = fmaf(workspace.shape, fraction, -t) +
+                                workspace.shape * fractionResidual + workspace.shapeResidual * fraction;
+        const float fractionSquared = fmaf(2.0f * fraction, fractionResidual, fraction * fraction);
+        const float ratio = fractionSquared * (normalized_float(t, tResidual) * workspace.inverseShapeNormalization);
+        if (workspace.shape >= 0.5f && ratio >= 0.5f) {
+            // The endpoint form subtracts a nonnegative deficit from the
+            // representable peak; it cannot overflow by adding to a near-peak sample.
+            const float gap = workspace.maximum - sample;
+            const float gapFraction = gap / workspace.range;
+            const float gapResidual = (fmaf(-gapFraction, workspace.range, gap) -
+                                       gapFraction * workspace.rangeResidual) /
+                                      workspace.range;
+            const float d = workspace.shape * gapFraction;
+            const float dResidual = fmaf(workspace.shape, gapFraction, -d) +
+                                    workspace.shape * gapResidual + workspace.shapeResidual * gapFraction;
+            const float oneMinusExp = fmaf(expf(-d), dResidual, -expm1f(-d));
+            const float tail = fmaf(oneMinusExp, workspace.tailExpFactor, -(d + dResidual) * workspace.tailLinearFactor);
+            // TwoDiff retains the subtraction's rounding error, and the
+            // stored peak residual retains the double-prepared endpoint.
+            const float endpoint = workspace.peak - gap;
+            const float virtualGap = workspace.peak - endpoint;
+            const float endpointResidual = (workspace.peak - (endpoint + virtualGap)) + (virtualGap - gap);
+            sample = endpoint + ((endpointResidual + workspace.peakResidual) - workspace.delta * tail);
+        } else {
+            sample = sample + workspace.delta * ratio;
+        }
     }
 
     __global__ void apply_highlight_boost(
         HighlightFrame frame,
-        double protection,
         const HighlightBoostWorkspace* workspace) {
         if (workspace->disposition != HighlightBoostDisposition::Applied) {
             return;
@@ -129,9 +197,9 @@ namespace {
         const auto step = static_cast<std::size_t>(gridDim.x) * blockDim.x;
         for (std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < frame.pixels; i += step) {
             const auto index = carrier_index(i, frame.width, frame.carrier.rowStrideFloats);
-            boost_sample(frame.carrier.redSensitive[index], protection, *workspace);
-            boost_sample(frame.carrier.greenSensitive[index], protection, *workspace);
-            boost_sample(frame.carrier.blueSensitive[index], protection, *workspace);
+            boost_sample(frame.carrier.redSensitive[index], *workspace);
+            boost_sample(frame.carrier.greenSensitive[index], *workspace);
+            boost_sample(frame.carrier.blueSensitive[index], *workspace);
         }
     }
 } // namespace
@@ -183,7 +251,7 @@ namespace JuicerCuda {
             return {fault, HighlightBoostLaunchStage::Apply};
         }
 #endif
-        apply_highlight_boost<<<blocks, kThreads, 0, stream>>>(frame, descriptor.protection, workspace);
+        apply_highlight_boost<<<blocks, kThreads, 0, stream>>>(frame, workspace);
         if (const auto status = cudaGetLastError(); status != cudaSuccess) {
             return {status, HighlightBoostLaunchStage::Apply};
         }
