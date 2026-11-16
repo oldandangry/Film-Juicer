@@ -76,6 +76,10 @@
       "protocol": "gtest",
       "registrations": 1
     },
+    "JuicerGrainPrototype": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerDirExposureCacheTests": {
       "protocol": "gtest",
       "registrations": 1
@@ -196,6 +200,18 @@
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
+    "Grain.Gpu.FilmReference": {
+      "listed": 6,
+      "terminal": 6,
+      "required": [
+        ["film-reference", "rectangles-wrap-and-seams"],
+        ["film-reference", "dense-minimum-footprint"],
+        ["film-reference", "endpoints-seed-roi-alpha-padding"],
+        ["film-reference", "zero-noise-identity"],
+        ["film-reference", "disabled-no-bank"],
+        ["film-reference", "unsupported-frame"]
+      ]
+    },
     "Ffi.Gpu.PreparedStateLifetime": {
       "listed": 31,
       "terminal": 333,

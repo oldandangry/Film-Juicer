@@ -247,7 +247,7 @@ function(juicer_write_host_targets)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/host-contracts.json" juicer_host_contract)
     string(JSON juicer_host_target_count LENGTH "${juicer_host_contract}" targets)
     math(EXPR juicer_host_last "${juicer_host_target_count} - 1")
-    set(juicer_mixed_host_targets JuicerFilmRecipeTests JuicerColorPreparationTests)
+    set(juicer_mixed_host_targets JuicerFilmRecipeTests JuicerColorPreparationTests JuicerGrainPrototype)
     set(juicer_host_target_paths "{\n")
     set(separator "")
     foreach(index RANGE ${juicer_host_last})
@@ -1296,6 +1296,17 @@ add_dependencies(JuicerGrainScratchTests juicer_test_resources)
 add_test(NAME Grain.Gpu.ScratchReuse COMMAND JuicerGrainScratchTests)
 set_tests_properties(Grain.Gpu.ScratchReuse PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerGrainPrototype grain/grain_prototype.cpp grain/film_reference.cu
+    grain/film_bank.cpp grain/film_oracle.cpp grain/prototype_benchmark.cpp ffi/prepared_frame_fixture.cpp
+    ofx/instance_host.cpp ../native/ofx_exports.cpp)
+target_link_libraries(JuicerGrainPrototype PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
+set_target_properties(JuicerGrainPrototype PROPERTIES LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerGrainPrototype juicer_test_resources)
+juicer_add_host_test(Grain.Host.FilmReferenceOracle JuicerGrainPrototype custom host)
+add_test(NAME Grain.Gpu.FilmReference COMMAND JuicerGrainPrototype gpu)
+set_tests_properties(Grain.Gpu.FilmReference PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerDirExposureCacheTests dir/exposure_cache_test.cpp ffi/spatial_optics_fixture.cpp
     ffi/prepared_frame_fixture.cpp

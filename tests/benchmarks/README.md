@@ -38,6 +38,48 @@ On Windows, use the matching
 `out\build\windows-clang-release\tests\bin\JuicerScatterHalationGpuTests.exe`
 and Windows paths with the same arguments.
 
+### Film grain reference prototype
+
+The nonshipping G1 target compares the Film reference sampler with Current grain.
+Prepare it on `linux-release` or `windows-clang-release`. The ordinary CTest
+registrations exercise synthetic fixtures using the independent double-precision
+oracle.
+
+```sh
+python -B scripts/verify.py prepare --preset linux-release --testing ON --targets JuicerGrainPrototype
+python -B scripts/verify.py development --preset linux-release --runtime all \
+  --tests Grain.Host.FilmReferenceOracle Grain.Gpu.FilmReference --run-id grain-reference-cases
+```
+
+Explicit `python -B tests/benchmarks/grain.py` operations take a native
+`--preset` and a fresh `--run-id`. They write original results under
+`out/validation/<preset>/results/<run-id>/`.
+
+1. Run `response` to export the Portra 400 CDF3 response in `response.log`.
+   In a temporary copy of the [pinned Fotufilm package](../grain/fotufilm-notice.md),
+   place [capture_film_probe.swift](../grain/capture_film_probe.swift) in
+   `Sources/FotufilmCore/` and [capture_film_reference.swift](../grain/capture_film_reference.swift)
+   in `Sources/graincapture/main.swift`. Add the `graincapture` executable
+   target with the `FotufilmCore` dependency to the temporary package manifest.
+   Build with Swift 6.1.2 using
+   `FOTUFILM_DISABLE_HALIDE=1 swift build -c release --product graincapture`.
+   Run the executable with the response log and an empty output directory.
+   Preserve the bank and probe file hashes. The bank uses synthetic calibration
+   and belongs in local research output.
+2. Run `reference --bank <directory>` to compare CUDA, the independent oracle
+   and the pinned Swift outputs on the frozen bank.
+3. Run `capture --input <new-file>` once to write the immutable
+   production-developed C/M/Y planes. Pass the same file and bank to
+   `benchmark --bank <directory> --input <file>` in both native presets.
+
+The single workload is 3840×2160 Portra 400 at integer frame zero, with a 36 mm
+long edge and DIR inactive. Current uses the OFX defaults with Add grain enabled.
+Film uses its reference controls. Each arm records 10 warmups and 30 samples
+in each of three alternating pairs. Timing includes Current's filters and Film's
+density write. Cold applications, setup, input reset and upload are reported
+separately. The script retains the raw samples and reports per-platform medians
+and nearest-rank p90. These describe the unmatched G1 stage workload.
+
 ### Production highlight boost check
 
 `scatter.py highlight-check` builds and runs the actual production highlight

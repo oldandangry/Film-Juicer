@@ -1,0 +1,98 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <vector>
+
+#include <cuda_runtime_api.h>
+
+namespace GrainPrototype {
+    constexpr int kTileSide = 256;
+    constexpr int kTileStride = kTileSide + 1;
+    constexpr int kTileEntries = kTileStride * kTileStride;
+    constexpr int kLevels = 17;
+    constexpr int kRecords = 3;
+    constexpr int kPlacementBlock = 128;
+    constexpr int kPlacementMargin = 64;
+    constexpr int kSeam = 16;
+    constexpr int kLayings = 2;
+    constexpr std::size_t kBankEntries = static_cast<std::size_t>(kRecords) * kLevels * kTileEntries;
+
+    struct FilmLevel {
+        float meanLight;
+        float meanDensity;
+        float correlation;
+    };
+
+    struct FilmRecord {
+        float minimumGross;
+        float maximumGross;
+        float offset;
+        FilmLevel levels[kLevels];
+    };
+
+    // Frozen single-footprint view of a bank. The planes and SAT are C/M/Y.
+    struct FilmTables {
+        FilmRecord records[kRecords];
+        float footprint;
+    };
+
+    struct FilmBank {
+        std::vector<float> sums;
+        FilmTables tables;
+    };
+
+    struct FilmFrame {
+        float pitch;
+        int originX;
+        int originY;
+        int width;
+        int height;
+        int stride;
+        std::uint32_t seed;
+        bool enabled;
+    };
+
+    struct FilmPlanes {
+        float* cyan;
+        float* magenta;
+        float* yellow;
+    };
+
+    // Owner is scoped to a single current CUDA context. The caller drains every
+    // stream that borrowed this immutable bank before the owner leaves scope.
+    class DeviceFilmBank {
+    public:
+        DeviceFilmBank() = default;
+        DeviceFilmBank(const DeviceFilmBank&) = delete;
+        DeviceFilmBank& operator=(const DeviceFilmBank&) = delete;
+        ~DeviceFilmBank();
+
+        cudaError_t upload(const FilmBank& bank);
+        [[nodiscard]] bool resident() const {
+            return sums_ != nullptr;
+        }
+        [[nodiscard]] const float* sums() const {
+            return sums_;
+        }
+        [[nodiscard]] const FilmTables& tables() const {
+            return tables_;
+        }
+        [[nodiscard]] void* context() const {
+            return context_;
+        }
+
+    private:
+        float* sums_ = nullptr;
+        void* context_ = nullptr;
+        FilmTables tables_{};
+    };
+
+    // Only the three density planes are written. A disabled frame needs neither
+    // a CUDA context nor an uploaded bank.
+    cudaError_t apply_film_reference(const DeviceFilmBank& bank, FilmFrame frame, FilmPlanes planes, cudaStream_t stream);
+
+    // Fixed little-endian research capture. Throws on I/O or representation failure.
+    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint);
+} // namespace GrainPrototype
