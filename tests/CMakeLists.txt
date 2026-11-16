@@ -1716,6 +1716,6 @@ foreach(target IN LISTS juicer_rust_candidates)
 endforeach()
 list(APPEND juicer_rust_consumers JuicerOfxMeasurementModule)
 set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts
-    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
+    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
 juicer_write_python_targets()
 set(JUICER_RUST_TEST_CONSUMERS "${juicer_rust_consumers}" PARENT_SCOPE)
