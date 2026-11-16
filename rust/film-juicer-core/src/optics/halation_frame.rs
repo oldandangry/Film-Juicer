@@ -1,5 +1,7 @@
 //! Callback-local scatter/halation schedules, distinct from the cached GaussianKernel.
 
+use super::{HALATION_MAX_BOUNCES, HALATION_TAIL_COMPONENTS};
+
 #[derive(Clone, Copy, Debug)]
 pub struct HalationFrameInput {
     pub scatter_active: bool,
@@ -10,6 +12,38 @@ pub struct HalationFrameInput {
     pub first_sigma_um: [f32; 3],
     pub total_strength: [f32; 3],
     pub recipe_hash: u64,
+    pub scatter_core_um: [f64; 3],
+    pub scatter_tail_um: [f64; 3],
+    pub scatter_tail_weight: [f32; 3],
+    pub bounce_weights: [f32; HALATION_MAX_BOUNCES],
+    pub bounce_count: usize,
+    pub renormalize: bool,
+    pub legacy_scatter: bool,
+    pub legacy_reflection: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for HalationFrameInput {
+    fn default() -> Self {
+        Self {
+            scatter_active: false,
+            back_reflection_active: false,
+            scatter_amount: 0.0,
+            scatter_spatial_scale: 0.0,
+            halation_spatial_scale: 0.0,
+            first_sigma_um: [0.0; 3],
+            total_strength: [0.0; 3],
+            recipe_hash: 0,
+            scatter_core_um: super::SCATTER_CORE_UM,
+            scatter_tail_um: super::SCATTER_TAIL_UM,
+            scatter_tail_weight: super::SCATTER_TAIL_WEIGHT.map(|v| v as f32),
+            bounce_weights: super::LEGACY_BOUNCE_WEIGHTS,
+            bounce_count: 3,
+            renormalize: true,
+            legacy_scatter: true,
+            legacy_reflection: true,
+        }
+    }
 }
 
 impl From<&super::Halation> for HalationFrameInput {
@@ -23,6 +57,14 @@ impl From<&super::Halation> for HalationFrameInput {
             first_sigma_um: *recipe.first_sigma_um(),
             total_strength: *recipe.total_strength(),
             recipe_hash: recipe.hash(),
+            scatter_core_um: recipe.scatter_core_um,
+            scatter_tail_um: recipe.scatter_tail_um,
+            scatter_tail_weight: recipe.scatter_tail_weight,
+            bounce_weights: recipe.bounce_weights,
+            bounce_count: recipe.bounce_count,
+            renormalize: recipe.renormalize,
+            legacy_scatter: recipe.legacy_scatter,
+            legacy_reflection: recipe.legacy_reflection,
         }
     }
 }
@@ -32,6 +74,7 @@ pub enum HalationGaussianKind {
     Identity,
     FirReflect,
     YvvReplicate,
+    YvvReplicateFactored,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +84,66 @@ pub struct HalationGaussian {
     fir_weights: [f32; 19],
     yvv: [f32; 4],
 }
+
+// Factor the normalized third-order recurrence into a real pole and a
+// second-order section. The bisection and reconstruction checks match the
+// measured precision witness; only the final execution factors are narrowed.
+fn factored_coefficients([b, a1, a2, a3]: [f64; 4]) -> Option<[f32; 4]> {
+    if ![b, a1, a2, a3].iter().all(|value| value.is_finite()) || b <= 0.0 || a3 <= 0.0 {
+        return None;
+    }
+    let c1 = 3.0 - 2.0 * a1 - a2;
+    let c2 = 3.0 - a1;
+    let polynomial = |h: f64| ((-h + c2) * h - c1) * h + b;
+    if !(polynomial(0.0) > 0.0 && polynomial(1.0) < 0.0) {
+        return None;
+    }
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..64 {
+        let mid = (low + high) * 0.5;
+        if polynomial(mid) > 0.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    let h = (low + high) * 0.5;
+    let real_pole = 1.0 - h;
+    let t = a3 / real_pole;
+    let g = b / h;
+    let pair_sum = 1.0 + t - g;
+    let reconstructed_a1 = real_pole + pair_sum;
+    let reconstructed_a2 = -t - real_pole * pair_sum;
+    let reconstructed_a3 = real_pole * t;
+    const TOLERANCE: f64 = 2.0e-10;
+    if !(h > 0.0
+        && h < 1.0
+        && t > 0.0
+        && t < 1.0
+        && g > 0.0
+        && g < 2.0 * (1.0 + t)
+        && g.is_finite())
+        || (reconstructed_a1 - a1).abs() > TOLERANCE
+        || (reconstructed_a2 - a2).abs() > TOLERANCE
+        || (reconstructed_a3 - a3).abs() > TOLERANCE
+    {
+        return None;
+    }
+    let factors = [h as f32, g as f32, t as f32, 0.0];
+    if !(factors[0] > 0.0
+        && factors[0] < 1.0
+        && factors[1] > 0.0
+        && factors[1].is_finite()
+        && factors[2] > 0.0
+        && factors[2] < 1.0
+        && f64::from(factors[1]) < 2.0 * (1.0 + f64::from(factors[2])))
+    {
+        return None;
+    }
+    Some(factors)
+}
+
 impl HalationGaussian {
     const IDENTITY: Self = Self {
         kind: HalationGaussianKind::Identity,
@@ -54,6 +157,7 @@ impl HalationGaussian {
         field: HalationFrameField,
         channel: usize,
         index: Option<usize>,
+        legacy: bool,
     ) -> Result<Self, HalationFrameError> {
         let failed = || HalationFrameError::Gaussian {
             field,
@@ -102,6 +206,15 @@ impl HalationGaussian {
             return Ok(result);
         }
 
+        const MAX_ADVANCED_SIGMA_PX: f64 = 1024.0;
+        if !legacy && sigma_px > MAX_ADVANCED_SIGMA_PX {
+            return Err(HalationFrameError::AdvancedRadius {
+                field,
+                channel,
+                index,
+                sigma_px,
+            });
+        }
         let q = 0.98711 * sigma_px - 0.96330;
         let q2 = q * q;
         let q3 = q2 * q;
@@ -113,9 +226,20 @@ impl HalationGaussian {
         if !coefficients.iter().all(|v| v.is_finite()) {
             return Err(failed());
         }
+        let (kind, yvv) = if legacy {
+            (
+                HalationGaussianKind::YvvReplicate,
+                coefficients.map(|v| v as f32),
+            )
+        } else {
+            (
+                HalationGaussianKind::YvvReplicateFactored,
+                factored_coefficients(coefficients).ok_or_else(failed)?,
+            )
+        };
         let result = Self {
-            kind: HalationGaussianKind::YvvReplicate,
-            yvv: coefficients.map(|v| v as f32),
+            kind,
+            yvv,
             ..Self::IDENTITY
         };
         if !result.yvv.iter().all(|v| v.is_finite()) {
@@ -141,22 +265,26 @@ impl HalationGaussian {
 #[derive(Clone, Copy, Debug)]
 pub struct HalationChannel {
     core: HalationGaussian,
-    tail: [HalationGaussian; 3],
-    bounce: [HalationGaussian; 3],
+    tail: [HalationGaussian; HALATION_TAIL_COMPONENTS],
+    bounce: [HalationGaussian; HALATION_MAX_BOUNCES],
+    tail_weight: f32,
     total_strength: f32,
 }
 impl HalationChannel {
     pub fn core(&self) -> &HalationGaussian {
         &self.core
     }
-    pub fn tail(&self) -> &[HalationGaussian; 3] {
+    pub fn tail(&self) -> &[HalationGaussian; HALATION_TAIL_COMPONENTS] {
         &self.tail
     }
-    pub fn bounce(&self) -> &[HalationGaussian; 3] {
+    pub fn bounce(&self) -> &[HalationGaussian; HALATION_MAX_BOUNCES] {
         &self.bounce
     }
     pub fn total_strength(&self) -> f32 {
         self.total_strength
+    }
+    pub fn tail_weight(&self) -> f32 {
+        self.tail_weight
     }
 }
 
@@ -164,6 +292,9 @@ impl HalationChannel {
 pub struct HalationFrame {
     recipe_hash: u64,
     scatter_amount: f32,
+    bounce_weights: [f32; HALATION_MAX_BOUNCES],
+    bounce_count: usize,
+    renormalize: bool,
     channels: [HalationChannel; 3],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,10 +303,26 @@ pub enum HalationFrameField {
     ScatterTail,
     Bounce,
 }
+impl HalationFrameField {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ScatterCore => "scatter_core",
+            Self::ScatterTail => "scatter_tail",
+            Self::Bounce => "back_reflection_bounce",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HalationFrameError {
     PixelSize,
+    BounceCount,
     Gaussian {
+        field: HalationFrameField,
+        channel: usize,
+        index: Option<usize>,
+        sigma_px: f64,
+    },
+    AdvancedRadius {
         field: HalationFrameField,
         channel: usize,
         index: Option<usize>,
@@ -194,15 +341,23 @@ impl HalationFrame {
         if !pixel_size_um.is_finite() || pixel_size_um <= 0.0 {
             return Err(HalationFrameError::PixelSize);
         }
-        const CORE_UM: [f64; 3] = [2.2, 2.0, 1.6];
-        const TAIL_UM: [f64; 3] = [9.3, 9.7, 9.1];
-        const SIGMA_RATIOS: [f64; 3] = [0.5360, 1.5236, 2.7684];
+        if input.back_reflection_active && !(1..=HALATION_MAX_BOUNCES).contains(&input.bounce_count)
+        {
+            return Err(HalationFrameError::BounceCount);
+        }
+        const SIGMA_RATIOS: [f64; HALATION_TAIL_COMPONENTS] = [0.5360, 1.5236, 2.7684];
         #[expect(
             clippy::approx_constant,
             clippy::excessive_precision,
             reason = "preserve the native f64 bounce literal spellings and exact rounded values"
         )]
-        const BOUNCE_MULTIPLIERS: [f64; 3] = [1.0, 1.4142135623730950488, 1.7320508075688772935];
+        const BOUNCE_MULTIPLIERS: [f64; HALATION_MAX_BOUNCES] = [
+            1.0,
+            1.4142135623730950488,
+            1.7320508075688772935,
+            2.0,
+            2.23606797749979,
+        ];
         let mut result = Self {
             recipe_hash: input.recipe_hash,
             scatter_amount: if input.scatter_active {
@@ -210,10 +365,22 @@ impl HalationFrame {
             } else {
                 0.0
             },
+            bounce_weights: if input.back_reflection_active {
+                input.bounce_weights
+            } else {
+                [0.0; HALATION_MAX_BOUNCES]
+            },
+            bounce_count: if input.back_reflection_active {
+                input.bounce_count
+            } else {
+                0
+            },
+            renormalize: input.back_reflection_active && input.renormalize,
             channels: [HalationChannel {
                 core: HalationGaussian::IDENTITY,
-                tail: [HalationGaussian::IDENTITY; 3],
-                bounce: [HalationGaussian::IDENTITY; 3],
+                tail: [HalationGaussian::IDENTITY; HALATION_TAIL_COMPONENTS],
+                bounce: [HalationGaussian::IDENTITY; HALATION_MAX_BOUNCES],
+                tail_weight: 0.0,
                 total_strength: 0.0,
             }; 3],
         };
@@ -221,12 +388,26 @@ impl HalationFrame {
         for (channel, output) in result.channels.iter_mut().enumerate() {
             if input.scatter_active {
                 let scale = f64::from(input.scatter_spatial_scale);
-                let sigma = super::ordered_max(CORE_UM[channel] * scale / pixel, 1.0e-6);
-                output.core =
-                    HalationGaussian::new(sigma, HalationFrameField::ScatterCore, channel, None)?;
-                for (index, tail) in output.tail.iter_mut().enumerate() {
+                output.tail_weight = input.scatter_tail_weight[channel];
+                if output.tail_weight != 1.0 {
+                    let sigma =
+                        super::ordered_max(input.scatter_core_um[channel] * scale / pixel, 1.0e-6);
+                    output.core = HalationGaussian::new(
+                        sigma,
+                        HalationFrameField::ScatterCore,
+                        channel,
+                        None,
+                        input.legacy_scatter,
+                    )?;
+                }
+                for (index, tail) in output
+                    .tail
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|_| output.tail_weight != 0.0)
+                {
                     let sigma = super::ordered_max(
-                        TAIL_UM[channel] * SIGMA_RATIOS[index] * scale / pixel,
+                        input.scatter_tail_um[channel] * SIGMA_RATIOS[index] * scale / pixel,
                         1.0e-6,
                     );
                     *tail = HalationGaussian::new(
@@ -234,6 +415,7 @@ impl HalationFrame {
                         HalationFrameField::ScatterTail,
                         channel,
                         Some(index),
+                        input.legacy_scatter,
                     )?;
                 }
             }
@@ -242,10 +424,12 @@ impl HalationFrame {
             } else {
                 0.0
             };
-            if input.back_reflection_active {
+            if input.back_reflection_active
+                && (input.legacy_reflection || output.total_strength > 0.0)
+            {
                 let first_sigma = f64::from(input.first_sigma_um[channel]);
                 let scale = f64::from(input.halation_spatial_scale);
-                for (index, bounce) in output.bounce.iter_mut().enumerate() {
+                for (index, bounce) in output.bounce[..result.bounce_count].iter_mut().enumerate() {
                     let sigma = super::ordered_max(
                         first_sigma * BOUNCE_MULTIPLIERS[index] * scale / pixel,
                         1.0e-6,
@@ -255,6 +439,7 @@ impl HalationFrame {
                         HalationFrameField::Bounce,
                         channel,
                         Some(index),
+                        input.legacy_reflection,
                     )?;
                 }
             }
@@ -266,6 +451,15 @@ impl HalationFrame {
     }
     pub fn scatter_amount(&self) -> f32 {
         self.scatter_amount
+    }
+    pub fn bounce_weights(&self) -> &[f32; HALATION_MAX_BOUNCES] {
+        &self.bounce_weights
+    }
+    pub fn bounce_count(&self) -> usize {
+        self.bounce_count
+    }
+    pub fn renormalize(&self) -> bool {
+        self.renormalize
     }
     pub fn channels(&self) -> &[HalationChannel; 3] {
         &self.channels
@@ -289,6 +483,8 @@ mod tests {
                 halation_spatial_scale: 0.5,
                 first_sigma_um: [65.0, 32.0, 9.0],
                 primary_amount: [0.3, 0.0, 0.015],
+                shape: super::super::HalationShape::default(),
+                legacy_reflection: true,
             })
             .unwrap();
             let input = HalationFrameInput::from(&recipe);
@@ -325,7 +521,8 @@ mod tests {
         );
         for (id, sigma) in sigmas {
             let case = cases.case(id);
-            let g = HalationGaussian::new(sigma, HalationFrameField::ScatterCore, 0, None).unwrap();
+            let g = HalationGaussian::new(sigma, HalationFrameField::ScatterCore, 0, None, true)
+                .unwrap();
             assert_eq!(g.kind(), HalationGaussianKind::Identity);
             assert_eq!(g.radius(), 0);
             assert_eq!(g.fir_weights().map(f32::to_bits), [0; 19]);
@@ -333,6 +530,86 @@ mod tests {
             case.passed();
         }
         cases.finish();
+    }
+
+    #[test]
+    fn advanced_factors_reconstruct_the_original_recurrence() {
+        for sigma in [3.0, 8.0, 64.0, 1024.0] {
+            let gaussian =
+                HalationGaussian::new(sigma, HalationFrameField::ScatterCore, 0, None, false)
+                    .unwrap();
+            assert_eq!(gaussian.kind(), HalationGaussianKind::YvvReplicateFactored);
+            let [h, g, t, reserved] = gaussian.yvv().map(f64::from);
+            assert!(h > 0.0 && h < 1.0 && g > 0.0 && t > 0.0 && t < 1.0);
+            assert!(g < 2.0 * (1.0 + t));
+            assert_eq!(reserved.to_bits(), 0);
+
+            let q = 0.98711 * sigma - 0.96330;
+            let q2 = q * q;
+            let q3 = q2 * q;
+            let b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
+            let expected = [
+                (2.44413 * q + 2.85619 * q2 + 1.26661 * q3) / b0,
+                -(1.4281 * q2 + 1.26661 * q3) / b0,
+                0.422205 * q3 / b0,
+            ];
+            let pole = 1.0 - h;
+            let pair_sum = 1.0 + t - g;
+            let actual = [pole + pair_sum, -t - pole * pair_sum, pole * t];
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 2.0e-7, "sigma={sigma}");
+            }
+        }
+        for (sigma, expected) in [
+            (3.0, [0x3ebcc461, 0x3e8d20e0, 0x3eafdc3e, 0]),
+            (8.0, [0x3e138802, 0x3d44ee67, 0x3f38af36, 0]),
+        ] {
+            let gaussian =
+                HalationGaussian::new(sigma, HalationFrameField::Bounce, 2, Some(1), false)
+                    .unwrap();
+            assert_eq!(gaussian.yvv().map(f32::to_bits), expected);
+        }
+    }
+
+    #[test]
+    fn legacy_yvv_bits_and_advanced_boundaries_are_preserved() {
+        let legacy =
+            HalationGaussian::new(3.0, HalationFrameField::Bounce, 1, Some(2), true).unwrap();
+        assert_eq!(legacy.kind(), HalationGaussianKind::YvvReplicate);
+        assert_eq!(
+            legacy.yvv().map(f32::to_bits),
+            [0x3dd020cf, 0x3fd97dbf, 0xbf824147, 0x3e5e0bd7]
+        );
+        let below = f64::from_bits(3.0f64.to_bits() - 1);
+        assert_eq!(
+            HalationGaussian::new(below, HalationFrameField::ScatterTail, 1, Some(2), false)
+                .unwrap()
+                .kind(),
+            HalationGaussianKind::FirReflect
+        );
+        let above = f64::from_bits(1024.0f64.to_bits() + 1);
+        assert_eq!(
+            HalationGaussian::new(above, HalationFrameField::ScatterTail, 1, Some(2), false)
+                .unwrap_err(),
+            HalationFrameError::AdvancedRadius {
+                field: HalationFrameField::ScatterTail,
+                channel: 1,
+                index: Some(2),
+                sigma_px: above,
+            }
+        );
+        assert!(matches!(
+            HalationGaussian::new(f64::INFINITY, HalationFrameField::Bounce, 1, Some(2), false),
+            Err(HalationFrameError::Gaussian {
+                field: HalationFrameField::Bounce,
+                channel: 1,
+                index: Some(2),
+                sigma_px,
+            }) if sigma_px.is_infinite()
+        ));
+        assert!(factored_coefficients([0.0, 0.0, 0.0, 1.0]).is_none());
+        assert!(factored_coefficients([1.0, 1.0, 1.0, f64::NAN]).is_none());
+        assert!(factored_coefficients([1.0, 0.0, 0.0, 1.0]).is_none());
     }
 
     fn capture() -> Value {
@@ -369,6 +646,7 @@ mod tests {
             first_sigma_um: std::array::from_fn(|i| f("first_sigma_um", i)),
             total_strength: std::array::from_fn(|i| f("total_strength", i)),
             recipe_hash: v["recipe_hash"].as_u64().unwrap(),
+            ..HalationFrameInput::default()
         }
     }
     fn gaussian(v: &HalationGaussian) -> Value {
@@ -376,13 +654,16 @@ mod tests {
             HalationGaussianKind::Identity => 0,
             HalationGaussianKind::FirReflect => 1,
             HalationGaussianKind::YvvReplicate => 2,
+            HalationGaussianKind::YvvReplicateFactored => {
+                panic!("legacy fixture emitted factored YVV")
+            }
         };
         json!({"kind":kind,"radius":v.radius(),"weights":v.fir_weights().map(f32::to_bits),"yvv":v.yvv().map(f32::to_bits)})
     }
     fn project(v: &HalationFrame) -> Value {
         json!({"recipe_hash":v.recipe_hash(),"scatter_amount":v.scatter_amount().to_bits(),
             "channels":v.channels().map(|c| json!({"core":gaussian(c.core()),"tail":c.tail().map(|g|gaussian(&g)),
-                "bounce":c.bounce().map(|g|gaussian(&g)),"strength":c.total_strength().to_bits()}))})
+                "bounce":c.bounce()[..3].iter().map(gaussian).collect::<Vec<_>>(),"strength":c.total_strength().to_bits()}))})
     }
 
     #[test]
@@ -434,6 +715,9 @@ mod tests {
             if let Err(error) = result {
                 let expected = &checked["cases"][row["input"]["name"].as_str().unwrap()];
                 match error {
+                    HalationFrameError::BounceCount | HalationFrameError::AdvancedRadius { .. } => {
+                        panic!("legacy frame returned an advanced failure: {error:?}")
+                    }
                     HalationFrameError::PixelSize => assert_eq!(expected["reason"], 2),
                     HalationFrameError::Gaussian {
                         field,

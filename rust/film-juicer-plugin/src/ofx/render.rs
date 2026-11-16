@@ -162,6 +162,17 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     if print && window != source.bounds {
         return Err(Status::FATAL);
     }
+    if state.optics().highlight_boost().is_some()
+        && (source.definition != source.bounds
+            || destination.bounds != source.bounds
+            || window != source.bounds)
+    {
+        callback.message(
+            c"FilmJuicerHighlightBoost",
+            "Highlight reconstruction requires the full source region, output image and render window.",
+        );
+        return Err(Status::FATAL);
+    }
     let policy = cuda::FramePolicy::prepare(state, full).map_err(|_| Status::FATAL)?;
     #[cfg(feature = "test-support")]
     policy.observe_callback(state.development().route() as u32);

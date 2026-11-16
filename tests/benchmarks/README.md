@@ -23,9 +23,46 @@ paths. Compare only runs with the same executable, dimensions, device, driver,
 warmup/sample counts and external GPU load. The JSON result is diagnostic
 evidence; no shared timing threshold is inferred from one machine.
 
+For advanced halation, pair `reflection-3` and `reflection-5` at the same
+dimensions. Both use the same absolute RGB widths, strengths and FP64 YVV
+stage with scatter off. Use `boost-sparse` and `boost-dense` for the prepared
+boost stage, including its status event and separate CPU wait and preparation
+samples. The useful device and pinned bytes in these reports describe the
+admitted optical stage. The stage timing excludes test source upload and
+destinations and is separate from the OFX callback timing. Retain the cold
+stage sample and three alternating pairs of 10 warmups and 30 measured runs
+at 1920×1080 and 3840×2160.
+
 On Windows, use the matching
 `out\build\windows-clang-release\tests\bin\JuicerScatterHalationGpuTests.exe`
 and Windows paths with the same arguments.
+
+### Matched blur precision characterization
+
+`scatter.py collect` validates retained three-way precision experiments from
+before the stable FP32 production conversion. Those bundles contain their original
+executable, source, fixture identities, errors and raw timing samples. The live
+experimental precision switch and its runner are retired; current spatial and
+timing tests use the ordinary production launch.
+
+```sh
+python -B tests/benchmarks/scatter.py collect \
+  --bundle out/validation/linux-release/results/blur-precision-comparison
+```
+
+The collector verifies complete command and fixture membership, retained hashes,
+ordinary-launch equality, compact/padded identity, and reported percentiles against
+the raw timing arrays. The large-gain exception retains both independent ULP
+checks and relative error reporting. A completed characterization is distinct from
+a passing FP32 variant; individual gate failures remain explicit.
+
+Retained timing uses the same three-bounce schedule and source at 1080p and UHD, with three
+alternating variant orders, ten warmups and thirty samples each. CUDA event and
+host submit/wait timings exclude source reset and include per-Gaussian host factor
+construction and any resulting launch gaps. Reports retain cold samples, kernel
+register counts and common frame storage. They are stage measurements, not OFX
+callback or full application timings. That experiment derived factors per launch
+on the CPU. Production prepares FP32 factors in Rust before native execution.
 
 The OFX performance campaign uses `ofx.py` on each native Release platform.
 Prepare the driver and companion with `scripts/verify.py prepare --testing ON`
@@ -88,6 +125,22 @@ its OFF configuration and exports, and binds its consumed inputs and source
 snapshot at campaign entry and exit. It copies the closure result, contract and
 source evidence into the run. The compatibility check and measurement must use
 the same qualification. The pinned S2.E reference remains unchanged.
+
+Halation callback measurements use `--reference-production-result` for the
+clean `31a4d5d` Release OFF closure and `--candidate-production-result` for the
+candidate closure. Choose `halation-1080p-direct`, `halation-1080p-print`,
+`halation-1080p-direct-spatial`, `halation-1080p-print-spatial`, and the
+corresponding `halation-uhd-*` rows in that order. Add the `-boost` and
+`-composed-boost` variants for matched above-onset exposures at each size.
+Both sides receive the same manual exposure. The composed rows also enable
+camera diffusion and spatial halation on both sides. The candidate receives
+four stops of highlight boost with zero protection EV in both boosted variants.
+The paired control census
+checks the common photographic settings. The candidate also verifies that the
+new controls start in the legacy-compatible mode with zero boost. The
+result retains both production proofs. Use the clean reference's empty
+`candidate.patch` for the input `overlay` identity when its checked-in
+observation target supplies the reference companion.
 
 Focused follow-ups may pass --workloads with a nonempty subset in the documented
 workload order. Check and measure require identical selections. The offline

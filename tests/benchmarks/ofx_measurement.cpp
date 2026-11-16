@@ -33,6 +33,7 @@
 #include "ofxParam.h"
 #include "ofxParamExt.h"
 #include "production_images.h"
+#include "host_reference.h"
 #include "observation.h"
 
 namespace {
@@ -288,10 +289,10 @@ namespace {
         return {{"rss_bytes", *rss}, {"peak_rss_bytes", *peak}, {"private_bytes", nullptr}};
 #endif
     }
-    Json control_map(InstanceHost& host, OfxImageEffectHandle effect) {
+    Json control_map(InstanceHost& host, OfxImageEffectHandle effect, const Json& controlTypes) {
         Json controls = Json::object();
         for (const auto& definition : ofx_test::kInstanceParameters) {
-            if (definition.kind == ofx_test::InstanceParamKind::PushButton)
+            if (definition.kind == ofx_test::InstanceParamKind::PushButton || !controlTypes.contains(definition.name))
                 continue;
             Json values = Json::array();
             for (const auto& value : host.value(effect, definition.name)) {
@@ -309,6 +310,33 @@ namespace {
         }
         return controls;
     }
+    struct HalationWorkload {
+        std::string_view id;
+        int width;
+        int height;
+        bool print;
+        bool spatial;
+        bool boost = false;
+        bool diffusion = false;
+    };
+    constexpr std::array kHalationWorkloads{
+        HalationWorkload{"halation-1080p-direct", 1920, 1080, false, false},
+        HalationWorkload{"halation-1080p-print", 1920, 1080, true, false},
+        HalationWorkload{"halation-1080p-direct-spatial", 1920, 1080, false, true},
+        HalationWorkload{"halation-1080p-print-spatial", 1920, 1080, true, true},
+        HalationWorkload{"halation-1080p-direct-boost", 1920, 1080, false, false, true},
+        HalationWorkload{"halation-1080p-print-boost", 1920, 1080, true, false, true},
+        HalationWorkload{"halation-1080p-direct-composed-boost", 1920, 1080, false, true, true, true},
+        HalationWorkload{"halation-1080p-print-composed-boost", 1920, 1080, true, true, true, true},
+        HalationWorkload{"halation-uhd-direct", 3840, 2160, false, false},
+        HalationWorkload{"halation-uhd-print", 3840, 2160, true, false},
+        HalationWorkload{"halation-uhd-direct-spatial", 3840, 2160, false, true},
+        HalationWorkload{"halation-uhd-print-spatial", 3840, 2160, true, true},
+        HalationWorkload{"halation-uhd-direct-boost", 3840, 2160, false, false, true},
+        HalationWorkload{"halation-uhd-print-boost", 3840, 2160, true, false, true},
+        HalationWorkload{"halation-uhd-direct-composed-boost", 3840, 2160, false, true, true, true},
+        HalationWorkload{"halation-uhd-print-composed-boost", 3840, 2160, true, true, true, true},
+    };
     struct RenderStep {
         const char* phase = nullptr;
         int cycle = 0;
@@ -437,10 +465,16 @@ namespace {
         verify_output_guard();
         const bool observed = args.lane == "observed";
         const bool check = args.mode == "check";
-        const bool print = args.workload == "negative-print" || args.workload == "negative-print-grain";
+        const decltype(kHalationWorkloads)::const_iterator halation = std::ranges::find(kHalationWorkloads, args.workload, &HalationWorkload::id);
+        const bool pairedHalation = halation != kHalationWorkloads.end();
+        const bool print = pairedHalation ? halation->print : args.workload == "negative-print" || args.workload == "negative-print-grain";
         const bool grain = args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
-        require(print || grain || args.workload == "negative-direct", "unknown workload");
-        const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : "NegativeDirectScan", print ? 1 : 0, print ? 4 : 3, check ? 7 : 6048, check ? 5 : 4032, grain ? 1 : 0, 0.0};
+        require(pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
+        const int width = check ? 7 : pairedHalation ? halation->width
+                                                     : 6048;
+        const int height = check ? 5 : pairedHalation ? halation->height
+                                                      : 4032;
+        const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : "NegativeDirectScan", print ? 1 : 0, print ? 4 : 3, width, height, grain ? 1 : 0, 0.0};
         report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
         const auto effectiveResources = std::filesystem::canonical(args.module.parent_path().parent_path() / "Resources");
         report["resources"] = effectiveResources.string();
@@ -514,11 +548,27 @@ namespace {
                 controlTypes[call.property] = std::get<std::string>(call.values.front());
             }
         }
-        report["control_types"] = controlTypes;
+        const bool advancedHalation = controlTypes.contains("HalationAdvancedGroup");
         for (const auto& definition : ofx_test::kInstanceParameters) {
+            if (!advancedHalation && ofx_test::reference::advanced_halation_parameter(definition.name)) {
+                require(!controlTypes.contains(definition.name), "partial advanced halation parameter inventory");
+                continue;
+            }
             require(controlTypes.contains(definition.name) && controlTypes.at(definition.name) == parameter_type(definition.kind),
                     std::string("consumed control missing or wrong descriptor type: ") + std::string(definition.name));
         }
+        if (pairedHalation) {
+            report["advanced_halation_available"] = advancedHalation;
+            report["halation_boost_ev"] = 0.0;
+        }
+        for (const auto& definition : ofx_test::kInstanceParameters) {
+            if (ofx_test::reference::advanced_halation_parameter(definition.name)) {
+                controlTypes.erase(definition.name);
+            }
+        }
+        controlTypes.erase("HalationAdvancedGroup");
+        controlTypes.erase("HalationHighlightGroup");
+        report["control_types"] = controlTypes;
         std::array<Sample, 71> samples{};
         std::size_t sampleCount = 0;
         report["renders"].get_ref<Json::array_t&>().reserve(check ? 15 : 71);
@@ -584,6 +634,27 @@ namespace {
             timings["author_ns"].push_back(nullptr);
             timed(timings["author_ns"].back(), [&] {
                 ofx_test::author_parameters(host, effect, test);
+                if (pairedHalation) {
+                    host.set_value(effect, "HalationActive", {halation->spatial ? 1 : 0});
+                    host.set_value(effect, "CameraDiffusionEnabled", {halation->diffusion ? 1 : 0});
+                    if (advancedHalation) {
+                        using V = std::vector<ofx_test::InstanceValue>;
+                        require(host.value(effect, "HalationHighlightBoostEv") == V{0.0} &&
+                                    host.value(effect, "HalationReflectionSource") == V{0} &&
+                                    host.value(effect, "HalationBounceCount") == V{3} &&
+                                    host.value(effect, "HalationBounceDecay") == V{0.5} &&
+                                    host.value(effect, "HalationRenormalize") == V{1},
+                                "halation comparison requires the legacy-compatible defaults");
+                    }
+                    if (halation->boost) {
+                        host.set_value(effect, "Exposure", {6.0});
+                        if (advancedHalation) {
+                            host.set_value(effect, "HalationHighlightBoostEv", {4.0});
+                            host.set_value(effect, "HalationHighlightProtectionEv", {0.0});
+                            report["halation_boost_ev"] = std::get<double>(host.value(effect, "HalationHighlightBoostEv").at(0));
+                        }
+                    }
+                }
             });
             OfxStatus createStatus = kOfxStatFailed;
             timings["create_ns"].push_back(nullptr);
@@ -593,7 +664,7 @@ namespace {
             life["create_statuses"].push_back(createStatus);
             require(createStatus == kOfxStatOK, "CreateInstance failed");
             life["effects_created"] = cycle + 1;
-            const auto controls = control_map(host, effect);
+            const auto controls = control_map(host, effect, controlTypes);
             if (cycle == 0)
                 report["controls"] = controls;
             else

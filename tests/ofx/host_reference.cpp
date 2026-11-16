@@ -1,6 +1,7 @@
 #include "host_reference.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <fstream>

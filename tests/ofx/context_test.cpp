@@ -237,6 +237,114 @@ namespace {
         require(found != host.definitions.end(), "missing definition " + std::string(name));
         return *found;
     }
+    void advanced_halation_projection(const ContextHost& actual, ContextHost& legacy) {
+        using ofx_test::Value;
+        constexpr std::array<std::pair<std::string_view, std::string_view>, 14> advanced{{
+            {"HalationAdvancedGroup", kOfxParamTypeGroup},
+            {"HalationScatterCoreSigmaUm", kOfxParamTypeDouble3D},
+            {"HalationScatterTailScaleUm", kOfxParamTypeDouble3D},
+            {"HalationScatterTailWeight", kOfxParamTypeDouble3D},
+            {"HalationReflectionSource", kOfxParamTypeChoice},
+            {"HalationStrengthRgb", kOfxParamTypeDouble3D},
+            {"HalationFirstBounceSigmaUm", kOfxParamTypeDouble3D},
+            {"HalationBounceCount", kOfxParamTypeInteger},
+            {"HalationBounceDecay", kOfxParamTypeDouble},
+            {"HalationRenormalize", kOfxParamTypeBoolean},
+            {"HalationHighlightGroup", kOfxParamTypeGroup},
+            {"HalationHighlightBoostEv", kOfxParamTypeDouble},
+            {"HalationHighlightProtectionEv", kOfxParamTypeDouble},
+            {"HalationHighlightBoostRange", kOfxParamTypeDouble},
+        }};
+        const auto start = std::find_if(actual.definitions.begin(), actual.definitions.end(), [](const auto& d) {
+            return d.name == "HalationSpatialScale";
+        });
+        require(start != actual.definitions.end() && actual.definitions.end() - start > static_cast<std::ptrdiff_t>(advanced.size()),
+                "advanced halation declaration position");
+        const auto first = start + 1;
+        const auto after = first + static_cast<std::ptrdiff_t>(advanced.size());
+        for (std::size_t i = 0; i < advanced.size(); ++i) {
+            const auto& d = first[static_cast<std::ptrdiff_t>(i)];
+            require(d.name == advanced[i].first && d.type == advanced[i].second, "advanced halation declaration order");
+            const char* const parent = i == 0 ? "HalationGroup" : i > 10 ? "HalationHighlightGroup"
+                                                                         : "HalationAdvancedGroup";
+            require(d.properties.at(kOfxParamPropParent) == std::vector<Value>{std::string(parent)},
+                    "advanced halation parent");
+            if (d.type != kOfxParamTypeGroup) {
+                require(d.properties.at(kOfxParamPropEvaluateOnChange) == std::vector<Value>{1}, "advanced halation evaluation");
+                require(!std::get<std::string>(d.properties.at(kOfxParamPropHint).at(0)).empty(), "advanced halation hint");
+            }
+        }
+        require(first->properties.at(kOfxPropLabel) == std::vector<Value>{std::string("Advanced Halation")} &&
+                    first->properties.at(kOfxParamPropGroupOpen) == std::vector<Value>{0},
+                "advanced halation group");
+        const auto check_rgb = [&](std::string_view name, const std::vector<Value>& defaults, double maximum, double display_max, double increment) {
+            const auto& p = definition(actual, name).properties;
+            require(p.at(kOfxParamPropDefault) == defaults && p.at(kOfxParamPropMin) == std::vector<Value>(3, 0.0) &&
+                        p.at(kOfxParamPropMax) == std::vector<Value>(3, maximum) && p.at(kOfxParamPropDisplayMin) == std::vector<Value>(3, 0.0) &&
+                        p.at(kOfxParamPropDisplayMax) == std::vector<Value>(3, display_max) && p.at(kOfxParamPropIncrement) == std::vector<Value>{increment} &&
+                        p.at(kOfxParamPropDimensionLabel) == std::vector<Value>{std::string("R"), std::string("G"), std::string("B")},
+                    "advanced halation RGB descriptor " + std::string(name));
+        };
+        check_rgb("HalationScatterCoreSigmaUm", {2.2, 2.0, 1.6}, 1e6, 10.0, 0.5);
+        check_rgb("HalationScatterTailScaleUm", {9.3, 9.7, 9.1}, 1e6, 40.0, 1.0);
+        check_rgb("HalationScatterTailWeight", {0.78, 0.65, 0.67}, 1.0, 1.0, 0.01);
+        check_rgb("HalationStrengthRgb", {0.05, 0.015, 0.0}, 1e6, 0.5, 0.005);
+        check_rgb("HalationFirstBounceSigmaUm", {65.0, 65.0, 65.0}, 1e6, 150.0, 1.0);
+        const auto& source = definition(actual, "HalationReflectionSource").properties;
+        require(source.at(kOfxParamPropDefault) == std::vector<Value>{0} &&
+                    source.at(kOfxParamPropChoiceOption) == std::vector<Value>{std::string("Profile"), std::string("Custom")},
+                "advanced halation reflection choice");
+        const auto& bounces = definition(actual, "HalationBounceCount").properties;
+        require(bounces.at(kOfxParamPropDefault) == std::vector<Value>{3} && bounces.at(kOfxParamPropMin) == std::vector<Value>{1} &&
+                    bounces.at(kOfxParamPropMax) == std::vector<Value>{5},
+                "advanced halation bounce count");
+        const auto& decay = definition(actual, "HalationBounceDecay").properties;
+        require(decay.at(kOfxParamPropDefault) == std::vector<Value>{0.5} && decay.at(kOfxParamPropMin) == std::vector<Value>{0.0} &&
+                    decay.at(kOfxParamPropMax) == std::vector<Value>{1.0} && decay.at(kOfxParamPropIncrement) == std::vector<Value>{0.05},
+                "advanced halation decay");
+        require(definition(actual, "HalationRenormalize").properties.at(kOfxParamPropDefault) == std::vector<Value>{1},
+                "advanced halation renormalization");
+        require(definition(actual, "HalationHighlightGroup").properties.at(kOfxPropLabel) == std::vector<Value>{std::string("Highlight Reconstruction")},
+                "highlight reconstruction group");
+        const auto check_scalar = [&](std::string_view name, double initial, double limit, double display, double increment) {
+            const auto& p = definition(actual, name).properties;
+            require(p.at(kOfxParamPropDefault) == std::vector<Value>{initial} &&
+                        p.at(kOfxParamPropMin) == std::vector<Value>{0.0} && p.at(kOfxParamPropMax) == std::vector<Value>{limit} &&
+                        p.at(kOfxParamPropDisplayMin) == std::vector<Value>{0.0} && p.at(kOfxParamPropDisplayMax) == std::vector<Value>{display} &&
+                        p.at(kOfxParamPropIncrement) == std::vector<Value>{increment},
+                    "highlight descriptor " + std::string(name));
+        };
+        check_scalar("HalationHighlightBoostEv", 0.0, 20.0, 8.0, 0.5);
+        check_scalar("HalationHighlightProtectionEv", 4.0, 20.0, 10.0, 0.5);
+        check_scalar("HalationHighlightBoostRange", 0.3, 1.0, 1.0, 0.05);
+
+        const auto& active = definition(actual, "HalationActive");
+        constexpr auto previous_hint = "Add profile-derived scatter and halation to the negative raw exposure.";
+        require(active.properties.at(kOfxParamPropHint) == std::vector<Value>{std::string("Enable in-emulsion scatter and back-reflection in the capture film.")},
+                "halation enable hint");
+        legacy.definitions.assign(actual.definitions.begin(), first);
+        legacy.definitions.insert(legacy.definitions.end(), after, actual.definitions.end());
+        const auto active_index = static_cast<std::size_t>(&active - actual.definitions.data());
+        legacy.definitions[active_index].properties[kOfxParamPropHint] = {std::string(previous_hint)};
+
+        // Normalize the mock's definition tokens after excluding the declared new controls.
+        constexpr int first_definition_token = 7;
+        const auto first_token = static_cast<int>(first - actual.definitions.begin()) + first_definition_token;
+        const auto after_token = first_token + static_cast<int>(advanced.size());
+        const auto active_token = static_cast<int>(active_index) + first_definition_token;
+        for (auto call : actual.calls) {
+            if ((call.target >= first_token && call.target < after_token) ||
+                (call.operation == "param_define" && std::any_of(advanced.begin(), advanced.end(), [&](const auto& d) {
+                     return d.first == call.property;
+                 })))
+                continue;
+            if (call.target == active_token && call.property == kOfxParamPropHint)
+                call.value = std::string(previous_hint);
+            if (call.target >= after_token)
+                call.target -= static_cast<int>(advanced.size());
+            legacy.calls.push_back(std::move(call));
+        }
+    }
     void check_startup(const std::vector<ofx_test::ContextCall>& calls) {
         const std::vector<ofx_test::ContextCall> expected{
             {"fetch", "OfxImageEffectSuite", {}, 1, 0, 0}, {"fetch", "OfxPropertySuite", {}, 1, 0, 0}, {"fetch", "OfxParameterSuite", {}, 1, 0, 0}, {"fetch", "OfxMemorySuite", {}, 1, 0, 0}, {"fetch", "OfxMultiThreadSuite", {}, 1, 0, 0}, {"fetch", "OfxMessageSuite", {}, 1, 0, 0}, {"fetch", "OfxProgressSuite", {}, 1, 0, 0}, {"fetch", "OfxProgressSuite", {}, 2, 0, 0}, {"fetch", "OfxTimeLineSuite", {}, 1, 0, 0}, {"get_int", kOfxPropAPIVersion, {}, 0, 0, 0}, {"get_int", kOfxPropAPIVersion, {}, 1, 0, 0}, {"get_string", kOfxPropName, {}, 0, 0, 0}, {"get_string", kOfxPropLabel, {}, 0, 0, 0}, {"get_int", kOfxPropVersion, {}, 0, 0, 0}, {"get_int", kOfxPropVersion, {}, 1, 0, 0}, {"get_int", kOfxPropVersion, {}, 2, 0, 0}, {"get_string", kOfxPropVersionLabel, {}, 0, 0, 0}, {"get_int", kOfxImageEffectHostPropIsBackground, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSupportsOverlays, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSupportsMultiResolution, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSupportsTiles, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropTemporalClipAccess, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSupportsMultipleClipDepths, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSupportsMultipleClipPARs, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSetableFrameRate, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropSetableFielding, {}, 0, 0, 0}, {"get_int", kOfxImageEffectInstancePropSequentialRender, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsStringAnimation, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsCustomInteract, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsChoiceAnimation, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsStrChoiceAnimation, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsBooleanAnimation, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsCustomAnimation, {}, 0, 0, 0}, {"get_pointer", kOfxPropHostOSHandle, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropSupportsParametricAnimation, {}, 0, 0, 0}, {"get_string", kOfxImageEffectPropOpenCLRenderSupported, {}, 0, 0, 0}, {"get_string", kOfxImageEffectPropCudaRenderSupported, {}, 0, 0, 0}, {"get_string", kOfxImageEffectPropCudaStreamSupported, {}, 0, 0, 0}, {"get_string", kOfxImageEffectPropMetalRenderSupported, {}, 0, 0, 0}, {"get_int", kOfxImageEffectPropRenderQualityDraft, {}, 0, 0, 0}, {"get_string", kOfxImageEffectHostPropNativeOrigin, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropMaxParameters, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropMaxPages, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropPageRowColumnCount, {}, 0, 0, 0}, {"get_int", kOfxParamHostPropPageRowColumnCount, {}, 1, 0, 0}, {"dimension", kOfxImageEffectPropSupportedComponents, {}, 0, 0, 0}, {"dimension", kOfxImageEffectPropSupportedContexts, {}, 0, 0, 0}, {"dimension", kOfxImageEffectPropSupportedPixelDepths, {}, 0, 0, 0}};
@@ -320,18 +428,20 @@ namespace {
         {
             auto row = rows.case_event("equal");
             require(describe(plugin, first) == kOfxStatOK && !first.callback_error, "candidate filter");
-            check_census(first);
-            require(same(reference, first), "candidate differs from reference");
+            ContextHost legacy;
+            advanced_halation_projection(first, legacy);
+            check_census(legacy);
+            require(same(reference, legacy), "candidate legacy descriptors differ from reference");
             auto altered = ofx_test::reference::context(reference);
             altered[3][0][0] = "altered";
             ContextHost changed;
             ofx_test::reference::context(altered, changed);
-            require(!same(changed, first), "candidate accepted altered reference definition");
+            require(!same(changed, legacy), "candidate accepted altered reference definition");
             altered = ofx_test::reference::context(reference);
             std::swap(altered[3][0], altered[3][1]);
             ContextHost reordered;
             ofx_test::reference::context(altered, reordered);
-            require(!same(reordered, first), "candidate accepted reordered reference definitions");
+            require(!same(reordered, legacy), "candidate accepted reordered reference definitions");
             row.passed();
         }
         {

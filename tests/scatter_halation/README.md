@@ -74,13 +74,47 @@ visual acceptance.
 `Ffi.Host.HalationFrame` checks fixed transport, C11/C++20/Rust ABI agreement,
 complete descriptor values, typed failures, diagnostics, independent clearing and
 bounded fixture faults. `Optics.Host.HalationFrameProducts` checks twenty completed
-route products using the same Rust producer. Both are finite driver-free host
-groups with 180-second deadlines. `Ffi.Host.PreparedProjection` checks all fields
+route products using the same Rust producer. Both are driver-free host groups.
+`Ffi.Host.PreparedProjection` checks all fields
 through native encode/decode; `ScatterHalation.Gpu.RouteBoundaries` checks complete
 frozen fields at preparation and the launch view for all four routes.
 
-The safe schedule constructor preserves the complete twenty-one-record family;
-it is distinct from the cached scalar GaussianKernel constructor. The native
-adapter transports and checks the fixed result without deriving recipe policy or
-recomputing mathematics. Native carriers, workspaces and finish/abort retirement
-retain their existing ownership.
+The frame schedule has one core, three tail and five bounce slots per RGB
+channel. The frozen frame fixtures compare the original 21 records in the
+legacy schedule. The C11 payload checks also cover the extended schedule and
+canonical unused bounce slots. The native adapter validates the wire and binds
+it to the prepared frame. The cached scalar GaussianKernel remains a different
+producer with different consumers.
+
+The [parity fixture manifest](parity-fixtures/manifest.json) records matched RGB
+inputs and outputs from the unmodified pinned spektrafilm main and experimental
+operators. Each revision was imported and run independently. The branch binary
+outputs match byte for byte on these rows. The packed payload stores each
+identical range once, preserving the individual SHA-256 and little-endian
+sample words. Spatial arrays are logical, top-down HWC Float64. Boost inputs
+record the original Float32 bits and were promoted into contiguous Float64 for
+the pinned helper. Near onset the manifest records the pinned exception or
+result alongside the independent 100-digit continuation.
+
+`ScatterHalation.Gpu.FocusedCudaReference` uses the spatial rows through the
+test-support preparation boundary and production CUDA launch. It checks
+RGB outputs with poisoned carrier padding and bit-identical compact carriers, including separate scatter and
+composed results and typed rejection on the above-bound row. The manifest's
+two large additive gain rows compare each output sample to the rounded
+spektrafilm reference and to the independently calculated flat-field gain,
+each within one FP32 ULP. They report peak-scaled maximum and RMS error.
+The other spatial rows use their operator-specific error bounds. Advanced
+Gaussian sigma is limited to 1024 pixels per executed Gaussian after
+physical size, format and authored-scale conversion. The legacy schedule keeps
+its existing domain. Rust prepares the advanced YVV factors `[h, g, t, 0]` in
+FP32 after CPU factor construction; CUDA executes the factored recurrence in
+FP32. Legacy YVV keeps its original four coefficients and arithmetic.
+
+The same registration runs the boost rows through the production CUDA kernels.
+It checks the exact image maximum over logical RGB samples, the one-ULP peak,
+fixed bypass values, finite carrier and peak rejection, and repeatability
+across different reduction block counts. The lifecycle registration checks
+that the verdict is available while downstream use remains pending and that
+finish and abort transfer the carrier and pinned staging to the CUDA owner.
+Fixture generation is explicit reference maintenance outside ordinary builds
+and tests.

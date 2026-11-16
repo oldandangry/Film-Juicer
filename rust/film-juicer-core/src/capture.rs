@@ -21,6 +21,9 @@ impl Mixer {
     fn float(&mut self, v: f32) {
         self.add(u64::from(if v == 0.0 { 0 } else { v.to_bits() }));
     }
+    fn double(&mut self, v: f64) {
+        self.add(if v == 0.0 { 0 } else { v.to_bits() });
+    }
     fn retained(&mut self, v: f64) {
         if v.is_finite() {
             self.add(u64::from((v as f32).to_bits()));
@@ -133,6 +136,31 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
         ] {
             h.float(v);
         }
+        let shape = s.shape.canonicalize_defaults();
+        if shape != optics::HalationShape::default() {
+            h.add(hash::bytes(b"halation-shape"));
+            for v in shape
+                .scatter_core_um
+                .into_iter()
+                .chain(shape.scatter_tail_um)
+                .chain(shape.scatter_tail_weight)
+            {
+                h.double(v);
+            }
+            h.int(shape.bounce_count);
+            h.double(shape.bounce_decay);
+            h.add(shape.renormalize as u64);
+        }
+        if let crate::recipe::HalationReflectionSource::Custom {
+            strength,
+            first_sigma_um,
+        } = s.reflection
+        {
+            h.add(hash::bytes(b"halation-custom"));
+            for v in strength.into_iter().chain(first_sigma_um) {
+                h.double(v);
+            }
+        }
     }
     for v in [
         p.scanner_lens_blur_sigma_px,
@@ -205,6 +233,12 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
         if p.gate_weave_amount.is_finite() {
             h.add(p.gate_weave_amount.to_bits());
         }
+    }
+    if p.highlight_boost.boost_ev != 0.0 {
+        h.add(hash::bytes(b"highlight-boost"));
+        h.double(p.highlight_boost.boost_ev);
+        h.double(p.highlight_boost.protection_ev);
+        h.double(p.highlight_boost.range);
     }
     h.0
 }
@@ -303,13 +337,8 @@ pub fn defaults() -> Params {
         hanatos2025_adaptation_surface: 0,
         camera_auto_exposure_enabled: 1,
         camera_metering_method: 0,
-        scatter_halation: crate::recipe::HalationControls {
-            active: false,
-            scatter_amount: 0.0,
-            scatter_spatial_scale: 0.0,
-            halation_amount: 0.0,
-            halation_spatial_scale: 0.0,
-        },
+        scatter_halation: crate::recipe::HalationControls::default(),
+        highlight_boost: optics::highlight_boost::Controls::default(),
         scanner_black_correction: 0,
         scanner_white_correction: 0,
         scanner_lut_resolution: 17,

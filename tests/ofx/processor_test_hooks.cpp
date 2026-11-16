@@ -3,9 +3,48 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <stdexcept>
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 namespace JuicerCuda::ExecutorTest {
+    namespace {
+        thread_local CarrierReadbacks* carrierObserver = nullptr;
+    }
+
+    void set_carrier_observer(CarrierReadbacks* readbacks) noexcept {
+        carrierObserver = readbacks;
+    }
+
+    void observe_carrier(CarrierObservation observation) {
+        if (!carrierObserver) {
+            return;
+        }
+        const auto width = static_cast<std::size_t>(observation.width);
+        const auto height = static_cast<std::size_t>(observation.height);
+        if (width == 0 || height == 0 || width > 4096 || height > 4096 / width) {
+            throw std::runtime_error("carrier observation requires at most 4096 logical samples per plane");
+        }
+        auto& capture = carrierObserver->at(static_cast<std::size_t>(observation.stage));
+        const auto& planes = observation.planes;
+        const std::array sources{planes.redSensitive, planes.greenSensitive, planes.blueSensitive};
+        auto* const stream = reinterpret_cast<cudaStream_t>(observation.stream);
+        for (std::size_t channel = 0; channel < sources.size(); ++channel) {
+            if (sources[channel]) {
+                auto& values = capture.rgb[channel];
+                values.resize(width * height);
+                if (cudaMemcpy2DAsync(values.data(), width * sizeof(float), sources[channel], planes.rowStrideFloats * sizeof(float), width * sizeof(float), height, cudaMemcpyDeviceToHost, stream) != cudaSuccess) {
+                    (void)cudaStreamSynchronize(stream);
+                    throw std::runtime_error("carrier observation readback failed");
+                }
+            }
+        }
+        if (cudaStreamSynchronize(stream) != cudaSuccess) {
+            throw std::runtime_error("carrier observation readback did not complete");
+        }
+        capture.routeCorrection = observation.routeCorrection;
+        ++capture.count;
+    }
+
     void FailureObservation::record(Event event) noexcept {
         if (count < events.size()) {
             events[count++] = event;

@@ -3,7 +3,9 @@
 #![forbid(unsafe_code)]
 
 use film_juicer_core::film::grain;
+use film_juicer_core::optics::highlight_boost;
 use film_juicer_core::profile::{self, Polarity, Role};
+use film_juicer_core::recipe::{HalationControls, HalationReflectionSource};
 use film_juicer_core::{capture, effects, exposure, film, optics, print, scanner};
 use film::dir::DirField;
 
@@ -140,20 +142,91 @@ fn capture_dir(
     Ok(dir)
 }
 
-pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, CaptureError> {
-    let mut p = capture::defaults();
-    let active = controls.integer(c"HalationActive")? != 0;
-    let values = if active {
+fn invalid_halation(error: optics::Error) -> CaptureError {
+    const PREFIX: &str = "InvalidAuthoredControl component=scatter_halation field=";
+    let field = error.field().name();
+    let channel = match error.channel() {
+        Some(0) => " channel=R",
+        Some(1) => " channel=G",
+        Some(2) => " channel=B",
+        _ => "",
+    };
+    let mut diagnostic = String::new();
+    if diagnostic
+        .try_reserve_exact(PREFIX.len() + field.len() + channel.len())
+        .is_err()
+    {
+        return CaptureError::Host(Status::MEMORY);
+    }
+    diagnostic.push_str(PREFIX);
+    diagnostic.push_str(field);
+    diagnostic.push_str(channel);
+    CaptureError::Invalid(diagnostic)
+}
+
+fn capture_halation(controls: &Controls<'_>) -> Result<HalationControls, CaptureError> {
+    if controls.integer(c"HalationActive")? == 0 {
+        return Ok(HalationControls::default());
+    }
+    let mut halation = optics::halation(
+        true,
         [
             controls.double(c"HalationScatterAmount")?,
             controls.double(c"HalationScatterSpatialScale")?,
             controls.double(c"HalationAmount")?,
             controls.double(c"HalationSpatialScale")?,
-        ]
-    } else {
-        [0.0; 4]
-    };
-    p.scatter_halation = optics::halation(active, values).map_err(invalid_diagnostic)?;
+        ],
+    )
+    .map_err(invalid_diagnostic)?;
+    halation.shape = optics::HalationShape {
+        scatter_core_um: controls.double3(c"HalationScatterCoreSigmaUm")?,
+        scatter_tail_um: controls.double3(c"HalationScatterTailScaleUm")?,
+        scatter_tail_weight: controls.double3(c"HalationScatterTailWeight")?,
+        bounce_count: controls.integer(c"HalationBounceCount")?,
+        bounce_decay: controls.double(c"HalationBounceDecay")?,
+        renormalize: controls.integer(c"HalationRenormalize")? != 0,
+    }
+    .validate()
+    .map_err(invalid_halation)?;
+    halation.reflection = match controls.integer(c"HalationReflectionSource")? {
+        0 => HalationReflectionSource::Profile,
+        1 => HalationReflectionSource::Custom {
+            strength: controls.double3(c"HalationStrengthRgb")?,
+            first_sigma_um: controls.double3(c"HalationFirstBounceSigmaUm")?,
+        },
+        _ => {
+            return Err(invalid_diagnostic(
+                "InvalidAuthoredControl component=scatter_halation field=reflection_source",
+            ));
+        }
+    }
+    .validate()
+    .map_err(invalid_halation)?;
+    Ok(halation)
+}
+
+fn capture_highlight_boost(
+    controls: &Controls<'_>,
+) -> Result<highlight_boost::Controls, CaptureError> {
+    let boost_ev =
+        highlight_boost::Controls::validate_ev(controls.double(c"HalationHighlightBoostEv")?)
+            .map_err(|error| invalid_diagnostic(error.diagnostic()))?;
+    if boost_ev == 0.0 {
+        return Ok(highlight_boost::Controls::default());
+    }
+    highlight_boost::Controls {
+        boost_ev,
+        protection_ev: controls.double(c"HalationHighlightProtectionEv")?,
+        range: controls.double(c"HalationHighlightBoostRange")?,
+    }
+    .validate()
+    .map_err(|error| invalid_diagnostic(error.diagnostic()))
+}
+
+pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, CaptureError> {
+    let mut p = capture::defaults();
+    p.scatter_halation = capture_halation(controls)?;
+    p.highlight_boost = capture_highlight_boost(controls)?;
     p.camera_film_format_long_edge_mm =
         film::input::film_format_mm(controls.double(c"CameraFilmFormatMm")?)
             .map_err(invalid_diagnostic)?;
@@ -263,11 +336,41 @@ fn control_route(controls: &Controls<'_>) -> Result<(bool, bool), Status> {
 }
 
 pub(super) fn initialize(controls: &Controls<'_>) -> Result<(), Status> {
+    refresh_route_ui(controls)?;
+    update_halation(controls)?;
+    update_highlight_boost(controls)
+}
+
+fn refresh_route_ui(controls: &Controls<'_>) -> Result<(), Status> {
     let diffusion_route = control_route(controls)?;
     let gamma_route = control_route(controls)?;
     update_diffusion(controls, diffusion_route.0)?;
     update_gamma(controls, gamma_route.0, gamma_route.1)?;
     update_spectral(controls)
+}
+
+fn update_halation(controls: &Controls<'_>) -> Result<(), Status> {
+    let active = controls.integer(c"HalationActive")? != 0;
+    let custom = active && controls.integer(c"HalationReflectionSource")? == 1;
+    for name in [
+        c"HalationScatterCoreSigmaUm",
+        c"HalationScatterTailScaleUm",
+        c"HalationScatterTailWeight",
+        c"HalationReflectionSource",
+        c"HalationBounceCount",
+        c"HalationBounceDecay",
+        c"HalationRenormalize",
+    ] {
+        controls.set_enabled(name, active)?;
+    }
+    controls.set_enabled(c"HalationStrengthRgb", custom)?;
+    controls.set_enabled(c"HalationFirstBounceSigmaUm", custom)
+}
+
+fn update_highlight_boost(controls: &Controls<'_>) -> Result<(), Status> {
+    let active = controls.double(c"HalationHighlightBoostEv")? > 0.0;
+    controls.set_enabled(c"HalationHighlightProtectionEv", active)?;
+    controls.set_enabled(c"HalationHighlightBoostRange", active)
 }
 
 fn update_grain_chroma(controls: &Controls<'_>) -> Result<(), Status> {
@@ -463,7 +566,13 @@ pub(super) fn change(
     if read_before_ui {
         controls.begin_read()?;
     }
-    initialize(controls)?;
+    refresh_route_ui(controls)?;
+    if matches!(name, b"HalationActive" | b"HalationReflectionSource") {
+        update_halation(controls)?;
+    }
+    if name == b"HalationHighlightBoostEv" {
+        update_highlight_boost(controls)?;
+    }
     Ok(false)
 }
 

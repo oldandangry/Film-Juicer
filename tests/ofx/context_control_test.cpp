@@ -125,7 +125,7 @@ namespace {
         {
             auto row = rows.case_event("one_shot_recovery");
             ofx_test::ContextHost recovered;
-            require(context(plugin, recovered) == kOfxStatOK && recovered.definitions.size() == 130 && !recovered.callback_error,
+            require(context(plugin, recovered) == kOfxStatOK && recovered.definitions.size() == baseline.definitions.size() && !recovered.callback_error,
                     "allocation fault did not clear");
             row.passed();
         }

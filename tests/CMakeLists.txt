@@ -1223,7 +1223,8 @@ add_test(NAME Ofx.Gpu.StreamContract
 set_tests_properties(Ofx.Gpu.StreamContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu
     ENVIRONMENT "JUICER_DIAGNOSTICS=3;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract-diagnostic.log")
 
-add_library(juicer_context_drain_test_root OBJECT ../src/ProcessRoot.cpp)
+add_library(juicer_context_drain_test_root OBJECT
+    ../src/ProcessRoot.cpp ../src/Cuda/Film/JuicerCudaHighlightBoost.cu)
 target_link_libraries(juicer_context_drain_test_root PRIVATE juicer_settings)
 target_compile_definitions(juicer_context_drain_test_root PRIVATE
     JUICER_CONTEXT_DRAIN_TEST_HOOK=1)

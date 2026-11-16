@@ -170,7 +170,11 @@ namespace {
     }
     void same(const Result& reference, const Result& candidate, std::string_view id) {
         require(reference.status == candidate.status, std::string(id) + ": status differs from C++ mainEntry");
-        require(ofx_test::reference::calls(reference.calls) == ofx_test::reference::calls(candidate.calls), std::string(id) + ": callback trace differs from C++ mainEntry");
+        auto legacy_calls = candidate.calls;
+        std::erase_if(legacy_calls, [](const auto& call) {
+            return call.operation == "param_get" && ofx_test::reference::advanced_halation_parameter(call.target);
+        });
+        require(ofx_test::reference::calls(reference.calls) == ofx_test::reference::calls(legacy_calls), std::string(id) + ": callback trace differs from C++ mainEntry");
         require(reference.source_releases == candidate.source_releases, std::string(id) + ": Source release count differs");
         require(reference.output_releases == candidate.output_releases, std::string(id) + ": Output release count differs");
         if (id == "keys") {
@@ -180,7 +184,7 @@ namespace {
             altered = reference;
             require(altered.calls.size() > 1, "render reference order boundary");
             std::swap(altered.calls[0], altered.calls[1]);
-            require(ofx_test::reference::calls(altered.calls) != ofx_test::reference::calls(candidate.calls),
+            require(ofx_test::reference::calls(altered.calls) != ofx_test::reference::calls(legacy_calls),
                     "candidate accepted reordered render calls");
         }
     }

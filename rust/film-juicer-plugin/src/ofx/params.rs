@@ -4,6 +4,9 @@
 
 use std::ffi::CStr;
 
+use film_juicer_core::optics::{HALATION_MAX_AUTHORED, HALATION_MAX_BOUNCES, HalationShape};
+use film_juicer_core::optics::highlight_boost;
+
 use super::host::{Callback, Parameters, Properties, Status};
 
 fn append_index(properties: &Properties<'_>, property: &CStr) -> Result<i32, Status> {
@@ -42,6 +45,184 @@ fn string_option(properties: &Properties<'_>, key: &CStr, label: &CStr) -> Resul
     }
     properties.set_string(c"OfxParamPropChoiceEnum", index, key)?;
     properties.set_string(c"OfxParamPropChoiceOption", index, label)
+}
+
+fn describe_advanced_halation(parameters: &Parameters<'_>) -> Result<(), Status> {
+    let defaults = HalationShape::default();
+    let group = c"HalationAdvancedGroup";
+    let p = parameters.define(c"OfxParamTypeGroup", group)?;
+    p.set_string(c"OfxPropLabel", 0, c"Advanced Halation")?;
+    let _ = p.set_int(c"OfxParamPropGroupOpen", 0, 0);
+    p.set_string(c"OfxParamPropParent", 0, c"HalationGroup")?;
+
+    for (name, label, hint, values, maximum, display_max, increment) in [
+        (
+            c"HalationScatterCoreSigmaUm",
+            c"Scatter Core σ (µm)",
+            c"Gaussian sigma of fine in-emulsion scatter for each RGB channel.",
+            defaults.scatter_core_um,
+            HALATION_MAX_AUTHORED,
+            10.0,
+            0.5,
+        ),
+        (
+            c"HalationScatterTailScaleUm",
+            c"Scatter Tail Scale (µm)",
+            c"Exponential decay length of the broad in-emulsion scatter tail for each RGB channel.",
+            defaults.scatter_tail_um,
+            HALATION_MAX_AUTHORED,
+            40.0,
+            1.0,
+        ),
+        (
+            c"HalationScatterTailWeight",
+            c"Scatter Tail Weight",
+            c"Fraction of scattered light in the broad tail for each RGB channel. The core receives the remaining fraction.",
+            defaults.scatter_tail_weight,
+            1.0,
+            1.0,
+            0.01,
+        ),
+    ] {
+        let p = parameters.define(c"OfxParamTypeDouble3D", name)?;
+        describe_halation_rgb(&p, label, hint, values, maximum, display_max, increment)?;
+    }
+
+    let p = parameters.define(c"OfxParamTypeChoice", c"HalationReflectionSource")?;
+    p.set_string(c"OfxPropLabel", 0, c"Reflection Source")?;
+    let _ = p.set_string(c"OfxParamPropHint", 0, c"Profile follows the selected stock. Custom uses saved absolute RGB strength and width, initially set to the schema defaults. Switching to Custom can change the result immediately.");
+    option(&p, c"Profile")?;
+    option(&p, c"Custom")?;
+    p.set_int(c"OfxParamPropDefault", 0, 0)?;
+    p.set_string(c"OfxParamPropParent", 0, group)?;
+    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+
+    let p = parameters.define(c"OfxParamTypeDouble3D", c"HalationStrengthRgb")?;
+    describe_halation_rgb(
+        &p,
+        c"Halation Strength",
+        c"Custom total back-reflection strength relative to incident exposure for each RGB channel, before the Halation amount multiplier.",
+        [0.05, 0.015, 0.0],
+        HALATION_MAX_AUTHORED,
+        0.5,
+        0.005,
+    )?;
+    let p = parameters.define(c"OfxParamTypeDouble3D", c"HalationFirstBounceSigmaUm")?;
+    describe_halation_rgb(
+        &p,
+        c"First-Bounce σ (µm)",
+        c"Custom first-bounce Gaussian sigma for each RGB channel. Later bounces use widths proportional to the square root of the bounce number.",
+        [65.0; 3],
+        HALATION_MAX_AUTHORED,
+        150.0,
+        1.0,
+    )?;
+
+    let p = parameters.define(c"OfxParamTypeInteger", c"HalationBounceCount")?;
+    p.set_string(c"OfxPropLabel", 0, c"Bounces")?;
+    let _ = p.set_string(c"OfxParamPropHint", 0, c"Number of Gaussian bounces used for back-reflection. Advanced Gaussian widths can be at most 1024 pixels at the rendered frame size.");
+    p.set_int(c"OfxParamPropDefault", 0, defaults.bounce_count)?;
+    p.set_int(c"OfxParamPropMin", 0, 1)?;
+    p.set_int(c"OfxParamPropMax", 0, HALATION_MAX_BOUNCES as i32)?;
+    p.set_int(c"OfxParamPropDisplayMin", 0, 1)?;
+    p.set_int(c"OfxParamPropDisplayMax", 0, HALATION_MAX_BOUNCES as i32)?;
+    p.set_string(c"OfxParamPropParent", 0, group)?;
+    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+
+    let p = parameters.define(c"OfxParamTypeDouble", c"HalationBounceDecay")?;
+    p.set_string(c"OfxPropLabel", 0, c"Bounce Decay")?;
+    let _ = p.set_string(c"OfxParamPropHint", 0, c"Amplitude ratio between consecutive back-reflection bounces. Zero uses only the first bounce. One weights all bounces equally.");
+    p.set_double(c"OfxParamPropDefault", 0, defaults.bounce_decay)?;
+    p.set_double(c"OfxParamPropMin", 0, 0.0)?;
+    p.set_double(c"OfxParamPropMax", 0, 1.0)?;
+    p.set_double(c"OfxParamPropDisplayMin", 0, 0.0)?;
+    p.set_double(c"OfxParamPropDisplayMax", 0, 1.0)?;
+    p.set_double(c"OfxParamPropIncrement", 0, 0.05)?;
+    p.set_string(c"OfxParamPropParent", 0, group)?;
+    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+
+    let p = parameters.define(c"OfxParamTypeBoolean", c"HalationRenormalize")?;
+    p.set_string(c"OfxPropLabel", 0, c"Renormalize")?;
+    let _ = p.set_string(c"OfxParamPropHint", 0, c"Preserve uniform exposure by dividing by one plus the reflection strength in each channel. Turn off for additive reflection.");
+    p.set_int(c"OfxParamPropDefault", 0, i32::from(defaults.renormalize))?;
+    p.set_string(c"OfxParamPropParent", 0, group)?;
+    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+
+    let highlight_group = c"HalationHighlightGroup";
+    let p = parameters.define(c"OfxParamTypeGroup", highlight_group)?;
+    p.set_string(c"OfxPropLabel", 0, c"Highlight Reconstruction")?;
+    p.set_string(c"OfxParamPropParent", 0, group)?;
+    let boost = highlight_boost::Controls::default();
+    for (name, label, hint, default, maximum, display_max, increment) in [
+        (
+            c"HalationHighlightBoostEv",
+            c"Highlight Boost (EV)",
+            c"Maximum highlight boost in stops. Uses the brightest film-linear sample in the rendered frame before camera diffusion.",
+            boost.boost_ev,
+            highlight_boost::MAX_EV,
+            8.0,
+            0.5,
+        ),
+        (
+            c"HalationHighlightProtectionEv",
+            c"Highlight Protection (EV)",
+            c"Sets the onset of reconstruction in stops above a film-linear exposure of 0.184.",
+            boost.protection_ev,
+            highlight_boost::MAX_EV,
+            10.0,
+            0.5,
+        ),
+        (
+            c"HalationHighlightBoostRange",
+            c"Highlight Boost Range",
+            c"Shape of the highlight response. Zero concentrates the boost near the peak. One spreads it more broadly above the onset.",
+            boost.range,
+            1.0,
+            1.0,
+            0.05,
+        ),
+    ] {
+        let p = parameters.define(c"OfxParamTypeDouble", name)?;
+        p.set_string(c"OfxPropLabel", 0, label)?;
+        let _ = p.set_string(c"OfxParamPropHint", 0, hint);
+        p.set_double(c"OfxParamPropDefault", 0, default)?;
+        p.set_double(c"OfxParamPropMin", 0, 0.0)?;
+        p.set_double(c"OfxParamPropMax", 0, maximum)?;
+        p.set_double(c"OfxParamPropDisplayMin", 0, 0.0)?;
+        p.set_double(c"OfxParamPropDisplayMax", 0, display_max)?;
+        p.set_double(c"OfxParamPropIncrement", 0, increment)?;
+        p.set_string(c"OfxParamPropParent", 0, highlight_group)?;
+        p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+    }
+    Ok(())
+}
+
+fn describe_halation_rgb(
+    p: &Properties<'_>,
+    label: &CStr,
+    hint: &CStr,
+    values: [f64; 3],
+    maximum: f64,
+    display_max: f64,
+    increment: f64,
+) -> Result<(), Status> {
+    p.set_string(c"OfxPropLabel", 0, label)?;
+    let _ = p.set_string(c"OfxParamPropHint", 0, hint);
+    for (index, value, dimension) in [
+        (0, values[0], c"R"),
+        (1, values[1], c"G"),
+        (2, values[2], c"B"),
+    ] {
+        p.set_double(c"OfxParamPropDefault", index, value)?;
+        p.set_double(c"OfxParamPropMin", index, 0.0)?;
+        p.set_double(c"OfxParamPropMax", index, maximum)?;
+        p.set_double(c"OfxParamPropDisplayMin", index, 0.0)?;
+        p.set_double(c"OfxParamPropDisplayMax", index, display_max)?;
+        p.set_string(c"OfxParamPropDimensionLabel", index, dimension)?;
+    }
+    p.set_double(c"OfxParamPropIncrement", 0, increment)?;
+    p.set_string(c"OfxParamPropParent", 0, c"HalationAdvancedGroup")?;
+    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)
 }
 
 pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> Result<(), Status> {
@@ -645,7 +826,7 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     let _ = p.set_string(
         c"OfxParamPropHint",
         0,
-        c"Add profile-derived scatter and halation to the negative raw exposure.",
+        c"Enable in-emulsion scatter and back-reflection in the capture film.",
     );
     p.set_string(c"OfxParamPropParent", 0, c"HalationGroup")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
@@ -709,6 +890,7 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     );
     p.set_string(c"OfxParamPropParent", 0, c"HalationGroup")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+    describe_advanced_halation(parameters)?;
     let p = parameters.define(c"OfxParamTypeGroup", c"GrainGroup")?;
     p.set_string(c"OfxPropLabel", 0, c"Grain")?;
     let _ = p.set_int(c"OfxParamPropGroupOpen", 0, 0);

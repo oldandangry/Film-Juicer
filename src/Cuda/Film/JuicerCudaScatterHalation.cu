@@ -176,9 +176,28 @@ namespace {
         const std::size_t tailIndex = static_cast<std::size_t>(y) * width + x;
         const float source = sourceAndDestination[sourceIndex];
         sourceAndDestination[sourceIndex] = finalize_scatter_value(
-            source, core, tail[tailIndex], tailWeight, scatterAmount);
+            source, core, tail ? tail[tailIndex] : 0.0f, tailWeight, scatterAmount);
     }
 
+
+    template <bool Factored>
+    __device__ __forceinline__ float yvv_step(float sample, float B, float B1, float B2, float B3, float& s1, float& s2, float& s3) {
+        if constexpr (Factored) {
+            // Coefficients [h, g, t, 0] and state [p, y, previous difference].
+            s1 += B * (sample - s1);
+            s3 = B2 * s3 + B1 * (s1 - s2);
+            s2 += s3;
+            return s2;
+        } else {
+            const float value = B * sample + B1 * s1 + B2 * s2 + B3 * s3;
+            s3 = s2;
+            s2 = s1;
+            s1 = value;
+            return value;
+        }
+    }
+
+    template <bool Factored>
     __global__ void yvv_horizontal_kernel(
         const float* source,
         std::size_t sourceStride,
@@ -198,7 +217,7 @@ namespace {
                                 : 0.0f;
         float w1 = first;
         float w2 = first;
-        float w3 = first;
+        float w3 = Factored ? 0.0f : first;
         // One full warp cooperatively stages columns, then each lane recurs
         // through one row. Out-of-frame lanes still reach every warp barrier.
         for (int firstColumn = 0; firstColumn < width; firstColumn += kYvvTileSize) {
@@ -212,11 +231,8 @@ namespace {
             __syncwarp();
             const int columns = min(kYvvTileSize, width - firstColumn);
             for (int column = 0; column < columns; ++column) {
-                const float w = B * tile[lane][column] + B1 * w1 + B2 * w2 + B3 * w3;
+                const float w = yvv_step<Factored>(tile[lane][column], B, B1, B2, B3, w1, w2, w3);
                 tile[lane][column] = w;
-                w3 = w2;
-                w2 = w1;
-                w1 = w;
             }
             __syncwarp();
             for (int row = 0; row < kYvvTileSize; ++row) {
@@ -233,7 +249,7 @@ namespace {
                                    : 0.0f;
         float y1 = terminal;
         float y2 = terminal;
-        float y3 = terminal;
+        float y3 = Factored ? 0.0f : terminal;
         for (int firstColumn = ((width - 1) / kYvvTileSize) * kYvvTileSize;
              firstColumn >= 0;
              firstColumn -= kYvvTileSize) {
@@ -247,12 +263,8 @@ namespace {
             __syncwarp();
             const int columns = min(kYvvTileSize, width - firstColumn);
             for (int column = columns - 1; column >= 0; --column) {
-                const float value =
-                    B * tile[lane][column] + B1 * y1 + B2 * y2 + B3 * y3;
+                const float value = yvv_step<Factored>(tile[lane][column], B, B1, B2, B3, y1, y2, y3);
                 tile[lane][column] = value;
-                y3 = y2;
-                y2 = y1;
-                y1 = value;
             }
             __syncwarp();
             for (int row = 0; row < kYvvTileSize; ++row) {
@@ -265,6 +277,7 @@ namespace {
         }
     }
 
+    template <bool Factored>
     __global__ void yvv_vertical_accumulate_kernel(
         float* temporary,
         float* accumulation,
@@ -286,7 +299,7 @@ namespace {
         const float first = temporary[topIndex];
         float w1 = first;
         float w2 = first;
-        float w3 = first;
+        float w3 = Factored ? 0.0f : first;
         // Prefetch independent inputs while preserving the ordered recurrence.
         for (int firstRow = height - 1; firstRow >= 0; firstRow -= kYvvPrefetchRows) {
             float values[kYvvPrefetchRows];
@@ -300,11 +313,8 @@ namespace {
                 const int y = firstRow - row;
                 if (y >= 0) {
                     const std::size_t index = static_cast<std::size_t>(y) * width + x;
-                    const float w = B * values[row] + B1 * w1 + B2 * w2 + B3 * w3;
+                    const float w = yvv_step<Factored>(values[row], B, B1, B2, B3, w1, w2, w3);
                     temporary[index] = w;
-                    w3 = w2;
-                    w2 = w1;
-                    w1 = w;
                 }
             }
         }
@@ -312,7 +322,7 @@ namespace {
         const float terminal = temporary[x];
         float y1 = terminal;
         float y2 = terminal;
-        float y3 = terminal;
+        float y3 = Factored ? 0.0f : terminal;
         for (int firstRow = 0; firstRow < height; firstRow += kYvvPrefetchRows) {
             float values[kYvvPrefetchRows];
 #pragma unroll
@@ -325,18 +335,15 @@ namespace {
                 const int y = firstRow + row;
                 if (y < height) {
                     const std::size_t index = static_cast<std::size_t>(y) * width + x;
-                    const float value =
-                        B * values[row] + B1 * y1 + B2 * y2 + B3 * y3;
+                    const float value = yvv_step<Factored>(values[row], B, B1, B2, B3, y1, y2, y3);
                     accumulation[index] = accumulate_weighted(
                         accumulation[index], value, componentWeight, mode);
-                    y3 = y2;
-                    y2 = y1;
-                    y1 = value;
                 }
             }
         }
     }
 
+    template <bool Factored>
     __global__ void yvv_vertical_scatter_core_kernel(
         float* temporary,
         float* sourceAndDestination,
@@ -360,7 +367,7 @@ namespace {
         const float first = temporary[topIndex];
         float w1 = first;
         float w2 = first;
-        float w3 = first;
+        float w3 = Factored ? 0.0f : first;
         // Prefetch independent inputs while preserving the ordered recurrence.
         for (int firstRow = height - 1; firstRow >= 0; firstRow -= kYvvPrefetchRows) {
             float values[kYvvPrefetchRows];
@@ -374,11 +381,8 @@ namespace {
                 const int y = firstRow - row;
                 if (y >= 0) {
                     const std::size_t index = static_cast<std::size_t>(y) * width + x;
-                    const float w = B * values[row] + B1 * w1 + B2 * w2 + B3 * w3;
+                    const float w = yvv_step<Factored>(values[row], B, B1, B2, B3, w1, w2, w3);
                     temporary[index] = w;
-                    w3 = w2;
-                    w2 = w1;
-                    w1 = w;
                 }
             }
         }
@@ -386,7 +390,7 @@ namespace {
         const float terminal = temporary[x];
         float y1 = terminal;
         float y2 = terminal;
-        float y3 = terminal;
+        float y3 = Factored ? 0.0f : terminal;
         for (int firstRow = 0; firstRow < height; firstRow += kYvvPrefetchRows) {
             float values[kYvvPrefetchRows];
 #pragma unroll
@@ -400,20 +404,16 @@ namespace {
                 if (y < height) {
                     const std::size_t filterIndex =
                         static_cast<std::size_t>(y) * width + x;
-                    const float core =
-                        B * values[row] + B1 * y1 + B2 * y2 + B3 * y3;
+                    const float core = yvv_step<Factored>(values[row], B, B1, B2, B3, y1, y2, y3);
                     const std::size_t sourceIndex =
                         static_cast<std::size_t>(y) * sourceStride + x;
                     const float source = sourceAndDestination[sourceIndex];
                     sourceAndDestination[sourceIndex] = finalize_scatter_value(
                         source,
                         core,
-                        tail[filterIndex],
+                        tail ? tail[filterIndex] : 0.0f,
                         tailWeight,
                         scatterAmount);
-                    y3 = y2;
-                    y2 = y1;
-                    y1 = core;
                 }
             }
         }
@@ -437,7 +437,7 @@ namespace {
         const std::size_t tailIndex = static_cast<std::size_t>(y) * width + x;
         const float source = sourceAndDestination[sourceIndex];
         sourceAndDestination[sourceIndex] = finalize_scatter_value(
-            source, source, tail[tailIndex], tailWeight, scatterAmount);
+            source, source, tail ? tail[tailIndex] : 0.0f, tailWeight, scatterAmount);
     }
 
     __global__ void back_reflection_finalize_kernel(
@@ -446,7 +446,8 @@ namespace {
         const float* accumulation,
         int width,
         int height,
-        float totalStrength) {
+        float totalStrength,
+        bool renormalize) {
         const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
         const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
         if (x >= width || y >= height) {
@@ -458,7 +459,7 @@ namespace {
             static_cast<std::size_t>(y) * width + x;
         const float source = sourceAndDestination[sourceIndex];
         const float added = source + totalStrength * accumulation[accumulationIndex];
-        sourceAndDestination[sourceIndex] = added / (1.0f + totalStrength);
+        sourceAndDestination[sourceIndex] = renormalize ? added / (1.0f + totalStrength) : added;
     }
 
     // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -480,6 +481,7 @@ namespace {
                              stream>>>(plane, width, height);
         return cudaGetLastError();
     }
+
 
     cudaError_t launch_weighted_gaussian(
         const float* source,
@@ -532,38 +534,46 @@ namespace {
                 return cudaGetLastError();
             }
             case ScatterHalationGaussianKind::YvvReplicate:
-                yvv_horizontal_kernel<<<(height + kYvvTileSize - 1) / kYvvTileSize,
-                                        kYvvTileSize,
-                                        0,
-                                        stream>>>(
-                    source,
-                    sourceStride,
-                    temporary,
-                    width,
-                    height,
-                    gaussian.B,
-                    gaussian.B1,
-                    gaussian.B2,
-                    gaussian.B3);
-                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) {
-                    return status;
-                }
-                yvv_vertical_accumulate_kernel<<<
-                    (width + kLineThreads - 1) / kLineThreads,
-                    kLineThreads,
-                    0,
-                    stream>>>(
-                    temporary,
-                    accumulation,
-                    width,
-                    height,
-                    gaussian.B,
-                    gaussian.B1,
-                    gaussian.B2,
-                    gaussian.B3,
-                    componentWeight,
-                    mode);
-                return cudaGetLastError();
+            case ScatterHalationGaussianKind::YvvReplicateFactored: {
+                const auto launch = [&]<bool Factored>(const std::array<float, 4>& coefficients) {
+                    yvv_horizontal_kernel<Factored><<<
+                        (height + kYvvTileSize - 1) / kYvvTileSize,
+                        kYvvTileSize,
+                        0,
+                        stream>>>(
+                        source,
+                        sourceStride,
+                        temporary,
+                        width,
+                        height,
+                        coefficients[0],
+                        coefficients[1],
+                        coefficients[2],
+                        coefficients[3]);
+                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) {
+                        return status;
+                    }
+                    yvv_vertical_accumulate_kernel<Factored><<<
+                        (width + kLineThreads - 1) / kLineThreads,
+                        kLineThreads,
+                        0,
+                        stream>>>(
+                        temporary,
+                        accumulation,
+                        width,
+                        height,
+                        coefficients[0],
+                        coefficients[1],
+                        coefficients[2],
+                        coefficients[3],
+                        componentWeight,
+                        mode);
+                    return cudaGetLastError();
+                };
+                return gaussian.kind == ScatterHalationGaussianKind::YvvReplicate
+                           ? launch.template operator()<false>(gaussian.yvv)
+                           : launch.template operator()<true>(gaussian.yvv);
+            }
         }
         return cudaErrorInvalidValue;
     }
@@ -621,40 +631,48 @@ namespace {
                 return cudaGetLastError();
             }
             case ScatterHalationGaussianKind::YvvReplicate:
-                yvv_horizontal_kernel<<<(height + kYvvTileSize - 1) / kYvvTileSize,
-                                        kYvvTileSize,
-                                        0,
-                                        stream>>>(
-                    sourceAndDestination,
-                    sourceStride,
-                    temporary,
-                    width,
-                    height,
-                    gaussian.B,
-                    gaussian.B1,
-                    gaussian.B2,
-                    gaussian.B3);
-                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) {
-                    return status;
-                }
-                yvv_vertical_scatter_core_kernel<<<
-                    (width + kLineThreads - 1) / kLineThreads,
-                    kLineThreads,
-                    0,
-                    stream>>>(
-                    temporary,
-                    sourceAndDestination,
-                    sourceStride,
-                    tail,
-                    width,
-                    height,
-                    gaussian.B,
-                    gaussian.B1,
-                    gaussian.B2,
-                    gaussian.B3,
-                    tailWeight,
-                    scatterAmount);
-                return cudaGetLastError();
+            case ScatterHalationGaussianKind::YvvReplicateFactored: {
+                const auto launch = [&]<bool Factored>(const std::array<float, 4>& coefficients) {
+                    yvv_horizontal_kernel<Factored><<<
+                        (height + kYvvTileSize - 1) / kYvvTileSize,
+                        kYvvTileSize,
+                        0,
+                        stream>>>(
+                        sourceAndDestination,
+                        sourceStride,
+                        temporary,
+                        width,
+                        height,
+                        coefficients[0],
+                        coefficients[1],
+                        coefficients[2],
+                        coefficients[3]);
+                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) {
+                        return status;
+                    }
+                    yvv_vertical_scatter_core_kernel<Factored><<<
+                        (width + kLineThreads - 1) / kLineThreads,
+                        kLineThreads,
+                        0,
+                        stream>>>(
+                        temporary,
+                        sourceAndDestination,
+                        sourceStride,
+                        tail,
+                        width,
+                        height,
+                        coefficients[0],
+                        coefficients[1],
+                        coefficients[2],
+                        coefficients[3],
+                        tailWeight,
+                        scatterAmount);
+                    return cudaGetLastError();
+                };
+                return gaussian.kind == ScatterHalationGaussianKind::YvvReplicate
+                           ? launch.template operator()<false>(gaussian.yvv)
+                           : launch.template operator()<true>(gaussian.yvv);
+            }
         }
         return cudaErrorInvalidValue;
     }
@@ -712,40 +730,43 @@ namespace JuicerCuda {
 
             const bool skipScatter = descriptor.scatterAmount == 0.0f;
             if (!skipScatter) {
-                cudaError_t status = launch_clear(
-                    view.weightedAccumulation,
-                    view.fullFrameWidth,
-                    view.fullFrameHeight,
-                    stream);
-                if (status != cudaSuccess) {
-                    return failure(
-                        status,
-                        ScatterHalationLaunchStage::ScatterAccumulatorClear,
-                        channel);
-                }
-
-                for (std::size_t gaussianIndex = 0;
-                     gaussianIndex < schedule.tail.size();
-                     ++gaussianIndex) {
-                    status = launch_weighted_gaussian(
-                        plane,
-                        carrier.rowStrideFloats,
-                        view.filterTemp,
+                cudaError_t status = cudaSuccess;
+                if (schedule.tailWeight > 0.0f) {
+                    status = launch_clear(
                         view.weightedAccumulation,
                         view.fullFrameWidth,
                         view.fullFrameHeight,
-                        schedule.tail[gaussianIndex],
-                        Spektrafilm::kScatterHalationExponentialAmplitudes
-                            [gaussianIndex],
-                        gaussianIndex == 0 ? AccumulationMode::Initialize
-                                           : AccumulationMode::Add,
                         stream);
                     if (status != cudaSuccess) {
                         return failure(
                             status,
-                            ScatterHalationLaunchStage::ScatterTail,
-                            channel,
-                            static_cast<int>(gaussianIndex));
+                            ScatterHalationLaunchStage::ScatterAccumulatorClear,
+                            channel);
+                    }
+
+                    for (std::size_t gaussianIndex = 0;
+                         gaussianIndex < schedule.tail.size();
+                         ++gaussianIndex) {
+                        status = launch_weighted_gaussian(
+                            plane,
+                            carrier.rowStrideFloats,
+                            view.filterTemp,
+                            view.weightedAccumulation,
+                            view.fullFrameWidth,
+                            view.fullFrameHeight,
+                            schedule.tail[gaussianIndex],
+                            Spektrafilm::kScatterHalationExponentialAmplitudes
+                                [gaussianIndex],
+                            gaussianIndex == 0 ? AccumulationMode::Initialize
+                                               : AccumulationMode::Add,
+                            stream);
+                        if (status != cudaSuccess) {
+                            return failure(
+                                status,
+                                ScatterHalationLaunchStage::ScatterTail,
+                                channel,
+                                static_cast<int>(gaussianIndex));
+                        }
                     }
                 }
 
@@ -753,11 +774,11 @@ namespace JuicerCuda {
                     plane,
                     carrier.rowStrideFloats,
                     view.filterTemp,
-                    view.weightedAccumulation,
+                    schedule.tailWeight > 0.0f ? view.weightedAccumulation : nullptr,
                     view.fullFrameWidth,
                     view.fullFrameHeight,
                     schedule.core,
-                    Spektrafilm::kScatterHalationTailWeights[channelIndex],
+                    schedule.tailWeight,
                     descriptor.scatterAmount,
                     stream);
                 if (status != cudaSuccess) {
@@ -784,7 +805,7 @@ namespace JuicerCuda {
                     channel);
             }
             for (std::size_t gaussianIndex = 0;
-                 gaussianIndex < schedule.bounce.size();
+                 gaussianIndex < descriptor.bounceCount;
                  ++gaussianIndex) {
                 status = launch_weighted_gaussian(
                     plane,
@@ -794,7 +815,7 @@ namespace JuicerCuda {
                     view.fullFrameWidth,
                     view.fullFrameHeight,
                     schedule.bounce[gaussianIndex],
-                    Spektrafilm::kScatterHalationBounceWeights[gaussianIndex],
+                    descriptor.bounceWeights[gaussianIndex],
                     gaussianIndex == 0 ? AccumulationMode::Initialize
                                        : AccumulationMode::Add,
                     stream);
@@ -817,7 +838,8 @@ namespace JuicerCuda {
                 view.weightedAccumulation,
                 view.fullFrameWidth,
                 view.fullFrameHeight,
-                schedule.totalStrength);
+                schedule.totalStrength,
+                descriptor.renormalize);
             status = cudaGetLastError();
             if (status != cudaSuccess) {
                 return failure(
@@ -828,4 +850,5 @@ namespace JuicerCuda {
         }
         return {};
     }
+
 } // namespace JuicerCuda

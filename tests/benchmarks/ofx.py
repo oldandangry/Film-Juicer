@@ -21,6 +21,19 @@ execution = importlib.import_module("execution")
 verify = importlib.import_module("verify")
 
 ROWS = ("negative-direct", "negative-print", "negative-direct-grain", "negative-print-grain")
+HALATION_EXTENTS = {
+    f"halation-{size}-{route}{spatial}": extent
+    for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))
+    for spatial in ("", "-spatial", "-boost", "-composed-boost")
+    for route in ("direct", "print")
+}
+HALATION_REFERENCE = "31a4d5d94b1576a6b2dadc7f6eb8e918c62224e5"
+REFERENCE_PROOF = (
+    ("reference-production-result.json", "result.json"),
+    ("reference-production-contract.json", "production-contract.json"),
+    ("reference-production-source.json", "candidate.json"),
+    ("reference-production-source.patch", "candidate.patch"),
+)
 LANES = ("shipping", "observed")
 SIDES = ("reference", "candidate")
 REVISION = "19ede96179d5b27b3f65c2deaf9be8822d407d02"
@@ -133,6 +146,13 @@ def candidate_qualification(
     }
 
 
+def reference_qualification(proof, preset, module_hash, *, check_inputs):
+    snapshot = json.loads(proof[2])
+    if snapshot.get("head") != HALATION_REFERENCE or snapshot.get("new_files_base64") or proof[3]:
+        raise ValueError("halation reference must be the clean pinned revision")
+    return candidate_qualification(*proof, preset, module_hash, check_inputs=check_inputs)
+
+
 def nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
@@ -144,7 +164,8 @@ def validate_sample(sample, mode, lane, row):
         or (sample.get("mode"), sample.get("lane"), sample.get("workload")) != (mode, lane, row)
     ):
         raise ValueError("failed or mismatched process sample")
-    if (sample.get("width"), sample.get("height")) != ((7, 5) if mode == "check" else (6048, 4032)):
+    extent = (7, 5) if mode == "check" else HALATION_EXTENTS.get(row, (6048, 4032))
+    if (sample.get("width"), sample.get("height")) != extent:
         raise ValueError("incorrect geometry")
     if not sample.get("controls") or not sample.get("control_types") or not sample.get("device"):
         raise ValueError("missing controls or device")
@@ -316,9 +337,26 @@ def validate_sample(sample, mode, lane, row):
 
 
 def workloads(value):
-    if not isinstance(value, list) or not value or value != [row for row in ROWS if row in value]:
+    available = (*ROWS, *HALATION_EXTENTS)
+    if not isinstance(value, list) or not value or value != [row for row in available if row in value]:
         raise ValueError("workloads must be a nonempty ordered subset without duplicates")
     return value
+
+
+def check_reference_workloads(selection, has_pinned_reference):
+    if any((row in HALATION_EXTENTS) != has_pinned_reference for row in selection):
+        raise ValueError("halation workloads require the pinned halation production reference")
+
+
+def check_halation_side(sample, row, side):
+    if row not in HALATION_EXTENTS:
+        return
+    candidate = side == "candidate"
+    if sample.get("advanced_halation_available") is not candidate:
+        raise ValueError("unexpected advanced halation control surface")
+    expected_boost = 4.0 if candidate and row.endswith("-boost") else 0.0
+    if sample.get("halation_boost_ev") != expected_boost:
+        raise ValueError("unexpected highlight boost for the paired workload")
 
 
 def evidence_file(directory, name, expected_hash):
@@ -356,8 +394,20 @@ def read_run(directory, mode):
     if declared != result["identities"]:
         raise ValueError("input identity evidence mismatch")
     preset = result.get("preset")
-    if preset not in SHIPPING or declared["reference"]["shipping"] != SHIPPING[preset]["reference"]:
-        raise ValueError("offline reference differs from the approved fixed bundle")
+    reference_binding = result.get("reference_qualification")
+    check_reference_workloads(selected, reference_binding is not None)
+    if preset not in SHIPPING:
+        raise ValueError("unknown native Release preset")
+    if reference_binding is None:
+        if declared["reference"]["shipping"] != SHIPPING[preset]["reference"]:
+            raise ValueError("offline reference differs from the approved fixed bundle")
+    else:
+        proof = tuple(evidence_file(directory, name, evidence[name]).read_bytes() for name, _ in REFERENCE_PROOF)
+        if (
+            reference_qualification(proof, preset, declared["reference"]["shipping"], check_inputs=False)
+            != reference_binding
+        ):
+            raise ValueError("offline halation reference differs from its production closure")
     binding = result.get("candidate_qualification")
     if binding is None and declared["candidate"]["shipping"] != SHIPPING[preset]["candidate"]:
         raise ValueError("offline candidate qualification missing")
@@ -440,6 +490,7 @@ def read_run(directory, mode):
             raise ValueError("incorrect sample file")
         sample = json.loads(evidence_file(directory, member["file"], evidence[member["file"]]).read_text())
         validate_sample(sample, mode, key[0], key[1])
+        check_halation_side(sample, key[1], key[3])
         if platform_path(sample.get("resources", "")) != platform_path(expected_command[6]):
             raise ValueError("driver resource path mismatch")
         if key[1] in controls and controls[key[1]] != (sample["controls"], sample["control_types"]):
@@ -507,6 +558,7 @@ def offline_report(directories):
                         )
                         measured = {
                             "warm_callback_ns": callback["median"],
+                            "warm_callback_p95_ns": callback["p95"],
                             "warm_stream_interval_ms": stream["median"],
                             "module_open_ns": sample["timings"]["module_open_ns"],
                             "load_ns": sample["timings"]["load_ns"],
@@ -607,13 +659,26 @@ def campaign(args):
     if not args.preset.endswith("release"):
         raise ValueError("campaign requires Release")
     selected = workloads(args.workloads)
+    check_reference_workloads(selected, args.reference_production_result is not None)
     directory = (
         ROOT / "out/validation" / args.preset / "s7-b-performance-memory" / execution.name_component(args.run_id)
     )
     with execution.OutputLease(ROOT, ROOT / "out/build" / args.preset), execution.OutputLease(ROOT):
         inputs = json.loads(Path(args.inputs).read_text())
         entry = identities(inputs)
-        if entry["reference"]["shipping"] != SHIPPING[args.preset]["reference"]:
+        reference_binding = None
+        reference_proof = ()
+        if args.reference_production_result:
+            result_path = Path(args.reference_production_result).resolve(strict=True)
+            reference_proof = (result_path.read_bytes(),) + tuple(
+                (result_path.parent / source).read_bytes() for _, source in REFERENCE_PROOF[1:]
+            )
+            reference_binding = reference_qualification(
+                reference_proof, args.preset, entry["reference"]["shipping"], check_inputs=True
+            )
+            if not args.candidate_production_result:
+                raise ValueError("halation comparison requires the candidate production closure")
+        elif entry["reference"]["shipping"] != SHIPPING[args.preset]["reference"]:
             raise ValueError("reference module differs from the approved fixed bundle")
         production_result = production_contract = production_snapshot = production_patch = None
         binding = None
@@ -640,6 +705,8 @@ def campaign(args):
         (directory / "candidate.patch").write_bytes(patch)
         execution.write_json(directory / "candidate.json", source)
         execution.write_json(directory / "inputs.json", inputs)
+        for (name, _), content in zip(REFERENCE_PROOF, reference_proof):
+            (directory / name).write_bytes(content)
         if binding is not None:
             (directory / "candidate-production-result.json").write_bytes(production_result)
             (directory / "candidate-production-contract.json").write_bytes(production_contract)
@@ -656,6 +723,7 @@ def campaign(args):
             "samples": [],
             "commands": run.commands,
             "candidate_qualification": binding,
+            "reference_qualification": reference_binding,
             "workloads": selected,
         }
         try:
@@ -684,6 +752,7 @@ def campaign(args):
                     or check.get("preset") != args.preset
                     or check.get("source") != source
                     or check.get("candidate_qualification") != binding
+                    or check.get("reference_qualification") != reference_binding
                     or check.get("workloads", list(ROWS)) != selected
                 ):
                     raise ValueError("matching completed compatibility check required")
@@ -726,6 +795,7 @@ def campaign(args):
                                 )
                             sample = json.loads(target.read_text())
                             validate_sample(sample, args.operation, lane, row)
+                            check_halation_side(sample, row, side)
                             if Path(sample.get("resources", "")).resolve() != Path(command[6]).resolve():
                                 raise ValueError("driver resource path mismatch")
                             if row in controls and controls[row] != (sample["controls"], sample["control_types"]):
@@ -736,6 +806,14 @@ def campaign(args):
             result["error"] = str(error)
         try:
             result["identities_unchanged"] = identities(inputs) == entry
+            if reference_binding is not None:
+                result["identities_unchanged"] = (
+                    result["identities_unchanged"]
+                    and reference_qualification(
+                        reference_proof, args.preset, entry["reference"]["shipping"], check_inputs=True
+                    )
+                    == reference_binding
+                )
             if binding is not None:
                 result["identities_unchanged"] = (
                     result["identities_unchanged"]
@@ -758,6 +836,8 @@ def campaign(args):
             result["status"] = "failed"
             result["completion_error"] = str(error)
         evidence_names = ["candidate.patch", "candidate.json", "inputs.json"]
+        if reference_binding is not None:
+            evidence_names += [name for name, _ in REFERENCE_PROOF]
         if binding is not None:
             evidence_names += [
                 "candidate-production-result.json",
@@ -965,7 +1045,8 @@ def main():
         command.add_argument("--inputs", required=True)
         command.add_argument("--run-id", required=True)
         command.add_argument("--candidate-production-result")
-        command.add_argument("--workloads", nargs="+", choices=ROWS, default=list(ROWS))
+        command.add_argument("--reference-production-result")
+        command.add_argument("--workloads", nargs="+", choices=(*ROWS, *HALATION_EXTENTS), default=list(ROWS))
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)

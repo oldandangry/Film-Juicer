@@ -1222,13 +1222,10 @@ pub(crate) fn captured_projection(
         scan_route: params.scan_route as u32,
         glare_active: u32::from(params.glare_active),
         camera_filter_override: u32::from(params.camera_filter_override),
-        scatter_halation: preparation::FjPreparationHalation {
-            active: u32::from(halation.active),
-            scatter_amount: halation.scatter_amount,
-            scatter_spatial_scale: halation.scatter_spatial_scale,
-            halation_amount: halation.halation_amount,
-            halation_spatial_scale: halation.halation_spatial_scale,
-        },
+        scatter_halation: halation.into(),
+        highlight_boost_ev: params.highlight_boost.boost_ev,
+        highlight_protection_ev: params.highlight_boost.protection_ev,
+        highlight_boost_range: params.highlight_boost.range,
         dir_couplers: crate::film_recipe_bridge::FjFilmDirParams {
             active: u32::from(dir.active),
             amount: dir.amount,

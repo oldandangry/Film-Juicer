@@ -1207,8 +1207,8 @@ namespace {
     }
 
     auto cleared_fields(const FjHalationRecipe& value) {
-        const auto& [scatter_active, back_reflection_active, scatter_amount, scatter_spatial_scale, halation_spatial_scale, first_sigma_um, total_strength, hash] = value;
-        return std::tie(scatter_active, back_reflection_active, scatter_amount, scatter_spatial_scale, halation_spatial_scale, first_sigma_um, total_strength, hash);
+        const auto& [scatter_active, back_reflection_active, scatter_amount, scatter_spatial_scale, halation_spatial_scale, first_sigma_um, total_strength, hash, scatter_core_um, scatter_tail_um, scatter_tail_weight, bounce_weights, bounce_count, schedule_flags] = value;
+        return std::tie(scatter_active, back_reflection_active, scatter_amount, scatter_spatial_scale, halation_spatial_scale, first_sigma_um, total_strength, hash, scatter_core_um, scatter_tail_um, scatter_tail_weight, bounce_weights, bounce_count, schedule_flags);
     }
 
     auto cleared_fields(const FjLensBlurRecipe& value) {

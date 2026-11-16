@@ -31,20 +31,36 @@ namespace {
                 result.push_back(entry.property);
         return result;
     }
-    bool constructor_census(const std::vector<InstanceCall>& calls) {
+    using ofx_test::reference::advanced_halation_parameter;
+    std::vector<InstanceCall> legacy_halation_calls(std::vector<InstanceCall> calls, bool create = false) {
+        std::erase_if(calls, [&](const InstanceCall& c) {
+            if (c.operation == "param_handle")
+                return advanced_halation_parameter(c.property);
+            if (c.operation == "param_properties" || c.operation == "param_get" ||
+                (c.operation == "get_string" && c.property == kOfxParamPropType))
+                return advanced_halation_parameter(c.target) || (create && c.operation == "param_get" && c.target == "HalationActive");
+            constexpr std::string_view presentation = ".presentation";
+            return c.operation == "set_int" && c.property == kOfxParamPropEnabled && c.target.ends_with(presentation) &&
+                   advanced_halation_parameter(std::string_view(c.target).substr(0, c.target.size() - presentation.size()));
+        });
+        return calls;
+    }
+    bool constructor_census(const std::vector<InstanceCall>& calls, bool legacy = false) {
         const auto params = handles(calls, "param_handle");
         const auto clips = handles(calls, "clip_handle");
-        if (params.size() != ofx_test::kInstanceParameters.size() || clips.size() != ofx_test::kInstanceClips.size())
+        if (clips.size() != ofx_test::kInstanceClips.size())
             return false;
-        for (std::size_t i = 0; i < params.size(); ++i)
-            if (params[i] != ofx_test::kInstanceParameters[i].name)
+        std::size_t i = 0;
+        for (const auto& p : ofx_test::kInstanceParameters) {
+            if (legacy && advanced_halation_parameter(p.name))
+                continue;
+            if (i == params.size() || params[i++] != p.name)
                 return false;
-        for (std::size_t i = 0; i < clips.size(); ++i)
-            if (clips[i] != ofx_test::kInstanceClips[i])
-                return false;
-        return true;
+        }
+        return i == params.size() && std::equal(clips.begin(), clips.end(), ofx_test::kInstanceClips.begin());
     }
     bool create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected) {
+        actual = legacy_halation_calls(std::move(actual), true);
         const auto publication = [](const InstanceCall& call) {
             return call.operation == "set_pointer" && call.property == kOfxPropInstanceData &&
                    call.values.size() == 1 && std::holds_alternative<void*>(call.values[0]) &&
@@ -77,6 +93,7 @@ namespace {
         return ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected);
     }
     bool failed_create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected) {
+        actual = legacy_halation_calls(std::move(actual), true);
         const auto is_write = [](const InstanceCall& call) {
             return call.operation == "set_pointer" && call.property == kOfxPropInstanceData;
         };
@@ -134,7 +151,9 @@ namespace {
         auto append = [&](HandleFault value) {
             if (expected) {
                 const auto& r = expected->at(results.size());
-                require(value.name == r.name && value.injected == r.injected && value.status == r.status && value.params == r.params, "handle fault membership");
+                auto legacy_params = value.params;
+                std::erase_if(legacy_params, advanced_halation_parameter);
+                require(value.name == r.name && value.injected == r.injected && value.status == r.status && legacy_params == r.params, "handle fault membership");
                 require(value.status == kOfxStatOK ? create_equivalent(value.calls, r.calls) : failed_create_equivalent(value.calls, r.calls), "handle fault full continuation");
                 auto shortened = value.calls;
                 require(!shortened.empty(), "handle continuation boundary");
@@ -271,7 +290,7 @@ namespace {
         std::vector<InstanceCall> calls;
     };
     bool same_action(const ActionObservation& actual, const ActionObservation& expected) {
-        return actual.status == expected.status && ofx_test::reference::calls(actual.calls) == ofx_test::reference::calls(expected.calls);
+        return actual.status == expected.status && ofx_test::reference::calls(legacy_halation_calls(actual.calls)) == ofx_test::reference::calls(expected.calls);
     }
     ActionObservation run_action(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const ActionScenario& scenario) {
         auto* args = scenario.null_args ? nullptr : host.change_args({scenario.reason, scenario.type, scenario.name}, scenario.time);
@@ -356,10 +375,11 @@ namespace {
         return observations;
     }
     bool same_effect_trace(const ControlFault& actual, const ControlFault& expected) {
-        if (std::string_view(actual.operation) != expected.operation || actual.injected != expected.injected || actual.status != expected.status || actual.calls.size() != expected.calls.size())
+        const auto legacy = legacy_halation_calls(actual.calls);
+        if (std::string_view(actual.operation) != expected.operation || actual.injected != expected.injected || actual.status != expected.status || legacy.size() != expected.calls.size())
             return false;
-        for (std::size_t i = 0; i < actual.calls.size(); ++i) {
-            auto a = actual.calls[i];
+        for (std::size_t i = 0; i < legacy.size(); ++i) {
+            auto a = legacy[i];
             const auto& e = expected.calls[i];
             if (a.scope == actual.scope)
                 a.scope = expected.scope;
@@ -741,7 +761,7 @@ namespace {
         const JuicerTests::Cohort rows("ofx.instance.reference", {"census", "clip_order", "action_order", "missing", "extra", "type", "premature_success", "late_stop"});
         {
             auto row = rows.case_event("census");
-            require(constructor_census(r.create), "reference constructor census");
+            require(constructor_census(r.create, true), "reference constructor census");
             row.passed();
         }
         {
@@ -757,14 +777,14 @@ namespace {
         missing.erase(first);
         {
             auto row = rows.case_event("missing");
-            require(!constructor_census(missing), "missing parameter negative control");
+            require(!constructor_census(missing, true), "missing parameter negative control");
             row.passed();
         }
         auto extra = r.create;
         extra.push_back({"param_handle", {}, "extra", 0, {}, {}});
         {
             auto row = rows.case_event("extra");
-            require(!constructor_census(extra), "extra parameter negative control");
+            require(!constructor_census(extra, true), "extra parameter negative control");
             row.passed();
         }
         {
@@ -850,7 +870,7 @@ namespace {
             require(!create_equivalent(extended, reference.create), "constructor late stop negative control");
             require(std::count_if(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "param_properties";
-                    }) == 113,
+                    }) == static_cast<std::ptrdiff_t>(ofx_test::kInstanceParameters.size()),
                     "second parameter properties acquired");
             require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "get_string" && c.target == "GrainChroma" && c.property == kOfxParamPropType;
@@ -913,7 +933,7 @@ namespace {
             host.clear_calls();
             require(call(plugin, kOfxActionBeginInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.begin_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.begin), "begin action");
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.change), "change action");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.change), "change action");
             require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "set_string" && c.target == "GrainChroma.presentation" && c.property == kOfxParamPropHint && c.values == std::vector<ofx_test::InstanceValue>{std::string("returned hint")};
                     }),
@@ -939,7 +959,7 @@ namespace {
             auto row = edit_rows.case_event("camera_preset");
             host.set_value(effect, "CameraFilmFormatPreset", {1});
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.edit), "camera preset continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.edit), "camera preset continuation");
             require(host.value(effect, "CameraFilmFormatMm") == reference.edited_value, "camera preset value");
             row.passed();
         }
@@ -950,7 +970,7 @@ namespace {
             host.reenter_next("param_set/CameraFilmFormatMm", [&] {
                 require(change(plugin, host, effect, kOfxChangePluginEdited, "CameraFilmFormatMm") == reference.change_status, "candidate nested change");
             });
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.reentry), "nested edit continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.reentry), "nested edit continuation");
             row.passed();
         }
         require(reference.edits.size() == edit_scenarios().size(), "edit membership");
@@ -962,7 +982,7 @@ namespace {
                 host.set_value(effect, scenario.name, scenario.authored);
             host.clear_calls();
             require(change(plugin, host, effect, kOfxChangeUserEdited, scenario.name) == expected.status, "edit status");
-            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(expected.calls) && ofx_test::reference::values(host.value(effect, scenario.observed)) == ofx_test::reference::values(expected.value), "edit continuation");
+            require(ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(expected.calls) && ofx_test::reference::values(host.value(effect, scenario.observed)) == ofx_test::reference::values(expected.value), "edit continuation");
             row.passed();
         }
         edit_test.passed();
@@ -986,7 +1006,7 @@ namespace {
                 nested = change(plugin, host, effect, reason, "Exposure");
             });
             const auto status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-            require(nested == reference.change_status && status == reference.nested_changes[i].status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.nested_changes[i].calls), "nested user/time continuation");
+            require(nested == reference.change_status && status == reference.nested_changes[i].status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.nested_changes[i].calls), "nested user/time continuation");
             row.passed();
         }
         {

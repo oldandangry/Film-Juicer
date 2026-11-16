@@ -1,5 +1,6 @@
 #include "frame_geometry_test_hooks.h"
 #include "module_test.h"
+#include "host_reference.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
@@ -1798,6 +1799,18 @@ namespace {
             add_double(JuicerParams::kHalationScatterSpatialScale, 1.0);
             add_double(JuicerParams::kHalationAmount, 1.0);
             add_double(JuicerParams::kHalationSpatialScale, 1.0);
+            add_double3("HalationScatterCoreSigmaUm", 2.2, 2.0, 1.6);
+            add_double3("HalationScatterTailScaleUm", 9.3, 9.7, 9.1);
+            add_double3("HalationScatterTailWeight", 0.78, 0.65, 0.67);
+            add_choice("HalationReflectionSource", 0);
+            add_double3("HalationStrengthRgb", 0.05, 0.015, 0.0);
+            add_double3("HalationFirstBounceSigmaUm", 65.0, 65.0, 65.0);
+            add_int("HalationBounceCount", 3);
+            add_double("HalationBounceDecay", 0.5);
+            add_boolean("HalationRenormalize", true);
+            add_double("HalationHighlightBoostEv", 0.0);
+            add_double("HalationHighlightProtectionEv", 4.0);
+            add_double("HalationHighlightBoostRange", 0.3);
 
             add_boolean(JuicerParams::kGrainActive, false);
             add_boolean(JuicerParams::kGrainSublayersActive, true);
@@ -4083,7 +4096,7 @@ namespace {
         return {{"route", route}, {"extent", {extent.x, extent.y, extent.width, extent.height}}, {"camera", camera ? diffusion_policy_stage(value.camera, Spektrafilm::DiffusionLinearStage::CameraFilmLinear) : Json()}, {"enlarger", enlarger ? diffusion_policy_stage(value.enlarger, Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear) : Json()}, {"hash", value.diffusion_hash}};
     }
     Json halation_policy_gaussian(const FjHalationGaussian& value) {
-        return {{"kind", value.kind}, {"radius", value.radius}, {"weights", optics_words(value.fir_weights)}, {"yvv", optics_words(std::array{value.feedforward, value.feedback[0], value.feedback[1], value.feedback[2]})}};
+        return {{"kind", value.kind}, {"radius", value.radius}, {"weights", optics_words(value.fir_weights)}, {"yvv", optics_words(value.yvv)}};
     }
     Json halation_policy_project(const FjScatterHalation& value) {
         Json channels = Json::array();
@@ -4092,8 +4105,8 @@ namespace {
             Json bounce = Json::array();
             for (const auto& gaussian : channel.tail)
                 tail.push_back(halation_policy_gaussian(gaussian));
-            for (const auto& gaussian : channel.bounce)
-                bounce.push_back(halation_policy_gaussian(gaussian));
+            for (std::size_t index = 0; index < 3; ++index)
+                bounce.push_back(halation_policy_gaussian(channel.bounce[index]));
             channels.push_back({{"core", halation_policy_gaussian(channel.core)}, {"tail", tail}, {"bounce", bounce}, {"strength", std::bit_cast<std::uint32_t>(channel.total_strength)}});
         }
         return {{"recipe_hash", value.recipe_hash}, {"scatter_amount", std::bit_cast<std::uint32_t>(value.scatter_amount)}, {"channels", channels}};
@@ -4164,9 +4177,17 @@ namespace {
                 auto observed = JuicerTestSupport::EffectObservation::snapshot(effect);
                 require(host.at_time_get_count() == timed, "current getters");
                 Json getters = Json::array();
-                for (std::size_t i = start; i < host.trace_size(); ++i)
-                    if (host.trace()[i].starts_with("GET_CURRENT"))
-                        getters.push_back(host.trace()[i]);
+                constexpr std::string_view getterPrefix = "GET_CURRENT name=";
+                for (std::size_t i = start; i < host.trace_size(); ++i) {
+                    const auto& entry = host.trace()[i];
+                    if (!entry.starts_with(getterPrefix)) {
+                        continue;
+                    }
+                    const auto argument = std::string_view(entry).substr(getterPrefix.size());
+                    if (!ofx_test::reference::advanced_halation_parameter(argument.substr(0, argument.find(' ')))) {
+                        getters.push_back(entry);
+                    }
+                }
                 auto admission = JuicerTestSupport::EffectObservation::admit(effect);
                 FjPreparedStateView preparedView{};
                 const bool admitted = bool(admission.state);
@@ -4448,7 +4469,7 @@ namespace {
                                std::all_of(std::begin(gaussian.fir_weights), std::end(gaussian.fir_weights), [](float value) {
                                    return std::bit_cast<std::uint32_t>(value) == 0;
                                }) &&
-                               std::bit_cast<std::uint32_t>(gaussian.feedforward) == 0 && std::all_of(std::begin(gaussian.feedback), std::end(gaussian.feedback), [](float value) {
+                               std::all_of(std::begin(gaussian.yvv), std::end(gaussian.yvv), [](float value) {
                                    return std::bit_cast<std::uint32_t>(value) == 0;
                                });
                     };

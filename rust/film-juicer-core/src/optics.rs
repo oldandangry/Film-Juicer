@@ -3,6 +3,7 @@
 use crate::hash;
 
 pub mod diffusion_frame;
+pub mod highlight_boost;
 
 mod gaussian;
 pub use gaussian::{GaussianKernel, GaussianKernelError};
@@ -42,6 +43,116 @@ pub struct HalationParams {
     pub halation_spatial_scale: f32,
     pub first_sigma_um: [f32; 3],
     pub primary_amount: [f32; 3],
+    pub shape: HalationShape,
+    pub legacy_reflection: bool,
+}
+
+pub const HALATION_TAIL_COMPONENTS: usize = 3;
+pub const HALATION_MAX_BOUNCES: usize = 5;
+const SCATTER_CORE_UM: [f64; 3] = [2.2, 2.0, 1.6];
+const SCATTER_TAIL_UM: [f64; 3] = [9.3, 9.7, 9.1];
+const SCATTER_TAIL_WEIGHT: [f64; 3] = [0.78, 0.65, 0.67];
+const LEGACY_BOUNCE_WEIGHTS: [f32; HALATION_MAX_BOUNCES] =
+    [4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0, 0.0, 0.0];
+pub const HALATION_MAX_AUTHORED: f64 = 1.0e6;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HalationShape {
+    pub scatter_core_um: [f64; 3],
+    pub scatter_tail_um: [f64; 3],
+    pub scatter_tail_weight: [f64; 3],
+    pub bounce_count: i32,
+    pub bounce_decay: f64,
+    pub renormalize: bool,
+}
+impl Default for HalationShape {
+    fn default() -> Self {
+        Self {
+            scatter_core_um: SCATTER_CORE_UM,
+            scatter_tail_um: SCATTER_TAIL_UM,
+            scatter_tail_weight: SCATTER_TAIL_WEIGHT,
+            bounce_count: 3,
+            bounce_decay: 0.5,
+            renormalize: true,
+        }
+    }
+}
+impl HalationShape {
+    pub(crate) fn canonicalize_defaults(mut self) -> Self {
+        // Resolve can return Double3D defaults after an FP32 round trip. Restore
+        // only those exact aliases before identity and legacy schedule selection;
+        // nearby authored values retain their original precision.
+        for (values, defaults) in [
+            (&mut self.scatter_core_um, SCATTER_CORE_UM),
+            (&mut self.scatter_tail_um, SCATTER_TAIL_UM),
+            (&mut self.scatter_tail_weight, SCATTER_TAIL_WEIGHT),
+        ] {
+            for (value, default) in values.iter_mut().zip(defaults) {
+                if *value == f64::from(default as f32) {
+                    *value = default;
+                }
+            }
+        }
+        self
+    }
+
+    pub fn validate(self) -> Result<Self, Error> {
+        if !(1..=HALATION_MAX_BOUNCES as i32).contains(&self.bounce_count) {
+            return Err(Error::new(Component::ScatterHalation, Field::BounceCount));
+        }
+        if !(0.0..=1.0).contains(&self.bounce_decay) {
+            return Err(Error::new(Component::ScatterHalation, Field::BounceDecay));
+        }
+        Ok(Self {
+            scatter_core_um: halation_triplet(
+                self.scatter_core_um,
+                HALATION_MAX_AUTHORED,
+                Field::ScatterCore,
+            )?,
+            scatter_tail_um: halation_triplet(
+                self.scatter_tail_um,
+                HALATION_MAX_AUTHORED,
+                Field::ScatterTail,
+            )?,
+            scatter_tail_weight: halation_triplet(
+                self.scatter_tail_weight,
+                1.0,
+                Field::ScatterTailWeight,
+            )?,
+            bounce_decay: canonical_double(self.bounce_decay),
+            ..self
+        }
+        .canonicalize_defaults())
+    }
+
+    fn weights(self) -> [f32; HALATION_MAX_BOUNCES] {
+        let mut powers = [0.0; HALATION_MAX_BOUNCES];
+        let mut power = 1.0;
+        let mut sum = 0.0;
+        for weight in &mut powers[..self.bounce_count as usize] {
+            *weight = power;
+            sum += power;
+            power *= self.bounce_decay;
+        }
+        powers.map(|weight| (weight / sum) as f32)
+    }
+}
+
+pub(crate) fn halation_triplet(
+    values: [f64; 3],
+    maximum: f64,
+    field: Field,
+) -> Result<[f64; 3], Error> {
+    for (channel, value) in values.into_iter().enumerate() {
+        if !(0.0..=maximum).contains(&value) {
+            return Err(Error {
+                component: Component::ScatterHalation,
+                field,
+                channel: Some(channel),
+            });
+        }
+    }
+    Ok(values.map(canonical_double))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +160,7 @@ pub struct Params {
     pub camera_diffusion: DiffusionParams,
     pub camera_lens_blur_um: f32,
     pub scatter_halation: HalationParams,
+    pub highlight_boost: Option<highlight_boost::Recipe>,
     pub enlarger_diffusion: DiffusionParams,
     pub print_domain: bool,
 }
@@ -118,6 +230,42 @@ pub enum Field {
     ResolvedHash,
     SigmaUm,
     TotalStrength,
+    ScatterCore,
+    ScatterTail,
+    ScatterTailWeight,
+    FirstBounceSigma,
+    ReflectionStrength,
+    BounceCount,
+    BounceDecay,
+}
+impl Field {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Family => "family",
+            Self::Strength => "strength",
+            Self::SpatialScale => "spatial_scale",
+            Self::HaloWarmth => "halo_warmth",
+            Self::CoreIntensity => "core_intensity",
+            Self::CoreSize => "core_size",
+            Self::HaloIntensity => "halo_intensity",
+            Self::HaloSize => "halo_size",
+            Self::BloomIntensity => "bloom_intensity",
+            Self::BloomSize => "bloom_size",
+            Self::ScatterFraction => "scatter_fraction",
+            Self::GroupWeights => "group_weights",
+            Self::GroupCenters => "group_centers_um",
+            Self::ResolvedHash => "resolved_hash",
+            Self::SigmaUm => "sigma_um",
+            Self::TotalStrength => "total_strength",
+            Self::ScatterCore => "scatter_core_um",
+            Self::ScatterTail => "scatter_tail_um",
+            Self::ScatterTailWeight => "scatter_tail_weight",
+            Self::FirstBounceSigma => "first_sigma_um",
+            Self::ReflectionStrength => "reflection_strength",
+            Self::BounceCount => "bounce_count",
+            Self::BounceDecay => "bounce_decay",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -171,6 +319,14 @@ pub struct Halation {
     halation_spatial_scale: f32,
     first_sigma_um: [f32; 3],
     total_strength: [f32; 3],
+    scatter_core_um: [f64; 3],
+    scatter_tail_um: [f64; 3],
+    scatter_tail_weight: [f32; 3],
+    bounce_weights: [f32; HALATION_MAX_BOUNCES],
+    bounce_count: usize,
+    renormalize: bool,
+    legacy_scatter: bool,
+    legacy_reflection: bool,
     hash: u64,
 }
 #[derive(Debug)]
@@ -178,6 +334,7 @@ pub struct Recipe {
     camera_diffusion: Diffusion,
     camera_lens_blur: LensBlur,
     scatter_halation: Halation,
+    highlight_boost: Option<highlight_boost::Recipe>,
     enlarger_diffusion: Diffusion,
     hash: u64,
 }
@@ -247,6 +404,9 @@ fn hash_double(hash: &mut u64, value: f64) {
     hash::update_bytes(hash, &bits.to_le_bytes());
 }
 fn canonical_float(value: f32) -> f32 {
+    if value == 0.0 { 0.0 } else { value }
+}
+fn canonical_double(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
@@ -399,15 +559,36 @@ impl Halation {
             halation_spatial_scale: 0.0,
             first_sigma_um: [0.0; 3],
             total_strength: [0.0; 3],
+            scatter_core_um: [0.0; 3],
+            scatter_tail_um: [0.0; 3],
+            scatter_tail_weight: [0.0; 3],
+            bounce_weights: [0.0; HALATION_MAX_BOUNCES],
+            bounce_count: 0,
+            renormalize: false,
+            legacy_scatter: false,
+            legacy_reflection: false,
             hash: 0,
         };
         if !params.active {
             return Ok(result);
         }
-        result.scatter_active = params.scatter_amount > 0.0 && params.scatter_spatial_scale > 0.0;
+        let shape = params.shape.validate()?;
+        result.scatter_active = params.scatter_amount > 0.0
+            && params.scatter_spatial_scale > 0.0
+            && shape
+                .scatter_core_um
+                .into_iter()
+                .chain(shape.scatter_tail_um)
+                .any(|v| v > 0.0);
         if result.scatter_active {
             result.scatter_amount = canonical_float(params.scatter_amount);
             result.scatter_spatial_scale = canonical_float(params.scatter_spatial_scale);
+            result.scatter_core_um = shape.scatter_core_um;
+            result.scatter_tail_um = shape.scatter_tail_um;
+            result.scatter_tail_weight = shape.scatter_tail_weight.map(|value| value as f32);
+            result.legacy_scatter = result.scatter_core_um == SCATTER_CORE_UM
+                && result.scatter_tail_um == SCATTER_TAIL_UM
+                && result.scatter_tail_weight == SCATTER_TAIL_WEIGHT.map(|value| value as f32);
         }
         result.back_reflection_active = params.halation_amount > 0.0
             && params.halation_spatial_scale > 0.0
@@ -441,6 +622,17 @@ impl Halation {
                 result.halation_spatial_scale = 0.0;
                 result.first_sigma_um = [0.0; 3];
                 result.total_strength = [0.0; 3];
+            } else {
+                result.bounce_weights = shape.weights();
+                result.bounce_count = result
+                    .bounce_weights
+                    .iter()
+                    .rposition(|&weight| weight > 0.0)
+                    .map_or(0, |index| index + 1);
+                result.renormalize = shape.renormalize;
+                result.legacy_reflection = params.legacy_reflection
+                    && result.renormalize
+                    && result.bounce_weights == LEGACY_BOUNCE_WEIGHTS;
             }
         }
         if !result.scatter_active && !result.back_reflection_active {
@@ -460,6 +652,29 @@ impl Halation {
             }
             for value in result.total_strength {
                 hash::update_bytes(&mut hash, &value.to_le_bytes());
+            }
+        }
+        if result.scatter_active && !result.legacy_scatter {
+            hash::update_bytes(&mut hash, b"halation-scatter\0");
+            for value in result
+                .scatter_core_um
+                .into_iter()
+                .chain(result.scatter_tail_um)
+            {
+                hash_double(&mut hash, value);
+            }
+            for weight in result.scatter_tail_weight {
+                hash::update_bytes(&mut hash, &weight.to_le_bytes());
+            }
+        }
+        if result.back_reflection_active && !result.legacy_reflection {
+            hash::update_bytes(&mut hash, b"halation-reflection\0");
+            hash::update_bytes(
+                &mut hash,
+                &[result.bounce_count as u8, u8::from(result.renormalize)],
+            );
+            for weight in result.bounce_weights {
+                hash::update_bytes(&mut hash, &weight.to_le_bytes());
             }
         }
         result.hash = if hash == 0 { 1 } else { hash };
@@ -504,10 +719,16 @@ impl Recipe {
                 contributed = true;
             }
         }
+        if let Some(boost) = params.highlight_boost {
+            hash::update_bytes(&mut hash, b"highlight-boost\0");
+            hash::update_bytes(&mut hash, &boost.hash().to_le_bytes());
+            contributed = true;
+        }
         Ok(Self {
             camera_diffusion,
             camera_lens_blur,
             scatter_halation,
+            highlight_boost: params.highlight_boost,
             enlarger_diffusion,
             hash: if contributed { hash } else { 0 },
         })
@@ -612,6 +833,9 @@ impl Recipe {
     pub fn scatter_halation(&self) -> &Halation {
         &self.scatter_halation
     }
+    pub fn highlight_boost(&self) -> Option<highlight_boost::Recipe> {
+        self.highlight_boost
+    }
     pub fn enlarger_diffusion(&self) -> &Diffusion {
         &self.enlarger_diffusion
     }
@@ -649,10 +873,7 @@ pub fn halation(
 ) -> Result<crate::recipe::HalationControls, &'static str> {
     let mut result = crate::recipe::HalationControls {
         active,
-        scatter_amount: 0.0,
-        scatter_spatial_scale: 0.0,
-        halation_amount: 0.0,
-        halation_spatial_scale: 0.0,
+        ..Default::default()
     };
     if !active {
         return Ok(result);
@@ -728,6 +949,149 @@ mod tests {
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
+    fn active_halation(shape: HalationShape) -> Halation {
+        Halation::new(HalationParams {
+            active: true,
+            scatter_amount: 1.0,
+            scatter_spatial_scale: 1.0,
+            halation_amount: 1.0,
+            halation_spatial_scale: 1.0,
+            first_sigma_um: [65.0; 3],
+            primary_amount: [0.015, 0.005, 0.0],
+            shape,
+            legacy_reflection: true,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn host_rounded_halation_defaults_preserve_identity_and_schedule() {
+        let defaults = HalationShape::default();
+        let expected = active_halation(defaults);
+        let mut params = crate::capture::defaults();
+        params.scatter_halation = halation(true, [1.0; 4]).unwrap();
+        let identity = crate::capture::hash_params(&params, b"kodak_portra_400", b"print");
+        // Every mixture of literal and host-rounded default channels must agree.
+        for mask in 0..512 {
+            let mut shape = defaults;
+            for (index, value) in shape
+                .scatter_core_um
+                .iter_mut()
+                .chain(&mut shape.scatter_tail_um)
+                .chain(&mut shape.scatter_tail_weight)
+                .enumerate()
+            {
+                if mask & (1 << index) != 0 {
+                    *value = f64::from(*value as f32);
+                }
+            }
+            assert_eq!(shape.validate().unwrap(), defaults);
+            // Direct capture callers may hash before validation.
+            params.scatter_halation.shape = shape;
+            assert_eq!(
+                crate::capture::hash_params(&params, b"kodak_portra_400", b"print"),
+                identity
+            );
+            let actual = active_halation(shape);
+            assert!(actual.legacy_scatter && actual.legacy_reflection);
+            assert_eq!(actual.hash, expected.hash);
+            // Include the captured clip geometry and separate FIR/YVV regimes.
+            for pixel_size_um in [35000.0_f32 / 6048.0, 100.0, 0.5] {
+                let frame = HalationFrame::new((&actual).into(), pixel_size_um)
+                    .unwrap()
+                    .unwrap();
+                let expected_frame = HalationFrame::new((&expected).into(), pixel_size_um)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(frame.recipe_hash(), expected_frame.recipe_hash());
+                assert_eq!(frame.scatter_amount(), expected_frame.scatter_amount());
+                assert_eq!(frame.bounce_count(), expected_frame.bounce_count());
+                assert_eq!(frame.bounce_weights(), expected_frame.bounce_weights());
+                assert_eq!(frame.renormalize(), expected_frame.renormalize());
+                for (channel, expected_channel) in
+                    frame.channels().iter().zip(expected_frame.channels())
+                {
+                    assert_eq!(channel.tail_weight(), expected_channel.tail_weight());
+                    assert_eq!(channel.total_strength(), expected_channel.total_strength());
+                    let gaussians = std::iter::once(channel.core())
+                        .chain(channel.tail())
+                        .chain(channel.bounce());
+                    let expected_gaussians = std::iter::once(expected_channel.core())
+                        .chain(expected_channel.tail())
+                        .chain(expected_channel.bounce());
+                    for (gaussian, expected_gaussian) in gaussians.zip(expected_gaussians) {
+                        assert_eq!(gaussian.kind(), expected_gaussian.kind());
+                        assert_eq!(gaussian.radius(), expected_gaussian.radius());
+                        assert_eq!(
+                            gaussian.fir_weights().map(f32::to_bits),
+                            expected_gaussian.fir_weights().map(f32::to_bits)
+                        );
+                        assert_eq!(
+                            gaussian.yvv().map(f32::to_bits),
+                            expected_gaussian.yvv().map(f32::to_bits)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn halation_default_recognition_preserves_adjacent_custom_values() {
+        let defaults = HalationShape::default();
+        let mut params = crate::capture::defaults();
+        params.scatter_halation = halation(true, [1.0; 4]).unwrap();
+        let identity = crate::capture::hash_params(&params, b"film", b"print");
+        for (field, values) in [
+            defaults.scatter_core_um,
+            defaults.scatter_tail_um,
+            defaults.scatter_tail_weight,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (channel, default) in values.into_iter().enumerate() {
+                for alias in [default, f64::from(default as f32)] {
+                    for custom in [alias.next_down(), alias.next_up()] {
+                        let mut shape = HalationShape {
+                            scatter_core_um: defaults.scatter_core_um.map(|v| f64::from(v as f32)),
+                            scatter_tail_um: defaults.scatter_tail_um.map(|v| f64::from(v as f32)),
+                            scatter_tail_weight: defaults
+                                .scatter_tail_weight
+                                .map(|v| f64::from(v as f32)),
+                            ..defaults
+                        };
+                        let mut expected = defaults;
+                        for value in [&mut shape, &mut expected] {
+                            let triplet = match field {
+                                0 => &mut value.scatter_core_um,
+                                1 => &mut value.scatter_tail_um,
+                                _ => &mut value.scatter_tail_weight,
+                            };
+                            triplet[channel] = custom;
+                        }
+                        assert_eq!(shape.validate().unwrap(), expected);
+                        params.scatter_halation.shape = shape;
+                        let custom_identity =
+                            crate::capture::hash_params(&params, b"film", b"print");
+                        assert_ne!(custom_identity, identity);
+                        params.scatter_halation.shape = expected;
+                        assert_eq!(
+                            crate::capture::hash_params(&params, b"film", b"print"),
+                            custom_identity
+                        );
+                        if field < 2 {
+                            let resolved = active_halation(shape);
+                            assert!(!resolved.legacy_scatter);
+                            assert_eq!(resolved.scatter_core_um, expected.scatter_core_um);
+                            assert_eq!(resolved.scatter_tail_um, expected.scatter_tail_um);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn fixture(kind: &str) -> Value {
         let preset = match (cfg!(target_os = "windows"), cfg!(debug_assertions)) {
             (true, true) => "windows-clang-debug",
@@ -775,7 +1139,10 @@ mod tests {
                 halation_spatial_scale: f("halation_f32", 3),
                 first_sigma_um: std::array::from_fn(|i| f("first_sigma_f32", i)),
                 primary_amount: std::array::from_fn(|i| f("primary_f32", i)),
+                shape: HalationShape::default(),
+                legacy_reflection: true,
             },
+            highlight_boost: None,
             enlarger_diffusion: diffusion_params(&v["enlarger"]),
             print_domain: v["print"].as_bool().unwrap(),
         }
@@ -794,24 +1161,7 @@ mod tests {
             "f32":([h.scatter_amount(),h.scatter_spatial_scale(),h.halation_spatial_scale(),h.first_sigma_um()[0],h.first_sigma_um()[1],h.first_sigma_um()[2],h.total_strength()[0],h.total_strength()[1],h.total_strength()[2]].map(f32::to_bits)),"hash":h.hash()},"hash":v.hash()})
     }
     fn diagnostic(error: Error) -> String {
-        let field = match error.field() {
-            Field::Family => "family",
-            Field::Strength => "strength",
-            Field::SpatialScale => "spatial_scale",
-            Field::HaloWarmth => "halo_warmth",
-            Field::CoreIntensity => "core_intensity",
-            Field::CoreSize => "core_size",
-            Field::HaloIntensity => "halo_intensity",
-            Field::HaloSize => "halo_size",
-            Field::BloomIntensity => "bloom_intensity",
-            Field::BloomSize => "bloom_size",
-            Field::ScatterFraction => "scatter_fraction",
-            Field::GroupWeights => "group_weights",
-            Field::GroupCenters => "group_centers_um",
-            Field::ResolvedHash => "resolved_hash",
-            Field::SigmaUm => "sigma_um",
-            Field::TotalStrength => "total_strength",
-        };
+        let field = error.field().name();
         let component = match error.component() {
             Component::CameraDiffusion => "camera_diffusion",
             Component::CameraLensBlur => "camera_lens_blur",
