@@ -354,6 +354,7 @@ namespace {
         OfxStatus status = kOfxStatFailed;
         std::uint64_t cpuNs = 0;
         float streamMs = 0.0f;
+        double frameTime = 0.0;
         bool streamTimed = false;
         FjMeasurementRecord before{};
         FjMeasurementRecord after{};
@@ -397,7 +398,7 @@ namespace {
                     break;
             }
         }
-        return {{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
+        return {{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"frame_time", sample.frameTime}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
     }
     bool output_valid(const std::vector<float>& source, const std::vector<float>& initial, const std::vector<float>& output, const ofx_test::Case& test) {
         if (!ofx_test::canaries_preserved(initial, output, test) || !ofx_test::alpha_preserved(source, output, test))
@@ -470,14 +471,46 @@ namespace {
         const bool check = args.mode == "check";
         const decltype(kHalationWorkloads)::const_iterator halation = std::ranges::find(kHalationWorkloads, args.workload, &HalationWorkload::id);
         const bool pairedHalation = halation != kHalationWorkloads.end();
-        const bool print = pairedHalation ? halation->print : args.workload == "negative-print" || args.workload == "negative-print-grain";
-        const bool grain = args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
-        require(pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
-        const int width = check ? 7 : pairedHalation ? halation->width
-                                                     : 6048;
-        const int height = check ? 5 : pairedHalation ? halation->height
-                                                      : 4032;
-        const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : "NegativeDirectScan", print ? 1 : 0, print ? 4 : 3, width, height, grain ? 1 : 0, 0.0};
+        // G3 workload encoding is explicit so historical workload meanings remain unchanged.
+        const bool g3 = args.workload.starts_with("g3-");
+        std::vector<std::string> parts;
+        if (g3) {
+            std::size_t begin = 0;
+            while (begin <= args.workload.size()) {
+                const auto end = args.workload.find('-', begin);
+                parts.push_back(args.workload.substr(begin, end - begin));
+                if (end == std::string::npos)
+                    break;
+                begin = end + 1;
+            }
+            require(parts.size() == 8 && (parts[1] == "hd" || parts[1] == "uhd") &&
+                        (parts[2] == "portra" || parts[2] == "gold" || parts[2] == "provia") &&
+                        (parts[3] == "direct" || parts[3] == "print") &&
+                        (parts[4] == "default" || parts[4] == "expensive" || parts[4] == "simple") &&
+                        (parts[5] == "on" || parts[5] == "off") &&
+                        (parts[6] == "varied" || parts[6] == "unchanged") &&
+                        (parts[7] == "integer" || parts[7] == "half") &&
+                        (parts[2] == "portra" || parts[3] == "direct"),
+                    "invalid G3 route workload");
+        }
+        const bool print = g3 ? parts[3] == "print" : pairedHalation ? halation->print
+                                                                     : args.workload == "negative-print" || args.workload == "negative-print-grain";
+        const bool grain = g3 ? parts[5] == "on" : args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
+        require(g3 || pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
+        const int width = check ? 7 : g3           ? (parts[1] == "hd" ? 1920 : 3840)
+                                  : pairedHalation ? halation->width
+                                                   : 6048;
+        const int height = check ? 5 : g3           ? (parts[1] == "hd" ? 1080 : 2160)
+                                   : pairedHalation ? halation->height
+                                                    : 4032;
+        const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : g3 && parts[2] == "provia" ? "PositiveDirectScan"
+                                                                                                                                                                : "NegativeDirectScan",
+                                  print ? 1 : 0,
+                                  print ? 4 : 3,
+                                  width,
+                                  height,
+                                  grain ? 1 : 0,
+                                  0.0};
         report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
         const auto effectiveResources = std::filesystem::canonical(args.module.parent_path().parent_path() / "Resources");
         report["resources"] = effectiveResources.string();
@@ -590,6 +623,14 @@ namespace {
             host.clear_calls();
             require(sampleCount < samples.size(), "unexpected render beyond fixed sample storage");
             auto& sample = samples[sampleCount++];
+            if (g3) {
+                const double offset = parts[7] == "half" ? 0.5 : 0.0;
+                const double frame = parts[6] == "unchanged" ? offset : (std::string_view(step.phase) == "warmup" || std::string_view(step.phase) == "cycle-warmup") ? step.index - 10.0 + offset
+                                                                    : std::string_view(step.phase) == "warm"                                                         ? step.index + offset
+                                                                                                                                                                     : offset;
+                host.set_property(host.action_args(), kOfxPropTime, {frame});
+                sample.frameTime = frame;
+            }
             sample.phase = step.phase;
             sample.cycle = step.cycle;
             sample.index = step.index;
@@ -633,11 +674,40 @@ namespace {
             }
         };
         const int warmups = check ? 1 : 10, measured = check ? 1 : 30;
-        for (int cycle = 0; cycle < 3; ++cycle) {
+        for (int cycle = 0; cycle < (g3 ? 1 : 3); ++cycle) {
             auto* effect = host.create_effect();
             timings["author_ns"].push_back(nullptr);
             timed(timings["author_ns"].back(), [&] {
+                std::vector<std::pair<std::string, std::vector<ofx_test::InstanceValue>>> grainDefaults;
+                if (g3) {
+                    for (const auto& definition : ofx_test::kInstanceParameters)
+                        if (std::string_view(definition.name).starts_with("Grain") && definition.kind != ofx_test::InstanceParamKind::PushButton)
+                            grainDefaults.emplace_back(definition.name, host.value(effect, definition.name));
+                }
                 ofx_test::author_parameters(host, effect, test);
+                if (g3) {
+                    for (const auto& [name, value] : grainDefaults)
+                        host.set_value(effect, name, value);
+                    host.set_value(effect, "GrainActive", {grain ? 1 : 0});
+                    host.set_value(effect, "CameraFilmFormatMm", {36.0});
+                    host.set_value(effect, "CouplersActive", {0});
+                    host.set_value(effect, "FilmProfileKey", {std::string(parts[2] == "portra" ? "kodak_portra_400" : parts[2] == "gold" ? "kodak_gold_200"
+                                                                                                                                         : "fujifilm_provia_100f")});
+                    if (parts[4] == "expensive") {
+                        host.set_value(effect, "GrainSublayersActive", {1});
+                        host.set_value(effect, "GrainSizeMixWeight", {1.0 / 3.0});
+                        host.set_value(effect, "GrainSizeMixWeightMid", {1.0 / 3.0});
+                        host.set_value(effect, "GrainSizeMixScale", {4.0});
+                        host.set_value(effect, "GrainChroma", {0.5});
+                    } else if (parts[4] == "simple") {
+                        host.set_value(effect, "GrainSublayersActive", {0});
+                        host.set_value(effect, "GrainSizeMixWeight", {0.0});
+                        host.set_value(effect, "GrainSizeMixWeightMid", {0.0});
+                        host.set_value(effect, "GrainBlur", {0.0});
+                        host.set_value(effect, "GrainBlurDyeCloudsUm", {0.0});
+                        host.set_value(effect, "GrainChroma", {1.0});
+                    }
+                }
                 if (pairedHalation) {
                     host.set_value(effect, "HalationActive", {halation->spatial ? 1 : 0});
                     host.set_value(effect, "CameraDiffusionEnabled", {halation->diffusion ? 1 : 0});
@@ -686,21 +756,23 @@ namespace {
                 for (int i = 0; i < measured; ++i)
                     render(effect, {.phase = "warm", .cycle = cycle, .index = i, .readback = i == measured - 1});
                 endpoint("after-sample", cycle, measured);
-                constexpr std::array<double, 3> gamma{1.1, 1.0, 1.1};
-                for (std::size_t i = 0; i < gamma.size(); ++i) {
-                    OfxStatus status = kOfxStatFailed;
-                    report["edits"].push_back({{"gamma", gamma[i]}, {"edit_ns", nullptr}, {"status", nullptr}});
-                    auto& edit = report["edits"].back();
-                    timed(edit["edit_ns"], [&] {
-                        host.set_value(effect, "FilmGammaFactor", {gamma[i]});
-                        status = lifecycle.call(kOfxActionInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "FilmGammaFactor"}));
-                    });
-                    edit["status"] = status;
-                    require(status == kOfxStatOK || status == kOfxStatReplyDefault, "parameter change callback failed");
-                    require(host.value(effect, "FilmGammaFactor") == std::vector<ofx_test::InstanceValue>{gamma[i]}, "parameter edit readback differs");
-                    render(effect, {.phase = "changed", .cycle = cycle, .index = static_cast<int>(i), .expect_construction = true, .readback = true});
-                    endpoint("after-edit", cycle, static_cast<int>(i));
-                    render(effect, {.phase = "changed-reuse", .cycle = cycle, .index = static_cast<int>(i), .readback = true});
+                if (!g3) {
+                    constexpr std::array<double, 3> gamma{1.1, 1.0, 1.1};
+                    for (std::size_t i = 0; i < gamma.size(); ++i) {
+                        OfxStatus status = kOfxStatFailed;
+                        report["edits"].push_back({{"gamma", gamma[i]}, {"edit_ns", nullptr}, {"status", nullptr}});
+                        auto& edit = report["edits"].back();
+                        timed(edit["edit_ns"], [&] {
+                            host.set_value(effect, "FilmGammaFactor", {gamma[i]});
+                            status = lifecycle.call(kOfxActionInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "FilmGammaFactor"}));
+                        });
+                        edit["status"] = status;
+                        require(status == kOfxStatOK || status == kOfxStatReplyDefault, "parameter change callback failed");
+                        require(host.value(effect, "FilmGammaFactor") == std::vector<ofx_test::InstanceValue>{gamma[i]}, "parameter edit readback differs");
+                        render(effect, {.phase = "changed", .cycle = cycle, .index = static_cast<int>(i), .expect_construction = true, .readback = true});
+                        endpoint("after-edit", cycle, static_cast<int>(i));
+                        render(effect, {.phase = "changed-reuse", .cycle = cycle, .index = static_cast<int>(i), .readback = true});
+                    }
                 }
             } else
                 render(effect, {.phase = "cycle-end", .cycle = cycle, .readback = true});
@@ -714,7 +786,7 @@ namespace {
             life["effects_destroyed"] = cycle + 1;
             endpoint("after-destroy", cycle);
         }
-        require(sampleCount == (check ? 15u : 71u), "incomplete render sample membership");
+        require(sampleCount == (g3 ? (check ? 3u : 41u) : (check ? 15u : 71u)), "incomplete render sample membership");
         OfxStatus unload = kOfxStatFailed;
         timed(timings["unload_ns"], [&] {
             unload = lifecycle.unload();

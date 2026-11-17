@@ -145,6 +145,163 @@ those original calibration fields and recomputes the matched statistics from
 fresh reduced-chroma CUDA frames. It freezes the same controls for the
 disjoint integer and half-frame checks.
 
+#### G3 qualified grain comparison
+
+Prepare the nonshipping `JuicerGrainPrototype` and `JuicerOfxMeasurement`
+targets with the maintained verifier on each native Release preset. The
+ordinary `Grain.Host.FilmReferenceOracle` and `Grain.Gpu.FilmReference`
+registrations remain correctness checks. Explicit G3 operations take a frozen
+reduced-chroma experiment and completed Current and Film G2 capture receipts.
+Pass the repository-local paths to the retained inputs. Historical receipt
+paths are resolved in the checkout and their original bytes are preserved.
+
+```sh
+python -B tests/benchmarks/grain.py g3-inputs --preset linux-release --run-id g3-inputs \
+  --experiment "$experiment" --current-receipt "$current_receipt" --film-receipt "$film_receipt" \
+  --input "$manifest"
+python -B tests/benchmarks/grain.py g3-check --preset linux-release --run-id g3-linux-check --input "$manifest"
+python -B tests/benchmarks/grain.py g3 --preset linux-release --run-id g3-linux-stage \
+  --input "$manifest" --check-result "$linux_check_result"
+```
+
+Use the same manifest for Windows `g3-check` and `g3` with
+`--preset windows-clang-release` and fresh run IDs. The input operation
+captures planar CMY from production development for each size, stock and route.
+The static camera-linear pattern gives identical image membership between the
+two engines and in both time modes. The varied mode changes frame and seed
+identities. The check operation compares the measured dispatch at selected G2
+integer and half frames and replays a signed frame sequence in both orders.
+
+Each native decision row uses three separate A/B process pairs in alternating
+order with 10 warmups and 30 measured requests per arm. Both repeatability
+factors must fall below 1.05 for the single paired Film block to run. The reader
+applies linearly interpolated median and p90 envelopes per row. Grain-off
+controls use unchanged integer and half frames in all four Portra size/route
+combinations. Timing, cold setup and output checks keep separate boundaries.
+An edit observation reads a frozen alternate table while the SAT remains
+resident. It measures existing table read and binding costs.
+
+Measure the Current shipping routes with the qualified Release OFF module and
+its module-relative resources. The G3 route runner infers the native driver from
+the preset build and verifies the production closure. Use `--workload` with
+`g3-hd-portra-direct-default-on-varied-half` for a focused check, or use
+`--g3-manifest` for the complete on/off route inventory. The measure mode
+records one cold render, ten warmups and thirty measurements per process.
+
+```sh
+python -B tests/benchmarks/ofx.py g3-route --preset linux-release --run-id g3-linux-routes \
+  --candidate-production-result "$production_result" --module "$module" --resources "$resources" \
+  --g3-manifest "$manifest" --mode measure
+python -B tests/benchmarks/grain.py g3-report --input "$manifest" --output "$report" \
+  --results "$linux_stage_result" "$windows_stage_result" \
+  --route-results "$linux_route_result" "$windows_route_result"
+```
+
+Run GPU operations sequentially through the shared device owner. The offline
+report preserves missing and invalid rows alongside measurements. It gives
+Current callback-stream event time and the isolated stage interval separately.
+Where both are available, the reported estimate adds median route-off event
+time to each Film arm's median stage event time on the same workload. Both
+intervals can include host submission gaps. The sum estimates serial
+stream elapsed time under those observed conditions. The inputs, residency
+and runtime identities differ between the route and stage fixtures, and
+integration staging and synchronization are unmeasured.
+
+#### Output-preserving grain experiments
+
+The explicit Film selectors are `--film-variant reference|scalar|reuse|paired|quad` and
+`--film-block 32x4|16x8|32x8`. Existing G1/G2 and G3 commands default to the
+original reference at 32x4. The scalar variant uses fixed record indices and
+scalar carrier inputs. Reuse additionally shares identical laying geometry
+and per-record level preparation across temporal samples. Both retain the
+accepted sampling, normalization and chroma operations.
+
+`g3-verify-opt` checks all eleven workload labels across eighty frame identities
+and their reverse replay, comparing full CMY words outside timing. It retains
+all mismatch counts and the first differing coordinate. A completed agreement
+for the exact executable, manifest, variant and launch admits `g3-screen`.
+The screen uses three alternating reference/optimized pairs for unchanged Gold
+half frames and the fixed seven-row control set defined in
+`grain_optimization.py`. It reports descriptive per-pair ratios and control
+times. Each invocation retains ten warmups and thirty measured requests.
+New screens declare per-invocation device observations and retain query and
+activity logs before and after each arm. Readback validates their membership
+and hashes. Earlier receipts retain their original telemetry scope.
+
+```sh
+python -B tests/benchmarks/grain.py g3-verify-opt --preset linux-release \
+  --run-id grain-opt-agreement --input "$manifest" --film-variant scalar
+python -B tests/benchmarks/grain.py g3-screen --preset linux-release \
+  --run-id grain-opt-screen --input "$manifest" --film-variant scalar \
+  --check-result "$agreement_result"
+```
+
+`reference-scalar` and `reference-reuse` add bitwise optimized comparisons to
+the original G1 probe reader. `reference-g2-scalar` and `reference-g2-reuse`
+do the same for the G2 probe reader. They take the original commands' bank,
+table and probe operands. The ordinary host/GPU registrations additionally
+compare both variants on the synthetic carriers and all three launch shapes.
+
+`g3-profile` takes an explicit native Nsight Compute executable through
+`--profiler`. It captures three grain kernels after ten warmups for five fixed
+workloads, with uncontrolled caches and clocks declared in the result. Profile
+replays and their stage samples retain their attribution scope. The runner
+records raw Nsight reports, kernel/launch membership and selected metrics.
+CSV readback uses the native locale encoding. If postprocessing fails after
+successful captures, `--profile-result <failed-result.json>` reimports those
+closed captures and collects only missing fixed cases. It requires matching
+candidate/tool/settings and successful drained commands, preserves the failed
+receipt and records hashes at readback for reused artifacts.
+
+```sh
+python -B tests/benchmarks/grain.py g3-profile --preset windows-clang-release \
+  --run-id grain-opt-profile --input "$manifest" --film-variant scalar \
+  --profiler "$ncu"
+python -B tests/benchmarks/grain.py g3-opt-report --input "$manifest" \
+  --results "$reference_profile_result" "$agreement_result" "$screen_result" \
+  --profile-reader "$nsight_extras_python" --output "$optimization_report"
+```
+
+The offline optimization report revalidates profile and screen membership and
+agreement hashes, linking the original evidence. It describes the bounded
+experiment before decision timing and carries the planned decision inventory
+as unrun. A subsequent complete G3 comparison uses `g3` and `g3-report`.
+The focused offline admission tests run with
+`python -B -m unittest discover -s tests/benchmarks -p test_grain_optimization.py`.
+For SAT attribution, `--profile-set sat --profile-reader <Nsight-extras-python>`
+adds memory tables, imported source, source-correlated requests/stalls and an
+explicit device-verified counter set. The result distinguishes per-operation
+tag-stage wavefronts from combined local/global data-pipe wavefronts. It retains
+invalid ancillary counters with unusable derived ratios, while invalid required
+read counters fail attribution. Imported sampler text is hashed with UTF-8/LF
+normalization and checked against frozen source. Closed-capture continuation
+follows hashed receipt chains and never repeats a captured case.
+
+Incremental screens can select `--baseline-variant scalar --baseline-block 32x8`.
+Pass these selectors to `g3-verify-opt` too: the resident driver compares the
+baseline and candidate directly to the original on every frame in the same
+agreement campaign. The exact-binary agreement must cover that baseline before
+the screen is admitted. The `paired` variant overlaps adjacent-level SAT reads
+while preserving each level's original arithmetic. Its explicit pinned modes
+are `reference-paired` and `reference-g2-paired`. Historical defaults remain
+reference/32x4, with the original profiling section set.
+
+The separate `quad` variant copies each 2x2 SAT cell's four original Float32
+words into a 16-byte aligned entry. It retains scalar arithmetic and requires
+53,477,376 device bytes instead of the canonical bank's 13,473,996. Timing binds
+only the selected representation; direct verification holds both and reports
+66,951,372 combined bytes. Cold preparation reports the host packing temporary
+and packing time. `reference-quad` and `reference-g2-quad` run the original pinned
+probe readers. `verify-quads --bank <directory>` exhaustively compares all
+13,369,344 uploaded component words against that bank and retains a JSON report
+under the ordinary native supervisor and GPU lease. This explicit maintenance
+operation modifies no fixture.
+
+For optimized G3 timing, `--check-result` identifies the matching `g3-check`
+run, and `--agreement-result` identifies full-frame `g3-verify-opt` agreement.
+Pass the selected variant and launch to both verification and timing. The
+fixed 1.05 median/p90 decision rule applies to the complete qualified matrix.
+
 ### Production highlight boost check
 
 `scatter.py highlight-check` builds and runs the actual production highlight

@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import statistics
 import subprocess
 import sys
@@ -345,26 +346,67 @@ def validate_sample(sample, mode, lane, row):
         or (sample.get("mode"), sample.get("lane"), sample.get("workload")) != (mode, lane, row)
     ):
         raise ValueError("failed or mismatched process sample")
-    extent = (7, 5) if mode == "check" else HALATION_EXTENTS.get(row, (6048, 4032))
+    extent = (
+        (7, 5)
+        if mode == "check"
+        else ((1920, 1080) if row.startswith("g3-hd-") else (3840, 2160))
+        if row.startswith("g3-")
+        else HALATION_EXTENTS.get(row, (6048, 4032))
+    )
     if (sample.get("width"), sample.get("height")) != extent:
         raise ValueError("incorrect geometry")
     if not sample.get("controls") or not sample.get("control_types") or not sample.get("device"):
         raise ValueError("missing controls or device")
     renders = sample.get("renders", [])
-    if len(renders) != (15 if mode == "check" else 71):
+    g3 = row.startswith("g3-")
+    cycles = 1 if g3 else 3
+    if len(renders) != ((3 if mode == "check" else 41) if g3 else (15 if mode == "check" else 71)):
         raise ValueError("incomplete render membership")
     warmups = 10 if mode == "measure" else 1
     samples = 30 if mode == "measure" else 1
     expected = [("cold", 0, 0)]
     expected += [("warmup", 0, index) for index in range(warmups)]
     expected += [("warm", 0, index) for index in range(samples)]
-    expected += [(phase, 0, index) for index in range(3) for phase in ("changed", "changed-reuse")]
-    for cycle in (1, 2):
-        expected.append(("cycle-cold", cycle, 0))
-        expected += [("cycle-warmup", cycle, index) for index in range(warmups)]
-        expected.append(("cycle-end", cycle, 0))
+    if not g3:
+        expected += [(phase, 0, index) for index in range(3) for phase in ("changed", "changed-reuse")]
+        for cycle in (1, 2):
+            expected.append(("cycle-cold", cycle, 0))
+            expected += [("cycle-warmup", cycle, index) for index in range(warmups)]
+            expected.append(("cycle-end", cycle, 0))
     if [(r.get("phase"), r.get("cycle"), r.get("index")) for r in renders] != expected:
         raise ValueError("incorrect render order or membership")
+    if row.startswith("g3-"):
+        parts = row.split("-")
+        offset = 0.5 if parts[7] == "half" else 0.0
+        for render in renders:
+            phase, index = render["phase"], render["index"]
+            frame = offset
+            if parts[6] == "varied":
+                if phase in ("warmup", "cycle-warmup"):
+                    frame += index - 10
+                elif phase == "warm":
+                    frame += index
+            if render.get("frame_time") != frame:
+                raise ValueError("incorrect G3 frame sequence")
+        controls = sample["controls"]
+        expected_stock = {"portra": "kodak_portra_400", "gold": "kodak_gold_200", "provia": "fujifilm_provia_100f"}[
+            parts[2]
+        ]
+        expected_route = (
+            "NegativePrintScan"
+            if parts[3] == "print"
+            else ("PositiveDirectScan" if parts[2] == "provia" else "NegativeDirectScan")
+        )
+        for key, expected_value in (
+            ("FilmProfileKey", expected_stock),
+            ("ScanRoute", expected_route),
+            ("GrainActive", int(parts[5] == "on")),
+            ("FilmGammaFactor", 1.0),
+            ("CouplersActive", 0),
+            ("CameraFilmFormatMm", 36.0),
+        ):
+            if controls.get(key) != [expected_value]:
+                raise ValueError(f"incorrect G3 control: {key}")
     for render in renders:
         if (
             render.get("callback_status") != 0
@@ -397,17 +439,20 @@ def validate_sample(sample, mode, lane, row):
     if any(not r.get("output_checked") or not r.get("output_valid") for r in required_checked):
         raise ValueError("missing required output validation")
     edits = sample.get("edits") or []
-    if (
-        len(edits) != 3
-        or [e.get("gamma") for e in edits] != [1.1, 1.0, 1.1]
-        or any(e.get("status") not in (0, 14) or not nonnegative(e.get("edit_ns")) for e in edits)
+    if (g3 and edits) or (
+        not g3
+        and (
+            len(edits) != 3
+            or [e.get("gamma") for e in edits] != [1.1, 1.0, 1.1]
+            or any(e.get("status") not in (0, 14) or not nonnegative(e.get("edit_ns")) for e in edits)
+        )
     ):
         raise ValueError("invalid edit membership")
     timings = sample.get("timings") or {}
     if any(not nonnegative(timings.get(k)) for k in ("module_open_ns", "load_ns", "describe_ns", "unload_ns")):
         raise ValueError("incomplete lifecycle timings")
     if any(
-        not isinstance(timings.get(k), list) or len(timings[k]) != 3 or not all(nonnegative(v) for v in timings[k])
+        not isinstance(timings.get(k), list) or len(timings[k]) != cycles or not all(nonnegative(v) for v in timings[k])
         for k in ("create_ns", "author_ns", "destroy_ns")
     ):
         raise ValueError("incomplete per-instance timings")
@@ -421,8 +466,8 @@ def validate_sample(sample, mode, lane, row):
         or not life.get("context_restored")
         or not life.get("module_closed")
         or life.get("callback_error")
-        or life.get("effects_created") != 3
-        or life.get("effects_destroyed") != 3
+        or life.get("effects_created") != cycles
+        or life.get("effects_destroyed") != cycles
     ):
         raise ValueError("invalid lifecycle")
     memory = sample.get("memory") or []
@@ -430,9 +475,10 @@ def validate_sample(sample, mode, lane, row):
     endpoints.update(
         (name, cycle, 0)
         for name in ("after-create", "after-cold", "after-warmups", "after-destroy")
-        for cycle in range(3)
+        for cycle in range(cycles)
     )
-    endpoints.update(("after-edit", 0, index) for index in range(3))
+    if not g3:
+        endpoints.update(("after-edit", 0, index) for index in range(3))
     if len(memory) != len(endpoints) or {(m.get("name"), m.get("cycle"), m.get("index")) for m in memory} != endpoints:
         raise ValueError("incomplete memory endpoint membership")
     if any(
@@ -1329,6 +1375,251 @@ def check_row(driver, shipping, observed, resources, directory, row):
         controls = (sample["controls"], sample["control_types"])
 
 
+G3_PRODUCT_DIRS = ("src", "rust", "native", "cmake", "Resources", "third_party", ".cargo")
+G3_PRODUCT_FILES = (
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    ".gitattributes",
+)
+
+
+def g3_product_source(source, patch):
+    prefixes = tuple(f"{name}/" for name in G3_PRODUCT_DIRS)
+
+    def product(name):
+        return name.startswith(prefixes) or name in G3_PRODUCT_FILES
+
+    # The verifier emits binary Git patches with no renames. Quoted paths
+    # retain the ASCII repository directory prefix.
+    starts = tuple(f"diff --git {quote}a/{prefix}".encode() for prefix in prefixes for quote in ("", '"'))
+    files = {f"diff --git a/{name} b/{name}".encode() for name in G3_PRODUCT_FILES}
+    sections = re.split(rb"(?m)(?=^diff --git )", patch)
+    return (
+        {name: value for name, value in source["inputs"].items() if product(name)},
+        {name: value for name, value in source["new_files_base64"].items() if product(name)},
+        [section for section in sections if section.startswith(starts) or section.partition(b"\n")[0] in files],
+    )
+
+
+def g3_production_source(snapshot, production_patch, source, patch, *, root):
+    """Bind the index, tracked worktree changes and added product inputs."""
+    production = json.loads(snapshot)
+    if production["head"] != source["head"]:
+        if not all(re.fullmatch(r"[0-9a-f]{40,64}", value) for value in (production["head"], source["head"])):
+            raise ValueError("invalid production source revision")
+        difference = subprocess.run(
+            ["git", "diff", "--quiet", production["head"], source["head"], "--", *G3_PRODUCT_DIRS, *G3_PRODUCT_FILES],
+            cwd=root,
+            check=False,
+        )
+        if difference.returncode != 0:
+            raise ValueError("production witness product base revision differs")
+    if g3_product_source(production, production_patch) != g3_product_source(source, patch):
+        raise ValueError("production witness product source or membership differs")
+
+
+def g3_production_binding(proof, preset, selected, source, patch, *, root):
+    binding = candidate_qualification(*proof, preset, selected["shipping"], check_inputs=True)
+    g3_production_source(proof[2], proof[3], source, patch, root=root)
+    contract = json.loads(proof[1])
+    module = contract["loaded_module"]["file"]
+    path_type = PureWindowsPath if PureWindowsPath(module).drive else PurePosixPath
+    resources = path_type(module).parent.parent / "Resources"
+    qualified = {
+        path_type(name).relative_to(resources).as_posix(): hashes["sha256_after"]
+        for name, hashes in contract["consumed_inputs"].items()
+        if path_type(name).is_relative_to(resources)
+    }
+    if not qualified or selected["resources"] != qualified or inventory(Path(str(resources))) != qualified:
+        raise ValueError("shipping module-relative Resources differ from qualified bundle")
+    return binding
+
+
+def g3_identities(inputs):
+    result = {}
+    for key in ("driver",):
+        entry = inputs[key]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        if actual != entry["sha256"]:
+            raise ValueError(f"{key} identity mismatch")
+        result[key] = actual
+    result["candidate"] = {}
+    for key in ("shipping", "resources"):
+        entry = inputs["candidate"][key]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        expected = entry["files" if key == "resources" else "sha256"]
+        if actual != expected:
+            raise ValueError(f"candidate {key} identity mismatch")
+        result["candidate"][key] = actual
+    module = Path(inputs["candidate"]["shipping"]["path"])
+    if Path(inputs["candidate"]["resources"]["path"]) != (module.parent.parent / "Resources").resolve(strict=True):
+        raise ValueError("shipping module-relative Resources mismatch")
+    return result
+
+
+def g3_route(args):
+    """Run a current production route witness under the native owner."""
+    if args.inputs and (args.module or args.resources):
+        raise ValueError("--inputs cannot be combined with --module or --resources")
+    if args.mode not in ("check", "measure"):
+        raise ValueError("invalid G3 route mode")
+    if args.preset not in SHIPPING or args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("G3 route requires a native Release preset")
+    if args.g3_manifest:
+        grain_g3 = importlib.import_module("grain_g3")
+        manifest_path = Path(args.g3_manifest).resolve(strict=True)
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if manifest.get("schema") != "grain-g3-workloads-v1" or manifest.get("rows") != grain_g3.expand_rows(
+            manifest["workloads"], manifest["carriers"]
+        ):
+            raise ValueError("G3 manifest membership mismatch")
+        selections = []
+        stock_names = {"kodak_portra_400": "portra", "kodak_gold_200": "gold", "fujifilm_provia_100f": "provia"}
+        for row in manifest["rows"]:
+            if row["preset"] != args.preset or row["role"] != "decision":
+                continue
+            current = manifest["workloads"][row["workload"]]["current"]
+            size = {(1920, 1080): "hd", (3840, 2160): "uhd"}[(current["width"], current["height"])]
+            stock = stock_names[current["stock"]]
+            route = {0: "direct", 1: "print", 2: "direct"}[current["route"]]
+            if (current["route"] == 2) != (stock == "provia") or current["long_edge_mm"] != 36.0:
+                raise ValueError("unsupported G3 route facts")
+            offset = {0.0: "integer", 0.5: "half"}[row["offset"]]
+            for enabled in ("off", "on"):
+                workload = f"g3-{size}-{stock}-{route}-{current['look']}-{enabled}-{row['time_mode']}-{offset}"
+                selections.append((row["id"], workload))
+        if len(selections) != 88 or len(set(selections)) != 88:
+            raise ValueError("incorrect G3 route membership")
+    else:
+        manifest_path = None
+        manifest_bytes = None
+        selections = [("single", args.workload)]
+    for _, workload in selections:
+        parts = workload.split("-")
+        if (
+            len(parts) != 8
+            or parts[0] != "g3"
+            or parts[1] not in ("hd", "uhd")
+            or parts[2] not in ("portra", "gold", "provia")
+            or parts[3] not in ("direct", "print")
+            or parts[4] not in ("default", "expensive", "simple")
+            or parts[5] not in ("on", "off")
+            or parts[6] not in ("varied", "unchanged")
+            or parts[7] not in ("integer", "half")
+            or (parts[2] != "portra" and parts[3] != "direct")
+        ):
+            raise ValueError("invalid G3 route workload")
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    with execution.OutputLease(ROOT, ROOT / "out/build" / args.preset), execution.OutputLease(ROOT):
+        if args.inputs:
+            inputs = json.loads(Path(args.inputs).read_text())
+        else:
+            if not args.module or not args.resources:
+                raise ValueError("provide both --module and --resources")
+            driver = (
+                ROOT
+                / "out/build"
+                / args.preset
+                / "tests/bin"
+                / ("JuicerOfxMeasurement.exe" if os.name == "nt" else "JuicerOfxMeasurement")
+            )
+            inputs = {
+                "driver": {"path": str(driver), "sha256": inventory(driver)},
+                "candidate": {
+                    "shipping": {"path": args.module, "sha256": inventory(args.module)},
+                    "resources": {"path": args.resources, "files": inventory(args.resources)},
+                },
+            }
+        entry = g3_identities(inputs)
+        result_path = Path(args.candidate_production_result).resolve(strict=True)
+        proof = [result_path.read_bytes()] + [
+            (result_path.parent / name).read_bytes()
+            for name in ("production-contract.json", "candidate.json", "candidate.patch")
+        ]
+        source, patch, _ = verify.capture_native_source(ROOT, "tests/benchmarks/ofx.py", domain_tests=True)
+        binding = g3_production_binding(proof, args.preset, entry["candidate"], source, patch, root=ROOT)
+        directory.mkdir(parents=True, exist_ok=False)
+        run = execution.NativeRun(ROOT, directory)
+        execution.write_json(directory / "candidate.json", source)
+        (directory / "candidate.patch").write_bytes(patch)
+        execution.write_json(directory / "inputs.json", inputs)
+        if manifest_bytes is not None:
+            (directory / "g3-manifest.json").write_bytes(manifest_bytes)
+        for name, data in zip(
+            ("production-result.json", "production-contract.json", "production-source.json", "production-source.patch"),
+            proof,
+        ):
+            (directory / name).write_bytes(data)
+        result = {
+            "schema": 1,
+            "operation": "g3-route",
+            "status": "failed",
+            "preset": args.preset,
+            "selections": selections,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest() if manifest_bytes else None,
+            "mode": args.mode,
+            "production_qualification": binding,
+            "identities": entry,
+            "source": source,
+            "commands": run.commands,
+            "samples": [],
+            "intervals": "callback stream events include host submission gaps; active-kernel time is unmeasured",
+        }
+        try:
+            for index, (row_id, workload) in enumerate(selections):
+                name = f"shipping-{index:03d}"
+                target = directory / f"{name}.json"
+                command = [
+                    inputs["driver"]["path"],
+                    "--mode",
+                    args.mode,
+                    "--module",
+                    inputs["candidate"]["shipping"]["path"],
+                    "--resources",
+                    inputs["candidate"]["resources"]["path"],
+                    "--lane",
+                    "shipping",
+                    "--workload",
+                    workload,
+                    "--output",
+                    str(target),
+                ]
+                member = {"row": row_id, "workload": workload, "file": target.name, "status": "started"}
+                result["samples"].append(member)
+                environment = {key: value for key, value in os.environ.items() if key.upper() != "JUICER_DIAGNOSTICS"}
+                run.command(name, command, env=environment)
+                sample = json.loads(target.read_text())
+                validate_sample(sample, args.mode, "shipping", workload)
+                if Path(sample["resources"]).resolve() != Path(command[6]).resolve():
+                    raise ValueError("driver resource path mismatch")
+                member.update(status="passed", sha256=execution.digest(target))
+            final, final_patch, _ = verify.capture_native_source(ROOT, "tests/benchmarks/ofx.py", domain_tests=True)
+            if (
+                final != source
+                or final_patch != patch
+                or g3_identities(inputs) != entry
+                or (manifest_path is not None and manifest_path.read_bytes() != manifest_bytes)
+            ):
+                raise ValueError("source or inputs changed during G3 route witness")
+            if g3_production_binding(proof, args.preset, entry["candidate"], final, final_patch, root=ROOT) != binding:
+                raise ValueError("production closure changed during G3 route witness")
+            result["status"] = "passed"
+        except Exception as error:
+            result["error"] = str(error)
+        if all(command["drained"] for command in run.commands):
+            run.publish(result)
+        else:
+            execution.write_json(directory / "incomplete.json", result)
+        if result["status"] != "passed":
+            raise ValueError(result.get("error", "G3 route witness failed"))
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="operation", required=True)
@@ -1341,6 +1632,15 @@ def main():
         command.add_argument("--reference-production-result")
         command.add_argument("--comparison", choices=COMPARISONS, default="standard")
         command.add_argument("--workloads", nargs="+", choices=(*ROWS, *HALATION_EXTENTS), default=list(ROWS))
+    command = sub.add_parser("g3-route")
+    for option in ("preset", "run-id", "candidate-production-result", "mode"):
+        command.add_argument("--" + option, required=True)
+    command.add_argument("--inputs")
+    command.add_argument("--module")
+    command.add_argument("--resources")
+    selection = command.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--workload")
+    selection.add_argument("--g3-manifest")
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)
@@ -1349,7 +1649,9 @@ def main():
     command.add_argument("--runs", nargs=2, required=True)
     command.add_argument("--output", required=True)
     args = parser.parse_args()
-    if args.operation == "report":
+    if args.operation == "g3-route":
+        g3_route(args)
+    elif args.operation == "report":
         execution.write_json(Path(args.output), offline_report(args.runs))
     elif args.operation == "prepare-reference":
         prepare_reference(args)

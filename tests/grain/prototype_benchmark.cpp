@@ -33,6 +33,8 @@
 
 extern "C" cudaError_t juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
     const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::CameraFilmLinearExposurePlanes, float*, float*, float*, void*);
+extern "C" cudaError_t juicer_cuda_print_focused_capture_density_from_camera_film_linear(
+    const JuicerCuda::PrintPipelineRunParams*, JuicerCuda::CameraFilmLinearExposurePlanes, float*, float*, float*, void*);
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
 extern "C" FjStatus fj_test_ofx_instance_observe(OfxImageEffectHandle, FjInstanceObservation**, FjErrorBuffer*);
@@ -443,9 +445,18 @@ namespace GrainPrototype {
             std::uint64_t submission;
             FilmPlanes planes;
             Json resolved;
+            cudaEvent_t begin = nullptr;
+            cudaEvent_t end = nullptr;
+            double submitMs = 0;
+            double waitMs = 0;
+            double framePrepareMs = 0;
+            double callbackMs = 0;
+            bool allowInactive = false;
+            std::size_t workspaceBytes = 0;
         };
 
         bool render_current(void* user, const Fixture::Inputs& prepared, std::string& diagnostic) {
+            const auto callbackStart = Clock::now();
             auto& capture = *static_cast<CurrentCapture*>(user);
             auto& run = capture.run;
             require(prepared.state.dir_recipe.mode == FJ_DIR_INACTIVE, "research requires DIR off");
@@ -470,6 +481,29 @@ namespace GrainPrototype {
             }
             try {
                 const auto work = frame.visual_grain_workspace(lease);
+                if (capture.allowInactive) {
+                    require(!work.active, "grain-off frame has active workspace");
+                    capture.framePrepareMs = milliseconds(callbackStart);
+                    if (capture.begin)
+                        cuda_check(cudaEventRecord(capture.begin, run.stream));
+                    if (capture.end)
+                        cuda_check(cudaEventRecord(capture.end, run.stream));
+                    const auto waitStart = Clock::now();
+                    require(frame.finish(run.stream, failure), failure.diagnostic);
+                    cuda_check(cudaStreamSynchronize(run.stream));
+                    capture.waitMs = milliseconds(waitStart);
+                    capture.resolved = {{"active", false}, {"route", prepared.state.route}};
+                    capture.callbackMs = milliseconds(callbackStart);
+                    return true;
+                }
+                const auto& extent = capture.facts.fullFrameExtent;
+                const auto planeBytes = static_cast<std::size_t>(extent.width) * static_cast<std::size_t>(extent.height) * sizeof(float);
+                const std::array buffers{work.filterTemp, work.scaleWork, work.deltaAccum, work.layerWork, work.sharedDelta};
+                for (std::size_t i = 0; i < buffers.size(); ++i)
+                    if (buffers[i] && std::find(buffers.begin(), buffers.begin() + static_cast<std::ptrdiff_t>(i), buffers[i]) == buffers.begin() + static_cast<std::ptrdiff_t>(i))
+                        capture.workspaceBytes += planeBytes;
+                if (work.frameUniforms)
+                    capture.workspaceBytes += sizeof(*work.frameUniforms);
                 JuicerCuda::GrainPayload grain;
                 JuicerCuda::GrainKernelPayload kernels;
                 const bool bound = work.active && JuicerCuda::pack_visual_grain_payload(prepared.grainPayload,
@@ -479,9 +513,19 @@ namespace GrainPrototype {
                                                                                         diagnostic);
                 require(bound, "cannot bind Current grain: " + diagnostic);
                 grain.frameUniforms = work.frameUniforms;
-                const auto& extent = capture.facts.fullFrameExtent;
                 require(grain.active == 1 && grain.pixelSizeUm == capture.facts.pixelSizeUm, "incorrect Current frame geometry");
+                capture.framePrepareMs = milliseconds(callbackStart);
+                if (capture.begin)
+                    cuda_check(cudaEventRecord(capture.begin, run.stream));
+                const auto submitStart = Clock::now();
                 cuda_check(juicer_cuda_apply_visual_grain(&grain, &kernels, extent.width, extent.height, capture.planes.cyan, capture.planes.magenta, capture.planes.yellow, work.filterTemp, work.scaleWork, work.deltaAccum, work.layerWork, work.sharedDelta, run.stream));
+                capture.submitMs = milliseconds(submitStart);
+                if (capture.end)
+                    cuda_check(cudaEventRecord(capture.end, run.stream));
+                const auto waitStart = Clock::now();
+                require(frame.finish(run.stream, failure), failure.diagnostic);
+                cuda_check(cudaStreamSynchronize(run.stream));
+                capture.waitMs = milliseconds(waitStart);
                 const auto& recipe = prepared.state.grain;
                 auto& resolved = capture.resolved;
                 resolved = {
@@ -524,8 +568,7 @@ namespace GrainPrototype {
                                                    {"particle_density", grain.odParticle[record]},
                                                    {"layers", layers}});
                 }
-                require(frame.finish(run.stream, failure), failure.diagnostic);
-                cuda_check(cudaStreamSynchronize(run.stream));
+                capture.callbackMs = milliseconds(callbackStart);
                 return true;
             } catch (...) {
                 frame.abort();
@@ -533,10 +576,90 @@ namespace GrainPrototype {
             }
         }
 
-        std::uint32_t film_seed(const Fixture::FrameFacts& facts, std::uint64_t index) {
+        struct DevelopCapture {
+            Run& run;
+            const Fixture::FrameFacts& facts;
+            const std::filesystem::path& output;
+            bool print;
+            Json metadata;
+        };
+
+        bool develop_input(void* user, const Fixture::Inputs& prepared, std::string& diagnostic) {
+            auto& capture = *static_cast<DevelopCapture*>(user);
+            auto& run = capture.run;
+            require(prepared.state.dir_recipe.mode == FJ_DIR_INACTIVE, "develop capture requires DIR off");
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = capture.facts.clipToken;
+            snapshot.frameToken.value = 1;
+            snapshot.snapshotId = 1;
+            snapshot.deviceContextKey = run.key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(prepared.state.upload_core_hash, prepared.state.dir_recipe.hash, prepared.state.scanner_hash, 0);
+            JuicerCuda::Failure failure;
+            auto frame = JuicerCuda::borrow_root(run.runtime.borrow().cuda).prepare_cuda_frame(run.key, snapshot, prepared.preparation, {}, run.stream, failure, prepared.hostPreparation);
+            if (!frame.active()) {
+                diagnostic = failure.diagnostic;
+                return false;
+            }
+            const auto lease = frame.workspace_lease();
+            if (!frame.stage_optical_workspace(lease, run.stream, failure)) {
+                diagnostic = failure.diagnostic;
+                frame.abort();
+                return false;
+            }
+            try {
+                JuicerCuda::FilmPayloadPack payload;
+                require(JuicerCuda::pack_film_payloads(prepared.filmPayload, frame.focused_resources().film, nullptr, prepared.filmRouteCorrectionScale, payload, diagnostic), diagnostic);
+                const int w = capture.facts.fullFrameExtent.width;
+                const int h = capture.facts.fullFrameExtent.height;
+                const auto elements = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+                const auto bytes = kRecords * elements * sizeof(float);
+                std::vector<float> host(kRecords * elements);
+                for (std::size_t channel = 0; channel < kRecords; ++channel)
+                    for (std::size_t i = 0; i < elements; ++i)
+                        host[channel * elements + i] = static_cast<float>(1 + (i * 17 + channel * 89) % 1024) / 512.F;
+                Buffer camera(bytes), density(bytes);
+                cuda_check(cudaMemcpyAsync(camera.data, host.data(), bytes, cudaMemcpyHostToDevice, run.stream));
+                JuicerCuda::CameraFilmLinearExposurePlanes planes{camera.data, camera.data + elements, camera.data + 2 * elements, static_cast<std::size_t>(w)};
+                if (capture.print) {
+                    JuicerCuda::PrintPipelineRunParams params{};
+                    params.width = w;
+                    params.height = h;
+                    params.filmRaw = payload.filmRaw;
+                    params.filmExpose = payload.filmExposure;
+                    params.filmDevelop = payload.filmDevelop;
+                    cuda_check(juicer_cuda_print_focused_capture_density_from_camera_film_linear(&params, planes, density.data, density.data + elements, density.data + 2 * elements, run.stream));
+                } else {
+                    JuicerCuda::DirectPipelineRunParams params{};
+                    params.width = w;
+                    params.height = h;
+                    params.filmRaw = payload.filmRaw;
+                    params.filmExpose = payload.filmExposure;
+                    params.filmDevelop = payload.filmDevelop;
+                    cuda_check(juicer_cuda_direct_focused_capture_density_from_camera_film_linear(&params, planes, density.data, density.data + elements, density.data + 2 * elements, run.stream));
+                }
+                cuda_check(cudaMemcpyAsync(host.data(), density.data, bytes, cudaMemcpyDeviceToHost, run.stream));
+                require(frame.finish(run.stream, failure), failure.diagnostic);
+                cuda_check(cudaStreamSynchronize(run.stream));
+                require(std::all_of(host.begin(), host.end(), [](float x) {
+                            return std::isfinite(x);
+                        }),
+                        "nonfinite developed input");
+                require(!std::filesystem::exists(capture.output), "developed input exists");
+                std::ofstream file(capture.output, std::ios::binary);
+                file.write(reinterpret_cast<const char*>(host.data()), static_cast<std::streamsize>(bytes));
+                require(static_cast<bool>(file), "cannot write developed input");
+                capture.metadata = {{"route", prepared.state.route}, {"upload_core_hash", prepared.state.upload_core_hash}, {"bytes", bytes}, {"pattern", "camera-linear: (1 + (pixel*17 + channel*89) % 1024)/512"}};
+                return true;
+            } catch (...) {
+                frame.abort();
+                throw;
+            }
+        }
+
+        std::uint32_t film_seed(std::uint64_t sessionSeed, std::uint64_t clipToken, std::int64_t index) {
             // SplitMix64 permutation of frame/clip/session identity, truncated
             // to the upstream placement seed width. Coordinates do not enter.
-            std::uint64_t word = (facts.sessionSeed ^ std::rotl(facts.clipToken, 17)) + (index + 1) * 0x9e3779b97f4a7c15ULL;
+            std::uint64_t word = (sessionSeed ^ std::rotl(clipToken, 17)) + (static_cast<std::uint64_t>(index) + 1) * 0x9e3779b97f4a7c15ULL;
             word = (word ^ (word >> 30)) * 0xbf58476d1ce4e5b9ULL;
             word = (word ^ (word >> 27)) * 0x94d049bb133111ebULL;
             return static_cast<std::uint32_t>(word ^ (word >> 31));
@@ -544,7 +667,10 @@ namespace GrainPrototype {
 
         JuicerTestSupport::PreparationInput research_controls(const Json& request) {
             JuicerTestSupport::PreparationInput controls;
-            controls.values.grain = current_grain_controls(request.at("look").get<std::string>());
+            const auto look = request.at("look").get<std::string>();
+            controls.values.grain = current_grain_controls(look == "off" ? "default" : look);
+            if (look == "off")
+                controls.values.grain.active = 0;
             controls.film_key = request.at("stock").get<std::string>();
             controls.values.camera_film_format_long_edge_mm = request.at("long_edge_mm").get<float>();
             controls.values.film_gamma_factor = 1.0f;
@@ -604,6 +730,17 @@ namespace GrainPrototype {
             }
         }
     } // namespace
+
+    // The operands match FrameFacts time, session and clip in that order.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    FilmTime resolve_film_time(double time, std::uint64_t sessionSeed, std::uint64_t clipToken) {
+        require(std::isfinite(time) && time >= -1000000.0 && time <= 1000000.0,
+                "unsupported research frame time");
+        const double floor = std::floor(time);
+        const auto index = static_cast<std::int64_t>(floor);
+        const auto fraction = static_cast<float>(time - floor);
+        return {index, fraction, film_seed(sessionSeed, clipToken, index), fraction == 0.F ? 0U : film_seed(sessionSeed, clipToken, index + 1)};
+    }
 
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void capture_research(const std::filesystem::path& resources, const std::filesystem::path& requestPath, std::ostream& results) {
@@ -684,7 +821,7 @@ namespace GrainPrototype {
         std::uint64_t submission = 0;
         for (const auto& sample : request.at("requests")) {
             facts.frameTime = sample.at("time").get<double>();
-            require(facts.frameTime >= 0.0 && facts.frameTime <= 1000000.0, "unsupported research frame time");
+            require(std::isfinite(facts.frameTime) && facts.frameTime >= -1000000.0 && facts.frameTime <= 1000000.0, "unsupported research frame time");
             fill_research_input(host, facts, sample);
             cuda_check(cudaMemcpyAsync(carrier.data, host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
             if (current) {
@@ -694,10 +831,10 @@ namespace GrainPrototype {
                 require(rendered, "Current research preparation: " + diagnostic);
                 request["resolved"].push_back(std::move(capture.resolved));
             } else {
-                const auto index = static_cast<std::uint64_t>(std::floor(facts.frameTime));
-                film.temporalFraction = static_cast<float>(facts.frameTime - std::floor(facts.frameTime));
-                film.seed = film_seed(facts, index);
-                film.nextSeed = film.temporalFraction == 0.0f ? 0 : film_seed(facts, index + 1);
+                const auto time = resolve_film_time(facts.frameTime, facts.sessionSeed, facts.clipToken);
+                film.temporalFraction = time.fraction;
+                film.seed = time.seed;
+                film.nextSeed = time.nextSeed;
                 cuda_check(apply_film_reference(device, tables, film, planes, stream));
                 request["resolved"].push_back({{"seed", film.seed}, {"next_seed", film.nextSeed}, {"fraction", film.temporalFraction}});
             }
@@ -724,6 +861,407 @@ namespace GrainPrototype {
         manifest.close();
         require(manifest.good(), "cannot write research manifest");
         results << "research captured " << request["resolved"].size() << " full frames\n";
+    }
+
+    // Path order is the native command's resources and request operands.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void develop_g3(const std::filesystem::path& resources, const std::filesystem::path& requestPath) {
+        std::ifstream requestFile(requestPath);
+        require(static_cast<bool>(requestFile), "cannot open develop request");
+        auto request = Json::parse(requestFile);
+        request["look"] = "default";
+        auto controls = research_controls(request);
+        controls.values.grain.active = 0;
+        const int w = request.at("width").get<int>();
+        const int h = request.at("height").get<int>();
+        require(w >= 8 && h >= 8 && w <= 4096 && h <= 4096, "unsupported develop extent");
+        Fixture::FrameFacts facts;
+        facts.renderExtent = {0, 0, w, h};
+        facts.fullFrameExtent = facts.renderExtent;
+        facts.pixelDefinition = facts.renderExtent;
+        facts.filmFormatLongEdgeMm = request.at("long_edge_mm").get<float>();
+        facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.F / static_cast<float>(w);
+        facts.frameTime = 0;
+        facts.frameRate = 24;
+        facts.sessionSeed = 17;
+        facts.clipToken = 23;
+        const auto output = std::filesystem::path(request.at("output").get<std::string>());
+        const auto report = requestPath.parent_path() / "develop.json";
+        require(!std::filesystem::exists(report), "develop report exists");
+        Run run(resources, controls);
+        run.open();
+        DevelopCapture capture{run, facts, output, (request.at("route").get<std::uint32_t>() & 1U) != 0, {}};
+        std::string diagnostic;
+        require(Fixture::with_prepared_frame_inputs(run.runtime.borrow().assets, *run.state, facts, &capture, &develop_input, diagnostic), "develop preparation: " + diagnostic);
+        run.close();
+        std::ofstream metadata(report);
+        metadata << Json{{"request", request}, {"resolved", capture.metadata}}.dump(2) << '\n';
+        require(static_cast<bool>(metadata), "cannot write develop report");
+    }
+
+    // Path order is the native command's resources and request operands.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void stage(const std::filesystem::path& resources, const std::filesystem::path& requestPath, bool check, bool verify) {
+        const auto coldStart = Clock::now();
+        std::ifstream requestFile(requestPath);
+        require(static_cast<bool>(requestFile), "cannot open stage request");
+        auto request = Json::parse(requestFile);
+        const auto engine = request.at("engine").get<std::string>();
+        require(engine == "current" || engine == "film", "invalid stage engine");
+        const auto variantName = request.value("film_variant", "reference");
+        const auto blockName = request.value("film_block", "32x4");
+        require(variantName == "reference" || variantName == "scalar" || variantName == "reuse" || variantName == "paired" || variantName == "quad", "invalid Film variant");
+        require(blockName == "32x4" || blockName == "16x8" || blockName == "32x8", "invalid Film block");
+        const auto variant = variantName == "scalar" ? FilmVariant::Scalar : (variantName == "reuse" ? FilmVariant::Reuse : (variantName == "paired" ? FilmVariant::Paired : (variantName == "quad" ? FilmVariant::Quad : FilmVariant::Reference)));
+        const auto block = blockName == "16x8" ? FilmBlock::Block16x8 : (blockName == "32x8" ? FilmBlock::Block32x8 : FilmBlock::Block32x4);
+        require(variant != FilmVariant::Quad || block == FilmBlock::Block32x8, "quad stage requires 32x8 block");
+        require(!verify || (engine == "film" && (variant != FilmVariant::Reference || block != FilmBlock::Block32x4)), "verification requires an alternative Film variant or block");
+        const bool off = engine == "current" && request.at("look").get<std::string>() == "off";
+        const auto mode = request.at("time_mode").get<std::string>();
+        require(mode == "varied" || mode == "unchanged", "invalid stage time mode");
+        const double offset = request.at("offset").get<double>();
+        require(offset == 0.0 || offset == 0.5, "invalid stage offset");
+        const int w = request.at("width").get<int>();
+        const int h = request.at("height").get<int>();
+        require(w >= 8 && h >= 8 && w <= 4096 && h <= 4096, "unsupported stage extent");
+        Fixture::FrameFacts facts;
+        facts.renderExtent = {0, 0, w, h};
+        facts.fullFrameExtent = facts.renderExtent;
+        facts.pixelDefinition = facts.renderExtent;
+        facts.pixelSizeUm = request.at("pitch_um").get<float>();
+        facts.filmFormatLongEdgeMm = request.at("long_edge_mm").get<float>();
+        facts.frameRate = request.at("fps").get<double>();
+        facts.sessionSeed = request.at("session_seed").get<std::uint64_t>();
+        facts.clipToken = request.at("clip_token").get<std::uint64_t>();
+        require(facts.pixelSizeUm > 0.F && facts.frameRate == 24.0 && facts.clipToken != 0, "invalid stage frame identity");
+        const auto elements = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        const auto bytes = kRecords * elements * sizeof(float);
+        std::vector<float> host(kRecords * elements);
+        const auto readStart = Clock::now();
+        std::ifstream input(request.at("input").get<std::string>(), std::ios::binary | std::ios::ate);
+        require(input && input.tellg() == static_cast<std::streamoff>(bytes), "wrong stage input size");
+        input.seekg(0);
+        input.read(reinterpret_cast<char*>(host.data()), static_cast<std::streamsize>(bytes));
+        require(static_cast<bool>(input) && std::all_of(host.begin(), host.end(), [](float x) {
+                    return std::isfinite(x);
+                }),
+                "invalid stage input");
+        const double readMs = milliseconds(readStart);
+        std::optional<Run> current;
+        if (engine == "current") {
+            current.emplace(resources, research_controls(request));
+            current->open();
+        } else {
+            cuda_check(cudaSetDevice(0));
+            cuda_check(cudaFree(nullptr));
+        }
+        auto* const stream = current ? current->stream : nullptr;
+        DeviceFilmBank device;
+        DeviceFilmQuads quads;
+        FilmTables tables{};
+        FilmFrame film{};
+        film.width = w;
+        film.height = h;
+        film.stride = w;
+        film.enabled = engine == "film";
+        std::size_t bankBytes = 0, quadBytes = 0, quadHostBytes = 0;
+        double bankReadMs = 0, tableReadMs = 0, bankUploadMs = 0, quadPackMs = 0, quadUploadMs = 0;
+        if (film.enabled) {
+            const auto size = request.at("size").get<float>();
+            const auto amounts = request.at("amounts").get<std::array<float, kRecords>>();
+            require(size >= 0.5F && size <= 4.F, "Film size outside experiment");
+            film.chromaFraction = request.at("chroma_fraction").get<float>();
+            require(film.chromaFraction == 0.2406350076198578F, "stage requires accepted Film chroma");
+            for (std::size_t record = 0; record < amounts.size(); ++record) {
+                require(amounts[record] >= 0.125F && amounts[record] <= 8.F, "Film amount outside experiment");
+                film.amounts[record] = amounts[record] / size;
+            }
+            film.pitch = facts.pixelSizeUm / size;
+            const auto bankPath = request.at("bank").get<std::string>();
+            const auto bankReadStart = Clock::now();
+            const auto bank = read_film_bank(bankPath, 1.F);
+            bankReadMs = milliseconds(bankReadStart);
+            const auto tableReadStart = Clock::now();
+            tables = read_film_tables(request.value("tables", bankPath), film.pitch);
+            tableReadMs = milliseconds(tableReadStart);
+            if (variant != FilmVariant::Quad || verify) {
+                bankBytes = bank.sums.size() * sizeof(float);
+                const auto uploadStart = Clock::now();
+                cuda_check(device.upload(bank));
+                bankUploadMs = milliseconds(uploadStart);
+            }
+            if (variant == FilmVariant::Quad) {
+                const auto packStart = Clock::now();
+                const auto packed = pack_film_quads(bank);
+                quadPackMs = milliseconds(packStart);
+                quadHostBytes = packed.size() * sizeof(FilmQuad);
+                const auto uploadStart = Clock::now();
+                cuda_check(quads.upload(packed));
+                quadUploadMs = milliseconds(uploadStart);
+                quadBytes = quadHostBytes;
+            }
+        }
+        const auto carrierStart = Clock::now();
+        Buffer inputDevice(bytes), carrier(bytes);
+        cuda_check(cudaMemcpyAsync(inputDevice.data, host.data(), bytes, cudaMemcpyHostToDevice, stream));
+        cuda_check(cudaStreamSynchronize(stream));
+        const double carrierUploadMs = milliseconds(carrierStart);
+        FilmPlanes planes{carrier.data, carrier.data + elements, carrier.data + 2 * elements};
+        Event begin, end;
+        const auto apply = [&] {
+            return variant == FilmVariant::Quad ? apply_film_quads(quads, tables, film, planes, stream, block)
+                                                : apply_film_variant(device, tables, film, planes, stream, variant, block);
+        };
+        if (verify) {
+            const bool hasBaseline = request.contains("baseline_variant") || request.contains("baseline_block");
+            require(!hasBaseline || (request.value("baseline_variant", "") == "scalar" && request.value("baseline_block", "") == "32x8"), "invalid verification baseline");
+            std::vector<float> reference(host.size()), optimized(host.size());
+            std::vector<float> baseline(hasBaseline ? host.size() : 0);
+            std::array<std::uint64_t, 80> forwardHashes{};
+            Json observations = Json::array();
+            std::size_t mismatches = 0, baselineMismatches = 0, replayMismatches = 0, nonfinite = 0, inactive = 0;
+            for (int pass = 0; pass < 160; ++pass) {
+                const int identity = pass < 80 ? pass : 159 - pass;
+                const double time = static_cast<double>(identity / 2 - 10) + (identity % 2 == 0 ? 0.0 : 0.5);
+                const auto resolved = resolve_film_time(time, facts.sessionSeed, facts.clipToken);
+                film.seed = resolved.seed;
+                film.nextSeed = resolved.nextSeed;
+                film.temporalFraction = resolved.fraction;
+                const auto download = [&](bool original, std::vector<float>& output) {
+                    cuda_check(cudaMemcpyAsync(carrier.data, inputDevice.data, bytes, cudaMemcpyDeviceToDevice, stream));
+                    cuda_check(original ? apply_film_reference(device, tables, film, planes, stream) : apply());
+                    cuda_check(cudaMemcpyAsync(output.data(), carrier.data, bytes, cudaMemcpyDeviceToHost, stream));
+                    cuda_check(cudaStreamSynchronize(stream));
+                };
+                download(true, reference);
+                download(false, optimized);
+                if (hasBaseline) {
+                    cuda_check(cudaMemcpyAsync(carrier.data, inputDevice.data, bytes, cudaMemcpyDeviceToDevice, stream));
+                    cuda_check(apply_film_variant(device, tables, film, planes, stream, FilmVariant::Scalar, FilmBlock::Block32x8));
+                    cuda_check(cudaMemcpyAsync(baseline.data(), carrier.data, bytes, cudaMemcpyDeviceToHost, stream));
+                    cuda_check(cudaStreamSynchronize(stream));
+                }
+                std::uint64_t hash = 14695981039346656037ULL;
+                std::size_t frameMismatches = 0, frameBaselineMismatches = 0, frameNonfinite = 0;
+                std::array<std::size_t, kRecords> changed{};
+                Json first = nullptr, firstBaseline = nullptr;
+                for (std::size_t i = 0; i < host.size(); ++i) {
+                    const auto expected = std::bit_cast<std::uint32_t>(reference[i]);
+                    const auto actual = std::bit_cast<std::uint32_t>(optimized[i]);
+                    if (hasBaseline) {
+                        const auto baselineWord = std::bit_cast<std::uint32_t>(baseline[i]);
+                        if (baselineWord != expected) {
+                            ++frameBaselineMismatches;
+                            if (firstBaseline.is_null()) {
+                                const auto pixel = i % elements;
+                                firstBaseline = {{"record", i / elements}, {"x", pixel % static_cast<std::size_t>(w)}, {"y", pixel / static_cast<std::size_t>(w)}, {"reference_word", expected}, {"baseline_word", baselineWord}};
+                            }
+                        }
+                    }
+                    hash = (hash ^ expected) * 1099511628211ULL;
+                    frameNonfinite += !std::isfinite(reference[i]) || !std::isfinite(optimized[i]);
+                    changed[i / elements] += actual != std::bit_cast<std::uint32_t>(host[i]);
+                    if (expected != actual) {
+                        ++frameMismatches;
+                        if (first.is_null()) {
+                            const auto pixel = i % elements;
+                            first = {{"record", i / elements}, {"x", pixel % static_cast<std::size_t>(w)}, {"y", pixel / static_cast<std::size_t>(w)}, {"reference_word", expected}, {"optimized_word", actual}};
+                        }
+                    }
+                }
+                const bool isInactive = std::any_of(changed.begin(), changed.end(), [](std::size_t n) {
+                    return n == 0;
+                });
+                const bool replayMismatch = pass >= 80 && forwardHashes[static_cast<std::size_t>(identity)] != hash;
+                if (pass < 80)
+                    forwardHashes[static_cast<std::size_t>(identity)] = hash;
+                mismatches += frameMismatches;
+                baselineMismatches += frameBaselineMismatches;
+                replayMismatches += replayMismatch;
+                nonfinite += frameNonfinite;
+                inactive += isInactive;
+                Json observation{{"identity", identity}, {"order", pass < 80 ? "forward" : "reverse"}, {"time", time}, {"seed", resolved.seed}, {"next_seed", resolved.nextSeed}, {"fraction", resolved.fraction}, {"bit_mismatches", frameMismatches}, {"first_mismatch", first}, {"nonfinite", frameNonfinite}, {"changed", changed}, {"reference_hash", hash}, {"replay_hash_mismatch", replayMismatch}};
+                if (hasBaseline) {
+                    observation["baseline_bit_mismatches"] = frameBaselineMismatches;
+                    observation["first_baseline_mismatch"] = firstBaseline;
+                }
+                observations.push_back(std::move(observation));
+            }
+            const auto reportPath = requestPath.parent_path() / "stage-verify.json";
+            require(!std::filesystem::exists(reportPath), "stage verification output exists");
+            std::ofstream reportFile(reportPath);
+            Json report{{"request", request}, {"frame_identities", 80}, {"bit_mismatches", mismatches}, {"replay_hash_mismatches", replayMismatches}, {"nonfinite", nonfinite}, {"inactive_frames", inactive}, {"observations", observations}};
+            if (variant == FilmVariant::Quad) {
+                report["device_bank_bytes"] = bankBytes;
+                report["device_quad_bytes"] = quadBytes;
+                report["device_sat_bytes"] = bankBytes + quadBytes;
+                report["quad_host_bytes"] = quadHostBytes;
+                report["quad_pack_source_and_staging_bytes"] = kBankEntries * sizeof(float) + quadHostBytes;
+                report["quad_pack_ms"] = quadPackMs;
+                report["quad_upload_ms"] = quadUploadMs;
+            }
+            if (hasBaseline) {
+                report["baseline_bit_mismatches"] = baselineMismatches;
+                report["baseline_host_bytes"] = bytes;
+            }
+            reportFile << report.dump(2) << '\n';
+            reportFile.close();
+            require(reportFile.good(), "cannot write stage verification report");
+            require(mismatches == 0 && baselineMismatches == 0 && replayMismatches == 0 && nonfinite == 0 && inactive == 0, "Film variant verification failed");
+            return;
+        }
+        Json samples = Json::array();
+        double coldMs = milliseconds(coldStart);
+        double firstCompletedMs = 0;
+        std::size_t workspaceBytes = 0;
+        const auto checkTimes = request.value("verification_times", std::array{-1.0, -0.5, 0.0, 0.5});
+        for (double time : checkTimes)
+            require(std::isfinite(time) && time >= -1000000.0 && time <= 1000000.0, "invalid verification time");
+        std::array<std::vector<float>, 4> checkOutputs;
+        const int passes = check ? 8 : 40;
+        for (int pass = 0; pass < passes; ++pass) {
+            const auto checkIndex = static_cast<std::size_t>(pass < 4 ? pass : 7 - pass);
+            facts.frameTime = check ? checkTimes[checkIndex] : (mode == "varied" ? pass - 10 : 0) + offset;
+            const auto resetStart = Clock::now();
+            cuda_check(cudaMemcpyAsync(carrier.data, inputDevice.data, bytes, cudaMemcpyDeviceToDevice, stream));
+            cuda_check(cudaStreamSynchronize(stream));
+            const double resetMs = milliseconds(resetStart);
+            const auto prepareStart = Clock::now();
+            double submitMs = 0, waitMs = 0, prepareMs = 0;
+            Json resolved;
+            if (current) {
+                CurrentCapture capture{*current, facts, static_cast<std::uint64_t>(pass + 1), planes, {}};
+                capture.begin = begin.event;
+                capture.end = end.event;
+                capture.allowInactive = off;
+                std::string diagnostic;
+                require(Fixture::with_prepared_frame_inputs(current->runtime.borrow().assets, *current->state, facts, &capture, &render_current, diagnostic), "Current stage preparation: " + diagnostic);
+                submitMs = capture.submitMs;
+                waitMs = capture.waitMs;
+                workspaceBytes = std::max(workspaceBytes, capture.workspaceBytes);
+                prepareMs = milliseconds(prepareStart) - capture.callbackMs + capture.framePrepareMs;
+                resolved = std::move(capture.resolved);
+            } else {
+                const auto time = resolve_film_time(facts.frameTime, facts.sessionSeed, facts.clipToken);
+                film.seed = time.seed;
+                film.nextSeed = time.nextSeed;
+                film.temporalFraction = time.fraction;
+                prepareMs = milliseconds(prepareStart);
+                cuda_check(cudaEventRecord(begin.event, stream));
+                const auto submitStart = Clock::now();
+                cuda_check(apply());
+                submitMs = milliseconds(submitStart);
+                cuda_check(cudaEventRecord(end.event, stream));
+                const auto waitStart = Clock::now();
+                cuda_check(cudaEventSynchronize(end.event));
+                waitMs = milliseconds(waitStart);
+                resolved = {{"frame_index", time.frame}, {"seed", time.seed}, {"next_seed", time.nextSeed}, {"fraction", time.fraction}};
+            }
+            if (pass == 0)
+                firstCompletedMs = milliseconds(coldStart);
+            float gpuMs = 0;
+            cuda_check(cudaEventElapsedTime(&gpuMs, begin.event, end.event));
+            if (check) {
+                std::vector<float> observed(host.size());
+                cuda_check(cudaMemcpyAsync(observed.data(), carrier.data, bytes, cudaMemcpyDeviceToHost, stream));
+                cuda_check(cudaStreamSynchronize(stream));
+                const auto slot = static_cast<std::size_t>(pass < 4 ? pass : 7 - pass);
+                if (pass < 4) {
+                    if (request.contains("verification")) {
+                        const auto directory = std::filesystem::path(request.at("verification").get<std::string>());
+                        const int cropWidth = request.value("crop_width", w);
+                        const int cropHeight = request.value("crop_height", h);
+                        require(cropWidth > 0 && cropWidth <= w && cropHeight > 0 && cropHeight <= h, "invalid verification crop");
+                        const auto path = directory / ("frame-" + std::to_string(pass) + ".f32");
+                        require(!std::filesystem::exists(path), "verification frame exists");
+                        std::ofstream file(path, std::ios::binary);
+                        const int cropX = (w - cropWidth) / 2;
+                        const int cropY = (h - cropHeight) / 2;
+                        for (int record = 0; record < kRecords; ++record)
+                            for (int row = 0; row < cropHeight; ++row) {
+                                const auto start = static_cast<std::size_t>(record) * elements + static_cast<std::size_t>(cropY + row) * static_cast<std::size_t>(w) + static_cast<std::size_t>(cropX);
+                                file.write(reinterpret_cast<const char*>(observed.data() + start), static_cast<std::streamsize>(static_cast<std::size_t>(cropWidth) * sizeof(float)));
+                            }
+                        require(static_cast<bool>(file), "cannot write verification frame");
+                    }
+                    checkOutputs[slot] = std::move(observed);
+                } else
+                    for (std::size_t i = 0; i < observed.size(); ++i)
+                        require(std::bit_cast<std::uint32_t>(observed[i]) == std::bit_cast<std::uint32_t>(checkOutputs[slot][i]), "stage-check request order changed output");
+            }
+            samples.push_back({{"phase", check ? "validation" : (pass < 10 ? "warmup" : "measurement")}, {"index", pass < 10 ? pass : pass - 10}, {"time", facts.frameTime}, {"gpu_ms", gpuMs}, {"host_prepare_ms", prepareMs}, {"host_submit_ms", submitMs}, {"host_wait_ms", waitMs}, {"reset_ms", resetMs}, {"resolved", std::move(resolved)}});
+        }
+        std::vector<float> output(host.size());
+        cuda_check(cudaMemcpyAsync(output.data(), carrier.data, bytes, cudaMemcpyDeviceToHost, stream));
+        cuda_check(cudaStreamSynchronize(stream));
+        std::array<std::size_t, kRecords> changed{};
+        for (std::size_t i = 0; i < output.size(); ++i) {
+            require(std::isfinite(output[i]), "nonfinite stage output");
+            changed[i / elements] += output[i] != host[i];
+        }
+        require(std::all_of(changed.begin(), changed.end(), [off](std::size_t n) {
+                    return off ? n == 0 : n != 0;
+                }),
+                "stage output does not match active control");
+        cuda_check(cudaMemcpyAsync(carrier.data, inputDevice.data, bytes, cudaMemcpyDeviceToDevice, stream));
+        if (current) {
+            CurrentCapture replay{*current, facts, 41, planes, {}};
+            replay.allowInactive = off;
+            std::string diagnostic;
+            require(Fixture::with_prepared_frame_inputs(current->runtime.borrow().assets, *current->state, facts, &replay, &render_current, diagnostic), "Current replay preparation: " + diagnostic);
+        } else {
+            cuda_check(apply());
+        }
+        std::vector<float> replay(host.size());
+        cuda_check(cudaMemcpyAsync(replay.data(), carrier.data, bytes, cudaMemcpyDeviceToHost, stream));
+        cuda_check(cudaStreamSynchronize(stream));
+        for (std::size_t i = 0; i < output.size(); ++i)
+            require(std::bit_cast<std::uint32_t>(output[i]) == std::bit_cast<std::uint32_t>(replay[i]), "stage replay differs");
+        Json edits = Json::array();
+        if (check && film.enabled && request.contains("edit_tables")) {
+            const auto measureEdit = [&](const char* kind, double updateMs) {
+                cuda_check(cudaMemcpyAsync(carrier.data, inputDevice.data, bytes, cudaMemcpyDeviceToDevice, stream));
+                cuda_check(cudaStreamSynchronize(stream));
+                cuda_check(cudaEventRecord(begin.event, stream));
+                const auto submitStart = Clock::now();
+                cuda_check(apply());
+                const double submitMs = milliseconds(submitStart);
+                cuda_check(cudaEventRecord(end.event, stream));
+                const auto waitStart = Clock::now();
+                cuda_check(cudaEventSynchronize(end.event));
+                const double waitMs = milliseconds(waitStart);
+                float gpuMs = 0;
+                cuda_check(cudaEventElapsedTime(&gpuMs, begin.event, end.event));
+                edits.push_back({{"kind", kind}, {"update_ms", updateMs}, {"submit_ms", submitMs}, {"wait_ms", waitMs}, {"gpu_ms", gpuMs}, {"resident_bank_bytes", bankBytes}, {"resident_quad_bytes", quadBytes}, {"table_bytes", sizeof(FilmTables)}});
+            };
+            const auto amountStart = Clock::now();
+            const auto amounts = request.at("edit_amounts").get<std::array<float, kRecords>>();
+            const float size = request.at("size").get<float>();
+            for (std::size_t record = 0; record < amounts.size(); ++record) {
+                require(amounts[record] >= 0.125F && amounts[record] <= 8.F, "invalid edit amount");
+                film.amounts[record] = amounts[record] / size;
+            }
+            measureEdit("amount", milliseconds(amountStart));
+            const auto seedStart = Clock::now();
+            const auto editTime = resolve_film_time(request.at("edit_time").get<double>(), facts.sessionSeed, facts.clipToken);
+            film.seed = editTime.seed;
+            film.nextSeed = editTime.nextSeed;
+            film.temporalFraction = editTime.fraction;
+            measureEdit("seed", milliseconds(seedStart));
+            const auto tableStart = Clock::now();
+            const auto pitch = request.at("edit_pitch").get<float>();
+            tables = read_film_tables(request.at("edit_tables").get<std::string>(), pitch);
+            film.pitch = pitch;
+            measureEdit("footprint_table_read_bind", milliseconds(tableStart));
+        }
+        if (current)
+            current->close();
+        const auto reportPath = requestPath.parent_path() / (check ? "stage-check.json" : "stage.json");
+        require(!std::filesystem::exists(reportPath), "stage output exists");
+        Json report{{"request", request}, {"samples", std::move(samples)}, {"cold_setup_ms", coldMs}, {"cold_first_completed_ms", firstCompletedMs}, {"input_read_ms", readMs}, {"bank_read_ms", bankReadMs}, {"table_read_ms", tableReadMs}, {"bank_upload_ms", bankUploadMs}, {"carrier_allocation_upload_ms", carrierUploadMs}, {"input_bytes", bytes}, {"carrier_bytes", bytes}, {"host_input_bytes", bytes}, {"device_bank_bytes", bankBytes}, {"device_quad_bytes", quadBytes}, {"device_sat_bytes", bankBytes + quadBytes}, {"quad_host_bytes", quadHostBytes}, {"quad_pack_source_and_staging_bytes", variant == FilmVariant::Quad ? kBankEntries * sizeof(float) + quadHostBytes : 0U}, {"quad_pack_ms", quadPackMs}, {"quad_upload_ms", quadUploadMs}, {"film_table_bytes", film.enabled ? sizeof(FilmTables) : 0U}, {"current_workspace_bytes", workspaceBytes}, {"changed", changed}, {"replay_bit_mismatches", 0}, {"edits", std::move(edits)}};
+        std::ofstream reportFile(reportPath);
+        reportFile << report.dump(2) << '\n';
+        require(static_cast<bool>(reportFile), "cannot write stage report");
     }
 
     void capture_developed_input(const std::filesystem::path& resources, const std::filesystem::path& output) {

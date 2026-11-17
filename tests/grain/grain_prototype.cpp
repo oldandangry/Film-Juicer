@@ -25,6 +25,10 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+#include <cuda.h>
+#include <cudaTypedefs.h>
+
 namespace GrainPrototype {
     namespace {
         constexpr std::string_view kCaseCaller = "film-reference";
@@ -44,6 +48,16 @@ namespace GrainPrototype {
         void open_cuda() {
             check_cuda(cudaSetDevice(0));
             check_cuda(cudaFree(nullptr));
+        }
+
+        // Only the foreign-context GPU witness needs these versioned driver entry points.
+        template <typename Function>
+        Function context_entry(const char* name, unsigned int version) {
+            void* address = nullptr;
+            cudaDriverEntryPointQueryResult query{};
+            check_cuda(cudaGetDriverEntryPointByVersion(name, &address, version, cudaEnableDefault, &query));
+            require(query == cudaDriverEntryPointSuccess && address != nullptr, name);
+            return reinterpret_cast<Function>(address);
         }
 
         enum class SyntheticBank : std::uint8_t {
@@ -123,6 +137,29 @@ namespace GrainPrototype {
             std::size_t planeWords_;
         };
 
+        // Input and reference are the before/after carriers for the same frame.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        void compare_variants(const DeviceFilmBank& resident, const FilmBank& bank, FilmFrame frame, const DeviceCarrier& carrier, const std::vector<float>& input, const std::vector<float>& reference) {
+            const auto& tables = bank.tables;
+            for (const auto variant : {FilmVariant::Scalar, FilmVariant::Reuse, FilmVariant::Paired})
+                for (const auto block : {FilmBlock::Block32x4, FilmBlock::Block16x8, FilmBlock::Block32x8}) {
+                    carrier.write(input);
+                    check_cuda(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, variant, block));
+                    const auto actual = carrier.read();
+                    require(std::equal(actual.begin(), actual.end(), reference.begin(), same_words), "Film variant differs from reference");
+                }
+            DeviceFilmQuads quads;
+            if (frame.enabled)
+                check_cuda(quads.upload(pack_film_quads(bank)));
+            for (const auto block : {FilmBlock::Block32x4, FilmBlock::Block16x8, FilmBlock::Block32x8}) {
+                carrier.write(input);
+                check_cuda(apply_film_quads(quads, tables, frame, carrier.planes(), nullptr, block));
+                const auto actual = carrier.read();
+                require(std::equal(actual.begin(), actual.end(), reference.begin(), same_words), "quad Film variant differs from reference");
+            }
+            require(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, FilmVariant::Quad, FilmBlock::Block32x8) == cudaErrorInvalidValue, "canonical owner accepted quad layout");
+        }
+
         struct Errors {
             double largestError = 0;
             double largestBudget = 0;
@@ -195,6 +232,7 @@ namespace GrainPrototype {
             carrier.write(initial);
             check_cuda(apply_film_reference(resident, frame, carrier.planes(), nullptr));
             auto output = carrier.read();
+            compare_variants(resident, bank, frame, carrier, initial, output);
             if (!frame.enabled)
                 require(!resident.resident(), "disabled frame made bank resident");
             for (int channel = 0; channel <= kRecords; ++channel) {
@@ -279,7 +317,9 @@ namespace GrainPrototype {
                 request.chromaFraction = chroma;
                 carrier.write(input);
                 check_cuda(apply_film_reference(resident, request, carrier.planes(), nullptr));
-                return carrier.read();
+                auto output = carrier.read();
+                compare_variants(resident, bank, request, carrier, input, output);
+                return output;
             };
             Errors errors;
             for (float time : {0.F, .5F}) {
@@ -355,14 +395,20 @@ namespace GrainPrototype {
             const auto bank = make_synthetic_bank(SyntheticBank::Constant, 1.F);
             DeviceFilmBank resident;
             check_cuda(resident.upload(bank));
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            require(quads.resident() && quads.context() != nullptr, "quad context was not retained");
+            require(quads.upload(pack_film_quads(bank)) == cudaErrorInvalidValue, "quad owner accepted second upload");
             const DeviceCarrier carrier(16);
             auto frame = FilmFrame{kUhdPitch, 4096, 0, 2, 2, 4, 0, true};
             require(apply_film_reference(resident, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "out-of-range ROI was admitted");
+            require(apply_film_quads(quads, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8) == cudaErrorInvalidValue, "quad admitted out-of-range ROI");
             frame.originX = 0;
             frame.pitch = 0.125F;
             require(apply_film_reference(resident, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "unsupported pitch was admitted");
+            require(apply_film_quads(quads, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8) == cudaErrorInvalidValue, "quad admitted unsupported pitch");
             frame.pitch = kUhdPitch;
             for (float chroma : {-0.1F, 1.1F, std::numeric_limits<float>::quiet_NaN()}) {
                 frame.chromaFraction = chroma;
@@ -370,6 +416,20 @@ namespace GrainPrototype {
                         "invalid chroma fraction was admitted");
             }
             frame.chromaFraction = 1.F;
+            const auto getCurrent = context_entry<PFN_cuCtxGetCurrent_v4000>("cuCtxGetCurrent", 4000);
+            const auto create = context_entry<PFN_cuCtxCreate_v12050>("cuCtxCreate", 12050);
+            const auto setCurrent = context_entry<PFN_cuCtxSetCurrent_v4000>("cuCtxSetCurrent", 4000);
+            const auto destroy = context_entry<PFN_cuCtxDestroy_v4000>("cuCtxDestroy", 4000);
+            CUcontext original = nullptr;
+            CUcontext foreign = nullptr;
+            require(getCurrent(&original) == CUDA_SUCCESS && original != nullptr, "missing original CUDA context");
+            require(create(&foreign, nullptr, 0, 0) == CUDA_SUCCESS, "cannot create foreign CUDA context");
+            const auto foreignStatus = apply_film_quads(quads, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8);
+            const auto restoreStatus = setCurrent(original);
+            const auto destroyStatus = destroy(foreign);
+            require(restoreStatus == CUDA_SUCCESS && destroyStatus == CUDA_SUCCESS, "cannot restore CUDA context");
+            require(foreignStatus == cudaErrorInvalidResourceHandle, "quad accepted foreign CUDA context");
+            require(apply_film_quads({}, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8) == cudaErrorInvalidValue, "quad admitted missing bank");
             require(apply_film_reference({}, frame, carrier.planes(), nullptr) == cudaErrorInvalidValue,
                     "enabled frame accepted missing bank");
         }
@@ -379,7 +439,21 @@ namespace GrainPrototype {
             void (*run)();
         };
 
-        constexpr std::array kHostCases{Case{"known-rectangles-and-constant", known_rectangles}};
+        void signed_film_time() {
+            const auto negative = resolve_film_time(-1.0, 17, 23);
+            const auto half = resolve_film_time(-0.5, 17, 23);
+            const auto zero = resolve_film_time(0.0, 17, 23);
+            const auto positiveHalf = resolve_film_time(0.5, 17, 23);
+            const auto one = resolve_film_time(1.0, 17, 23);
+            require(zero.seed == 3099808472U && one.seed == 1854463680U && negative.seed == 1701653862U, "Film seed mapping changed");
+            require(negative.frame == -1 && negative.fraction == 0.F && negative.nextSeed == 0, "negative integer frame");
+            require(half.frame == -1 && half.fraction == 0.5F && half.seed == negative.seed && half.nextSeed == zero.seed, "negative half frame transition");
+            require(positiveHalf.frame == 0 && positiveHalf.seed == zero.seed && positiveHalf.nextSeed == one.seed, "positive half frame transition");
+            const auto replay = resolve_film_time(-0.5, 17, 23);
+            require(replay.seed == half.seed && replay.nextSeed == half.nextSeed, "frame request order changed seeds");
+        }
+
+        constexpr std::array kHostCases{Case{"known-rectangles-and-constant", known_rectangles}, Case{"signed-film-time", signed_film_time}};
         constexpr std::array kGpuCases{
             Case{"g2-geometry-and-temporal", g2_geometry_and_temporal}, Case{"chroma-projection", chroma_projection}, Case{"rectangles-wrap-and-seams", rectangles_and_seams}, Case{"dense-minimum-footprint", dense_footprints}, Case{"endpoints-seed-roi-alpha-padding", repeat_padded_roi}, Case{"zero-noise-identity", zero_noise}, Case{"disabled-no-bank", disabled}, Case{"unsupported-frame", unsupported_frame}};
 
@@ -431,13 +505,16 @@ namespace GrainPrototype {
             return probes;
         }
 
-        void compare_capture(const std::filesystem::path& directory) {
+        void compare_capture(const std::filesystem::path& directory, bool compareVariant, FilmVariant variant) {
             const auto probes = read_probes(directory / "reference.tsv");
             require(probes.size() == 3360, "incomplete G1 pinned probe capture");
             for (const float footprint : {1.F, kUhdPitch, 32.F}) {
                 const auto bank = read_film_bank(directory, footprint);
                 DeviceFilmBank device;
                 check_cuda(device.upload(bank));
+                DeviceFilmQuads quads;
+                if (compareVariant && variant == FilmVariant::Quad)
+                    check_cuda(quads.upload(pack_film_quads(bank)));
                 DeviceCarrier carrier(1);
                 Errors oracleErrors;
                 Errors upstreamErrors;
@@ -448,7 +525,15 @@ namespace GrainPrototype {
                     carrier.write(std::vector<float>(4, probe.net));
                     const FilmFrame frame{probe.pitch, probe.x, probe.y, 1, 1, 1, probe.seed, true};
                     check_cuda(apply_film_reference(device, frame, carrier.planes(), nullptr));
-                    const double output = carrier.read().at(static_cast<std::size_t>(probe.record));
+                    const auto reference = carrier.read();
+                    if (compareVariant) {
+                        carrier.write(std::vector<float>(4, probe.net));
+                        check_cuda(variant == FilmVariant::Quad ? apply_film_quads(quads, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8)
+                                                                : apply_film_variant(device, bank.tables, frame, carrier.planes(), nullptr, variant, FilmBlock::Block32x4));
+                        const auto candidate = carrier.read();
+                        require(std::equal(candidate.begin(), candidate.end(), reference.begin(), same_words), "Film variant pinned probe differs");
+                    }
+                    const double output = reference.at(static_cast<std::size_t>(probe.record));
                     const auto oracle = evaluate_sample(bank, {probe.pitch, probe.x, probe.y, probe.seed, probe.record, probe.net});
                     const double delta = output - probe.net;
                     oracleErrors.measure(delta, oracle.delta, oracle.roundingBound, probe.x, probe.y, probe.record);
@@ -472,12 +557,17 @@ namespace GrainPrototype {
         // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
         void compare_g2_capture(const std::filesystem::path& bankDirectory,
                                 const std::filesystem::path& tableDirectory,
-                                const std::filesystem::path& probeFile) {
+                                const std::filesystem::path& probeFile,
+                                bool compareVariant,
+                                FilmVariant variant) {
             const auto probes = read_probes(probeFile, true);
             require(probes.size() == 3360, "incomplete G2 pinned probe capture");
             auto bank = read_film_bank(bankDirectory, 1.F);
             DeviceFilmBank device;
             check_cuda(device.upload(bank));
+            DeviceFilmQuads quads;
+            if (compareVariant && variant == FilmVariant::Quad)
+                check_cuda(quads.upload(pack_film_quads(bank)));
             DeviceCarrier carrier(1);
             for (const float footprint : {0.25F, 0.78125F, 3.17F, 37.5F}) {
                 bank.tables = read_film_tables(tableDirectory, footprint);
@@ -490,7 +580,15 @@ namespace GrainPrototype {
                     carrier.write(std::vector<float>(4, probe.net));
                     const FilmFrame frame{probe.pitch, probe.x, probe.y, 1, 1, 1, probe.seed, true};
                     check_cuda(apply_film_reference(device, bank.tables, frame, carrier.planes(), nullptr));
-                    const double output = carrier.read().at(static_cast<std::size_t>(probe.record));
+                    const auto reference = carrier.read();
+                    if (compareVariant) {
+                        carrier.write(std::vector<float>(4, probe.net));
+                        check_cuda(variant == FilmVariant::Quad ? apply_film_quads(quads, bank.tables, frame, carrier.planes(), nullptr, FilmBlock::Block32x8)
+                                                                : apply_film_variant(device, bank.tables, frame, carrier.planes(), nullptr, variant, FilmBlock::Block32x4));
+                        const auto candidate = carrier.read();
+                        require(std::equal(candidate.begin(), candidate.end(), reference.begin(), same_words), "Film variant pinned probe differs");
+                    }
+                    const double output = reference.at(static_cast<std::size_t>(probe.record));
                     const auto oracle = evaluate_sample(bank, {probe.pitch, probe.x, probe.y, probe.seed, probe.record, probe.net});
                     const double delta = output - probe.net;
                     oracleErrors.measure(delta, oracle.delta, oracle.roundingBound, probe.x, probe.y, probe.record);
@@ -563,6 +661,41 @@ namespace GrainPrototype {
             benchmark(resources, input, launch_uhd, &device, std::cout);
         }
 
+        // Command operands are the bank directory followed by the output report.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        void verify_quads(const std::filesystem::path& directory, const std::filesystem::path& reportPath) {
+            const auto bank = read_film_bank(directory, 1.F);
+            const auto packed = pack_film_quads(bank);
+            DeviceFilmQuads device;
+            check_cuda(device.upload(packed));
+            std::vector<FilmQuad> copied(kQuadEntries);
+            check_cuda(cudaMemcpy(copied.data(), device.quads(), copied.size() * sizeof(FilmQuad), cudaMemcpyDeviceToHost));
+            std::size_t mismatches = 0;
+            nlohmann::json first = nullptr;
+            for (int record = 0; record < kRecords; ++record)
+                for (int level = 0; level < kLevels; ++level)
+                    for (int y = 0; y < kTileSide; ++y)
+                        for (int x = 0; x < kTileSide; ++x) {
+                            const auto levelIndex = static_cast<std::size_t>(record) * kLevels + static_cast<std::size_t>(level);
+                            const auto source = levelIndex * kTileEntries + static_cast<std::size_t>(y * kTileStride + x);
+                            const auto& q = copied[levelIndex * kTileSide * kTileSide + static_cast<std::size_t>(y * kTileSide + x)];
+                            const std::array actual{q.topLeft, q.topRight, q.bottomLeft, q.bottomRight};
+                            const std::array expected{bank.sums[source], bank.sums[source + 1], bank.sums[source + kTileStride], bank.sums[source + kTileStride + 1]};
+                            for (std::size_t word = 0; word < actual.size(); ++word)
+                                if (!same_words(actual[word], expected[word])) {
+                                    ++mismatches;
+                                    if (first.is_null())
+                                        first = {{"record", record}, {"level", level}, {"x", x}, {"y", y}, {"word", word}, {"expected", std::bit_cast<std::uint32_t>(expected[word])}, {"actual", std::bit_cast<std::uint32_t>(actual[word])}};
+                                }
+                        }
+            require(!std::filesystem::exists(reportPath), "quad verification report exists");
+            std::ofstream output(reportPath);
+            output << nlohmann::json{{"bank", directory.string()}, {"quad_count", kQuadEntries}, {"checked_words", kQuadEntries * 4}, {"bit_mismatches", mismatches}, {"device_quad_bytes", kQuadEntries * sizeof(FilmQuad)}, {"first_mismatch", first}}.dump(2) << '\n';
+            output.close();
+            require(output.good(), "cannot write quad verification report");
+            require(mismatches == 0, "quad packing differs from bank");
+        }
+
         void run_main(int argc, char** argv) {
             require(argc >= 2, "expected host, gpu, response, reference, capture or benchmark mode");
             const std::string_view mode(argv[1]);
@@ -577,18 +710,31 @@ namespace GrainPrototype {
                 run_cases(kGpuCases, list);
                 return;
             }
+            if (mode == "develop-g3" && argc == 4) {
+                develop_g3(argv[2], argv[3]);
+                return;
+            }
+            if ((mode == "stage" || mode == "stage-check" || mode == "stage-verify") && argc == 4) {
+                stage(argv[2], argv[3], mode == "stage-check", mode == "stage-verify");
+                return;
+            }
+            if (mode == "verify-quads" && argc == 4) {
+                open_cuda();
+                verify_quads(argv[2], argv[3]);
+                return;
+            }
             if (mode == "research" && argc == 4) {
                 capture_research(argv[2], argv[3], std::cout);
                 return;
             }
-            if (mode == "reference-g2" && argc == 5) {
+            if ((mode == "reference-g2" || mode == "reference-g2-scalar" || mode == "reference-g2-reuse" || mode == "reference-g2-paired" || mode == "reference-g2-quad") && argc == 5) {
                 open_cuda();
-                compare_g2_capture(argv[2], argv[3], argv[4]);
+                compare_g2_capture(argv[2], argv[3], argv[4], mode != "reference-g2", mode == "reference-g2-reuse" ? FilmVariant::Reuse : (mode == "reference-g2-paired" ? FilmVariant::Paired : (mode == "reference-g2-quad" ? FilmVariant::Quad : FilmVariant::Scalar)));
                 return;
             }
-            if (mode == "reference" && argc == 3) {
+            if ((mode == "reference" || mode == "reference-scalar" || mode == "reference-reuse" || mode == "reference-paired" || mode == "reference-quad") && argc == 3) {
                 open_cuda();
-                compare_capture(argv[2]);
+                compare_capture(argv[2], mode != "reference", mode == "reference-reuse" ? FilmVariant::Reuse : (mode == "reference-paired" ? FilmVariant::Paired : (mode == "reference-quad" ? FilmVariant::Quad : FilmVariant::Scalar)));
                 return;
             }
             if (mode == "response" && (argc == 3 || argc == 4)) {

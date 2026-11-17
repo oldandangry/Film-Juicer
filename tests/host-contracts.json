@@ -424,9 +424,9 @@
   },
   "native_membership": {
     "Grain.Host.FilmReferenceOracle": {
-      "listed": 1,
-      "terminal": 1,
-      "required": [["film-reference", "known-rectangles-and-constant"]]
+      "listed": 2,
+      "terminal": 2,
+      "required": [["film-reference", "known-rectangles-and-constant"], ["film-reference", "signed-film-time"]]
     }
   },
   "cuda_free_required": [

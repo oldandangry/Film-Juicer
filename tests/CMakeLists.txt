@@ -1300,6 +1300,8 @@ set_tests_properties(Grain.Gpu.ScratchReuse PROPERTIES
 add_executable(JuicerGrainPrototype grain/grain_prototype.cpp grain/film_reference.cu
     grain/film_bank.cpp grain/film_oracle.cpp grain/prototype_benchmark.cpp ffi/prepared_frame_fixture.cpp
     ofx/instance_host.cpp ../native/ofx_exports.cpp)
+# Correlate SAT profiling with this prototype CUDA source in Release builds.
+set_property(SOURCE grain/film_reference.cu APPEND PROPERTY COMPILE_OPTIONS -lineinfo)
 target_link_libraries(JuicerGrainPrototype PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
 set_target_properties(JuicerGrainPrototype PROPERTIES LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")

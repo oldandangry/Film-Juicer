@@ -3,6 +3,7 @@
 import json
 import hashlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import subprocess
 import tempfile
 import unittest
 
@@ -111,7 +112,7 @@ def sample(lane, row):
     return record
 
 
-def production_evidence(preset, module_hash, consumed_path):
+def production_evidence(preset, module_hash, consumed_path, *, module=None, snapshot=b"{}"):
     digest = ofx.execution.digest(consumed_path)
     contract = {
         "preset": preset,
@@ -121,8 +122,10 @@ def production_evidence(preset, module_hash, consumed_path):
         "loaded_module": {"sha256": module_hash},
         "consumed_inputs": {str(consumed_path): {"sha256_before": digest, "sha256_after": digest}},
     }
+    if module is not None:
+        contract["loaded_module"]["file"] = str(module)
     contract_bytes = json.dumps(contract).encode()
-    snapshot, patch = b"{}", b""
+    patch = b""
 
     def member(data):
         return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
@@ -385,6 +388,83 @@ class MeasurementReportTests(unittest.TestCase):
         p.write_text("changed")
         with self.assertRaises(ValueError):
             ofx.candidate_qualification(*production, "linux-release", "candidate-hash", check_inputs=True)
+
+    def test_g3_shipping_source_checks_unstaged_render_changes(self):
+        def git(*arguments):
+            subprocess.run(["git", *arguments], cwd=self.root, check=True, capture_output=True)
+
+        def capture():
+            return ofx.verify.capture_native_source(self.root, "tests/benchmarks/ofx.py", domain_tests=True)[:2]
+
+        for name in ("scripts", "src/Cuda", "tests/benchmarks"):
+            (self.root / name).mkdir(parents=True)
+        (self.root / "scripts/source_file_policy.json").write_text('{"supportedExtensions": [".cu"]}', encoding="utf-8")
+        render = self.root / "src/Cuda/Render.cu"
+        benchmark = self.root / "tests/benchmarks/ofx.py"
+        render.write_text("original\n", encoding="utf-8")
+        benchmark.write_text("original\n", encoding="utf-8")
+        git("init", "-q")
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "Fixture")
+        original, original_patch = capture()
+        snapshot = json.dumps(original).encode()
+        benchmark.write_text("test-only edit\n", encoding="utf-8")
+        test_only, test_patch = capture()
+        self.assertNotEqual(test_patch, original_patch)
+        ofx.g3_production_source(snapshot, original_patch, test_only, test_patch, root=self.root)
+        render.write_text("changed renderer\n", encoding="utf-8")
+        source, patch = capture()
+        self.assertEqual(source["inputs"]["src/Cuda/Render.cu"], original["inputs"]["src/Cuda/Render.cu"])
+        with self.assertRaisesRegex(ValueError, "product source or membership differs"):
+            ofx.g3_production_source(snapshot, original_patch, source, patch, root=self.root)
+        render.write_text("original\n", encoding="utf-8")
+        (render.parent / "New.cu").write_text("additional source\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "product source or membership differs"):
+            ofx.g3_production_source(snapshot, original_patch, *capture(), root=self.root)
+
+    def test_g3_shipping_binding_checks_relocated_sibling_inventory(self):
+        module = self.root / "qualified/Contents/native/juicer.ofx"
+        relocated = self.root / "relocated/Contents/native/juicer.ofx"
+        driver = self.root / "driver"
+        driver.write_bytes(b"driver")
+        for path in (module, relocated):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"module")
+            resources = path.parent.parent / "Resources"
+            resources.mkdir()
+            (resources / "profile").write_bytes(b"profile")
+        qualified = module.parent.parent / "Resources"
+        resources = relocated.parent.parent / "Resources"
+        resource = resources / "profile"
+        preset = "windows-clang-release" if PureWindowsPath(str(module)).drive else "linux-release"
+        source = {"head": "base", "inputs": {}, "new_files_base64": {}}
+        module_hash = ofx.inventory(module)
+        proof = production_evidence(
+            preset, module_hash, qualified / "profile", module=module, snapshot=json.dumps(source).encode()
+        )
+
+        def bind():
+            inputs = {
+                "driver": {"path": str(driver), "sha256": ofx.inventory(driver)},
+                "candidate": {
+                    "shipping": {"path": str(relocated), "sha256": module_hash},
+                    "resources": {"path": str(resources), "files": ofx.inventory(resources)},
+                },
+            }
+            selected = ofx.g3_identities(inputs)["candidate"]
+            return ofx.g3_production_binding(proof, preset, selected, source, b"", root=self.root)
+
+        self.assertEqual(bind()["module_sha256"], module_hash)
+        resource.write_bytes(b"altered")
+        with self.assertRaisesRegex(ValueError, "Resources differ"):
+            bind()
+        resource.unlink()
+        (resources / "other").write_bytes(b"profile")
+        with self.assertRaisesRegex(ValueError, "Resources differ"):
+            bind()
+        resource.write_bytes(b"profile")
+        with self.assertRaisesRegex(ValueError, "Resources differ"):
+            bind()
 
     def test_missing_pair(self):
         p = self.make_run("linux-release")

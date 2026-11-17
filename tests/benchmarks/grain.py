@@ -3,6 +3,7 @@
 
 import argparse
 import importlib
+import json
 import math
 import os
 from pathlib import Path
@@ -15,6 +16,19 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 execution = importlib.import_module("execution")
+
+
+def quad_copy_report(path, bank):
+    report = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "quad_count": 3342336,
+        "checked_words": 13369344,
+        "bit_mismatches": 0,
+        "device_quad_bytes": 53477376,
+    }
+    if any(report.get(key) != value for key, value in expected.items()) or Path(report["bank"]).resolve() != bank:
+        raise ValueError("quad copy report has mismatches or an unexpected representation")
+    return report
 
 
 def research(args, parser):
@@ -194,11 +208,28 @@ def main():
             "capture",
             "reference",
             "reference-g2",
+            "reference-scalar",
+            "reference-g2-scalar",
+            "reference-reuse",
+            "reference-g2-reuse",
+            "reference-paired",
+            "reference-g2-paired",
+            "reference-quad",
+            "reference-g2-quad",
+            "verify-quads",
             "benchmark",
             "freeze",
             "calibrate",
             "research",
             "quality",
+            "g3-inputs",
+            "g3-check",
+            "g3",
+            "g3-report",
+            "g3-profile",
+            "g3-screen",
+            "g3-verify-opt",
+            "g3-opt-report",
         ),
     )
     parser.add_argument("--preset", choices=("linux-release", "windows-clang-release"))
@@ -210,7 +241,50 @@ def main():
     parser.add_argument("--probes", type=Path, help="independent probe TSV for reference-g2")
     parser.add_argument("--experiment", type=Path, help="frozen G2 experiment JSON in the shared output directory")
     parser.add_argument("--rows", nargs="+", help="optional calibration or quality capture IDs")
+    parser.add_argument("--current-receipt", type=Path, help="retained G2 Current capture result")
+    parser.add_argument("--film-receipt", type=Path, help="retained G2 reduced-chroma capture result")
+    parser.add_argument("--check-result", type=Path, help="completed G3 stage check for the same binary and manifest")
+    parser.add_argument("--results", nargs="+", type=Path, help="completed G3 stage results for offline reporting")
+    parser.add_argument("--route-results", nargs="+", type=Path, help="completed Current route results")
+    parser.add_argument("--output", type=Path, help="new G3 offline report JSON")
+    parser.add_argument(
+        "--film-variant", choices=("reference", "scalar", "reuse", "paired", "quad"), default="reference"
+    )
+    parser.add_argument("--film-block", choices=("32x4", "16x8", "32x8"), default="32x4")
+    parser.add_argument("--baseline-variant", choices=("reference", "scalar"), default="reference")
+    parser.add_argument("--baseline-block", choices=("32x4", "16x8", "32x8"), default="32x4")
+    parser.add_argument("--profile-set", choices=("standard", "sat"), default="standard")
+    parser.add_argument("--profiler", type=Path, help="native Nsight Compute CLI for explicit profiling")
+    parser.add_argument(
+        "--profile-result", type=Path, help="closed failed profile receipt whose captured kernels must not repeat"
+    )
+    parser.add_argument("--agreement-result", type=Path, help="completed reference/optimized full-frame agreement")
+    parser.add_argument(
+        "--profile-reader", type=Path, help="Nsight Compute extras/python directory for offline reports"
+    )
     args = parser.parse_args()
+    if args.mode == "g3-opt-report":
+        import grain_optimization
+
+        if not (args.input and args.results and args.output):
+            parser.error("g3-opt-report requires --input, --results and --output")
+        grain_optimization.offline_report(ROOT, args)
+        return
+    if args.mode in {"g3-profile", "g3-screen", "g3-verify-opt"}:
+        import grain_optimization
+
+        grain_optimization.run_native(ROOT, args, parser)
+        return
+    if args.mode in {"g3-inputs", "g3-check", "g3", "g3-report"}:
+        import grain_g3
+
+        if args.mode == "g3-report":
+            if args.input is None or args.output is None:
+                parser.error("g3-report requires --input and --output")
+            grain_g3.offline_report(args.input, args.results or [], args.route_results or [], args.output, root=ROOT)
+        else:
+            grain_g3.run_native(ROOT, args, parser)
+        return
     if args.mode in {"freeze", "calibrate", "research", "quality"}:
         research(args, parser)
         return
@@ -218,9 +292,28 @@ def main():
         parser.error(f"{args.mode} requires --preset and --run-id")
     if args.preset.startswith("windows") != (os.name == "nt"):
         parser.error("use the preset's native platform")
-    if bool(args.bank) != (args.mode in {"reference", "reference-g2", "benchmark"}):
-        parser.error("reference, reference-g2 and benchmark require --bank")
-    if args.mode == "reference-g2" and not (args.tables and args.probes):
+    reference_modes = {
+        "reference",
+        "reference-scalar",
+        "reference-reuse",
+        "reference-g2",
+        "reference-g2-scalar",
+        "reference-g2-reuse",
+        "reference-paired",
+        "reference-g2-paired",
+        "reference-quad",
+        "reference-g2-quad",
+    }
+    g2_reference_modes = {
+        "reference-g2",
+        "reference-g2-scalar",
+        "reference-g2-reuse",
+        "reference-g2-paired",
+        "reference-g2-quad",
+    }
+    if bool(args.bank) != (args.mode in reference_modes | {"benchmark", "verify-quads"}):
+        parser.error("reference, reference-g2, verify-quads and benchmark require --bank")
+    if args.mode in g2_reference_modes and not (args.tables and args.probes):
         parser.error("reference-g2 requires --tables and --probes")
     if bool(args.input) != (args.mode in {"capture", "benchmark"}):
         parser.error("capture and benchmark require --input")
@@ -234,11 +327,13 @@ def main():
     resources = build / "tests/Resources"
     binary = build / "tests/bin" / ("JuicerGrainPrototype.exe" if os.name == "nt" else "JuicerGrainPrototype")
     directory = ROOT / "out/validation" / args.preset / "results" / run_id
-    inputs = [binary, resources / "profiles" / f"{stock}.json"]
-    if args.mode == "reference-g2":
+    inputs = [Path(__file__), binary, resources / "profiles" / f"{stock}.json"]
+    if args.mode in g2_reference_modes:
         inputs.extend(args.bank.resolve() / name for name in ("sums.f32", "records.f32", "footprint-1.f32"))
         inputs.extend(args.tables.resolve() / f"footprint-{pitch}.f32" for pitch in (0.25, 0.78125, 3.17, 37.5))
         inputs.extend((args.tables.resolve() / "records.f32", args.probes.resolve()))
+    elif args.mode == "verify-quads":
+        inputs.extend(args.bank.resolve() / name for name in ("sums.f32", "records.f32", "footprint-1.f32"))
     elif args.bank:
         inputs.extend(
             args.bank.resolve() / name
@@ -257,9 +352,11 @@ def main():
     command = [binary, args.mode]
     if args.bank:
         command.append(args.bank.resolve())
-    if args.mode == "reference-g2":
+    if args.mode in g2_reference_modes:
         command.extend((args.tables.resolve(), args.probes.resolve()))
-    elif args.mode != "reference":
+    elif args.mode == "verify-quads":
+        command.append(directory / "quad-copy.json")
+    elif args.mode not in reference_modes:
         command.append(resources)
     if args.input:
         command.append(args.input.resolve())
@@ -294,6 +391,11 @@ def main():
                     result["developed_input_sha256"] = execution.digest(args.input)
                 elif args.mode == "benchmark":
                     result["summary"] = summarize(log)
+                elif args.mode == "verify-quads":
+                    raw = directory / "quad-copy.json"
+                    result.update(
+                        quad_copy=quad_copy_report(raw, args.bank.resolve()), report_sha256=execution.digest(raw)
+                    )
             if result["input_hashes"] != {str(path): execution.digest(path) for path in inputs}:
                 raise ValueError("grain prototype input changed during execution")
             result["status"] = "passed"

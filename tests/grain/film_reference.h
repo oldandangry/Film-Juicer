@@ -43,6 +43,16 @@ namespace GrainPrototype {
         FilmTables tables;
     };
 
+    struct alignas(16) FilmQuad {
+        float topLeft;
+        float topRight;
+        float bottomLeft;
+        float bottomRight;
+    };
+    static_assert(sizeof(FilmQuad) == 16 && alignof(FilmQuad) == 16);
+    constexpr std::size_t kQuadEntries = static_cast<std::size_t>(kRecords) * kLevels * kTileSide * kTileSide;
+    std::vector<FilmQuad> pack_film_quads(const FilmBank& bank);
+
     struct FilmFrame {
         float pitch = 0.F;
         int originX = 0;
@@ -56,6 +66,19 @@ namespace GrainPrototype {
         std::uint32_t nextSeed = 0;
         float temporalFraction = 0.F;
         float chromaFraction = 1.F;
+    };
+
+    enum class FilmVariant : std::uint8_t {
+        Reference,
+        Scalar,
+        Reuse,
+        Paired,
+        Quad
+    };
+    enum class FilmBlock : std::uint8_t {
+        Block32x4,
+        Block16x8,
+        Block32x8
     };
 
     struct FilmPlanes {
@@ -93,11 +116,38 @@ namespace GrainPrototype {
         FilmTables tables_{};
     };
 
+    // Immutable quads belong to the exact CUDA context that received them.
+    class DeviceFilmQuads {
+    public:
+        DeviceFilmQuads() = default;
+        DeviceFilmQuads(const DeviceFilmQuads&) = delete;
+        DeviceFilmQuads& operator=(const DeviceFilmQuads&) = delete;
+        ~DeviceFilmQuads();
+        cudaError_t upload(const std::vector<FilmQuad>& quads);
+        [[nodiscard]] bool resident() const {
+            return quads_ != nullptr;
+        }
+        [[nodiscard]] const FilmQuad* quads() const {
+            return quads_;
+        }
+        [[nodiscard]] void* context() const {
+            return context_;
+        }
+
+    private:
+        FilmQuad* quads_ = nullptr;
+        void* context_ = nullptr;
+    };
+
+    cudaError_t apply_film_quads(const DeviceFilmQuads& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream, FilmBlock block);
+
     // Only the three density planes are written. A disabled frame needs neither
     // a CUDA context nor an uploaded bank.
     cudaError_t apply_film_reference(const DeviceFilmBank& bank, FilmFrame frame, FilmPlanes planes, cudaStream_t stream);
 
     cudaError_t apply_film_reference(const DeviceFilmBank& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream);
+
+    cudaError_t apply_film_variant(const DeviceFilmBank& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream, FilmVariant variant, FilmBlock block);
 
     FilmTables read_film_tables(const std::filesystem::path& directory, float footprint);
 
