@@ -28,7 +28,11 @@ pub enum Error {
         channel: usize,
     },
     #[cfg(any(feature = "grain-preview", test))]
+    FilmNormalization,
+    #[cfg(any(feature = "grain-preview", test))]
     FilmProjectionSpan,
+    #[cfg(any(feature = "grain-preview", test))]
+    FilmSpectralRange,
     ZeroIdentity,
 }
 
@@ -41,8 +45,16 @@ impl fmt::Display for Error {
                 "film density span requires finite positive result channel={channel}"
             ),
             #[cfg(any(feature = "grain-preview", test))]
+            Self::FilmNormalization => {
+                f.write_str("Film v1 normalization falls outside the Portra density certificate")
+            }
+            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmProjectionSpan => {
-                f.write_str("Portra Film v1 projection requires a finite CMY span within 33 D")
+                f.write_str("Portra Film v1 projection requires a finite CMY span within 64 D")
+            }
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::FilmSpectralRange => {
+                f.write_str("Portra Film v1 exceeds the scanner and enlarger transmission range")
             }
             Self::ZeroIdentity => f.write_str("film density bounds identity is zero"),
         }
@@ -87,12 +99,8 @@ impl Bounds {
     }
 
     #[cfg(any(feature = "grain-preview", test))]
-    pub(crate) fn film_v1(
-        development: &Development,
-        gain: f32,
-        size_um: f32,
-    ) -> Result<Self, Error> {
-        let [lower, upper] = portra::allowances(gain, size_um);
+    pub(crate) fn film_v1(development: &Development, allowances: [f32; 2]) -> Result<Self, Error> {
+        let [lower, upper] = allowances;
         // Development samples its normalized knots with capped linear
         // interpolation. Thinning by a factor in [0, 1] stays inside this
         // interval because it contains zero.
@@ -101,11 +109,23 @@ impl Bounds {
             let minimum = development.minimum_cmy()[channel];
             (maximum.max(maximum - minimum) + upper).next_up()
         });
-        if maximum_cmy
-            .iter()
-            .any(|&maximum| !(0.0..=33.0).contains(&(maximum - lower)))
-        {
+        if !(0.0..=64.0).contains(&(maximum_cmy.into_iter().fold(0.0, f32::max) - lower)) {
             return Err(Error::FilmProjectionSpan);
+        }
+        // Check the brightest spectral endpoint using the actual signed dye
+        // coefficients. A floor of -30 D leaves eight orders of Float32
+        // headroom for spectral accumulation and illumination/exposure scales.
+        let tables = development.profile().tables();
+        for (dyes, &base) in tables.channel_density().iter().zip(tables.base_density()) {
+            let spectral_minimum =
+                dyes.iter()
+                    .zip(maximum_cmy)
+                    .fold(f64::from(base), |sum, (&dye, max)| {
+                        sum + f64::from(dye) * f64::from(if dye >= 0.0 { lower } else { max })
+                    });
+            if spectral_minimum < -30.0 {
+                return Err(Error::FilmSpectralRange);
+            }
         }
         Self::from_range(development, [lower; 3], maximum_cmy)
     }

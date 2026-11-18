@@ -33,6 +33,84 @@ fn domain(bounds: [i32; 4]) -> Result<Domain, Status> {
     .map_err(|_| Status::FATAL)
 }
 
+#[cfg(feature = "grain-preview")]
+fn complete_frame_mapping(
+    args: &super::host::RenderArgs,
+    source: &super::host::Image<'_>,
+    destination: &super::host::Image<'_>,
+    window: [i32; 4],
+    canonical: [f64; 4],
+) -> bool {
+    let [x1, y1, x2, y2] = canonical;
+    let [scale_x, scale_y] = args.scale;
+    let standard_scale =
+        scale_x == scale_y && source.scale == args.scale && destination.scale == args.scale;
+    let resized =
+        scale_x < 1.0 && scale_y < 1.0 && source.scale == [1.0; 2] && destination.scale == [1.0; 2];
+    // A dimension-derived action scale can multiply back one ulp past an
+    // integer edge. Recognize that exact quotient on pre-resized images;
+    // genuinely fractional edges still need outward rounding.
+    let edge = |canonical: f64, scale: f64, outward: fn(f64) -> f64| {
+        let scaled = canonical * scale;
+        let nearest = scaled.round();
+        if resized && canonical != 0.0 && nearest / canonical == scale {
+            nearest
+        } else {
+            outward(scaled)
+        }
+    };
+    let [left, top, right, bottom] = source.definition;
+    canonical.into_iter().all(f64::is_finite)
+        && x1 < x2
+        && y1 < y2
+        && scale_x.is_finite()
+        && scale_y.is_finite()
+        && scale_x > 0.0
+        && scale_y > 0.0
+        && (standard_scale || resized)
+        && source.pixel_aspect_ratio == 1.0
+        && destination.pixel_aspect_ratio == 1.0
+        && edge(x1, scale_x, f64::floor) == f64::from(left)
+        && edge(x2, scale_x, f64::ceil) == f64::from(right)
+        && edge(y1, scale_y, f64::floor) == f64::from(top)
+        && edge(y2, scale_y, f64::ceil) == f64::from(bottom)
+        && destination.definition == source.definition
+        && source.bounds == source.definition
+        && destination.bounds == source.definition
+        && window == source.definition
+}
+
+#[cfg(feature = "grain-preview")]
+fn film_geometry_error(
+    callback: &Callback<'_>,
+    args: &super::host::RenderArgs,
+    source: &super::host::Image<'_>,
+    destination: &super::host::Image<'_>,
+    window: [i32; 4],
+    canonical: [f64; 4],
+) -> Status {
+    let mut text = AdmissionText(String::new());
+    if write!(
+        text,
+        "Film v1 requires complete square-pixel source and output images that agree with the action's canonical mapping. canonical={canonical:?} action_scale={:?} source_scale={:?} output_scale={:?} source_definition={:?} output_definition={:?} source_bounds={:?} output_bounds={:?} window={window:?} source_par={} output_par={} time={}",
+        args.scale,
+        source.scale,
+        destination.scale,
+        source.definition,
+        destination.definition,
+        source.bounds,
+        destination.bounds,
+        source.pixel_aspect_ratio,
+        destination.pixel_aspect_ratio,
+        args.time,
+    )
+    .is_ok()
+    {
+        callback.message(c"FilmJuicerFilmGrainGeometry", &text.0);
+    }
+    Status::FAILED
+}
+
 fn frame_position(time: f64) -> Result<(f64, u64), Status> {
     let time = if time.is_finite() { time } else { 0.0 };
     // Binary64 INT64_MAX rounds to the excluded upper endpoint. These exact
@@ -134,10 +212,52 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             None => owner.state.frame_input(),
         };
     }
+    #[cfg(feature = "grain-preview")]
+    let film_selected = input
+        .as_ref()
+        .is_ok_and(|input| input.film_grain_selected());
+    #[cfg(feature = "grain-preview")]
+    let preview_frame = if film_selected && callback.thumbnail(&owner.handles) {
+        film_juicer_core::recipe::PreviewFrame::Thumbnail
+    } else {
+        film_juicer_core::recipe::PreviewFrame::Raster {
+            long_edge_px: full.width.max(full.height),
+        }
+    };
+    #[cfg(feature = "grain-preview")]
+    let film_canonical = if film_selected
+        && matches!(
+            preview_frame,
+            film_juicer_core::recipe::PreviewFrame::Raster { .. }
+        ) {
+        let canonical = callback.canonical_region(&owner.handles, args.time)?;
+        if !complete_frame_mapping(&args, source, destination, window, canonical)
+            || !(-1_000_000.0..=1_000_000.0).contains(&args.time)
+        {
+            return Err(film_geometry_error(
+                callback,
+                &args,
+                source,
+                destination,
+                window,
+                canonical,
+            ));
+        }
+        Some(canonical)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "grain-preview"))]
+    let film_canonical = None;
     #[cfg(feature = "test-support")]
     let input_identity = input.as_ref().map_or(0, state::FrameInput::input_identity);
     let admitted = match input {
-        Ok(input) => owner.state.admit_frame(input, assets),
+        Ok(input) => owner.state.admit_frame(
+            input,
+            assets,
+            #[cfg(feature = "grain-preview")]
+            preview_frame,
+        ),
         Err(error) => Err(error),
     };
     let admitted = match admitted {
@@ -148,43 +268,31 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         Err(error) if allocation(&error) => return Err(Status::MEMORY),
         Err(error) => {
             let mut text = AdmissionText(String::new());
-            if write!(text, "{error}").is_ok() {
+            let diagnostic = write!(text, "{error}");
+            #[cfg(feature = "grain-preview")]
+            let diagnostic = diagnostic.and_then(|()| {
+                if matches!(
+                    error,
+                    state::Error::Preparation(
+                        film_juicer_core::recipe::PrepareError::FilmGrainFootprint { .. }
+                    )
+                ) {
+                    write!(
+                        text,
+                        " (rendered={}x{}, action_scale={:?})",
+                        full.width, full.height, args.scale
+                    )
+                } else {
+                    Ok(())
+                }
+            });
+            if diagnostic.is_ok() {
                 callback.message(c"FilmJuicerRenderAdmission", &text.0);
             }
             return Err(Status::FATAL);
         }
     };
     let state = admitted.as_ref();
-    #[cfg(feature = "grain-preview")]
-    if state.film_grain().is_some() {
-        let canonical = callback.canonical_region(&owner.handles, args.time)?;
-        let scale = source.scale[0];
-        let full_definition = [
-            (canonical[0] * scale).floor(),
-            (canonical[1] * scale).floor(),
-            (canonical[2] * scale).ceil(),
-            (canonical[3] * scale).ceil(),
-        ];
-        if source.definition != source.bounds
-            || destination.definition != source.definition
-            || destination.bounds != source.bounds
-            || window != source.bounds
-            || source.pixel_aspect_ratio != 1.0
-            || destination.pixel_aspect_ratio != 1.0
-            || !scale.is_finite()
-            || scale <= 0.0
-            || source.scale[1] != scale
-            || destination.scale != source.scale
-            || full_definition != source.definition.map(f64::from)
-            || !(-1_000_000.0..=1_000_000.0).contains(&args.time)
-        {
-            callback.message(
-                c"FilmJuicerFilmGrainGeometry",
-                "Film v1 requires a complete square-pixel source and output with matching isotropic render scale.",
-            );
-            return Err(Status::FAILED);
-        }
-    }
     let print = matches!(
         state.development().route(),
         ScanRoute::NegativePrint | ScanRoute::PositivePrint
@@ -222,7 +330,19 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         pixel_aspect_ratio: 0.0,
     };
     if state.effects().active() {
-        let canonical = callback.canonical_region(&owner.handles, args.time)?;
+        let canonical = match film_canonical {
+            Some(region) => region,
+            None => callback.canonical_region(&owner.handles, args.time)?,
+        };
+        let scale = source.scale;
+        #[cfg(feature = "grain-preview")]
+        let scale = if film_canonical.is_some()
+            || complete_frame_mapping(&args, source, destination, window, canonical)
+        {
+            args.scale
+        } else {
+            scale
+        };
         let definition = domain(source.definition)?;
         effects = cuda::sys::FjEffectsGeometry {
             pixel_definition: cuda::sys::FjExtent {
@@ -235,8 +355,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             canonical_y: canonical[1],
             canonical_width: canonical[2] - canonical[0],
             canonical_height: canonical[3] - canonical[1],
-            scale_x: source.scale[0],
-            scale_y: source.scale[1],
+            scale_x: scale[0],
+            scale_y: scale[1],
             pixel_aspect_ratio: source.pixel_aspect_ratio,
         };
         #[cfg(feature = "test-support")]

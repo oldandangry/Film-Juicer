@@ -39,6 +39,20 @@
 #include "production_images.h"
 #include "case_results.h"
 
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+#include <cerrno>
+#include <cstring>
+#include <iomanip>
+#include <optional>
+#include <sstream>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "motion-replay.h"
+#include "juicer_ofx_api.h"
+#endif
+
 namespace {
     using Json = nlohmann::json;
     using ofx_test::InstanceHost;
@@ -55,6 +69,23 @@ namespace {
                                           {"negative-print", "negative-print", "NegativePrintScan", 1, 4}}};
     constexpr std::array<std::string_view, 4> kCaseIds{
         "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"};
+    constexpr std::array kGrainPreviewCases{
+        Case{"negative-direct-quarter-size-half", "negative-direct", "NegativeDirectScan", 0, 4, 1208, 504},
+        Case{"negative-print-proxy-sequence", "negative-print", "NegativePrintScan", 0, 4, 1208, 504},
+        Case{"negative-direct-hd", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
+        Case{"negative-print-hd", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
+        Case{"negative-direct-uhd", "negative-direct", "NegativeDirectScan", 0, 4, 3840, 2160},
+        Case{"negative-print-uhd", "negative-print", "NegativePrintScan", 0, 4, 3840, 2160},
+        Case{"negative-direct-4832", "negative-direct", "NegativeDirectScan", 0, 4, 4832, 2016},
+        Case{"negative-print-4832", "negative-print", "NegativePrintScan", 0, 4, 4832, 2016},
+        Case{"negative-print-portrait", "negative-print", "NegativePrintScan", 0, 4, 5299, 7418},
+        Case{"negative-direct-smaller-formats", "negative-direct", "NegativeDirectScan", 0, 4, 4832, 2016},
+        Case{"negative-print-smaller-formats", "negative-print", "NegativePrintScan", 0, 4, 4832, 2016},
+        Case{"negative-direct-larger-formats", "negative-direct", "NegativeDirectScan", 0, 4, 92, 46},
+        Case{"negative-print-larger-formats", "negative-print", "NegativePrintScan", 0, 4, 92, 46},
+        Case{"negative-direct-thumbnails", "negative-direct", "NegativeDirectScan", 0, 4, 92, 46},
+        Case{"negative-print-thumbnails", "negative-print", "NegativePrintScan", 0, 4, 92, 46},
+    };
     constexpr std::array<Case, 8> kHalationCases{{{"negative-direct-ae-off", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
                                                   {"negative-direct-ae-on", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
                                                   {"negative-print-ae-off", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
@@ -439,7 +470,11 @@ namespace {
 
     int grain_preview_witness(const std::filesystem::path& path) {
         JuicerTests::CaseLog cases;
-        cases.membership("grain-preview-render", {"negative-direct-hd", "negative-print-hd", "negative-direct-uhd", "negative-print-uhd"});
+        std::vector<std::string> ids;
+        ids.reserve(kGrainPreviewCases.size());
+        for (const auto& test : kGrainPreviewCases)
+            ids.emplace_back(test.id);
+        cases.membership("grain-preview-render", ids);
         require(path.filename() == "juicer-grain-preview.ofx", "expected preview module");
         const auto resources = path.parent_path().parent_path() / "Resources";
         require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
@@ -465,12 +500,7 @@ namespace {
         DeviceBuffers device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create preview stream");
         Json routes = Json::array();
-        for (const Case test : std::array{
-                 Case{"negative-direct-hd", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
-                 Case{"negative-print-hd", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
-                 Case{"negative-direct-uhd", "negative-direct", "NegativeDirectScan", 0, 4, 3840, 2160},
-                 Case{"negative-print-uhd", "negative-print", "NegativePrintScan", 0, 4, 3840, 2160},
-             }) {
+        for (const auto& test : kGrainPreviewCases) {
             JuicerTests::CaseEvent event("grain-preview-render", test.id);
             auto* effect = host.create_effect();
             const auto amountDefault = host.value(effect, "FilmGrainAmountEv");
@@ -478,14 +508,22 @@ namespace {
             const auto colourDefault = host.value(effect, "FilmGrainChromaFraction");
             require(amountDefault == std::vector<InstanceValue>{0.0} &&
                         sizeDefault == std::vector<InstanceValue>{1.0} &&
-                        colourDefault == std::vector<InstanceValue>{0.2406350076198578},
+                        colourDefault == std::vector<InstanceValue>{1.0},
                     "preview descriptor slider defaults");
             author_parameters(host, effect, test);
+            const bool proxy = std::string_view(test.id) == "negative-direct-quarter-size-half" ||
+                               std::string_view(test.id) == "negative-print-proxy-sequence";
+            const bool smallerFormats = std::string_view(test.id).ends_with("-smaller-formats");
+            const bool largerFormats = std::string_view(test.id).ends_with("-larger-formats");
+            const bool thumbnails = std::string_view(test.id).ends_with("-thumbnails");
+            if (proxy || smallerFormats || thumbnails)
+                host.set_value(effect, "GlareActive", {0});
             host.set_value(effect, "CameraFilmFormatPreset", {2});
             host.set_value(effect, "CameraFilmFormatMm", {36.0});
             require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "preview create");
             lifecycle.created(effect);
-            const auto source = initial_source(test);
+            Case renderTest = test;
+            auto source = initial_source(renderTest);
             const auto bytes = source.size() * sizeof(float);
             require_cuda(cudaMalloc(&device.source, bytes), "allocate preview source");
             require_cuda(cudaMalloc(&device.destination, bytes), "allocate preview destination");
@@ -502,14 +540,274 @@ namespace {
                 host.set_property(host.action_args(), kOfxPropTime, {time});
                 std::vector<std::uint32_t> words;
                 try {
-                    (void)run_pass(lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, words, true);
+                    (void)run_pass(lifecycle, host, effect, renderTest, "cold", {source, nullptr, {}}, device, words, true);
                 } catch (const std::exception& error) {
                     throw std::runtime_error(lastEdit + " at frame " + std::to_string(time) + ": " + error.what());
                 }
                 return words;
             };
+            if (proxy || smallerFormats || largerFormats || thumbnails) {
+                auto resize = [&](int width, int height) {
+                    device.release_images();
+                    renderTest.width = width;
+                    renderTest.height = height;
+                    source = initial_source(renderTest);
+                    const auto imageBytes = source.size() * sizeof(float);
+                    require_cuda(cudaMalloc(&device.source, imageBytes), "allocate proxy source");
+                    require_cuda(cudaMalloc(&device.destination, imageBytes), "allocate proxy destination");
+                    configure(host, effect, renderTest, device);
+                };
+                auto geometry = [&](int divisor) {
+                    resize(4832 / divisor, 2016 / divisor);
+                    const double scale = 1.0 / divisor;
+                    host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {scale, scale});
+                    for (const auto* clip : {"Source", "Output"}) {
+                        host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {scale, scale});
+                        host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
+                    }
+                };
+                change("GrainModel", {std::string("film_v1")});
+                if (thumbnails) {
+                    constexpr double time = 158.0;
+                    Json rows = Json::array();
+                    auto source_flag = [&](std::vector<InstanceValue> values) {
+                        host.set_clip_property(effect, "Source", kOfxImageClipPropThumbnail, std::move(values));
+                    };
+                    auto output_flag = [&](std::vector<InstanceValue> values) {
+                        host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, std::move(values));
+                    };
+                    for (const auto& [width, height] : std::array{std::pair{92, 46}, std::pair{151, 63}, std::pair{100, 50}}) {
+                        const std::vector<InstanceValue> scale{width / 4832.0, height / 2016.0};
+                        auto resized = [&] {
+                            resize(width, height);
+                            host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, scale);
+                            for (const auto* clip : {"Source", "Output"})
+                                host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
+                        };
+                        resized();
+                        source_flag({});
+                        output_flag({});
+                        change("GrainActive", {0});
+                        change("FilmDustAmount", {0.0});
+                        change("FilmScratchAmount", {0.0});
+                        const auto clean = render(time);
+                        change("FilmDustAmount", {10.0});
+                        change("FilmScratchAmount", {10.0});
+                        // The ordinary image-scale path supplies an independent
+                        // processed reference for the same physical artifact grid.
+                        for (const auto* clip : {"Source", "Output"})
+                            host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, scale);
+                        const auto artifacts = render(time);
+                        require(artifacts != clean, "dust and scratches did not change the processed reference");
+                        for (const auto* clip : {"Source", "Output"})
+                            host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                        require(render(time) == artifacts, "unit image scales changed grain-off artifact geometry");
+                        change("GrainActive", {1});
+                        const auto grained = render(time);
+                        require(grained != artifacts, "absent thumbnail flag suppressed Film");
+                        output_flag({0});
+                        require(render(time) == grained, "false thumbnail flag changed Film");
+                        source_flag({1});
+                        require(render(time) == grained, "conflicting clip flags suppressed Film");
+                        output_flag({});
+                        require(render(time) == artifacts, "Source thumbnail did not match grain-off effects");
+                        source_flag({});
+                        output_flag({2});
+                        require(render(time) == grained, "malformed thumbnail flag suppressed Film");
+                        output_flag({0});
+                        geometry(8);
+                        const auto timeline = render(time);
+                        resized();
+                        output_flag({1});
+                        require(render(time) == artifacts, "Output thumbnail did not match grain-off effects");
+                        geometry(8);
+                        output_flag({0});
+                        require(render(time) == timeline, "timeline Film changed after a flagged thumbnail");
+                        rows.push_back({{"width", width}, {"height", height}, {"processed_thumbnail_matches", true}, {"timeline_returned", true}});
+                    }
+                    for (const auto& [rasterWidth, mappedWidth] : std::array{std::pair{100, 101}, std::pair{101, 100}}) {
+                        resize(rasterWidth, 50);
+                        for (const auto* clip : {"Source", "Output"})
+                            host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
+                        host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {mappedWidth / 4832.0, 50.0 / 2016.0});
+                        require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed,
+                                "one-pixel canonical mismatch was admitted");
+                    }
+                    geometry(8);
+                    change("GrainModel", {std::string("current")});
+                    const auto current = render(time);
+                    output_flag({1});
+                    require(render(time) == current, "thumbnail flag changed Current grain");
+                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}});
+                    require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                    device.release_images();
+                    event.passed();
+                    continue;
+                }
+                if (smallerFormats || largerFormats) {
+                    Json rows = Json::array();
+                    auto select_format = [&](int preset, double mm) {
+                        if (preset == 0)
+                            change("CameraFilmFormatMm", {mm});
+                        else
+                            change("CameraFilmFormatPreset", {preset});
+                        require(host.value(effect, "CameraFilmFormatPreset") == std::vector<InstanceValue>{preset} &&
+                                    host.value(effect, "CameraFilmFormatMm") == std::vector<InstanceValue>{mm},
+                                "effective film format differs from the host edit");
+                    };
+                    const double frameTime = largerFormats ? 158.0 : 37.0;
+                    auto film_frame = [&](double mm, double size) {
+                        change("FilmGrainTexelPitchUm", {size});
+                        lastEdit += " for " + std::to_string(mm) + " mm at Size " + std::to_string(size);
+                        auto frame = render(frameTime);
+                        const auto footprint = (mm * 1000.0) / std::max(renderTest.width, renderTest.height) / size;
+                        rows.push_back({{"mm", mm}, {"size_um", size}, {"width", renderTest.width}, {"height", renderTest.height}, {"expected_footprint", footprint}, {"ofx_status", kOfxStatOK}});
+                        return frame;
+                    };
+                    change("GrainActive", {1});
+                    if (largerFormats) {
+                        // Resolve project-open geometry as recorded at time 158.
+                        constexpr double scaleX = 92.0 / 4832.0;
+                        constexpr double scaleY = 46.0 / 2016.0;
+                        host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {scaleX, scaleY});
+                        for (const auto* clip : {"Source", "Output"}) {
+                            host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                            host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
+                        }
+                        for (const auto& [preset, mm] : std::array{std::pair{2, 36.0}, std::pair{5, 120.0}}) {
+                            select_format(preset, mm);
+                            for (double size : {0.5, 1.0, 4.0})
+                                (void)film_frame(mm, size);
+                        }
+                        const auto thumbnail = render(158.0);
+                        host.set_image_property(effect, "Output", kOfxImageEffectPropRenderScale, {scaleX, scaleY});
+                        host.clear_calls();
+                        require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed,
+                                "thumbnail with inconsistent image scales was not rejected");
+                        host.set_image_property(effect, "Output", kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                        require(render(158.0) == thumbnail, "thumbnail did not recover after scale rejection");
+
+                        geometry(1);
+                        for (const auto& [preset, mm] : std::array{std::pair{9, 37.72}, std::pair{0, 48.5}, std::pair{3, 56.0}, std::pair{4, 70.0}, std::pair{10, 70.4}, std::pair{5, 120.0}}) {
+                            select_format(preset, mm);
+                            (void)film_frame(mm, 1.0);
+                        }
+                        (void)film_frame(120.0, 0.5);
+                        (void)film_frame(120.0, 4.0);
+                        geometry(2);
+                        (void)film_frame(120.0, 0.5);
+                        geometry(8);
+                        (void)film_frame(120.0, 0.5);
+                        routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"thumbnail_recovered", true}});
+                        require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                        device.release_images();
+                        event.passed();
+                        continue;
+                    }
+                    select_format(2, 36.0);
+                    const auto reference = film_frame(36.0, 1.0);
+                    select_format(6, 11.66);
+                    require(film_frame(11.66, 1.0) != reference, "the format edit did not change the delivered image");
+                    select_format(2, 36.0);
+                    require(film_frame(36.0, 1.0) == reference, "36 mm output changed after paused format edits");
+                    for (const auto& [preset, mm] : std::array{std::pair{2, 36.0}, std::pair{0, 35.0}, std::pair{8, 24.89}, std::pair{6, 11.66}}) {
+                        select_format(preset, mm);
+                        for (const double size : {0.5, 1.0, 4.0})
+                            if (size != 1.0 || (preset != 2 && preset != 6))
+                                (void)film_frame(mm, size);
+                    }
+                    select_format(0, 8.0);
+                    const auto smaller = film_frame(8.0, 4.0);
+                    change("GrainActive", {0});
+                    const auto off = render(37.0);
+                    require(smaller != off, "8 mm Film v1 did not change delivered pixels");
+                    change("GrainModel", {std::string("current")});
+                    change("GrainActive", {1});
+                    require(render(37.0) != off, "8 mm Current did not change delivered pixels");
+
+                    resize(8192, 16);
+                    change("GrainModel", {std::string("film_v1")});
+                    select_format(0, 8.0);
+                    change("FilmGrainTexelPitchUm", {4.0});
+                    host.clear_calls();
+                    const auto sourceBefore = host.image_release_count(effect, "Source");
+                    const auto outputBefore = host.image_release_count(effect, "Output");
+                    require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                            "unsupported footprint was not rejected");
+                    require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
+                                host.image_release_count(effect, "Output") == outputBefore + 1,
+                            "unsupported footprint did not release both images");
+                    require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& call) {
+                                if (call.operation != "message" || call.values.size() != 2 ||
+                                    call.values[0] != InstanceValue{std::string("FilmJuicerRenderAdmission")})
+                                    return false;
+                                const auto& message = std::get<std::string>(call.values[1]);
+                                return message.find("film_long_edge_mm=8") != std::string::npos &&
+                                       message.find("grain_size_um=4") != std::string::npos &&
+                                       message.find("footprint_texels=0.244") != std::string::npos &&
+                                       message.find("rendered=8192x16") != std::string::npos;
+                            }),
+                            "unsupported footprint diagnostic omitted physical geometry");
+
+                    geometry(2);
+                    select_format(6, 11.66);
+                    (void)film_frame(11.66, 4.0);
+                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"paused_36mm_returned", true}, {"current_and_off_at_8mm", true}, {"footprint_recovered", true}});
+                    require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                    device.release_images();
+                    event.passed();
+                    continue;
+                }
+                for (int divisor : {1, 2, 4, 8}) {
+                    geometry(divisor);
+                    change("GrainActive", {0});
+                    const auto off = render(37.0);
+                    change("GrainActive", {1});
+                    for (double size : {0.5, 1.0, 4.0}) {
+                        change("FilmGrainTexelPitchUm", {size});
+                        require(render(37.0) != off, "proxy Film v1 did not change delivered pixels");
+                    }
+                }
+                change("FilmGrainTexelPitchUm", {1.0});
+                geometry(1);
+                const auto full = render(37.0);
+                geometry(4);
+                (void)render(37.0);
+                geometry(1);
+                require(render(37.0) == full, "Full output changed after Quarter");
+                host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {0.5, 0.5});
+                host.clear_calls();
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed,
+                        "inconsistent action scale was not rejected");
+                const auto& calls = host.calls();
+                require(std::any_of(calls.begin(), calls.end(), [](const auto& call) {
+                            return call.operation == "message" && !call.values.empty() &&
+                                   call.values.front() == InstanceValue{std::string("FilmJuicerFilmGrainGeometry")};
+                        }),
+                        "inconsistent action scale did not report geometry error");
+                host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                require(render(37.0) == full, "valid frame did not recover after geometry error");
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"proxy_scales", {1.0, 0.5, 0.25, 0.125}}, {"sizes_um", {0.5, 1.0, 4.0}}, {"full_returned", true}, {"geometry_recovered", true}});
+                require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                device.release_images();
+                event.passed();
+                continue;
+            }
             const auto off = render(37.0);
             change("GrainActive", {1});
+            if (test.height > test.width) {
+                change("GrainModel", {std::string("film_v1")});
+                const auto film = render(37.0);
+                require(film != off, "portrait Film v1 did not change delivered pixels");
+                change("FilmGrainTexelPitchUm", {4.0});
+                const auto maxSize = render(37.0);
+                require(maxSize != film && maxSize != off, "portrait maximum Size did not change delivered pixels");
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"max_size_changes_output", true}});
+                require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                device.release_images();
+                event.passed();
+                continue;
+            }
             const auto current = render(37.0);
             require(current != off, "Current grain did not change delivered pixels");
             change("GrainDebugView", {1});
@@ -518,10 +816,12 @@ namespace {
             change("GrainModel", {std::string("film_v1")});
             const auto film = render(37.0);
             require(film != off, "Film v1 did not change delivered pixels");
+            change("FilmGrainChromaFraction", {1.0});
+            require(render(37.0) == film, "explicit Colour 1 changed default Film output");
             for (const auto& [name, values, reset] : std::array{
                      std::tuple{"FilmGrainAmountEv", std::array{-3.0, 1.25, 3.0}, amountDefault},
                      std::tuple{"FilmGrainTexelPitchUm", std::array{0.5, 1.5, 4.0}, sizeDefault},
-                     std::tuple{"FilmGrainChromaFraction", std::array{0.0, 0.5, 1.0}, colourDefault},
+                     std::tuple{"FilmGrainChromaFraction", std::array{0.0, 0.5, 0.2406350076198578}, colourDefault},
                  }) {
                 for (double value : values) {
                     change(name, {value});
@@ -555,7 +855,7 @@ namespace {
             require(render(37.0) == current, "Current output changed after Film");
             change("GrainActive", {0});
             require(render(37.0) == off, "grain-off output changed after model edits");
-            routes.push_back({{"route", test.routeName}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
+            routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
             require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
             device.release_images();
             event.passed();
@@ -882,16 +1182,36 @@ namespace {
         require(static_cast<bool>(manifest), "replay report write failed");
         return 0;
     }
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+#include "motion-replay.inc"
+#endif
 } // namespace
+
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+cudaError_t JuicerTests::GrainMotion::before_grain(
+    JuicerCuda::FilmGrain::FilmFrame& frame,
+    JuicerCuda::FilmGrain::FilmPlanes planes,
+    cudaStream_t stream,
+    bool& applyGrain) {
+    return motionDensity ? motionDensity->transfer(frame, planes, stream, applyGrain) : cudaSuccess;
+}
+
+cudaError_t JuicerTests::GrainMotion::after_grain(
+    JuicerCuda::FilmGrain::FilmPlanes planes, cudaStream_t stream) noexcept {
+    return motionDensity ? motionDensity->capture_film_density(planes, stream) : cudaSuccess;
+}
+#endif
 
 int main(int argc, char** argv) {
     try {
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+        if (argc == 3)
+            return grain_motion_replay(argv[1], argv[2]);
+#endif
         if (argc >= 3 && std::string_view(argv[1]) == "--grain-preview-witness") {
             if (JuicerTests::list_requested(argc, argv)) {
-                JuicerTests::list_case("grain-preview-render", "negative-direct-hd");
-                JuicerTests::list_case("grain-preview-render", "negative-print-hd");
-                JuicerTests::list_case("grain-preview-render", "negative-direct-uhd");
-                JuicerTests::list_case("grain-preview-render", "negative-print-uhd");
+                for (const auto& test : kGrainPreviewCases)
+                    JuicerTests::list_case("grain-preview-render", test.id);
                 return std::fflush(stdout) == 0 ? 0 : 1;
             }
             require(argc == 3, "preview witness arguments");
@@ -1001,7 +1321,7 @@ int main(int argc, char** argv) {
                 require(host.value(effect, "GrainModel") == std::vector<InstanceValue>{std::string("current")}, "preview model default");
                 require(host.value(effect, "FilmGrainAmountEv") == std::vector<InstanceValue>{0.0} &&
                             host.value(effect, "FilmGrainTexelPitchUm") == std::vector<InstanceValue>{1.0} &&
-                            host.value(effect, "FilmGrainChromaFraction") == std::vector<InstanceValue>{0.2406350076198578},
+                            host.value(effect, "FilmGrainChromaFraction") == std::vector<InstanceValue>{1.0},
                         "preview slider defaults");
                 host.set_value(effect, "GrainDebugView", {3});
                 host.set_value(effect, "GrainModel", {std::string("film_v1")});

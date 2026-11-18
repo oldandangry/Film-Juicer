@@ -15,6 +15,10 @@ namespace JuicerCuda::FilmGrain {
     constexpr int kPlacementMargin = 64;
     constexpr int kSeam = 16;
     constexpr int kLayings = 2;
+    constexpr float kMinFootprint = 0.25F;
+    constexpr float kCalibratedMaxFootprint = 37.5F;
+    constexpr float kSingleWrapMaxFootprint = static_cast<float>(kTileSide - 1);
+    constexpr float kMaxFootprint = 240000.0F; // 120 mm at Size 0.5 µm on one pixel.
     constexpr std::size_t kBankEntries = static_cast<std::size_t>(kRecords) * kLevels * kTileEntries;
 
     struct FilmLevel {

@@ -196,5 +196,28 @@ if(BUILD_TESTING)
     add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
 
+# The motion witness adds a density tap to its local executor only. It uses the
+# production Rust preview and the same native archive as the OFX module.
+if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(JuicerGrainMotionReplay EXCLUDE_FROM_ALL
+        src/Cuda/JuicerCudaExecutor.cpp
+        tests/ffi/production-ofx-render.cpp
+        tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
+    target_include_directories(JuicerGrainMotionReplay PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi"
+        "${PROJECT_SOURCE_DIR}/tests/grain")
+    target_compile_definitions(JuicerGrainMotionReplay PRIVATE JUICER_GRAIN_MOTION_REPLAY=1)
+    target_link_libraries(JuicerGrainMotionReplay PRIVATE
+        juicer_core film_juicer_rust juicer_dependencies CUDA::cuda_driver)
+    set_target_properties(JuicerGrainMotionReplay PROPERTIES
+        LINKER_LANGUAGE CXX CUDA_RESOLVE_DEVICE_SYMBOLS ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/grain-motion/bin")
+    add_custom_command(TARGET JuicerGrainMotionReplay POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E create_symlink "${PROJECT_SOURCE_DIR}/Resources"
+            "${CMAKE_BINARY_DIR}/grain-motion/Resources"
+        VERBATIM)
+    set(juicer_motion_replay_target JuicerGrainMotionReplay)
+endif()
+
 juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
-    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})
+    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS} ${juicer_motion_replay_target})

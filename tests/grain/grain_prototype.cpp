@@ -161,6 +161,38 @@ namespace GrainPrototype {
             require(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, FilmVariant::Quad, FilmBlock::Block32x8) == cudaErrorInvalidValue, "canonical owner accepted quad layout");
         }
 
+        std::vector<float> render_production_quad(const DeviceFilmQuads& quads, const FilmTables& sourceTables, const FilmFrame& reference, const DeviceCarrier& carrier) {
+            JuicerCuda::FilmGrain::FilmTables tables{};
+            tables.footprint = sourceTables.footprint;
+            for (int record = 0; record < kRecords; ++record) {
+                const auto& source = sourceTables.records[record];
+                auto& target = tables.records[record];
+                target.minimumGross = source.minimumGross;
+                target.maximumGross = source.maximumGross;
+                target.offset = source.offset;
+                for (int level = 0; level < kLevels; ++level) {
+                    target.levels[level] = {source.levels[level].meanLight, source.levels[level].meanDensity, source.levels[level].correlation};
+                }
+            }
+            JuicerCuda::FilmGrain::FilmFrame frame{};
+            frame.pitch = reference.pitch;
+            frame.originX = reference.originX;
+            frame.originY = reference.originY;
+            frame.width = reference.width;
+            frame.height = reference.height;
+            frame.stride = reference.stride;
+            frame.seed = reference.seed;
+            frame.nextSeed = reference.nextSeed;
+            frame.enabled = reference.enabled;
+            frame.temporalFraction = reference.temporalFraction;
+            frame.chromaFraction = reference.chromaFraction;
+            std::copy_n(reference.amounts, kRecords, frame.amounts);
+            const auto planes = carrier.planes();
+            check_cuda(JuicerCuda::FilmGrain::apply(
+                reinterpret_cast<const JuicerCuda::FilmGrain::FilmQuad*>(quads.quads()), tables, frame, {planes.cyan, planes.magenta, planes.yellow}, nullptr));
+            return carrier.read();
+        }
+
         void compare_production_quad(const FilmBank& bank, float gain) {
             DeviceFilmQuads quads;
             check_cuda(quads.upload(pack_film_quads(bank)));
@@ -179,41 +211,14 @@ namespace GrainPrototype {
                     }
                 }
             }
-            JuicerCuda::FilmGrain::FilmTables tables{};
-            tables.footprint = bank.tables.footprint;
-            for (int record = 0; record < kRecords; ++record) {
-                const auto& source = bank.tables.records[record];
-                auto& target = tables.records[record];
-                target.minimumGross = source.minimumGross;
-                target.maximumGross = source.maximumGross;
-                target.offset = source.offset;
-                for (int level = 0; level < kLevels; ++level) {
-                    target.levels[level] = {source.levels[level].meanLight, source.levels[level].meanDensity, source.levels[level].correlation};
-                }
-            }
-            JuicerCuda::FilmGrain::FilmFrame frame{};
-            frame.pitch = reference.pitch;
-            frame.originX = reference.originX;
-            frame.originY = reference.originY;
-            frame.width = reference.width;
-            frame.height = reference.height;
-            frame.stride = reference.stride;
-            frame.seed = reference.seed;
-            frame.nextSeed = reference.nextSeed;
-            frame.chromaFraction = reference.chromaFraction;
-            std::copy_n(reference.amounts, kRecords, frame.amounts);
             DeviceCarrier carrier(planeWords);
             for (const float time : {0.F, 0.5F}) {
                 reference.temporalFraction = time;
-                frame.temporalFraction = time;
                 carrier.write(input);
                 check_cuda(apply_film_quads(quads, bank.tables, reference, carrier.planes(), nullptr, FilmBlock::Block32x8));
                 const auto expected = carrier.read();
                 carrier.write(input);
-                const auto planes = carrier.planes();
-                check_cuda(JuicerCuda::FilmGrain::apply(
-                    reinterpret_cast<const JuicerCuda::FilmGrain::FilmQuad*>(quads.quads()), tables, frame, {planes.cyan, planes.magenta, planes.yellow}, nullptr));
-                const auto actual = carrier.read();
+                const auto actual = render_production_quad(quads, bank.tables, reference, carrier);
                 require(std::equal(actual.begin(), actual.end(), expected.begin(), same_words),
                         "production Film Quad differs from G3, including padding or alpha");
                 require(!std::equal(actual.begin(), actual.end(), input.begin(), same_words),
@@ -255,6 +260,119 @@ namespace GrainPrototype {
                           << " max_budget_density=" << largestBudget << " max_budget_fraction=" << largestFraction << '\n';
             }
         };
+
+        void production_proxy_footprint() {
+            const std::filesystem::path bankDirectory = JUICER_GRAIN_TEST_BANK;
+            const std::filesystem::path tableDirectory = JUICER_GRAIN_TEST_TABLES;
+            auto bank = read_film_bank(bankDirectory, 37.5F, tableDirectory);
+            // Fix the density reference across widths to isolate the placed
+            // box average. Rust tests the production width-specific tables.
+            for (auto& record : bank.tables.records)
+                for (auto& level : record.levels)
+                    level.meanDensity = -std::log10(level.meanLight);
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            constexpr float net = 0.2F;
+            FilmFrame frame{0.F, -3, -2, 9, 6, 13, 1179208781U, true};
+            const auto stride = static_cast<std::size_t>(frame.stride);
+            const auto planeWords = stride * static_cast<std::size_t>(frame.height);
+            std::vector<float> input(4 * planeWords, -17.F);
+            for (int record = 0; record < kRecords; ++record)
+                for (int y = 0; y < frame.height; ++y)
+                    std::fill_n(input.data() + static_cast<std::size_t>(record) * planeWords + static_cast<std::size_t>(y) * stride,
+                                frame.width,
+                                net);
+            DeviceCarrier carrier(planeWords);
+            constexpr float custom8Width = static_cast<float>(8000.0 / 4832.0 / 4.0);
+            constexpr float super16Width = static_cast<float>(static_cast<double>(11.66F) * 1000.0 / 4832.0 / 4.0);
+            const std::array footprints{
+                0.25F,
+                custom8Width,
+                super16Width,
+                std::nextafter(1.0F, 0.0F),
+                1.0F,
+                std::nextafter(1.0F, 2.0F),
+                7.450331211090088F,
+                std::nextafter(37.5F, 0.F),
+                37.5F,
+                std::nextafter(37.5F, std::numeric_limits<float>::infinity()),
+                static_cast<float>(36000.0 / (1208 * 0.5)),
+                static_cast<float>(36000.0 / (604 * 0.5)),
+                static_cast<float>(36000.0 / (302 * 0.5)),
+                JuicerCuda::FilmGrain::kSingleWrapMaxFootprint,
+                std::nextafter(255.0F, 256.0F),
+                256.0F,
+                static_cast<float>(36'000.0 / 92.0),
+                512.0F,
+                static_cast<float>(240'000.0 / 92.0),
+            };
+            for (const float footprint : footprints) {
+                bank.tables.footprint = footprint;
+                frame.pitch = footprint;
+                carrier.write(input);
+                const auto actual = render_production_quad(quads, bank.tables, frame, carrier);
+                // The ROI crosses the placement seams at film origin and the
+                // placed rectangles straddle the periodic tile boundary.
+                Errors errors;
+                std::size_t crossings = 0;
+                double minDelta = 0;
+                double maxDelta = 0;
+                for (int record = 0; record <= kRecords; ++record) {
+                    const auto plane = static_cast<std::size_t>(record) * planeWords;
+                    for (int y = 0; y < frame.height; ++y) {
+                        for (int x = 0; x < frame.stride; ++x) {
+                            const auto at = plane + static_cast<std::size_t>(y) * stride + static_cast<std::size_t>(x);
+                            if (record == kRecords || x >= frame.width) {
+                                require(same_words(actual[at], input[at]), "proxy Film grain changed padding or alpha");
+                                continue;
+                            }
+                            const int column = frame.originX + x;
+                            const int row = frame.originY + y;
+                            const auto expected = evaluate_sample(bank, {
+                                                                            .pitch = footprint,
+                                                                            .x = column,
+                                                                            .y = row,
+                                                                            .seed = frame.seed,
+                                                                            .record = record,
+                                                                            .net = net,
+                                                                            .productionSubtexel = true,
+                                                                        });
+                            crossings += static_cast<std::size_t>(expected.crossesTexel);
+                            const double delta = static_cast<double>(actual[at]) - net;
+                            errors.measure(delta, expected.delta, expected.roundingBound, column, row, record);
+                            minDelta = std::min(minDelta, delta);
+                            maxDelta = std::max(maxDelta, delta);
+                        }
+                    }
+                }
+                if (std::fmod(footprint, 256.0F) == 0.0F) {
+                    for (int record = 0; record < kRecords; ++record) {
+                        const auto start = static_cast<std::size_t>(record) * planeWords;
+                        for (int y = 0; y < frame.height; ++y)
+                            for (int x = 0; x < frame.width; ++x)
+                                require(std::abs(actual[start + static_cast<std::size_t>(y) * stride + x] - actual[start]) <=
+                                            8.0F * std::numeric_limits<float>::epsilon(),
+                                        "a whole-period average varied across the image");
+                    }
+                } else {
+                    require(minDelta < 0.0 && maxDelta > 0.0, "proxy Film grain did not produce signed density variation");
+                }
+                if (footprint == custom8Width || footprint == super16Width)
+                    require(crossings != 0, "selected sub-texel reference did not cross a texel edge");
+                if (footprint < 1.0F) {
+                    const auto seed = frame.seed;
+                    frame.seed = seed + 1;
+                    carrier.write(input);
+                    require(render_production_quad(quads, bank.tables, frame, carrier) != actual,
+                            "sub-texel Film seed did not change signed density on static input");
+                    frame.seed = seed;
+                }
+                std::cout << std::setprecision(9) << "footprint_texels=" << footprint
+                          << " min_delta_density=" << minDelta << " max_delta_density=" << maxDelta
+                          << " subtexel_crossing_samples=" << crossings << ' ';
+                errors.report("production-proxy-footprint");
+            }
+        }
 
         void known_rectangles() {
             const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, 1.F);
@@ -525,6 +643,7 @@ namespace GrainPrototype {
         constexpr std::array kHostCases{Case{"known-rectangles-and-constant", known_rectangles}, Case{"signed-film-time", signed_film_time}};
         constexpr std::array kGpuCases{
             Case{"production-quad-g3-parity", production_quad_matches_g3},
+            Case{"production-proxy-footprint", production_proxy_footprint},
             Case{"g2-geometry-and-temporal", g2_geometry_and_temporal},
             Case{"chroma-projection", chroma_projection},
             Case{"rectangles-wrap-and-seams", rectangles_and_seams},

@@ -53,6 +53,25 @@ namespace JuicerCuda::FilmGrain {
             return leading * trailing;
         }
 
+        // Keep the projection fraction and the input/grained pivots in operand order.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        __device__ void reduce_chroma_wide(const float (&input)[kRecords], float (&grained)[kRecords], float fraction, float inputPivot, float grainPivot) {
+            constexpr double weights[kRecords]{0.2126, 0.7152, 0.0722};
+            double inputLight[kRecords];
+            double grainLight[kRecords];
+            double inputLuminance = 0.0;
+            double grainLuminance = 0.0;
+            for (int record = 0; record < kRecords; ++record) {
+                inputLight[record] = exp10(static_cast<double>(inputPivot) - input[record]);
+                grainLight[record] = exp10(static_cast<double>(grainPivot) - grained[record]);
+                inputLuminance += weights[record] * inputLight[record];
+                grainLuminance += weights[record] * grainLight[record];
+            }
+            const double sharedScale = (1.0 - fraction) * grainLuminance / inputLuminance;
+            for (int record = 0; record < kRecords; ++record)
+                grained[record] = static_cast<float>(grainPivot - log10(fraction * grainLight[record] + sharedScale * inputLight[record]));
+        }
+
         __device__ void reduce_chroma(const float (&input)[kRecords], float (&grained)[kRecords], float fraction) {
             // The G2 stills use the scalar CMY transmission as linear display RGB.
             // Mix toward the input's chromaticity at the sampled luminance. Separate
@@ -60,6 +79,13 @@ namespace JuicerCuda::FilmGrain {
             constexpr float weights[kRecords]{0.2126F, 0.7152F, 0.0722F};
             const float inputPivot = fminf(input[0], fminf(input[1], input[2]));
             const float grainPivot = fminf(grained[0], fminf(grained[1], grained[2]));
+            // Allow enough exponent range for transmission and its weighted
+            // mixture when the higher-resolution bounds exceed the FP32 proof.
+            if (fmaxf(input[0], fmaxf(input[1], input[2])) - inputPivot > 33.F ||
+                fmaxf(grained[0], fmaxf(grained[1], grained[2])) - grainPivot > 33.F) {
+                reduce_chroma_wide(input, grained, fraction, inputPivot, grainPivot);
+                return;
+            }
             float inputLight[kRecords];
             float grainLight[kRecords];
             float inputLuminance = 0.F;
@@ -75,14 +101,19 @@ namespace JuicerCuda::FilmGrain {
                 grained[record] = grainPivot - log10f(fraction * grainLight[record] + sharedScale * inputLight[record]);
         }
 
-        __device__ float sum_inside_quad(const FilmQuad* sums, float x, float y) {
+        template <typename Scalar>
+        __device__ Scalar sum_inside_quad(const FilmQuad* sums, Scalar x, Scalar y) {
             const int ix = min(static_cast<int>(x), kTileSide - 1);
             const int iy = min(static_cast<int>(y), kTileSide - 1);
-            const float ax = x - static_cast<float>(ix);
-            const float ay = y - static_cast<float>(iy);
+            const Scalar ax = x - static_cast<Scalar>(ix);
+            const Scalar ay = y - static_cast<Scalar>(iy);
             const FilmQuad q = sums[static_cast<std::ptrdiff_t>(iy) * kTileSide + ix];
-            const float cross = q.bottomRight - q.topRight - q.bottomLeft + q.topLeft;
-            return q.topLeft + (q.topRight - q.topLeft) * ax + (q.bottomLeft - q.topLeft) * ay + cross * ax * ay;
+            const auto a = static_cast<Scalar>(q.topLeft);
+            const auto b = static_cast<Scalar>(q.topRight);
+            const auto c = static_cast<Scalar>(q.bottomLeft);
+            const auto d = static_cast<Scalar>(q.bottomRight);
+            const Scalar cross = d - b - c + a;
+            return a + (b - a) * ax + (c - a) * ay + cross * ax * ay;
         }
 
         // The horizontal and vertical wrap corrections retain their original order.
@@ -94,9 +125,9 @@ namespace JuicerCuda::FilmGrain {
             const float ty = wrapY ? y - kTileSide : y;
             float total = sum_inside_quad(sums, tx, ty);
             if (wrapX)
-                total += sum_inside_quad(sums, kTileSide, ty);
+                total += sum_inside_quad(sums, static_cast<float>(kTileSide), ty);
             if (wrapY)
-                total += sum_inside_quad(sums, tx, kTileSide);
+                total += sum_inside_quad(sums, tx, static_cast<float>(kTileSide));
             if (wrapX && wrapY)
                 total += sums[kTileSide * kTileSide - 1].bottomRight;
             return total;
@@ -111,6 +142,55 @@ namespace JuicerCuda::FilmGrain {
             return -log10f(fmaxf(light, 1e-9F)) - level.meanDensity;
         }
 
+        __device__ double texel_delta(const FilmQuad* sums, int x, int y) {
+            const FilmQuad q = sums[(y % kTileSide) * kTileSide + (x % kTileSide)];
+            return (static_cast<double>(q.bottomRight) - q.bottomLeft) -
+                   (static_cast<double>(q.topRight) - q.topLeft);
+        }
+
+        __device__ float density_delta_subtexel(const FilmQuad* sums, const FilmBox& box, double width, FilmLevel level) {
+            // The placement margin keeps these edges positive. Each axis
+            // crosses at most one texel edge. Difference the SAT at texel
+            // corners before weighting, so the light error does not grow as
+            // the inverse area of the footprint.
+            const int x = static_cast<int>(box.left);
+            const int y = static_cast<int>(box.top);
+            const double ax = fmax(width - (x + 1.0 - box.left), 0.0) / width;
+            const double ay = fmax(width - (y + 1.0 - box.top), 0.0) / width;
+            const double top = (1.0 - ax) * texel_delta(sums, x, y) + ax * texel_delta(sums, x + 1, y);
+            const double bottom = (1.0 - ax) * texel_delta(sums, x, y + 1) + ax * texel_delta(sums, x + 1, y + 1);
+            const float light = static_cast<float>(level.meanLight + (1.0 - ay) * top + ay * bottom);
+            return -log10f(fmaxf(light, 1e-9F)) - level.meanDensity;
+        }
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) SAT coordinates are ordered x, y.
+        __device__ double periodic_prefix_quad(const FilmQuad* sums, double x, double y) {
+            const double nx = floor(x / kTileSide);
+            const double ny = floor(y / kTileSide);
+            const double tx = x - nx * kTileSide;
+            const double ty = y - ny * kTileSide;
+            const double side = kTileSide;
+            // Whole periods, the two residual strips, and their shared corner.
+            return sum_inside_quad(sums, tx, ty) +
+                   nx * sum_inside_quad(sums, side, ty) +
+                   ny * sum_inside_quad(sums, tx, side) +
+                   nx * ny * sums[kTileSide * kTileSide - 1].bottomRight;
+        }
+
+        __device__ float density_delta_periodic(const FilmQuad* sums, const FilmBox& center, double width, FilmLevel level) {
+            const double left = center.left - width * 0.5;
+            const double top = center.top - width * 0.5;
+            const double x0 = left - floor(left / kTileSide) * kTileSide;
+            const double y0 = top - floor(top / kTileSide) * kTileSide;
+            const double x1 = x0 + width;
+            const double y1 = y0 + width;
+            const double sum = periodic_prefix_quad(sums, x1, y1) -
+                               periodic_prefix_quad(sums, x0, y1) -
+                               periodic_prefix_quad(sums, x1, y0) +
+                               periodic_prefix_quad(sums, x0, y0);
+            const float light = static_cast<float>(level.meanLight + sum / (width * width));
+            return -log10f(fmaxf(light, 1e-9F)) - level.meanDensity;
+        }
+
         // One blend and footprint at this film-space center for the chosen lane.
         // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
         __device__ float sample_laying_quad(const FilmQuad* lowSums, const FilmLevel* levels, float fraction, float footprint, float cx, float cy, std::uint32_t seed, int laying, int record) {
@@ -119,6 +199,10 @@ namespace JuicerCuda::FilmGrain {
             const int firstY = static_cast<int>(floorf((cy - kSeam) / kPlacementBlock));
             const int lastY = static_cast<int>(floorf((cy + kSeam) / kPlacementBlock));
             const float half = footprint * 0.5F;
+            const bool wide = footprint > kCalibratedMaxFootprint;
+            const bool subtexel = footprint < 1.0F;
+            const bool periodic = footprint > kSingleWrapMaxFootprint;
+            const FilmQuad* highSums = lowSums + static_cast<std::ptrdiff_t>(kTileSide) * kTileSide;
             float value = 0;
             float normSquared = 0;
             for (int by = firstY; by <= lastY; ++by) {
@@ -129,16 +213,47 @@ namespace JuicerCuda::FilmGrain {
                     const float weight = seam_weight(cx, left) * weightY;
                     if (weight == 0)
                         continue;
-                    // A contributing center extends at most 16 beyond a block;
-                    // half of the largest footprint is 18.75, below the 64 margin.
-                    // Offsets therefore remain in [0, 512), so one wrap suffices.
-                    const float x0 = cx - half;
-                    const float y0 = cy - half;
-                    const FilmBox local{x0 - left, (x0 + footprint) - left, y0 - top, (y0 + footprint) - top};
-                    const float area = fmaxf((local.right - local.left) * (local.bottom - local.top), 1e-6F);
-                    const FilmBox box = place_box(local, placement_hash(bx, by, seed, laying, record));
-                    const float low = density_delta_quad(lowSums, box, area, levels[0]);
-                    const float high = density_delta_quad(lowSums + static_cast<std::ptrdiff_t>(kTileSide) * kTileSide, box, area, levels[1]);
+                    const auto hash = placement_hash(bx, by, seed, laying, record);
+                    if (periodic) {
+                        // Rotate the center first, then form the physical
+                        // square in Float64 so its sides retain the same width.
+                        const float x = cx - left;
+                        const float y = cy - top;
+                        const auto center = place_box({x, x, y, y}, hash);
+                        const float low = density_delta_periodic(lowSums, center, footprint, levels[0]);
+                        const float high = density_delta_periodic(highSums, center, footprint, levels[1]);
+                        value += weight * (low + (high - low) * fraction);
+                        normSquared += weight * weight;
+                        continue;
+                    }
+                    FilmBox local{};
+                    if (wide || subtexel) {
+                        // Form edges in placement coordinates to keep their
+                        // accuracy independent of the global edge.
+                        const float x0 = (cx - left) - half;
+                        const float y0 = (cy - top) - half;
+                        local = {x0, x0 + footprint, y0, y0 + footprint};
+                    } else {
+                        // Preserve the calibrated global edge arithmetic.
+                        const float x0 = cx - half;
+                        const float y0 = cy - half;
+                        local = {x0 - left, (x0 + footprint) - left, y0 - top, (y0 + footprint) - top};
+                    }
+                    FilmBox box = place_box(local, hash);
+                    float area = fmaxf((local.right - local.left) * (local.bottom - local.top), 1e-6F);
+                    if (wide) {
+                        // Each center-weighted placement contributes its full
+                        // square in transmission. Translate the box to a first
+                        // corner in [0, 256), with at most one wrap per axis.
+                        const float dx = floorf(box.left / kTileSide) * kTileSide;
+                        const float dy = floorf(box.top / kTileSide) * kTileSide;
+                        box = {box.left - dx, box.right - dx, box.top - dy, box.bottom - dy};
+                        area = (box.right - box.left) * (box.bottom - box.top);
+                    }
+                    const float low = subtexel ? density_delta_subtexel(lowSums, box, footprint, levels[0])
+                                               : density_delta_quad(lowSums, box, area, levels[0]);
+                    const float high = subtexel ? density_delta_subtexel(highSums, box, footprint, levels[1])
+                                                : density_delta_quad(highSums, box, area, levels[1]);
                     value += weight * (low + (high - low) * fraction);
                     normSquared += weight * weight;
                 }

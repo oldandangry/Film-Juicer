@@ -932,7 +932,7 @@ namespace ofx_test {
     }
     void InstanceHost::set_clip_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
         auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));
-        clip.bag.properties[std::string(key)] = std::move(values);
+        set_property(reinterpret_cast<OfxPropertySetHandle>(&clip.bag), key, std::move(values));
     }
     void InstanceHost::set_image_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
         auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));

@@ -2,56 +2,98 @@
 
 use crate::assets::{PortraGrainBank, PortraGrainTable};
 
-pub(crate) const FILM_LONG_EDGE_UM: f64 = 36_000.0;
-pub(crate) const MAX_RENDER_AXIS: i32 = 4097;
+pub(crate) const MIN_FOOTPRINT: f32 = 0.25;
+pub(crate) const CALIBRATED_MAX_FOOTPRINT: f32 = 37.5;
+pub(crate) const SINGLE_WRAP_MAX_FOOTPRINT: f32 = 255.0;
+// 120 mm at Size 0.5 µm on a one-pixel rendered long edge.
+pub(crate) const MAX_FOOTPRINT: f32 = 240_000.0;
 
 // Outward-rounded extrema of footprint times the single-placement OD delta
-// from -log10(mean light). The bank certificate covers every footprint in
-// [2, 37.5], enclosing the production minimum 36000 / (4097 * 4).
-const MIN_SCALED_DELTA: f64 = -4.03;
-const MAX_SCALED_DELTA: f64 = 4.20;
+// from -log10(mean light), paired with each band's upper footprint.
+// continuous_footprint_certificate recomputes these enclosures from the bank.
+const SCALED_DELTAS: [(f32, [f64; 2]); 10] = [
+    (2.0, [-0.85, 1.44]),
+    (4.0, [-1.62, 2.45]),
+    (6.0, [-2.25, 3.04]),
+    (8.0, [-2.66, 3.29]),
+    (10.0, [-2.84, 3.45]),
+    (12.0, [-2.85, 3.47]),
+    (16.0, [-3.08, 3.62]),
+    (20.0, [-3.34, 3.86]),
+    (28.0, [-3.57, 4.14]),
+    (CALIBRATED_MAX_FOOTPRINT, [-4.03, 4.20]),
+];
 const MAX_SCALED_MEAN_SHIFT: f64 = 0.16;
 const MIN_CORRELATION: f32 = 0.25;
+// A sub-texel sample is a convex average of the represented texel lights.
+// The bank certificate below verifies the extrema with the sampler's rounding.
+const SUBTEXEL_DELTAS: [f64; 2] = [-0.424, 0.752];
 
-/// Check the computed normalizers used in the enclosure at the exact width
-/// rendered. The means and correlations are published together before this
-/// check and remain immutable through projection.
-pub(crate) fn verify_table(bank: &PortraGrainBank, table: &PortraGrainTable) -> bool {
-    (2.0..=37.5).contains(&table.footprint)
-        && bank.records().iter().enumerate().all(|(r, record)| {
-            record
-                .mean_light
-                .iter()
-                .zip(table.mean_density[r])
-                .all(|(&light, mean)| {
-                    (f64::from(table.footprint) * (f64::from(mean) + f64::from(light).log10()))
-                        .abs()
-                        <= MAX_SCALED_MEAN_SHIFT
-                })
-                && table.correlation[r][..16]
-                    .iter()
-                    .all(|&correlation| (MIN_CORRELATION..=1.0).contains(&correlation))
-        })
-}
+pub(crate) fn allowances(
+    bank: &PortraGrainBank,
+    table: &PortraGrainTable,
+    gain: f32,
+) -> Option<[f32; 2]> {
+    let width = f64::from(table.footprint);
+    if !(MIN_FOOTPRINT..=MAX_FOOTPRINT).contains(&table.footprint) {
+        return None;
+    }
+    // Subdivide the placed rectangle into equal pieces with widths inside the
+    // certificate. The full transmission average is a convex combination of
+    // their averages, so it obeys the same bounds after the monotone -log10.
+    // Local box construction keeps the side error below the certificate's
+    // 1/64 texel allowance. For multiple periods, the Float64 prefix counts
+    // their contributions and the residuals within that same error budget.
+    let divisions = (width / f64::from(CALIBRATED_MAX_FOOTPRINT)).ceil();
+    let certified_width = width / divisions;
+    let [lower, upper] = if width < 1.0 {
+        SUBTEXEL_DELTAS.map(|delta| delta * width)
+    } else {
+        SCALED_DELTAS
+            .iter()
+            .find(|&&(high, _)| certified_width <= f64::from(high))?
+            .1
+    };
+    let calibrated = width >= 1.0 && divisions == 1.0;
+    let mut mean_shift = [0.0_f64; 2];
+    let mut min_correlation = 1.0_f32;
+    for (r, record) in bank.records().iter().enumerate() {
+        for (&light, mean) in record.mean_light.iter().zip(table.mean_density[r]) {
+            let shift = width * (f64::from(mean) + f64::from(light).log10());
+            if calibrated && !(-MAX_SCALED_MEAN_SHIFT..=MAX_SCALED_MEAN_SHIFT).contains(&shift) {
+                return None;
+            }
+            mean_shift[0] = mean_shift[0].min(shift);
+            mean_shift[1] = mean_shift[1].max(shift);
+        }
+        for &correlation in &table.correlation[r][..16] {
+            if calibrated && correlation < MIN_CORRELATION {
+                return None;
+            }
+            min_correlation = min_correlation.min(correlation);
+        }
+    }
 
-pub(crate) fn allowances(gain: f32, size_um: f32) -> [f32; 2] {
     // In each dimension only one of the two half-block-shifted layings can
     // straddle a seam. The sum of their normalized weight gains is at most
     // max(sqrt(4) + 1, sqrt(2) + sqrt(2)) = 3. The adjacent-level denominator
     // is at least sqrt(1 + rho), and fractional time adds at most sqrt(2).
-    // Round 3 * sqrt(2 / 1.25) up to 3.81 to include Float32 arithmetic.
-    // gain / footprint = gain * size / physical pixel width.
-    let scale = f64::from(gain) * f64::from(size_um) * f64::from(MAX_RENDER_AXIS)
-        / FILM_LONG_EDGE_UM
-        * 3.81;
+    // Round the seam gain up to include Float32 arithmetic.
+    let mut level_norm_squared = 1.0 + f64::from(min_correlation);
+    if !calibrated {
+        // Bound Float32 evaluation of kept * kLayings at the measured rho,
+        // including negative correlations permitted by table construction
+        // for widths outside the calibrated interval.
+        level_norm_squared -= 8.0 * f64::from(f32::EPSILON);
+    }
+    let scale = f64::from(gain) / width * 3.012 * (2.0 / level_norm_squared).sqrt();
     // Reduced chroma mixes transmission ratios with nonnegative weights.
     // Its exact OD delta remains between the pre-projection global extrema.
-    // The additional 0.002 D covers the finite Float32 exp/log projection;
-    // the worst certified CMY spread is less than 33 D.
-    [
-        (((MIN_SCALED_DELTA - MAX_SCALED_MEAN_SHIFT) * scale - 0.002) as f32).next_down(),
-        (((MAX_SCALED_DELTA + MAX_SCALED_MEAN_SHIFT) * scale + 0.002) as f32).next_up(),
-    ]
+    // The additional 0.002 D covers exp/log projection and adding the delta.
+    Some([
+        (((divisions * lower - mean_shift[1]) * scale - 0.002) as f32).next_down(),
+        (((divisions * upper - mean_shift[0]) * scale + 0.002) as f32).next_up(),
+    ])
 }
 
 #[cfg(test)]
@@ -138,7 +180,6 @@ mod tests {
     fn continuous_footprint_certificate() {
         let bank = assets().portra_grain_bank().unwrap();
         let levels = bank.records().iter().flat_map(|record| record.mean_light);
-        let mut extrema = [0.0_f64; 2];
         for (tile, mean_light) in bank
             .sums()
             .as_chunks::<{ STRIDE * STRIDE }>()
@@ -153,7 +194,17 @@ mod tests {
                 .fold(0.0, f64::max);
             let max_deviation = texels[0].abs().max(texels[1].abs());
             let mean = f64::from(mean_light);
-            for quarter in 8..150 {
+            // The sub-texel sampler differences stored SAT words and
+            // blends normalized overlaps in Float64, then rounds light
+            // once to Float32 before the same logarithm.
+            let subtexel_error = 32.0 * f64::EPSILON * sat_max
+                + 0.5 * f64::from(f32::EPSILON) * (mean + max_deviation);
+            let darkest = mean + texels[0] - subtexel_error;
+            let lightest = mean + texels[1] + subtexel_error;
+            assert!(darkest > 1e-9 && lightest.is_finite());
+            assert!(-(lightest / mean).log10() - 0.00005 >= SUBTEXEL_DELTAS[0]);
+            assert!(-(darkest / mean).log10() + 0.00005 <= SUBTEXEL_DELTAS[1]);
+            for quarter in 4..150 {
                 let low = f64::from(quarter) / 4.0;
                 let high = low + 0.25;
                 // Float32 right-edge construction can move a side length
@@ -178,26 +229,54 @@ mod tests {
                 );
                 let lower = (-((lightest / mean).log10()) - 0.00005) * high;
                 let upper = (-((darkest / mean).log10()) + 0.00005) * high;
-                extrema[0] = extrema[0].min(lower);
-                extrema[1] = extrema[1].max(upper);
+                let &(_, [certified_lower, certified_upper]) = SCALED_DELTAS
+                    .iter()
+                    .find(|&&(end, _)| high <= f64::from(end))
+                    .unwrap();
+                assert!(
+                    lower >= certified_lower && upper <= certified_upper,
+                    "footprint {low} to {high}, mean {mean}: {lower} to {upper}"
+                );
             }
         }
-        assert!(
-            extrema[0] >= MIN_SCALED_DELTA && extrema[1] <= MAX_SCALED_DELTA,
-            "{extrema:?}"
-        );
-        let [lower, upper] = allowances(16.0, 0.5);
-        assert!(upper - lower + 2.3 < 33.0);
     }
 
     #[test]
     fn computed_normalizers_cover_preview_footprints() {
         let assets = assets();
         let bank = assets.portra_grain_bank().unwrap();
-        for quarter in 8..=150 {
-            let width = quarter as f32 / 4.0;
+        let geometries = [302, 604, 1208, 1920, 2416, 3840, 4832, 7418];
+        let sizes = [0.5, 1.0, 4.0];
+        let widths = geometries.into_iter().flat_map(|long_edge| {
+            sizes.map(|size| (36_000.0 / f64::from(long_edge) / size) as f32)
+        });
+        let film_formats = [
+            8.0, 11.66, 19.125, 21.95, 24.89, 25.0, 35.0, 37.72, 48.5, 56.0, 70.0, 70.4, 120.0,
+        ]
+        .into_iter()
+        .flat_map(|mm| sizes.map(|size| (f64::from(mm as f32) * 1000.0 / 4832.0 / size) as f32));
+        for width in (1..=150)
+            .map(|quarter| quarter as f32 / 4.0)
+            .chain([
+                1.0_f32.next_down(),
+                1.0_f32.next_up(),
+                CALIBRATED_MAX_FOOTPRINT.next_up(),
+                128.0,
+                SINGLE_WRAP_MAX_FOOTPRINT,
+                SINGLE_WRAP_MAX_FOOTPRINT.next_up(),
+                256.0,
+                512.0,
+                (36_000.0 / 92.0) as f32,
+                (240_000.0 / 92.0) as f32,
+                MAX_FOOTPRINT,
+            ])
+            .chain(widths)
+            .chain(film_formats)
+        {
             let table = assets.portra_grain_table(&bank, width).unwrap();
-            assert!(verify_table(&bank, &table), "footprint {width}");
+            let [lower, upper] =
+                allowances(&bank, &table, 16.0).unwrap_or_else(|| panic!("footprint {width}"));
+            assert!(lower.is_finite() && upper.is_finite() && lower < 0.0 && upper > 0.0);
         }
     }
 }

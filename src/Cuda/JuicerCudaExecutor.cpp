@@ -26,6 +26,10 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+#include "motion-replay.h"
+#endif
+
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     void* cudaStreamOpaque,
@@ -1386,10 +1390,19 @@ namespace {
                          int height,
                          GrainBinding& grain,
                          const ExecutionErrors& errors) {
-        const auto axis_supported = [](int origin, int size) {
-            return origin >= -4096 && origin <= 4096 && size > 0 && size <= 4097 - origin;
+        const auto axis_supported = [pitch = static_cast<double>(input.pitch)](int origin, int size) {
+            if (size <= 0)
+                return false;
+            const auto last = static_cast<std::int64_t>(origin) + size - 1;
+            // Leave one placement block for the laying shift, seam and
+            // calibrated box edges. Wide and sub-texel edges are formed locally. Below
+            // 2^18 the global Float32 edge rounds by at most 1/128 texel.
+            constexpr double centerLimit = 262144.0 - JuicerCuda::FilmGrain::kPlacementBlock;
+            return last <= std::numeric_limits<int>::max() &&
+                   std::max(std::abs((origin + 0.5) * pitch), std::abs((static_cast<double>(last) + 0.5) * pitch)) < centerLimit;
         };
-        if (!std::isfinite(input.pitch) || input.pitch < 0.25f || input.pitch > 37.5f ||
+        if (!std::isfinite(input.pitch) || input.pitch < JuicerCuda::FilmGrain::kMinFootprint ||
+            input.pitch > JuicerCuda::FilmGrain::kMaxFootprint ||
             !std::isfinite(input.temporal_fraction) || input.temporal_fraction < 0.f || input.temporal_fraction >= 1.f ||
             !std::isfinite(input.gain) || input.gain < 0.f ||
             !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.f || input.chroma_fraction > 1.f ||
@@ -2284,9 +2297,20 @@ namespace {
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
-        if (grainStageActive) {
+        auto filmFrame = grain.filmFrame;
+        bool applyGrain = grainStageActive;
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+        if (grain.filmBank) {
+            launchError = JuicerTests::GrainMotion::before_grain(
+                filmFrame, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage("motion_density_transfer", "grain motion density transfer failed", launchError);
+            }
+        }
+#endif
+        if (applyGrain) {
             launchError = grain.filmBank
-                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, grain.filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
+                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
                               : juicer_cuda_apply_visual_grain(
                                     &grain.payload,
                                     &grain.kernels,
@@ -2307,6 +2331,15 @@ namespace {
                     "print visual grain launch failed",
                     launchError);
             }
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+            if (grain.filmBank) {
+                launchError = JuicerTests::GrainMotion::after_grain(
+                    {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream));
+                if (launchError != cudaSuccess) {
+                    errors.fail_stage("motion_film_density_readback", "grain motion Film density readback failed", launchError);
+                }
+            }
+#endif
         }
         if (filmEffectsActive && !grainDebugActive) {
             launchError = juicer_cuda_apply_film_defects(

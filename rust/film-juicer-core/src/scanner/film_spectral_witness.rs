@@ -4,7 +4,10 @@
 use super::{Lut, LutInput, LutTables};
 use crate::{
     assets::Assets,
-    film::{self, density::Bounds},
+    film::{
+        self,
+        density::{Bounds, portra},
+    },
     route::ScanRoute,
     spectral,
 };
@@ -89,6 +92,19 @@ fn sample(lut: &Lut, normalized: [f32; 3]) -> [f32; 3] {
 
 #[test]
 fn portra_film_envelope_scanner_and_enlarger_spectral_witness() {
+    // Keep the portrait control and exercise the 4832-pixel sub-texel
+    // requests at the maximum Amount for their Size.
+    spectral_witness((36_000.0 / 7418.0 / 0.5) as f32, 16.0, 129);
+    spectral_witness((8_000.0 / 4832.0 / 4.0) as f32, 2.0, 17);
+    spectral_witness(
+        (f64::from(11.66_f32) * 1000.0 / 4832.0 / 4.0) as f32,
+        2.0,
+        17,
+    );
+    spectral_witness((240_000.0 / 92.0) as f32, 16.0, 17);
+}
+
+fn spectral_witness(footprint: f32, gain: f32, minimum_resolution: u32) {
     // Predeclared criterion: 1% relative, with 1e-10 absolute XYZ for
     // scanner's logarithmic floor, and 1e-8 absolute print exposure.
     const REL: f64 = 0.01;
@@ -126,12 +142,18 @@ fn portra_film_envelope_scanner_and_enlarger_spectral_witness() {
         },
     )
     .unwrap();
-    let bounds = Bounds::film_v1(&development, 16.0, 0.5).unwrap();
+    let bank = assets.portra_grain_bank().unwrap();
+    let table = assets.portra_grain_table(&bank, footprint).unwrap();
+    let allowances = portra::allowances(&bank, &table, gain).unwrap();
+    let bounds = Bounds::film_v1(&development, allowances).unwrap();
     let lo = *bounds.minimum_cmy();
     let hi = *bounds.maximum_cmy();
     let inv = *bounds.inv_span_cmy();
     let resolution = bounds.film_v1_scan_resolution(17);
-    assert!(resolution <= 128);
+    assert!(resolution >= minimum_resolution);
+    for span in inv {
+        assert!(span.recip() / (resolution - 1) as f32 <= 0.26);
+    }
     let dyes = tables.dyes_cmy();
     let weights = tables.weighted_xyz();
     let lut = Lut::new(LutInput {

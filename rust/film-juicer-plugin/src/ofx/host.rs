@@ -14,6 +14,8 @@ mod instance_access;
 mod image;
 mod default_actions;
 
+#[cfg(feature = "grain-preview")]
+pub(super) use image::{Image, RenderArgs};
 pub(crate) use instance_access::{InstanceHandles, ParameterAccess, copy_bytes};
 
 #[derive(Clone, Copy, Debug)]

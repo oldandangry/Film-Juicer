@@ -1,6 +1,9 @@
 //! Frozen Portra bank and exact-footprint tables. Adapted from Fotufilm's
 //! FilmGrainTiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 use super::{AssetError, Assets};
+use crate::film::density::portra::{
+    CALIBRATED_MAX_FOOTPRINT, MAX_FOOTPRINT, MIN_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT,
+};
 use crate::hash;
 use serde::Deserialize;
 use std::{fmt, fs, path::Path, sync::Arc};
@@ -159,7 +162,7 @@ impl Assets {
         footprint: f32,
     ) -> Result<Arc<PortraGrainTable>, AssetError> {
         let fail = |e| AssetError::PortraGrain(Arc::new(e));
-        if !footprint.is_finite() || !(0.25..=37.5).contains(&footprint) {
+        if !(MIN_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
             return Err(fail(PortraGrainError::Invalid("unsupported footprint")));
         }
         let request = {
@@ -234,6 +237,18 @@ fn wrapped(s: &[f32], x: f64, y: f64) -> f64 {
 fn box_sum(s: &[f32], x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
     wrapped(s, x1, y1) - wrapped(s, x0, y1) - wrapped(s, x1, y0) + wrapped(s, x0, y0)
 }
+
+fn periodic_prefix(s: &[f32], x: f64, y: f64) -> f64 {
+    let nx = (x / 256.0).floor();
+    let ny = (y / 256.0).floor();
+    let tx = x - nx * 256.0;
+    let ty = y - ny * 256.0;
+    sum_at(s, tx, ty)
+        + nx * sum_at(s, 256.0, ty)
+        + ny * sum_at(s, tx, 256.0)
+        + nx * ny * f64::from(s[TILE - 1])
+}
+
 fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, PortraGrainError> {
     let pitch = f64::from(footprint);
     let mut table = PortraGrainTable {
@@ -262,10 +277,9 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
                         ));
                 let left = f64::from(bx) * 128.0;
                 let top = f64::from(by) * 128.0;
-                let u0 = x.max(left - 64.0) - left;
-                let u1 = (x + pitch).min(left + 192.0) - left;
-                let v0 = y.max(top - 64.0) - top;
-                let v1 = (y + pitch).min(top + 192.0) - top;
+                // Each footprint uses the same calibration positions and
+                // centre-selected placement. Average its complete square.
+                let (u0, u1, v0, v1) = (x - left, (x + pitch) - left, y - top, (y + pitch) - top);
                 let area = ((u1 - u0) * (v1 - v0)).max(1e-6);
                 let (mut p0, mut p1, mut q0, mut q1) = (u0, u1, v0, v1);
                 let turn = (h >> 16) & 7;
@@ -278,25 +292,45 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
                 if turn & 4 != 0 {
                     (p0, p1, q0, q1) = (q0, q1, p0, p1);
                 }
-                let sx = 64.0 + f64::from(h % 256);
-                let sy = 64.0 + f64::from((h >> 8) % 256);
+                let mut sx = 64.0 + f64::from(h % 256);
+                let mut sy = 64.0 + f64::from((h >> 8) % 256);
+                if footprint > CALIBRATED_MAX_FOOTPRINT {
+                    // Move the lower corner into the first period.
+                    sx -= (p0 + sx).div_euclid(256.0) * 256.0;
+                    sy -= (q0 + sy).div_euclid(256.0) * 256.0;
+                }
                 for level in [k, next] {
                     let start = (r * LEVELS + level) * TILE;
-                    let sum = box_sum(
-                        &bank.sums[start..start + TILE],
-                        p0 + sx,
-                        p1 + sx,
-                        q0 + sy,
-                        q1 + sy,
-                    );
-                    let light = bank.records[r].mean_light[level] + (sum / area) as f32;
+                    let sums = &bank.sums[start..start + TILE];
+                    let mean = bank.records[r].mean_light[level];
+                    let light = if footprint > SINGLE_WRAP_MAX_FOOTPRINT {
+                        let (x0, y0) = (p0 + sx, q0 + sy);
+                        let (x1, y1) = (x0 + pitch, y0 + pitch);
+                        let sum = periodic_prefix(sums, x1, y1)
+                            - periodic_prefix(sums, x0, y1)
+                            - periodic_prefix(sums, x1, y0)
+                            + periodic_prefix(sums, x0, y0);
+                        (f64::from(mean) + sum / (pitch * pitch)) as f32
+                    } else {
+                        let sum = box_sum(sums, p0 + sx, p1 + sx, q0 + sy, q1 + sy);
+                        mean + (sum / area) as f32
+                    };
                     fields[level][i] = -f64::from(light).max(1e-9).log10();
                 }
             }
         }
         let means: Vec<f64> = fields
             .iter()
-            .map(|v| v.iter().sum::<f64>() / v.len() as f64)
+            .map(|v| {
+                if footprint > SINGLE_WRAP_MAX_FOOTPRINT {
+                    // Exact periods can give constant light. Center before
+                    // summation so a constant field has exactly zero variance.
+                    let first = v[0];
+                    first + v.iter().map(|sample| sample - first).sum::<f64>() / v.len() as f64
+                } else {
+                    v.iter().sum::<f64>() / v.len() as f64
+                }
+            })
             .collect();
         for (target, mean) in table.mean_density[r].iter_mut().zip(&means) {
             *target = *mean as f32;
@@ -391,5 +425,10 @@ mod tests {
             ));
         }
         assert!(assets.portra_grain_table(&bank, f32::NAN).is_err());
+        assert!(
+            assets
+                .portra_grain_table(&bank, MAX_FOOTPRINT.next_up())
+                .is_err()
+        );
     }
 }

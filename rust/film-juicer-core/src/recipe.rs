@@ -283,7 +283,7 @@ impl fmt::Display for ControlError {
         f.write_str(match self {
             #[cfg(feature = "grain-preview")]
             Self::FilmGrain => {
-                "Film v1 requires Kodak Portra 400, 36 mm, a negative route and valid Film grain controls"
+                "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls"
             }
             Self::DirectScanner => "ResourceDescriptorMismatch phase=8 field=scanner_output",
             Self::PrintGamma => {
@@ -322,6 +322,14 @@ pub enum PrepareError {
     Asset(AssetError),
     Development(film::Error),
     Control(ControlError),
+    #[cfg(feature = "grain-preview")]
+    FilmGrainGeometry,
+    #[cfg(feature = "grain-preview")]
+    FilmGrainFootprint {
+        long_edge_mm: f32,
+        size_um: f32,
+        width_texels: f32,
+    },
     Input(input::Error),
     Optics(optics::Error),
     HighlightBoost(optics::highlight_boost::Error),
@@ -378,6 +386,19 @@ impl fmt::Display for PrepareError {
             Self::Asset(error) => error.fmt(f),
             Self::Development(error) => error.fmt(f),
             Self::Control(error) => error.fmt(f),
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrainGeometry => f.write_str("Film v1 requires rendered frame geometry"),
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrainFootprint {
+                long_edge_mm,
+                size_um,
+                width_texels,
+            } => {
+                write!(
+                    f,
+                    "Film v1 unsupported physical sampler footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={size_um}, footprint_texels={width_texels})"
+                )
+            }
             Self::Input(error) => error.fmt(f),
             Self::Optics(error) => optics_diagnostic(*error, f),
             Self::HighlightBoost(error) => f.write_str(error.diagnostic()),
@@ -396,7 +417,11 @@ impl fmt::Display for PrepareError {
                 stock,
             } => dir_diagnostic(error, *route, stock, f),
             #[cfg(any(feature = "grain-preview", test))]
-            Self::Bounds(error @ density::Error::FilmProjectionSpan) => error.fmt(f),
+            Self::Bounds(
+                error @ (density::Error::FilmNormalization
+                | density::Error::FilmProjectionSpan
+                | density::Error::FilmSpectralRange),
+            ) => error.fmt(f),
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
@@ -1613,9 +1638,38 @@ struct PrintAssembly {
     illuminant_hash: u64,
 }
 
-/// Complete one direct or print host state. No foreign record, frame geometry,
-/// CUDA residency, publication mutation or intermediate success escapes here.
+/// Complete one direct or print host state without frame-dependent grain.
 pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareError> {
+    prepare_state(
+        assets,
+        params,
+        #[cfg(feature = "grain-preview")]
+        None,
+    )
+}
+
+/// Sampling requested for this render of the private preview.
+#[cfg(feature = "grain-preview")]
+#[derive(Clone, Copy)]
+pub enum PreviewFrame {
+    Raster { long_edge_px: i32 },
+    Thumbnail,
+}
+
+#[cfg(feature = "grain-preview")]
+pub fn prepare_for_frame(
+    assets: &Assets,
+    params: &Params,
+    frame: PreviewFrame,
+) -> Result<RenderState, PrepareError> {
+    prepare_state(assets, params, Some(frame))
+}
+
+fn prepare_state(
+    assets: &Assets,
+    params: &Params,
+    #[cfg(feature = "grain-preview")] frame: Option<PreviewFrame>,
+) -> Result<RenderState, PrepareError> {
     #[cfg(feature = "test-support")]
     testing::reset();
     trace_stage!(SelectedFilm);
@@ -1623,6 +1677,9 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     #[cfg(feature = "grain-preview")]
     let film_grain = params
         .film_grain
+        // Keep the authored selection for current_grain(), which disables
+        // Current while Film is selected, including on a grain-free thumbnail.
+        .filter(|_| !matches!(frame, Some(PreviewFrame::Thumbnail)))
         .map(|controls| {
             if !controls.valid(
                 &params.film_profile_key,
@@ -1631,9 +1688,27 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
             ) {
                 return Err(ControlError::FilmGrain.into());
             }
+            let Some(PreviewFrame::Raster { long_edge_px }) = frame else {
+                return Err(PrepareError::FilmGrainGeometry);
+            };
+            let long_edge_mm = params.camera_film_format_long_edge_mm;
+            let footprint = controls.footprint(long_edge_mm, long_edge_px);
+            if !(density::portra::MIN_FOOTPRINT..=density::portra::MAX_FOOTPRINT)
+                .contains(&footprint)
+            {
+                return Err(PrepareError::FilmGrainFootprint {
+                    long_edge_mm,
+                    size_um: controls.texel_pitch_um,
+                    width_texels: footprint,
+                });
+            }
+            let bank = assets.portra_grain_bank()?;
+            let table = assets.portra_grain_table(&bank, footprint)?;
             Ok::<_, PrepareError>(grain::preview::Recipe::new(
-                assets.portra_grain_bank()?,
+                bank,
+                table,
                 controls,
+                long_edge_px,
             ))
         })
         .transpose()?;
@@ -1736,9 +1811,10 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     })?;
     #[cfg(feature = "grain-preview")]
     let film_bounds = match &film_grain {
-        Some(grain) => {
-            density::Bounds::film_v1(&acquired.development, grain.gain(), grain.texel_pitch_um())
-        }
+        Some(grain) => grain
+            .density_allowances()
+            .ok_or(density::Error::FilmNormalization)
+            .and_then(|allowances| density::Bounds::film_v1(&acquired.development, allowances)),
         None => density::Bounds::new(&acquired.development, &minimum),
     };
     #[cfg(not(feature = "grain-preview"))]

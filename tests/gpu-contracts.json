@@ -203,10 +203,11 @@
   },
   "native_membership": {
     "Grain.Gpu.FilmReference": {
-      "listed": 9,
-      "terminal": 9,
+      "listed": 10,
+      "terminal": 10,
       "required": [
         ["film-reference", "production-quad-g3-parity"],
+        ["film-reference", "production-proxy-footprint"],
         ["film-reference", "g2-geometry-and-temporal"],
         ["film-reference", "chroma-projection"],
         ["film-reference", "rectangles-wrap-and-seams"],
@@ -255,9 +256,17 @@
     },
     "native_membership": {
       "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 4,
-        "terminal": 4,
+        "listed": 15,
+        "terminal": 15,
         "required": [
+          [
+            "grain-preview-render",
+            "negative-direct-quarter-size-half"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-proxy-sequence"
+          ],
           [
             "grain-preview-render",
             "negative-direct-hd"
@@ -273,6 +282,42 @@
           [
             "grain-preview-render",
             "negative-print-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-portrait"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-thumbnails"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-thumbnails"
           ]
         ]
       }

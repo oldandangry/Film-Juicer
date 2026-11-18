@@ -19,30 +19,20 @@ use super::{edge, sys};
 pub(super) fn film_grain(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
-    assets: &film_juicer_core::assets::Assets,
 ) -> Result<Option<sys::FjFilmGrain>, edge::Failure> {
     let Some(recipe) = state.film_grain() else {
         return Ok(None);
     };
     let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
-    let Some(pitch) = recipe
-        .footprint(full.width.max(full.height))
-        .filter(|_| (-1_000_000.0..=1_000_000.0).contains(&frame.time_frames))
-    else {
+    if recipe.long_edge_px() != full.width.max(full.height)
+        || !(-1_000_000.0..=1_000_000.0).contains(&frame.time_frames)
+    {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
-            "Film v1 frame exceeds the supported geometry, footprint or time range",
-        ));
-    };
-    let table = assets
-        .portra_grain_table(recipe.bank(), pitch)
-        .map_err(|error| fail(sys::FJ_STATUS_PREPARATION_FAILURE, error.to_string()))?;
-    if !recipe.verified_normalization(&table) {
-        return Err(fail(
-            sys::FJ_STATUS_PREPARATION_FAILURE,
-            "Film v1 normalization falls outside the Portra density certificate",
+            "Film v1 frame geometry does not match its prepared density bounds or time is out of range",
         ));
     }
+    let table = recipe.table();
     let records = std::array::from_fn(|index| {
         let source = &recipe.bank().records()[index];
         sys::FjFilmGrainRecord {

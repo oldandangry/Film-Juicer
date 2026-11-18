@@ -11,6 +11,8 @@ use super::{Callback, InstanceHandles, Status, sys};
 pub(crate) struct RenderArgs {
     pub(crate) time: f64,
     pub(crate) window: [i32; 4],
+    #[cfg(feature = "grain-preview")]
+    pub(crate) scale: [f64; 2],
     pub(crate) cuda: bool,
     stream: usize,
     stream_present: bool,
@@ -50,6 +52,32 @@ impl Drop for Image<'_> {
 }
 
 impl Callback<'_> {
+    #[cfg(feature = "grain-preview")]
+    pub(crate) fn thumbnail(&self, handles: &InstanceHandles) -> bool {
+        let mut flagged = false;
+        for properties in handles.clip_properties {
+            let mut value = 0;
+            // SAFETY: Source and Output property sets are retained with their
+            // clip instances. The synchronous read holds no publication lock.
+            let status = unsafe {
+                (self.loaded.suites.get_int)(
+                    properties,
+                    c"kOfxImageClipPropThumbnail".as_ptr(),
+                    0,
+                    &mut value,
+                )
+            };
+            match status {
+                sys::kOfxStatOK if value == 1 => flagged = true,
+                sys::kOfxStatErrUnknown | sys::kOfxStatErrUnsupported => (),
+                // An explicit zero, a malformed flag or a failed read leaves
+                // the authored Film selection in effect for this render.
+                _ => return false,
+            }
+        }
+        flagged
+    }
+
     fn image_string(
         &self,
         handle: sys::OfxPropertySetHandle,
@@ -100,8 +128,12 @@ impl Callback<'_> {
     }
     pub(crate) fn render_args(&self) -> Result<RenderArgs, Status> {
         let time = self.action_double(c"OfxPropTime", 0)?;
-        let _ = self.action_double(c"OfxImageEffectPropRenderScale", 0)?;
-        let _ = self.action_double(c"OfxImageEffectPropRenderScale", 1)?;
+        let scale = [
+            self.action_double(c"OfxImageEffectPropRenderScale", 0)?,
+            self.action_double(c"OfxImageEffectPropRenderScale", 1)?,
+        ];
+        #[cfg(not(feature = "grain-preview"))]
+        let _ = scale;
         let mut window = [0; 4];
         for (index, value) in window.iter_mut().enumerate() {
             *value = self.image_int(self.input, c"OfxImageEffectPropRenderWindow", index as i32)?;
@@ -134,6 +166,8 @@ impl Callback<'_> {
         Ok(RenderArgs {
             time,
             window,
+            #[cfg(feature = "grain-preview")]
+            scale,
             cuda,
             stream,
             stream_present,

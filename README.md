@@ -239,6 +239,12 @@ Film dust and scratches are attached to the virtual strip. Gate artifacts are at
 
 Dust and scratches remain under refinement. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
 
+#### Portra 400 Film v1 preview
+
+In the opt-in **Film-Juicer Grain Preview** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes.
+
+Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Film grain suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions. The Windows preview was accepted after testing in DaVinci Resolve on 19 November 2026. [Preview build instructions](docs/building.md#portra-400-grain-preview)
+
 ### The enlarger and print medium
 
 The enlarger combines its illuminant with spektrafilm's Custom dichroic filter model. **Enlarger Y/M/C offsets** are expressed in Kodak CC units around the neutral calibration for the selected combination. At zero, the calibration's filtration is still in place.
