@@ -161,14 +161,14 @@ namespace GrainPrototype {
             require(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, FilmVariant::Quad, FilmBlock::Block32x8) == cudaErrorInvalidValue, "canonical owner accepted quad layout");
         }
 
-        void production_quad_matches_g3() {
-            const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, kUhdPitch);
+        void compare_production_quad(const FilmBank& bank, float gain) {
             DeviceFilmQuads quads;
             check_cuda(quads.upload(pack_film_quads(bank)));
-            FilmFrame reference{kUhdPitch, -17, -9, 37, 11, 43, 0x62345678U, true};
+            FilmFrame reference{bank.tables.footprint, -17, -9, 37, 11, 43, 0x62345678U, true};
             reference.nextSeed = 0x90123456U;
             reference.chromaFraction = 0.2406350076198578F;
-            constexpr std::size_t planeWords = 43U * 11U;
+            std::fill_n(reference.amounts, kRecords, gain);
+            const auto planeWords = static_cast<std::size_t>(reference.stride) * static_cast<std::size_t>(reference.height);
             std::vector<float> input(4 * planeWords, -17.F);
             for (int record = 0; record < kRecords; ++record) {
                 for (int y = 0; y < reference.height; ++y) {
@@ -219,6 +219,14 @@ namespace GrainPrototype {
                 require(!std::equal(actual.begin(), actual.end(), input.begin(), same_words),
                         "production Film Quad did not change the carrier");
             }
+        }
+
+        void production_quad_matches_g3() {
+            compare_production_quad(make_synthetic_bank(SyntheticBank::Rectangles, kUhdPitch), 1.F);
+            const std::filesystem::path bankDirectory = JUICER_GRAIN_TEST_BANK;
+            const std::filesystem::path tableDirectory = JUICER_GRAIN_TEST_TABLES;
+            compare_production_quad(read_film_bank(bankDirectory, kUhdPitch, tableDirectory), 1.F);
+            compare_production_quad(read_film_bank(bankDirectory, 37.5F, tableDirectory), 16.F);
         }
 
         struct Errors {

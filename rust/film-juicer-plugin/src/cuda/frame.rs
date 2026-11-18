@@ -25,22 +25,24 @@ pub(super) fn film_grain(
         return Ok(None);
     };
     let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
-    let pitch = (36_000.0_f64
-        / f64::from(full.width.max(full.height))
-        / f64::from(recipe.texel_pitch_um())) as f32;
-    if full.width > 4097
-        || full.height > 4097
-        || !(0.25..=37.5).contains(&pitch)
-        || !(-1_000_000.0..=1_000_000.0).contains(&frame.time_frames)
-    {
+    let Some(pitch) = recipe
+        .footprint(full.width.max(full.height))
+        .filter(|_| (-1_000_000.0..=1_000_000.0).contains(&frame.time_frames))
+    else {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
             "Film v1 frame exceeds the supported geometry, footprint or time range",
         ));
-    }
+    };
     let table = assets
         .portra_grain_table(recipe.bank(), pitch)
         .map_err(|error| fail(sys::FJ_STATUS_PREPARATION_FAILURE, error.to_string()))?;
+    if !recipe.verified_normalization(&table) {
+        return Err(fail(
+            sys::FJ_STATUS_PREPARATION_FAILURE,
+            "Film v1 normalization falls outside the Portra density certificate",
+        ));
+    }
     let records = std::array::from_fn(|index| {
         let source = &recipe.bank().records()[index];
         sys::FjFilmGrainRecord {

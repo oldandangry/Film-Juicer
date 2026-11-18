@@ -409,6 +409,13 @@ impl Callback<'_> {
                     let fatal = completion.fatal() || access.failed.get();
                     if fatal {
                         completion.trace_failure();
+                        #[cfg(feature = "grain-preview")]
+                        if state.film_grain().is_some()
+                            && !completion.deferred_dir_error()
+                            && !completion.diagnostic().is_empty()
+                        {
+                            self.message(c"FilmJuicerFilmRenderFailure", completion.diagnostic());
+                        }
                     }
                     #[cfg(feature = "test-support")]
                     super::test_support::render_complete(completion.status(), fatal, &owner.state);

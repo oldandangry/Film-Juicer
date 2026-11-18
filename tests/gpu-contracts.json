@@ -172,6 +172,8 @@
     "ExposureCache.ReflectedBoundaryFailuresStagingAndIndependentEpoch": 1,
     "ExposureCache.ReflectedBoundarySameKeyRaceAndPrepublicationCancellation": 1,
     "ExposureCache.SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit": 1,
+    "GrainUpload.FilmBankReuseAndContextRetirement": 1,
+    "GrainUpload.FilmBankFailureDoesNotPublish": 1,
     "GrainScratch.PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes": 1,
     "GrainScratch.GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction": 1,
     "GrainScratch.ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations": 1,
@@ -253,16 +255,24 @@
     },
     "native_membership": {
       "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 2,
-        "terminal": 2,
+        "listed": 4,
+        "terminal": 4,
         "required": [
           [
             "grain-preview-render",
-            "negative-direct"
+            "negative-direct-hd"
           ],
           [
             "grain-preview-render",
-            "negative-print"
+            "negative-print-hd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-uhd"
           ]
         ]
       }

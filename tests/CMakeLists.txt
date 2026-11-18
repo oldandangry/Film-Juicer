@@ -1318,6 +1318,9 @@ add_executable(JuicerGrainPrototype grain/grain_prototype.cpp grain/film_referen
 # Correlate SAT profiling with this prototype CUDA source in Release builds.
 set_property(SOURCE grain/film_reference.cu APPEND PROPERTY COMPILE_OPTIONS -lineinfo)
 target_link_libraries(JuicerGrainPrototype PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
+target_compile_definitions(JuicerGrainPrototype PRIVATE
+    JUICER_GRAIN_TEST_BANK="${JUICER_TEST_RESOURCE_DIR}/grain/portra-400"
+    JUICER_GRAIN_TEST_TABLES="${CMAKE_CURRENT_SOURCE_DIR}/grain/portra-table-fixtures")
 set_target_properties(JuicerGrainPrototype PROPERTIES LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerGrainPrototype juicer_test_resources)

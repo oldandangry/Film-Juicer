@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::assets::PortraGrainBank;
+use crate::assets::{PortraGrainBank, PortraGrainTable};
 use crate::{hash, route::ScanRoute};
+use super::super::density::portra;
 
 pub const DEFAULT_CHROMA: f64 = 0.2406350076198578;
 
@@ -65,6 +66,20 @@ impl Recipe {
 
     pub fn chroma_fraction(&self) -> f32 {
         self.chroma_fraction
+    }
+
+    pub fn footprint(&self, long_edge_px: i32) -> Option<f32> {
+        if !(1..=portra::MAX_RENDER_AXIS).contains(&long_edge_px) {
+            return None;
+        }
+        let footprint = (portra::FILM_LONG_EDGE_UM
+            / f64::from(long_edge_px)
+            / f64::from(self.texel_pitch_um)) as f32;
+        (2.0..=37.5).contains(&footprint).then_some(footprint)
+    }
+
+    pub fn verified_normalization(&self, table: &PortraGrainTable) -> bool {
+        portra::verify_table(&self.bank, table)
     }
 
     pub fn hash(&self) -> u64 {

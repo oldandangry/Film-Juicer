@@ -571,6 +571,89 @@ namespace {
         EXPECT_EQ(resources.wangTilesData, nullptr);
     }
 
+    TEST(GrainUpload, FilmBankReuseAndContextRetirement) {
+        JuicerTests::GtestCohort cases("film-bank-lifetime", {"reuse-and-retire", "fresh-epoch"});
+        auto reuse = cases.case_event("reuse-and-retire");
+        require_cuda(cudaSetDevice(0));
+        require_cuda(cudaFree(nullptr));
+        CUcontext context = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&context), CUDA_SUCCESS);
+        ASSERT_NE(context, nullptr);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
+        std::string diagnostic;
+        constexpr std::uint64_t budget = 256ULL * 1024 * 1024;
+        auto ledger = JuicerCuda::DeviceAllocationLedger::create({key.deviceId, budget}, diagnostic);
+        ASSERT_NE(ledger, nullptr) << diagnostic;
+        ASSERT_TRUE(ledger->bind_or_validate_cap(budget, diagnostic)) << diagnostic;
+        JuicerCuda::Resources resources(key, 1, ledger);
+        std::vector<float> sums(JuicerCuda::FilmGrain::kBankEntries, 1.F);
+        FjFilmGrain input{};
+        input.bank_hash = 1;
+        input.sums = {sums.data(), sums.size()};
+        const JuicerCuda::FilmGrain::FilmQuad* first = nullptr;
+        JuicerCuda::Failure failure;
+        ASSERT_TRUE(JuicerCuda::ensure_film_grain_uploaded(resources, input, first, failure)) << failure.diagnostic;
+        ASSERT_NE(first, nullptr);
+        const auto charged = ledger->snapshot().chargedBytes;
+        EXPECT_EQ(charged, JuicerCuda::FilmGrain::kQuadEntries * sizeof(JuicerCuda::FilmGrain::FilmQuad));
+        const JuicerCuda::FilmGrain::FilmQuad* reused = nullptr;
+        ASSERT_TRUE(JuicerCuda::ensure_film_grain_uploaded(resources, input, reused, failure)) << failure.diagnostic;
+        EXPECT_EQ(reused, first);
+        EXPECT_EQ(ledger->snapshot().chargedBytes, charged);
+        ASSERT_TRUE(JuicerCuda::drain_for_context_retire(resources, failure)) << failure.diagnostic;
+        EXPECT_TRUE(resources.filmGrainBanks.empty());
+        EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
+        reuse.passed();
+
+        auto epoch = cases.case_event("fresh-epoch");
+        JuicerCuda::Resources replacement(key, 2, ledger);
+        const JuicerCuda::FilmGrain::FilmQuad* newEpoch = nullptr;
+        ASSERT_TRUE(JuicerCuda::ensure_film_grain_uploaded(replacement, input, newEpoch, failure)) << failure.diagnostic;
+        EXPECT_NE(newEpoch, nullptr);
+        EXPECT_EQ(ledger->record_count_for_context(key, 1), 0);
+        EXPECT_EQ(ledger->record_count_for_context(key, 2), 1);
+        ASSERT_TRUE(JuicerCuda::drain_for_context_retire(replacement, failure)) << failure.diagnostic;
+        EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
+        epoch.passed();
+    }
+
+    TEST(GrainUpload, FilmBankFailureDoesNotPublish) {
+        JuicerTests::GtestCohort cases("film-bank-admission", {"capacity-refusal-and-retry", "malformed-bank"});
+        auto capacity = cases.case_event("capacity-refusal-and-retry");
+        require_cuda(cudaSetDevice(0));
+        require_cuda(cudaFree(nullptr));
+        CUcontext context = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&context), CUDA_SUCCESS);
+        ASSERT_NE(context, nullptr);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
+        std::string diagnostic;
+        auto ledger = JuicerCuda::DeviceAllocationLedger::create({key.deviceId, 1024}, diagnostic);
+        ASSERT_NE(ledger, nullptr) << diagnostic;
+        ASSERT_TRUE(ledger->bind_or_validate_cap(4, diagnostic)) << diagnostic;
+        JuicerCuda::Resources resources(key, 1, ledger);
+        std::vector<float> sums(JuicerCuda::FilmGrain::kBankEntries, 1.F);
+        FjFilmGrain input{};
+        input.bank_hash = 1;
+        input.sums = {sums.data(), sums.size()};
+        const JuicerCuda::FilmGrain::FilmQuad* bank = nullptr;
+        JuicerCuda::Failure failure;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            EXPECT_FALSE(JuicerCuda::ensure_film_grain_uploaded(resources, input, bank, failure));
+            EXPECT_EQ(failure.status.category, FJ_STATUS_ALLOCATION_FAILURE);
+            EXPECT_EQ(bank, nullptr);
+            EXPECT_TRUE(resources.filmGrainBanks.empty());
+            EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
+        }
+        capacity.passed();
+
+        auto malformed = cases.case_event("malformed-bank");
+        input.sums.count--;
+        EXPECT_FALSE(JuicerCuda::ensure_film_grain_uploaded(resources, input, bank, failure));
+        EXPECT_EQ(failure.status.category, FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_TRUE(resources.filmGrainBanks.empty());
+        malformed.passed();
+    }
+
     TEST_F(GrainScratch, GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
         const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
                                 Spektrafilm::ScanRoute::NegativePrintScan,

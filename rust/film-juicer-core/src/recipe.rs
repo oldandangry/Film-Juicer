@@ -395,8 +395,8 @@ impl fmt::Display for PrepareError {
                 route,
                 stock,
             } => dir_diagnostic(error, *route, stock, f),
-            #[cfg(feature = "grain-preview")]
-            Self::Bounds(error @ density::Error::FilmGrainBoundsUnverified) => error.fmt(f),
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::Bounds(error @ density::Error::FilmProjectionSpan) => error.fmt(f),
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
@@ -1553,6 +1553,7 @@ fn lut_descriptor(
     film_bounds: &density::Bounds,
     print: Option<(&PrintProfile, &print::Bounds)>,
     viewing: &str,
+    resolution: u32,
 ) -> Result<scanner::LutDescriptor, PrepareError> {
     let common = scanner::LutDescriptorParams {
         route: params.scan_route,
@@ -1561,7 +1562,7 @@ fn lut_descriptor(
         density_bounds_hash: print.map_or(film_bounds.hash(), |(_, bounds)| bounds.hash()),
         viewing_illuminant: viewing.as_bytes(),
         observer_identity: b"CIE1931_2deg_380_780_5nm",
-        resolution: params.scanner_lut_resolution.clamp(17, 128) as u32,
+        resolution,
     };
     let input = match print {
         Some((profile, _)) => scanner::LutDescriptorInput::Print {
@@ -1734,13 +1735,15 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         }
     })?;
     #[cfg(feature = "grain-preview")]
-    if film_grain.is_some() {
-        return Err(PrepareError::Bounds(
-            density::Error::FilmGrainBoundsUnverified,
-        ));
-    }
-    let film_bounds =
-        density::Bounds::new(&acquired.development, &minimum).map_err(PrepareError::Bounds)?;
+    let film_bounds = match &film_grain {
+        Some(grain) => {
+            density::Bounds::film_v1(&acquired.development, grain.gain(), grain.texel_pitch_um())
+        }
+        None => density::Bounds::new(&acquired.development, &minimum),
+    };
+    #[cfg(not(feature = "grain-preview"))]
+    let film_bounds = density::Bounds::new(&acquired.development, &minimum);
+    let film_bounds = film_bounds.map_err(PrepareError::Bounds)?;
     let profile_route_hash = profile_route_hash(params, film, selected_print.as_deref());
 
     // Route composition follows foundation, before focused payload construction.
@@ -1751,6 +1754,15 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         .map_err(PrepareError::PrintComposition)?;
     let (transform, gamut_hash) = output_policy(params)?;
     let scanner_params = scanner_params(params, transform.space());
+    #[cfg(feature = "grain-preview")]
+    let scanner_params = if film_grain.is_some() && selected_print.is_none() {
+        ScannerParams {
+            resolution: film_bounds.film_v1_scan_resolution(scanner_params.resolution),
+            ..scanner_params
+        }
+    } else {
+        scanner_params
+    };
     let print = match selected_print {
         Some(profile) => {
             let curves = profile
@@ -1800,7 +1812,14 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         )
         .to_owned();
     let direct_lut = if print.is_none() {
-        Some(lut_descriptor(params, film, &film_bounds, None, &viewing)?)
+        Some(lut_descriptor(
+            params,
+            film,
+            &film_bounds,
+            None,
+            &viewing,
+            scanner_params.resolution,
+        )?)
     } else {
         None
     };
@@ -1969,6 +1988,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
                 &film_bounds,
                 Some((&print.profile, &print.bounds)),
                 &viewing,
+                scanner_params.resolution,
             )
         })
         .transpose()?;

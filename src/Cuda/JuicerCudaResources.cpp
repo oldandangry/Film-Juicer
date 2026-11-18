@@ -1660,6 +1660,14 @@ namespace JuicerCuda {
         free_mallett_basis(resources);
         free_output_gamut_table(resources);
         free_scan_error_readbacks(resources);
+        for (auto& [key, slot] : resources.filmGrainBanks) {
+            (void)key;
+            if (slot->bank && !free_owned_device(resources, slot->bank, outError)) {
+                return false;
+            }
+            slot->bank = nullptr;
+        }
+        resources.filmGrainBanks.clear();
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
             release_frame_use_event_entry(resources, entry, false);
@@ -1789,6 +1797,7 @@ namespace JuicerCuda {
                 boundary = Resources::DeviceSpatialDirBoundary{};
             }
             resources.gaussianKernelCache.clear();
+            resources.filmGrainBanks.clear();
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
             for (const auto& entry : resources.retireQueue) {
@@ -3406,12 +3415,12 @@ namespace JuicerCuda {
             std::vector<FilmGrain::FilmQuad> packed(FilmGrain::kQuadEntries);
             for (int record = 0; record < FilmGrain::kRecords; ++record) {
                 for (int level = 0; level < FilmGrain::kLevels; ++level) {
-                    const auto index = static_cast<std::size_t>(record * FilmGrain::kLevels + level);
+                    const auto index = static_cast<std::size_t>(record) * FilmGrain::kLevels + level;
                     const float* source = input.sums.data + index * FilmGrain::kTileEntries;
                     auto* target = packed.data() + index * FilmGrain::kTileSide * FilmGrain::kTileSide;
                     for (int y = 0; y < FilmGrain::kTileSide; ++y) {
                         for (int x = 0; x < FilmGrain::kTileSide; ++x) {
-                            const auto at = static_cast<std::size_t>(y * FilmGrain::kTileStride + x);
+                            const auto at = static_cast<std::size_t>(y) * FilmGrain::kTileStride + x;
                             target[y * FilmGrain::kTileSide + x] = {source[at], source[at + 1], source[at + FilmGrain::kTileStride], source[at + FilmGrain::kTileStride + 1]};
                         }
                     }
@@ -4057,7 +4066,22 @@ namespace JuicerCuda {
                 free_owned_device_noexcept(resources, next.cellMax);
                 next = {};
             };
+            const std::size_t nodeBytes = lutView.log2_xyz.count * sizeof(float);
+            const std::size_t cellBytes = lutView.cell_min.count * sizeof(float);
+            const bool waitBetweenUploads =
+                nodeBytes > kPinnedUploadStagingMaxBytes / 4 ||
+                cellBytes > (kPinnedUploadStagingMaxBytes - 4 * nodeBytes) / 2;
             auto upload_next = [&](float*& destination, FjFloatSpan source, const char* label) {
+                if (waitBetweenUploads) {
+                    // A large six-array LUT cannot rely on all staging
+                    // allocations fitting at once. Complete earlier copies
+                    // on this stream so their buffers can be reclaimed.
+                    const auto result = cudaStreamSynchronize(static_cast<cudaStream_t>(cudaStreamOpaque));
+                    if (result != cudaSuccess) {
+                        set_failure(outError, runtime_failure_status(result), "CUDA scanner LUT staging fence failed");
+                        return false;
+                    }
+                }
                 void* raw = nullptr;
                 if (!alloc_and_upload_bytes(
                         resources,

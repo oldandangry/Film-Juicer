@@ -490,12 +490,7 @@ pub(crate) fn render(
     let mut guard = CallGuard::new(owner);
     let result = catch_unwind(AssertUnwindSafe(|| {
         #[cfg(feature = "grain-preview")]
-        let film_grain = {
-            guard.force_fatal = false;
-            let film = super::frame::film_grain(state, frame.raw(), assets)?;
-            guard.force_fatal = true;
-            film
-        };
+        let film_grain = super::frame::film_grain(state, frame.raw(), assets)?;
         let preview = guard.enter(assets, Some(state), frame)?;
         if guard.abort(abort)? {
             guard.force_fatal = false;

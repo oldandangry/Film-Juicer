@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -367,7 +368,8 @@ namespace {
             }
         const auto sourceReleases = host.image_release_count(effect, "Source") - sourceBefore;
         const auto outputReleases = host.image_release_count(effect, "Output") - outputBefore;
-        require(status == kOfxStatOK && messages.empty() && !host.callback_error(), "OFX render callback failed or emitted a host message");
+        require(status == kOfxStatOK && messages.empty() && !host.callback_error(),
+                "OFX render callback " + std::string(test.id) + " returned " + std::to_string(status) + ": " + messages.dump());
         require(sourceReleases == 1 && outputReleases == 1, "render did not release each acquired image once");
         require(before == after, "render changed current CUDA context");
         require_cuda(cudaStreamSynchronize(device.stream), "complete render stream");
@@ -437,7 +439,7 @@ namespace {
 
     int grain_preview_witness(const std::filesystem::path& path) {
         JuicerTests::CaseLog cases;
-        cases.membership("grain-preview-render", {"negative-direct", "negative-print"});
+        cases.membership("grain-preview-render", {"negative-direct-hd", "negative-print-hd", "negative-direct-uhd", "negative-print-uhd"});
         require(path.filename() == "juicer-grain-preview.ofx", "expected preview module");
         const auto resources = path.parent_path().parent_path() / "Resources";
         require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
@@ -464,11 +466,20 @@ namespace {
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create preview stream");
         Json routes = Json::array();
         for (const Case test : std::array{
-                 Case{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
-                 Case{"negative-print", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
+                 Case{"negative-direct-hd", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
+                 Case{"negative-print-hd", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
+                 Case{"negative-direct-uhd", "negative-direct", "NegativeDirectScan", 0, 4, 3840, 2160},
+                 Case{"negative-print-uhd", "negative-print", "NegativePrintScan", 0, 4, 3840, 2160},
              }) {
             JuicerTests::CaseEvent event("grain-preview-render", test.id);
             auto* effect = host.create_effect();
+            const auto amountDefault = host.value(effect, "FilmGrainAmountEv");
+            const auto sizeDefault = host.value(effect, "FilmGrainTexelPitchUm");
+            const auto colourDefault = host.value(effect, "FilmGrainChromaFraction");
+            require(amountDefault == std::vector<InstanceValue>{0.0} &&
+                        sizeDefault == std::vector<InstanceValue>{1.0} &&
+                        colourDefault == std::vector<InstanceValue>{0.2406350076198578},
+                    "preview descriptor slider defaults");
             author_parameters(host, effect, test);
             host.set_value(effect, "CameraFilmFormatPreset", {2});
             host.set_value(effect, "CameraFilmFormatMm", {36.0});
@@ -479,7 +490,9 @@ namespace {
             require_cuda(cudaMalloc(&device.source, bytes), "allocate preview source");
             require_cuda(cudaMalloc(&device.destination, bytes), "allocate preview destination");
             configure(host, effect, test, device);
+            std::string lastEdit = "initial grain-off state";
             auto change = [&](const char* name, std::vector<InstanceValue> value) {
+                lastEdit = name;
                 host.set_value(effect, name, std::move(value));
                 auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name});
                 require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault,
@@ -488,14 +501,48 @@ namespace {
             auto render = [&](double time) {
                 host.set_property(host.action_args(), kOfxPropTime, {time});
                 std::vector<std::uint32_t> words;
-                (void)run_pass(lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, words, true);
+                try {
+                    (void)run_pass(lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, words, true);
+                } catch (const std::exception& error) {
+                    throw std::runtime_error(lastEdit + " at frame " + std::to_string(time) + ": " + error.what());
+                }
                 return words;
             };
             const auto off = render(37.0);
-            change("GrainModel", {std::string("film_v1")});
             change("GrainActive", {1});
+            const auto current = render(37.0);
+            require(current != off, "Current grain did not change delivered pixels");
+            change("GrainDebugView", {1});
+            const auto diagnostic = render(37.0);
+            require(diagnostic != current, "Current debug view did not change delivered pixels");
+            change("GrainModel", {std::string("film_v1")});
             const auto film = render(37.0);
             require(film != off, "Film v1 did not change delivered pixels");
+            for (const auto& [name, values, reset] : std::array{
+                     std::tuple{"FilmGrainAmountEv", std::array{-3.0, 1.25, 3.0}, amountDefault},
+                     std::tuple{"FilmGrainTexelPitchUm", std::array{0.5, 1.5, 4.0}, sizeDefault},
+                     std::tuple{"FilmGrainChromaFraction", std::array{0.0, 0.5, 1.0}, colourDefault},
+                 }) {
+                for (double value : values) {
+                    change(name, {value});
+                    lastEdit += "=" + std::to_string(value);
+                    const auto edited = render(37.0);
+                    require(edited != off && edited != film, "Film slider did not change the delivered image");
+                }
+                change(name, reset);
+                require(render(37.0) == film, "descriptor-default reset did not restore Film output");
+            }
+            change("FilmGrainAmountEv", {3.0});
+            for (double size : {0.5, 4.0}) {
+                change("FilmGrainTexelPitchUm", {size});
+                for (double colour : {0.0, 1.0}) {
+                    change("FilmGrainChromaFraction", {colour});
+                    require(render(37.5) != off, "combined Film slider extrema produced grain-off output");
+                }
+            }
+            change("FilmGrainAmountEv", amountDefault);
+            change("FilmGrainTexelPitchUm", sizeDefault);
+            change("FilmGrainChromaFraction", colourDefault);
             require(render(37.0) == film, "paused Film frame changed");
             const auto later = render(38.0);
             require(later != film, "Film frame seed did not change");
@@ -503,8 +550,9 @@ namespace {
             const auto fractional = render(37.5);
             require(fractional != film && fractional != later, "fractional Film frame did not change");
             change("GrainModel", {std::string("current")});
-            const auto current = render(37.0);
-            require(current != off, "Current grain did not change delivered pixels");
+            require(render(37.0) == diagnostic, "saved Current debug view changed after Film");
+            change("GrainDebugView", {0});
+            require(render(37.0) == current, "Current output changed after Film");
             change("GrainActive", {0});
             require(render(37.0) == off, "grain-off output changed after model edits");
             routes.push_back({{"route", test.routeName}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
@@ -840,8 +888,10 @@ int main(int argc, char** argv) {
     try {
         if (argc >= 3 && std::string_view(argv[1]) == "--grain-preview-witness") {
             if (JuicerTests::list_requested(argc, argv)) {
-                JuicerTests::list_case("grain-preview-render", "negative-direct");
-                JuicerTests::list_case("grain-preview-render", "negative-print");
+                JuicerTests::list_case("grain-preview-render", "negative-direct-hd");
+                JuicerTests::list_case("grain-preview-render", "negative-print-hd");
+                JuicerTests::list_case("grain-preview-render", "negative-direct-uhd");
+                JuicerTests::list_case("grain-preview-render", "negative-print-uhd");
                 return std::fflush(stdout) == 0 ? 0 : 1;
             }
             require(argc == 3, "preview witness arguments");

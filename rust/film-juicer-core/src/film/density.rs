@@ -7,6 +7,9 @@ use crate::profile::Polarity;
 use crate::route::ScanRoute;
 use super::Development;
 
+#[cfg(any(feature = "grain-preview", test))]
+pub(crate) mod portra;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Minimum {
     cmy: [f32; 3],
@@ -24,8 +27,8 @@ pub enum Error {
     Span {
         channel: usize,
     },
-    #[cfg(feature = "grain-preview")]
-    FilmGrainBoundsUnverified,
+    #[cfg(any(feature = "grain-preview", test))]
+    FilmProjectionSpan,
     ZeroIdentity,
 }
 
@@ -37,9 +40,9 @@ impl fmt::Display for Error {
                 f,
                 "film density span requires finite positive result channel={channel}"
             ),
-            #[cfg(feature = "grain-preview")]
-            Self::FilmGrainBoundsUnverified => {
-                f.write_str("Film v1 requires verified two-sided Portra density bounds")
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::FilmProjectionSpan => {
+                f.write_str("Portra Film v1 projection requires a finite CMY span within 33 D")
             }
             Self::ZeroIdentity => f.write_str("film density bounds identity is zero"),
         }
@@ -76,13 +79,59 @@ pub struct Bounds {
 
 impl Bounds {
     pub fn new(development: &Development, minimum: &Minimum) -> Result<Self, Error> {
+        Self::from_range(
+            development,
+            minimum.cmy.map(|v| -v),
+            *development.maximum_cmy(),
+        )
+    }
+
+    #[cfg(any(feature = "grain-preview", test))]
+    pub(crate) fn film_v1(
+        development: &Development,
+        gain: f32,
+        size_um: f32,
+    ) -> Result<Self, Error> {
+        let [lower, upper] = portra::allowances(gain, size_um);
+        // Development samples its normalized knots with capped linear
+        // interpolation. Thinning by a factor in [0, 1] stays inside this
+        // interval because it contains zero.
+        let maximum_cmy = std::array::from_fn(|channel| {
+            let maximum = development.maximum_cmy()[channel];
+            let minimum = development.minimum_cmy()[channel];
+            (maximum.max(maximum - minimum) + upper).next_up()
+        });
+        if maximum_cmy
+            .iter()
+            .any(|&maximum| !(0.0..=33.0).contains(&(maximum - lower)))
+        {
+            return Err(Error::FilmProjectionSpan);
+        }
+        Self::from_range(development, [lower; 3], maximum_cmy)
+    }
+
+    #[cfg(any(feature = "grain-preview", test))]
+    pub(crate) fn film_v1_scan_resolution(&self, requested: u32) -> u32 {
+        let widest = self
+            .inv_span_cmy
+            .iter()
+            .map(|span| span.recip())
+            .fold(0.0, f32::max);
+        // The qualified Film grid has at most 0.26 D between nodes,
+        // including the broadest allowance at +3 EV.
+        requested.max((widest / 0.26).ceil() as u32 + 1)
+    }
+
+    fn from_range(
+        development: &Development,
+        minimum_cmy: [f32; 3],
+        maximum_cmy: [f32; 3],
+    ) -> Result<Self, Error> {
         let route = development.route();
         let source = match route {
             ScanRoute::NegativeDirect | ScanRoute::PositiveDirect => Source::DirectFilm,
             ScanRoute::NegativePrint | ScanRoute::PositivePrint => Source::EnlargerFilm,
         };
-        let minimum_cmy = minimum.cmy.map(|v| -v);
-        let maximum_cmy = *development.maximum_cmy();
         let mut inv_span_cmy = [0.0; 3];
         for channel in 0..3 {
             let span = maximum_cmy[channel] - minimum_cmy[channel];
