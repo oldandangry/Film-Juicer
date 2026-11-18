@@ -432,5 +432,31 @@
   "cuda_free_required": [
     "Rust.Core",
     "Rust.Bridge"
-  ]
+  ],
+  "grain_preview": {
+    "targets": {
+      "JuicerProductionPreparedRenderProbe": {
+        "protocol": "custom",
+        "registrations": 1
+      }
+    },
+    "required": [
+      "Ffi.Host.GrainPreviewDiscovery"
+    ],
+    "native_cohorts": {
+      "Ffi.Host.GrainPreviewDiscovery": 1
+    },
+    "native_membership": {
+      "Ffi.Host.GrainPreviewDiscovery": {
+        "listed": 1,
+        "terminal": 1,
+        "required": [
+          [
+            "grain-preview-discovery",
+            "both-modules"
+          ]
+        ]
+      }
+    }
+  }
 }

@@ -922,10 +922,20 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
+            if not standalone and not cuda_free and cache.get("JUICER_GRAIN_PREVIEW") == "ON":
+                for runtime in ("host", "gpu"):
+                    contract = contracts[runtime]
+                    preview = contract["grain_preview"]
+                    contract["targets"].update(preview["targets"])
+                    contract["required"].extend(preview["required"])
+                    contract["native_cohorts"].update(preview["native_cohorts"])
+                    contract["native_membership"].update(preview["native_membership"])
+                    (directory / (runtime + "-contracts.json")).write_text(json.dumps(contract, indent=2) + "\n")
             candidate["configuration"] = {
                 k: cache.get(k)
                 for k in (
                     "BUILD_TESTING",
+                    "JUICER_GRAIN_PREVIEW",
                     "CMAKE_BUILD_TYPE",
                     "CMAKE_CXX_COMPILER",
                     "CMAKE_CUDA_COMPILER",

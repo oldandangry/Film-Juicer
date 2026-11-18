@@ -803,7 +803,16 @@ namespace ofx_test {
             e->bag.properties[kOfxPropType] = {std::string(kOfxTypeImageEffectInstance)};
             e->bag.properties[kOfxImageEffectPropContext] = {std::string(kOfxImageEffectContextFilter)};
             e->bag.properties[kOfxPropInstanceData] = {static_cast<void*>(nullptr)};
-            for (auto entry : kInstanceParameters) {
+            std::vector<InstanceParamDefinition> parameters(kInstanceParameters.begin(), kInstanceParameters.end());
+            for (auto entry : std::array{
+                     InstanceParamDefinition{"GrainModel", InstanceParamKind::StringChoice},
+                     InstanceParamDefinition{"FilmGrainAmountEv", InstanceParamKind::Double},
+                     InstanceParamDefinition{"FilmGrainTexelPitchUm", InstanceParamKind::Double},
+                     InstanceParamDefinition{"FilmGrainChromaFraction", InstanceParamKind::Double},
+                 })
+                if (descriptor.params.contains(std::string(entry.name)))
+                    parameters.push_back(entry);
+            for (auto entry : parameters) {
                 auto p = std::make_unique<Param>(this, std::string(entry.name), entry.kind);
                 p->bag.scope = effect_name;
                 p->bag.properties[kOfxParamPropType] = {std::string(type(entry.kind))};

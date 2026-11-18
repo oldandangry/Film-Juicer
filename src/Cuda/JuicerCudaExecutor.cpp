@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "FilmEffectsFrameDescriptors.h"
+#include "juicer_cuda_api.h"
 
 #include <cuda_runtime.h>
 
@@ -916,6 +917,9 @@ namespace {
         JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView workspace{};
         JuicerCuda::GrainPayload payload{};
         JuicerCuda::GrainKernelPayload kernels{};
+        const JuicerCuda::FilmGrain::FilmQuad* filmBank = nullptr;
+        JuicerCuda::FilmGrain::FilmTables filmTables{};
+        JuicerCuda::FilmGrain::FilmFrame filmFrame{};
     };
 
     enum class CaptureExecution : unsigned char {
@@ -1376,6 +1380,46 @@ namespace {
         return optical;
     }
 
+    void bind_film_grain(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+                         const FjFilmGrain& input,
+                         int width,
+                         int height,
+                         GrainBinding& grain,
+                         const ExecutionErrors& errors) {
+        const auto axis_supported = [](int origin, int size) {
+            return origin >= -4096 && origin <= 4096 && size > 0 && size <= 4097 - origin;
+        };
+        if (!std::isfinite(input.pitch) || input.pitch < 0.25f || input.pitch > 37.5f ||
+            !std::isfinite(input.temporal_fraction) || input.temporal_fraction < 0.f || input.temporal_fraction >= 1.f ||
+            !std::isfinite(input.gain) || input.gain < 0.f ||
+            !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.f || input.chroma_fraction > 1.f ||
+            !axis_supported(input.origin_x, width) || !axis_supported(input.origin_y, height) ||
+            !(grain.filmBank = preparedFrame.film_grain_bank())) {
+            errors.fail_stage("film_grain_binding", "invalid Film grain frame", cudaErrorInvalidValue);
+        }
+        grain.filmTables.footprint = input.pitch;
+        for (int record = 0; record < 3; ++record) {
+            const auto& src = input.records[record];
+            auto& dst = grain.filmTables.records[record];
+            dst.minimumGross = src.minimum_gross;
+            dst.maximumGross = src.maximum_gross;
+            dst.offset = src.offset;
+            for (int level = 0; level < 17; ++level)
+                dst.levels[level] = {src.mean_light[level], src.mean_density[level], src.correlation[level]};
+        }
+        grain.filmFrame.pitch = input.pitch;
+        grain.filmFrame.originX = input.origin_x;
+        grain.filmFrame.originY = input.origin_y;
+        grain.filmFrame.width = width;
+        grain.filmFrame.height = height;
+        grain.filmFrame.stride = width;
+        grain.filmFrame.seed = input.seed;
+        grain.filmFrame.nextSeed = input.next_seed;
+        grain.filmFrame.temporalFraction = input.temporal_fraction;
+        grain.filmFrame.chromaFraction = input.chroma_fraction;
+        std::fill_n(grain.filmFrame.amounts, 3, input.gain);
+    }
+
     void bind_grain(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
@@ -1651,20 +1695,22 @@ namespace {
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
         if (grainStageActive) {
-            launchError = juicer_cuda_apply_visual_grain(
-                &grain.payload,
-                &grain.kernels,
-                width,
-                height,
-                optical.density.c,
-                optical.density.m,
-                optical.density.y,
-                grain.workspace.filterTemp,
-                grain.workspace.scaleWork,
-                grain.workspace.deltaAccum,
-                grain.workspace.layerWork,
-                grain.workspace.sharedDelta,
-                stream);
+            launchError = grain.filmBank
+                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, grain.filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
+                              : juicer_cuda_apply_visual_grain(
+                                    &grain.payload,
+                                    &grain.kernels,
+                                    width,
+                                    height,
+                                    optical.density.c,
+                                    optical.density.m,
+                                    optical.density.y,
+                                    grain.workspace.filterTemp,
+                                    grain.workspace.scaleWork,
+                                    grain.workspace.deltaAccum,
+                                    grain.workspace.layerWork,
+                                    grain.workspace.sharedDelta,
+                                    stream);
             if (launchError != cudaSuccess) {
                 errors.fail_stage(
                     "direct_visual_grain_launch",
@@ -2239,20 +2285,22 @@ namespace {
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
         if (grainStageActive) {
-            launchError = juicer_cuda_apply_visual_grain(
-                &grain.payload,
-                &grain.kernels,
-                width,
-                height,
-                optical.density.c,
-                optical.density.m,
-                optical.density.y,
-                grain.workspace.filterTemp,
-                grain.workspace.scaleWork,
-                grain.workspace.deltaAccum,
-                grain.workspace.layerWork,
-                grain.workspace.sharedDelta,
-                stream);
+            launchError = grain.filmBank
+                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, grain.filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
+                              : juicer_cuda_apply_visual_grain(
+                                    &grain.payload,
+                                    &grain.kernels,
+                                    width,
+                                    height,
+                                    optical.density.c,
+                                    optical.density.m,
+                                    optical.density.y,
+                                    grain.workspace.filterTemp,
+                                    grain.workspace.scaleWork,
+                                    grain.workspace.deltaAccum,
+                                    grain.workspace.layerWork,
+                                    grain.workspace.sharedDelta,
+                                    stream);
             if (launchError != cudaSuccess) {
                 errors.fail_stage(
                     "print_visual_grain_launch",
@@ -2578,9 +2626,9 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
         const bool grainStageActive =
-            descriptors.grain.has_value();
+            descriptors.grain.has_value() || input.preparation.filmGrain != nullptr;
         const bool grainDebugActive =
-            grainStageActive && input.grain.coefficients.debug_view != 0;
+            descriptors.grain.has_value() && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -2716,7 +2764,9 @@ namespace JuicerCuda {
             optical = bind_direct_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
-        if (grainStageActive) {
+        if (input.preparation.filmGrain) {
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, grain, errors);
+        } else if (grainStageActive) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -2848,9 +2898,9 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
         const bool grainStageActive =
-            descriptors.grain.has_value();
+            descriptors.grain.has_value() || input.preparation.filmGrain != nullptr;
         const bool grainDebugActive =
-            grainStageActive && input.grain.coefficients.debug_view != 0;
+            descriptors.grain.has_value() && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -3006,7 +3056,9 @@ namespace JuicerCuda {
             optical = bind_print_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
-        if (grainStageActive) {
+        if (input.preparation.filmGrain) {
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, grain, errors);
+        } else if (grainStageActive) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)

@@ -155,6 +155,36 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         }
     };
     let state = admitted.as_ref();
+    #[cfg(feature = "grain-preview")]
+    if state.film_grain().is_some() {
+        let canonical = callback.canonical_region(&owner.handles, args.time)?;
+        let scale = source.scale[0];
+        let full_definition = [
+            (canonical[0] * scale).floor(),
+            (canonical[1] * scale).floor(),
+            (canonical[2] * scale).ceil(),
+            (canonical[3] * scale).ceil(),
+        ];
+        if source.definition != source.bounds
+            || destination.definition != source.definition
+            || destination.bounds != source.bounds
+            || window != source.bounds
+            || source.pixel_aspect_ratio != 1.0
+            || destination.pixel_aspect_ratio != 1.0
+            || !scale.is_finite()
+            || scale <= 0.0
+            || source.scale[1] != scale
+            || destination.scale != source.scale
+            || full_definition != source.definition.map(f64::from)
+            || !(-1_000_000.0..=1_000_000.0).contains(&args.time)
+        {
+            callback.message(
+                c"FilmJuicerFilmGrainGeometry",
+                "Film v1 requires a complete square-pixel source and output with matching isotropic render scale.",
+            );
+            return Err(Status::FAILED);
+        }
+    }
     let print = matches!(
         state.development().route(),
         ScanRoute::NegativePrint | ScanRoute::PositivePrint

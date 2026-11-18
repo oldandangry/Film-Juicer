@@ -1,6 +1,7 @@
 #include "film_oracle.h"
 #include "film_reference.h"
 #include "prototype_benchmark.h"
+#include "Cuda/JuicerCudaFilmGrain.h"
 
 #include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
@@ -158,6 +159,66 @@ namespace GrainPrototype {
                 require(std::equal(actual.begin(), actual.end(), reference.begin(), same_words), "quad Film variant differs from reference");
             }
             require(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, FilmVariant::Quad, FilmBlock::Block32x8) == cudaErrorInvalidValue, "canonical owner accepted quad layout");
+        }
+
+        void production_quad_matches_g3() {
+            const auto bank = make_synthetic_bank(SyntheticBank::Rectangles, kUhdPitch);
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            FilmFrame reference{kUhdPitch, -17, -9, 37, 11, 43, 0x62345678U, true};
+            reference.nextSeed = 0x90123456U;
+            reference.chromaFraction = 0.2406350076198578F;
+            constexpr std::size_t planeWords = 43U * 11U;
+            std::vector<float> input(4 * planeWords, -17.F);
+            for (int record = 0; record < kRecords; ++record) {
+                for (int y = 0; y < reference.height; ++y) {
+                    for (int x = 0; x < reference.width; ++x) {
+                        const auto index = static_cast<std::size_t>(record) * planeWords +
+                                           static_cast<std::size_t>(y * reference.stride + x);
+                        input[index] = -0.25F + static_cast<float>((record * 5 + x + 3 * y) % 17) * 0.125F;
+                    }
+                }
+            }
+            JuicerCuda::FilmGrain::FilmTables tables{};
+            tables.footprint = bank.tables.footprint;
+            for (int record = 0; record < kRecords; ++record) {
+                const auto& source = bank.tables.records[record];
+                auto& target = tables.records[record];
+                target.minimumGross = source.minimumGross;
+                target.maximumGross = source.maximumGross;
+                target.offset = source.offset;
+                for (int level = 0; level < kLevels; ++level) {
+                    target.levels[level] = {source.levels[level].meanLight, source.levels[level].meanDensity, source.levels[level].correlation};
+                }
+            }
+            JuicerCuda::FilmGrain::FilmFrame frame{};
+            frame.pitch = reference.pitch;
+            frame.originX = reference.originX;
+            frame.originY = reference.originY;
+            frame.width = reference.width;
+            frame.height = reference.height;
+            frame.stride = reference.stride;
+            frame.seed = reference.seed;
+            frame.nextSeed = reference.nextSeed;
+            frame.chromaFraction = reference.chromaFraction;
+            std::copy_n(reference.amounts, kRecords, frame.amounts);
+            DeviceCarrier carrier(planeWords);
+            for (const float time : {0.F, 0.5F}) {
+                reference.temporalFraction = time;
+                frame.temporalFraction = time;
+                carrier.write(input);
+                check_cuda(apply_film_quads(quads, bank.tables, reference, carrier.planes(), nullptr, FilmBlock::Block32x8));
+                const auto expected = carrier.read();
+                carrier.write(input);
+                const auto planes = carrier.planes();
+                check_cuda(JuicerCuda::FilmGrain::apply(
+                    reinterpret_cast<const JuicerCuda::FilmGrain::FilmQuad*>(quads.quads()), tables, frame, {planes.cyan, planes.magenta, planes.yellow}, nullptr));
+                const auto actual = carrier.read();
+                require(std::equal(actual.begin(), actual.end(), expected.begin(), same_words),
+                        "production Film Quad differs from G3, including padding or alpha");
+                require(!std::equal(actual.begin(), actual.end(), input.begin(), same_words),
+                        "production Film Quad did not change the carrier");
+            }
         }
 
         struct Errors {
@@ -455,7 +516,15 @@ namespace GrainPrototype {
 
         constexpr std::array kHostCases{Case{"known-rectangles-and-constant", known_rectangles}, Case{"signed-film-time", signed_film_time}};
         constexpr std::array kGpuCases{
-            Case{"g2-geometry-and-temporal", g2_geometry_and_temporal}, Case{"chroma-projection", chroma_projection}, Case{"rectangles-wrap-and-seams", rectangles_and_seams}, Case{"dense-minimum-footprint", dense_footprints}, Case{"endpoints-seed-roi-alpha-padding", repeat_padded_roi}, Case{"zero-noise-identity", zero_noise}, Case{"disabled-no-bank", disabled}, Case{"unsupported-frame", unsupported_frame}};
+            Case{"production-quad-g3-parity", production_quad_matches_g3},
+            Case{"g2-geometry-and-temporal", g2_geometry_and_temporal},
+            Case{"chroma-projection", chroma_projection},
+            Case{"rectangles-wrap-and-seams", rectangles_and_seams},
+            Case{"dense-minimum-footprint", dense_footprints},
+            Case{"endpoints-seed-roi-alpha-padding", repeat_padded_roi},
+            Case{"zero-noise-identity", zero_noise},
+            Case{"disabled-no-bank", disabled},
+            Case{"unsupported-frame", unsupported_frame}};
 
         void run_cases(const auto& cases, bool list) {
             if (list) {

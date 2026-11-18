@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
+#include "Cuda/JuicerCudaFilmGrain.cuh"
 #include "GamutCompression.h"
 #include "openrand/philox.h"
 
@@ -3790,3 +3791,14 @@ extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
         (params.height + threads.y - 1) / threads.y);
     return launch_scan_pipeline(params, carrier, blocks, threads, stream);
 }
+
+namespace JuicerCuda::FilmGrain {
+    cudaError_t apply(const FilmQuad* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes, void* stream) {
+        if (!sums || !planes.cyan || !planes.magenta || !planes.yellow || frame.width <= 0 || frame.height <= 0 || frame.stride < frame.width)
+            return cudaErrorInvalidValue;
+        const dim3 threads{32, 8};
+        const dim3 blocks{(static_cast<unsigned>(frame.width) + 31U) / 32U, (static_cast<unsigned>(frame.height) + 7U) / 8U};
+        apply_quad<<<blocks, threads, 0, reinterpret_cast<cudaStream_t>(stream)>>>(sums, tables, frame, planes);
+        return cudaGetLastError();
+    }
+} // namespace JuicerCuda::FilmGrain

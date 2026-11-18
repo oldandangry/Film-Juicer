@@ -1630,6 +1630,71 @@ const _: () = {
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct FjFilmGrainRecord {
+    pub minimum_gross: f32,
+    pub maximum_gross: f32,
+    pub offset: f32,
+    pub mean_light: [f32; 17usize],
+    pub mean_density: [f32; 17usize],
+    pub correlation: [f32; 17usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjFilmGrainRecord"][::core::mem::size_of::<FjFilmGrainRecord>() - 216usize];
+    ["Alignment of FjFilmGrainRecord"][::core::mem::align_of::<FjFilmGrainRecord>() - 4usize];
+    ["Offset of field: FjFilmGrainRecord::minimum_gross"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, minimum_gross) - 0usize];
+    ["Offset of field: FjFilmGrainRecord::maximum_gross"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, maximum_gross) - 4usize];
+    ["Offset of field: FjFilmGrainRecord::offset"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, offset) - 8usize];
+    ["Offset of field: FjFilmGrainRecord::mean_light"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, mean_light) - 12usize];
+    ["Offset of field: FjFilmGrainRecord::mean_density"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, mean_density) - 80usize];
+    ["Offset of field: FjFilmGrainRecord::correlation"]
+        [::core::mem::offset_of!(FjFilmGrainRecord, correlation) - 148usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjFilmGrain {
+    pub bank_hash: u64,
+    pub sums: FjFloatSpan,
+    pub records: [FjFilmGrainRecord; 3usize],
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub seed: u32,
+    pub next_seed: u32,
+    pub pitch: f32,
+    pub temporal_fraction: f32,
+    pub gain: f32,
+    pub chroma_fraction: f32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjFilmGrain"][::core::mem::size_of::<FjFilmGrain>() - 704usize];
+    ["Alignment of FjFilmGrain"][::core::mem::align_of::<FjFilmGrain>() - 8usize];
+    ["Offset of field: FjFilmGrain::bank_hash"]
+        [::core::mem::offset_of!(FjFilmGrain, bank_hash) - 0usize];
+    ["Offset of field: FjFilmGrain::sums"][::core::mem::offset_of!(FjFilmGrain, sums) - 8usize];
+    ["Offset of field: FjFilmGrain::records"]
+        [::core::mem::offset_of!(FjFilmGrain, records) - 24usize];
+    ["Offset of field: FjFilmGrain::origin_x"]
+        [::core::mem::offset_of!(FjFilmGrain, origin_x) - 672usize];
+    ["Offset of field: FjFilmGrain::origin_y"]
+        [::core::mem::offset_of!(FjFilmGrain, origin_y) - 676usize];
+    ["Offset of field: FjFilmGrain::seed"][::core::mem::offset_of!(FjFilmGrain, seed) - 680usize];
+    ["Offset of field: FjFilmGrain::next_seed"]
+        [::core::mem::offset_of!(FjFilmGrain, next_seed) - 684usize];
+    ["Offset of field: FjFilmGrain::pitch"][::core::mem::offset_of!(FjFilmGrain, pitch) - 688usize];
+    ["Offset of field: FjFilmGrain::temporal_fraction"]
+        [::core::mem::offset_of!(FjFilmGrain, temporal_fraction) - 692usize];
+    ["Offset of field: FjFilmGrain::gain"][::core::mem::offset_of!(FjFilmGrain, gain) - 696usize];
+    ["Offset of field: FjFilmGrain::chroma_fraction"]
+        [::core::mem::offset_of!(FjFilmGrain, chroma_fraction) - 700usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct FjPreparedHostData {
     pub route: u32,
     pub capture_polarity: u32,
@@ -1655,10 +1720,11 @@ pub struct FjPreparedHostData {
     pub grain: FjVisualGrain,
     pub effects: FjFilmEffects,
     pub noise: FjStaticNoise,
+    pub film_grain: *const FjFilmGrain,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6824usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6832usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1708,6 +1774,8 @@ const _: () = {
         [::core::mem::offset_of!(FjPreparedHostData, effects) - 5904usize];
     ["Offset of field: FjPreparedHostData::noise"]
         [::core::mem::offset_of!(FjPreparedHostData, noise) - 6736usize];
+    ["Offset of field: FjPreparedHostData::film_grain"]
+        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6824usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;

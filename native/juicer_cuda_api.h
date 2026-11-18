@@ -750,6 +750,31 @@ typedef struct FjStaticNoise {
     int32_t wang_colors;
 } FjStaticNoise;
 
+typedef struct FjFilmGrainRecord {
+    float minimum_gross;
+    float maximum_gross;
+    float offset;
+    float mean_light[17];
+    float mean_density[17];
+    float correlation[17];
+} FjFilmGrainRecord;
+
+/* Exact-footprint calibration and callback-local sampler values. The canonical
+ * [record][level][y][x] SAT span and this record are borrowed through return. */
+typedef struct FjFilmGrain {
+    uint64_t bank_hash;
+    FjFloatSpan sums;
+    FjFilmGrainRecord records[3];
+    int32_t origin_x;
+    int32_t origin_y;
+    uint32_t seed;
+    uint32_t next_seed;
+    float pitch;
+    float temporal_fraction;
+    float gain;
+    float chroma_fraction;
+} FjFilmGrain;
+
 /* Complete invocation-local host input. Fixed records copy resolved coefficients;
  * spans borrow immutable producer storage. Unselected families are zero/empty.
  * Presence is explicit in family flags (print is selected by route); no model
@@ -781,6 +806,7 @@ typedef struct FjPreparedHostData {
     FjVisualGrain grain;
     FjFilmEffects effects;
     FjStaticNoise noise;
+    const FjFilmGrain* film_grain; /* Selected instead of visual grain; null otherwise. */
 } FjPreparedHostData;
 
 /* Calls serialize on one owner gate. inspect through render stays on the same

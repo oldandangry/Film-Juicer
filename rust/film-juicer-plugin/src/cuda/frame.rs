@@ -15,6 +15,83 @@ use film_juicer_core::{
 
 use super::{edge, sys};
 
+#[cfg(feature = "grain-preview")]
+pub(super) fn film_grain(
+    state: &recipe::RenderState,
+    frame: &sys::FjFrame,
+    assets: &film_juicer_core::assets::Assets,
+) -> Result<Option<sys::FjFilmGrain>, edge::Failure> {
+    let Some(recipe) = state.film_grain() else {
+        return Ok(None);
+    };
+    let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
+    let pitch = (36_000.0_f64
+        / f64::from(full.width.max(full.height))
+        / f64::from(recipe.texel_pitch_um())) as f32;
+    if full.width > 4097
+        || full.height > 4097
+        || !(0.25..=37.5).contains(&pitch)
+        || !(-1_000_000.0..=1_000_000.0).contains(&frame.time_frames)
+    {
+        return Err(fail(
+            sys::FJ_STATUS_UNSUPPORTED_INPUT,
+            "Film v1 frame exceeds the supported geometry, footprint or time range",
+        ));
+    }
+    let table = assets
+        .portra_grain_table(recipe.bank(), pitch)
+        .map_err(|error| fail(sys::FJ_STATUS_PREPARATION_FAILURE, error.to_string()))?;
+    let records = std::array::from_fn(|index| {
+        let source = &recipe.bank().records()[index];
+        sys::FjFilmGrainRecord {
+            minimum_gross: source.minimum_gross,
+            maximum_gross: source.maximum_gross,
+            offset: source.offset,
+            mean_light: source.mean_light,
+            mean_density: table.mean_density[index],
+            correlation: table.correlation[index],
+        }
+    });
+    let time_floor = frame.time_frames.floor();
+    let index = time_floor as i64;
+    let fraction = (frame.time_frames - time_floor) as f32;
+    let seed = film_seed(frame.session_seed, frame.clip_token, index);
+    let next_seed = if fraction == 0.0 {
+        seed
+    } else {
+        film_seed(frame.session_seed, frame.clip_token, index + 1)
+    };
+    let sums = recipe.bank().sums();
+    Ok(Some(sys::FjFilmGrain {
+        bank_hash: recipe.bank().identity(),
+        sums: sys::FjFloatSpan {
+            data: sums.as_ptr(),
+            count: sums.len(),
+        },
+        records,
+        origin_x: 0,
+        origin_y: 0,
+        seed,
+        next_seed,
+        pitch: table.footprint,
+        temporal_fraction: fraction,
+        gain: recipe.gain(),
+        chroma_fraction: recipe.chroma_fraction(),
+    }))
+}
+
+#[cfg(feature = "grain-preview")]
+fn film_seed(session: u64, clip: u64, index: i64) -> u32 {
+    let mut word = (session ^ clip.rotate_left(17)).wrapping_add(
+        (index as u64)
+            .wrapping_add(1)
+            .wrapping_mul(0x9e3779b97f4a7c15),
+    );
+    word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
+    (word ^ (word >> 31)) as u32
+}
+
 fn fail(category: u32, diagnostic: impl Into<String>) -> edge::Failure {
     edge::Failure::new(category, diagnostic)
 }

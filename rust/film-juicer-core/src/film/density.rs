@@ -21,7 +21,11 @@ pub enum Source {
 #[derive(Debug)]
 pub enum Error {
     Minimum,
-    Span { channel: usize },
+    Span {
+        channel: usize,
+    },
+    #[cfg(feature = "grain-preview")]
+    FilmGrainBoundsUnverified,
     ZeroIdentity,
 }
 
@@ -33,6 +37,10 @@ impl fmt::Display for Error {
                 f,
                 "film density span requires finite positive result channel={channel}"
             ),
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrainBoundsUnverified => {
+                f.write_str("Film v1 requires verified two-sided Portra density bounds")
+            }
             Self::ZeroIdentity => f.write_str("film density bounds identity is zero"),
         }
     }

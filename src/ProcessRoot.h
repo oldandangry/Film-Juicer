@@ -25,6 +25,7 @@
 
 struct FjCuda;
 struct FjHostPreparation;
+struct FjFilmGrain;
 namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
@@ -138,6 +139,7 @@ namespace JuicerProcess {
             int requestedWidth = 0;
             int requestedHeight = 0;
             const JuicerCuda::HighlightBoostDescriptor* highlightBoostDescriptor = nullptr;
+            const FjFilmGrain* filmGrain = nullptr;
         };
 
         class PreparedCudaFrame final {
@@ -305,6 +307,7 @@ namespace JuicerProcess {
             FocusedRgbWorkspaceView focused_rgb_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             JuicerCuda::PreparedVisualGrainView visual_grain_resources() const noexcept;
+            const JuicerCuda::FilmGrain::FilmQuad* film_grain_bank() const noexcept;
             const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
             film_juicer_effects_descriptor() const noexcept;
             VisualGrainWorkspaceView visual_grain_workspace(

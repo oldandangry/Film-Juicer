@@ -275,6 +275,9 @@ function(juicer_write_host_targets)
         string(APPEND juicer_host_target_paths "${separator}\"${target}\":\"$<TARGET_FILE:${target}>\"")
         set(separator ",\n")
     endforeach()
+    if(JUICER_GRAIN_PREVIEW AND NOT JUICER_CUDA_FREE_TESTS)
+        string(APPEND juicer_host_target_paths "${separator}\"JuicerProductionPreparedRenderProbe\":\"$<TARGET_FILE:JuicerProductionPreparedRenderProbe>\"")
+    endif()
     string(APPEND juicer_host_target_paths "\n}\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/host-targets.json"
         CONTENT "${juicer_host_target_paths}")
@@ -993,13 +996,25 @@ add_executable(JuicerPreparedBoundaryProbe
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_test_core film_juicer_rust_test_support CUDA::cuda_driver)
 add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
-        "${CMAKE_INSTALL_PREFIX}/juicer.ofx.bundle/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
+        "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
         "${JUICER_TEST_ROOT}/Resources"
         "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat"
         "${JUICER_TEST_PRESET_NAME}"
         "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+if(JUICER_GRAIN_PREVIEW)
+    juicer_add_host_test(Ffi.Host.GrainPreviewDiscovery JuicerProductionPreparedRenderProbe custom
+        --grain-preview-discovery
+        "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
+        "${CMAKE_INSTALL_PREFIX}/juicer.ofx.bundle/Contents/${JUICER_ARCH_DIR}/juicer.ofx")
+    set_tests_properties(Ffi.Host.GrainPreviewDiscovery PROPERTIES LABELS "host" TIMEOUT 0)
+    add_test(NAME Ffi.Gpu.GrainPreviewStaged
+        COMMAND JuicerProductionPreparedRenderProbe --grain-preview-witness
+            "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>")
+    set_tests_properties(Ffi.Gpu.GrainPreviewStaged PROPERTIES
+        LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+endif()
 if(MSVC)
     target_compile_options(JuicerPreparedBoundaryProbe PRIVATE $<$<COMPILE_LANGUAGE:C>:/W3;/WX>)
 else()

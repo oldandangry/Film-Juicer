@@ -285,6 +285,20 @@ pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, Capt
     p.camera_auto_exposure_enabled = i32::from(controls.integer(c"CameraAutoExposure")? != 0);
     p.camera_metering_method = controls.integer(c"CameraMeteringMethod")?;
     p.grain = capture_grain(controls)?;
+    #[cfg(feature = "grain-preview")]
+    {
+        let model = controls.string_bytes(c"GrainModel")?;
+        p.film_grain = match model.as_slice() {
+            b"current" => None,
+            b"film_v1" if !p.grain.active => None,
+            b"film_v1" => Some(grain::preview::Controls {
+                amount_ev: controls.double(c"FilmGrainAmountEv")? as f32,
+                texel_pitch_um: controls.double(c"FilmGrainTexelPitchUm")? as f32,
+                chroma_fraction: controls.double(c"FilmGrainChromaFraction")? as f32,
+            }),
+            _ => return Err(invalid_diagnostic("unsupported grain model")),
+        };
+    }
     effects::CaptureControls {
         film_dust: controls.double(c"FilmDustAmount")?,
         gate_dust: controls.double(c"GateDustAmount")?,
@@ -338,7 +352,10 @@ fn control_route(controls: &Controls<'_>) -> Result<(bool, bool), Status> {
 pub(super) fn initialize(controls: &Controls<'_>) -> Result<(), Status> {
     refresh_route_ui(controls)?;
     update_halation(controls)?;
-    update_highlight_boost(controls)
+    update_highlight_boost(controls)?;
+    #[cfg(feature = "grain-preview")]
+    update_grain_model(controls)?;
+    Ok(())
 }
 
 fn refresh_route_ui(controls: &Controls<'_>) -> Result<(), Status> {
@@ -371,6 +388,49 @@ fn update_highlight_boost(controls: &Controls<'_>) -> Result<(), Status> {
     let active = controls.double(c"HalationHighlightBoostEv")? > 0.0;
     controls.set_enabled(c"HalationHighlightProtectionEv", active)?;
     controls.set_enabled(c"HalationHighlightBoostRange", active)
+}
+
+#[cfg(feature = "grain-preview")]
+fn update_grain_model(controls: &Controls<'_>) -> Result<(), Status> {
+    let model = controls.string_bytes(c"GrainModel")?;
+    let film = match model.as_slice() {
+        b"current" => false,
+        b"film_v1" => true,
+        _ => return Err(Status::FAILED),
+    };
+    for name in [
+        c"FilmGrainAmountEv",
+        c"FilmGrainTexelPitchUm",
+        c"FilmGrainChromaFraction",
+    ] {
+        controls.set_secret(name, !film)?;
+    }
+    for name in [
+        c"GrainSublayersActive",
+        c"GrainPreset",
+        c"GrainAmplitude",
+        c"GrainBlur",
+        c"GrainSharpness",
+        c"GrainChroma",
+        c"GrainTexture",
+        c"GrainResetAdvanced",
+        c"GrainParticleAreaUm2",
+        c"GrainParticleScaleMaster",
+        c"GrainParticleScaleLayersMaster",
+        c"GrainDensityMinMaster",
+        c"GrainUniformityMaster",
+        c"GrainBlurDyeCloudsUm",
+        c"GrainSizeMixWeight",
+        c"GrainSizeMixWeightMid",
+        c"GrainSizeMixScale",
+        c"GrainMicroStructure",
+        c"GrainDebugView",
+        c"GrainClumpTemporalMix",
+        c"GrainClumpMorphPeriodSec",
+    ] {
+        controls.set_secret(name, film)?;
+    }
+    Ok(())
 }
 
 fn update_grain_chroma(controls: &Controls<'_>) -> Result<(), Status> {
@@ -567,6 +627,10 @@ pub(super) fn change(
         controls.begin_read()?;
     }
     refresh_route_ui(controls)?;
+    #[cfg(feature = "grain-preview")]
+    if name == b"GrainModel" {
+        update_grain_model(controls)?;
+    }
     if matches!(name, b"HalationActive" | b"HalationReflectionSource") {
         update_halation(controls)?;
     }

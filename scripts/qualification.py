@@ -1434,8 +1434,14 @@ def _validate_production_contract_v2(preset, payloads, report):
         raise ValueError("changed or missing production C11 probe")
     commands_by_name = {row["name"]: row for row in commands}
     probes_by_name = {row["name"]: row for row in probes}
+    variant = report.get("variant", "production")
+    if variant not in {"production", "grain-preview"}:
+        raise ValueError("unsupported production module variant")
+    ofx_command = [probes_by_name["ofx"]["executable"], loaded["file"]]
+    if variant == "grain-preview":
+        ofx_command.append("preview")
     if (
-        commands_by_name["ofx-probe"]["command"] != [probes_by_name["ofx"]["executable"], loaded["file"]]
+        commands_by_name["ofx-probe"]["command"] != ofx_command
         or commands_by_name["cuda-abi-probe"]["command"] != [probes_by_name["cuda-abi"]["executable"]]
         or loaded["file"] not in commands_by_name["module-probe"]["command"]
         or any(commands_by_name[row["name"]]["command"][-1] != row["file"] for row in scans)

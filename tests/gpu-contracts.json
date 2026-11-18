@@ -201,9 +201,10 @@
   },
   "native_membership": {
     "Grain.Gpu.FilmReference": {
-      "listed": 8,
-      "terminal": 8,
+      "listed": 9,
+      "terminal": 9,
       "required": [
+        ["film-reference", "production-quad-g3-parity"],
         ["film-reference", "g2-geometry-and-temporal"],
         ["film-reference", "chroma-projection"],
         ["film-reference", "rectangles-wrap-and-seams"],
@@ -235,6 +236,36 @@
           "negative-print/warm"
         ]
       ]
+    }
+  },
+  "grain_preview": {
+    "targets": {
+      "JuicerProductionPreparedRenderProbe": {
+        "protocol": "custom",
+        "registrations": 2
+      }
+    },
+    "required": [
+      "Ffi.Gpu.GrainPreviewStaged"
+    ],
+    "native_cohorts": {
+      "Ffi.Gpu.GrainPreviewStaged": 1
+    },
+    "native_membership": {
+      "Ffi.Gpu.GrainPreviewStaged": {
+        "listed": 2,
+        "terminal": 2,
+        "required": [
+          [
+            "grain-preview-render",
+            "negative-direct"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print"
+          ]
+        ]
+      }
     }
   }
 }

@@ -900,6 +900,40 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     let _ = p.set_string(c"OfxParamPropHint", 0, c"Add grain to the negative.");
     p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+    #[cfg(feature = "grain-preview")]
+    {
+        let p = parameters.define(c"OfxParamTypeStrChoice", c"GrainModel")?;
+        p.set_string(c"OfxPropLabel", 0, c"Model")?;
+        string_option(&p, c"current", c"Current")?;
+        string_option(&p, c"film_v1", c"Film v1")?;
+        p.set_string(c"OfxParamPropDefault", 0, c"current")?;
+        p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
+        p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+        for (name, label, default, min, max, increment) in [
+            (c"FilmGrainAmountEv", c"Amount (EV)", 0.0, -3.0, 3.0, 0.1),
+            (c"FilmGrainTexelPitchUm", c"Size (µm)", 1.0, 0.5, 4.0, 0.01),
+            (
+                c"FilmGrainChromaFraction",
+                c"Colour",
+                film_juicer_core::film::grain::preview::DEFAULT_CHROMA,
+                0.0,
+                1.0,
+                0.01,
+            ),
+        ] {
+            let p = parameters.define(c"OfxParamTypeDouble", name)?;
+            p.set_string(c"OfxPropLabel", 0, label)?;
+            p.set_double(c"OfxParamPropDefault", 0, default)?;
+            p.set_double(c"OfxParamPropMin", 0, min)?;
+            p.set_double(c"OfxParamPropMax", 0, max)?;
+            p.set_double(c"OfxParamPropDisplayMin", 0, min)?;
+            p.set_double(c"OfxParamPropDisplayMax", 0, max)?;
+            p.set_double(c"OfxParamPropIncrement", 0, increment)?;
+            p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
+            p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
+            p.set_int(c"OfxParamPropSecret", 0, 1)?;
+        }
+    }
     let p = parameters.define(c"OfxParamTypeBoolean", c"GrainSublayersActive")?;
     p.set_string(c"OfxPropLabel", 0, c"Use sublayers")?;
     p.set_int(c"OfxParamPropDefault", 0, 1)?;

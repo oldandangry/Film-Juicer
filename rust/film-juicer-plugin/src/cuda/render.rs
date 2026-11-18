@@ -489,6 +489,13 @@ pub(crate) fn render(
 ) -> Result<RenderOutcome, RenderError> {
     let mut guard = CallGuard::new(owner);
     let result = catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(feature = "grain-preview")]
+        let film_grain = {
+            guard.force_fatal = false;
+            let film = super::frame::film_grain(state, frame.raw(), assets)?;
+            guard.force_fatal = true;
+            film
+        };
         let preview = guard.enter(assets, Some(state), frame)?;
         if guard.abort(abort)? {
             guard.force_fatal = false;
@@ -546,6 +553,13 @@ pub(crate) fn render(
             noise.as_ref(),
         )
         .map_err(|diagnostic| Failure::new(sys::FJ_STATUS_PREPARATION_FAILURE, diagnostic))?;
+        #[cfg(feature = "grain-preview")]
+        let prepared = sys::FjPreparedHostData {
+            film_grain: film_grain
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            ..prepared
+        };
         let host_preparation = super::host_preparation::Call::new();
         #[cfg(feature = "test-support")]
         observe_native_render();

@@ -209,14 +209,25 @@ def execute(arguments):
         cache = build / "CMakeCache.txt"
         ninja = build / "build.ninja"
         compdb_path = build / "compile_commands.json"
-        assert "BUILD_TESTING:BOOL=OFF" in cache.read_text()
+        cache_text = cache.read_text()
+        assert "BUILD_TESTING:BOOL=OFF" in cache_text
+        variant = re.search(r"(?m)^JUICER_GRAIN_PREVIEW:BOOL=(ON|OFF)$", cache_text)
+        assert variant is not None
+        preview = variant.group(1) == "ON"
+        module_name = "juicer-grain-preview" if preview else "juicer"
+        descriptor = (
+            root / "tests/ofx" / ("descriptor_manifest_grain_preview.json" if preview else "descriptor_manifest.json")
+        )
         features = build / "cargo/production/features.txt"
         stamp = build / "cargo/production/build.stamp"
-        assert features.read_text().splitlines()[0] == "features=none" and stamp.is_file()
+        assert (
+            features.read_text().splitlines()[0] == ("features=grain-preview" if preview else "features=none")
+            and stamp.is_file()
+        )
         cargo_commands = [line for line in ninja.read_text().splitlines() if "--package film-juicer-plugin" in line]
         assert cargo_commands and all(
             "--no-default-features" in line
-            and "--features" not in line
+            and (("--features grain-preview" in line) if preview else ("--features" not in line))
             and "/cargo/production" in line.replace("\\", "/")
             for line in cargo_commands
         )
@@ -234,14 +245,17 @@ def execute(arguments):
             )
         )
         native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
-        build_module = build / "juicer.ofx"
-        contents = root / "out/stage" / arguments.preset / "juicer.ofx.bundle/Contents"
-        module = contents / ("Win64" if windows else "Linux-x86-64") / "juicer.ofx"
+        build_module = build / (module_name + ".ofx")
+        stage = root / "out/stage" / arguments.preset
+        if preview:
+            stage /= "portra-grain-preview"
+        contents = stage / (module_name + ".ofx.bundle") / "Contents"
+        module = contents / ("Win64" if windows else "Linux-x86-64") / (module_name + ".ofx")
         resources = contents / "Resources"
         render = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
         binary_inputs = [cache, ninja, compdb_path, features, stamp, archive, native, build_module, module, render]
         if windows:
-            binary_inputs.append(build / "juicer.pdb")
+            binary_inputs.append(build / (module_name + ".pdb"))
         before = {str(path): digest(path) for path in binary_inputs}
         assert before[str(build_module)] == before[str(module)], "staged and build modules differ"
         processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
@@ -258,7 +272,7 @@ def execute(arguments):
             root / "tests/ofx/instance_host.cpp",
             root / "tests/ofx/instance_host.h",
             root / "tests/ofx/probe.py",
-            root / "tests/ofx/descriptor_manifest.json",
+            descriptor,
             processor_fixture,
             updates,
             root / "tests/ofx/fixtures/exposure/manifest.json",
@@ -296,7 +310,7 @@ def execute(arguments):
         scan("rust-symbols", archive, "llvm-nm", ["--defined-only", "--demangle"])
         if windows:
             exports = scan("module-exports", module, "llvm-readobj", ["--coff-exports"])
-            scan("module-symbols", build / "juicer.pdb", "llvm-pdbutil", ["dump", "-globals", "-publics"])
+            scan("module-symbols", build / (module_name + ".pdb"), "llvm-pdbutil", ["dump", "-globals", "-publics"])
         else:
             exports = scan("module-exports", module, "llvm-nm", ["--dynamic", "--defined-only"])
             scan("module-symbols", module, "llvm-nm", ["--defined-only", "--demangle"])
@@ -331,7 +345,11 @@ def execute(arguments):
             executable = build / "tests/bin" / (target + suffix)
             linked = digest(executable)
             before[str(executable)] = linked
-            command(name + "-probe", [str(executable), *([str(module)] if name == "ofx" else [])], env=no_device_env)
+            command(
+                name + "-probe",
+                [str(executable), *([str(module), *(["preview"] if preview else [])] if name == "ofx" else [])],
+                env=no_device_env,
+            )
             after = digest(executable)
             assert linked == after
             probe_records.append(
@@ -352,7 +370,7 @@ def execute(arguments):
             str(root / "tests/ofx/probe.py"),
             str(module),
             "--expected-descriptor",
-            str(root / "tests/ofx/descriptor_manifest.json"),
+            str(descriptor),
         ]
         command("module-probe", module_command, env=no_device_env)
         render_command = [
@@ -450,6 +468,7 @@ def execute(arguments):
         }
         report = {
             "schema": "production-contract-v2",
+            "variant": "grain-preview" if preview else "production",
             "preset": arguments.preset,
             "build_testing": "OFF",
             "test_support": "OFF",

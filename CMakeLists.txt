@@ -56,6 +56,12 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
     message(FATAL_ERROR "Use a Debug or Release Ninja preset")
 endif()
 
+option(JUICER_GRAIN_PREVIEW "Build the private Portra grain preview" OFF)
+if(DEFINED ENV{JUICER_GRAIN_PREVIEW})
+    set(JUICER_GRAIN_PREVIEW "$ENV{JUICER_GRAIN_PREVIEW}" CACHE BOOL
+        "Build the private Portra grain preview" FORCE)
+endif()
+
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
 include(cmake/JuicerRust.cmake)
@@ -85,6 +91,9 @@ set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 add_library(juicer MODULE native/ofx_exports.cpp)
 target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
+if(JUICER_GRAIN_PREVIEW)
+    set_target_properties(juicer PROPERTIES OUTPUT_NAME "juicer-grain-preview")
+endif()
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
     # not need separable compilation. Resolve it once at the final module.

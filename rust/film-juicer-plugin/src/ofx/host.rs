@@ -643,7 +643,10 @@ unsafe impl Sync for Descriptor {}
 static DESCRIPTOR: Descriptor = Descriptor(sys::OfxPlugin {
     pluginApi: c"OfxImageEffectPluginAPI".as_ptr(),
     apiVersion: 1,
+    #[cfg(not(feature = "grain-preview"))]
     pluginIdentifier: c"com.juicer.Juicer".as_ptr(),
+    #[cfg(feature = "grain-preview")]
+    pluginIdentifier: c"com.juicer.Juicer.GrainPreview".as_ptr(),
     pluginVersionMajor: 1,
     pluginVersionMinor: 0,
     setHost: Some(set_host),

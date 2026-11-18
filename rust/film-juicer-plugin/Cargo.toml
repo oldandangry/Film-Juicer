@@ -9,6 +9,7 @@ publish = false
 crate-type = ["staticlib"]
 
 [features]
+grain-preview = ["film-juicer-core/grain-preview"]
 test-support = ["film-juicer-core/test-support"]
 
 [dependencies]

@@ -103,6 +103,14 @@ const REQUIRED: &[(&CStr, Kind)] = &[
     (c"HalationHighlightProtectionEv", Kind::Double),
     (c"HalationHighlightBoostRange", Kind::Double),
     (c"GrainActive", Kind::Boolean),
+    #[cfg(feature = "grain-preview")]
+    (c"GrainModel", Kind::StringChoice),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainAmountEv", Kind::Double),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainTexelPitchUm", Kind::Double),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainChromaFraction", Kind::Double),
     (c"GrainSublayersActive", Kind::Boolean),
     (c"GrainPreset", Kind::Choice),
     (c"GrainParticleAreaUm2", Kind::Double),

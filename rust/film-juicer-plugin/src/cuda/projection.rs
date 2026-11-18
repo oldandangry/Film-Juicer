@@ -517,5 +517,6 @@ pub(super) fn host_data(
         grain: descriptors.grain,
         effects: descriptors.effects,
         noise: static_noise,
+        film_grain: std::ptr::null(),
     })
 }

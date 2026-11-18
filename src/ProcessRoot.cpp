@@ -733,6 +733,7 @@ namespace JuicerProcess {
         Spektrafilm::ScanRoute scanRoute =
             Spektrafilm::kDefaultScanRoute;
         bool visualGrainPrepared = false;
+        const JuicerCuda::FilmGrain::FilmQuad* filmGrainBank = nullptr;
         bool frameUseEventSubmitted = false;
 
         void set_failure(
@@ -1059,6 +1060,7 @@ namespace JuicerProcess {
         const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSet,
         const ScatterHalationFrameDescriptor* scatterHalationDescriptor,
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
+        bool filmGrain,
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
         Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
@@ -1189,6 +1191,9 @@ namespace JuicerProcess {
             source = {spatialDir->scratchTier, spatialDir->planeRoles};
             target = {spatialDir->targetScratchTier, spatialDir->targetPlaneRoles};
             attachments.needSharedTmp = spatialDir->planeRoles.filterTempPlanes > 0;
+        }
+        if (filmGrain) {
+            attachments.needOptics = true;
         }
         if (visualGrain.has_value()) {
             if (visualGrain->renderExtent.width != requestedWidth ||
@@ -3792,6 +3797,10 @@ namespace JuicerProcess {
         return view.active ? view : VisualGrainWorkspaceView{};
     }
 
+    const JuicerCuda::FilmGrain::FilmQuad* Root::PreparedCudaFrame::film_grain_bank() const noexcept {
+        return _state ? _state->filmGrainBank : nullptr;
+    }
+
     Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
     Root::PreparedCudaFrame::capture_film_density_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
@@ -5297,6 +5306,7 @@ namespace JuicerProcess {
                 request.diffusionFrameSetDescriptor,
                 request.scatterHalationDescriptor,
                 request.visualGrainDescriptor,
+                request.filmGrain != nullptr,
                 request.effectsDescriptor,
                 request.identity.capturePolarity,
                 request.requestedWidth,
@@ -5332,6 +5342,13 @@ namespace JuicerProcess {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         JuicerCuda::ExecutorTest::observe_workspace_resource_acquired();
 #endif
+        if (request.filmGrain && !JuicerCuda::ensure_film_grain_uploaded(
+                                     *frame._state->resources, *request.filmGrain, frame._state->filmGrainBank, outError)) {
+            recordFailure("prepare_film_grain", "CUDA Film grain bank preparation failed");
+            frame.abort();
+            return frame;
+        }
+
         if (!frame._state->prepare_diffusion_resources(
                 deviceContextKey,
                 request.identity,
