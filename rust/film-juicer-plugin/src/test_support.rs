@@ -3047,6 +3047,7 @@ extern "C" fn fj_test_frame_geometry_fault(operation: u32, fault: u32) -> FjStat
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "test-support")]
 /// # Safety
 /// Required initialized/live/aligned records and exclusive/disjoint writable peers
 /// and optional diagnostic backing share the production operation's contract.

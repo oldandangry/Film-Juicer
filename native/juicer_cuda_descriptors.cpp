@@ -1,6 +1,7 @@
 #include "juicer_cuda_descriptors.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -25,6 +26,9 @@ namespace {
     static_assert(static_cast<std::uint32_t>(ScatterHalationGaussianKind::Identity) == FJ_HALATION_IDENTITY);
     static_assert(static_cast<std::uint32_t>(ScatterHalationGaussianKind::FirReflect) == FJ_HALATION_FIR_REFLECT);
     static_assert(static_cast<std::uint32_t>(ScatterHalationGaussianKind::YvvReplicate) == FJ_HALATION_YVV_REPLICATE);
+    static_assert(static_cast<std::uint32_t>(ScatterHalationGaussianKind::YvvReplicateFactored) == FJ_HALATION_YVV_REPLICATE_FACTORED);
+    static_assert(kHalationTailComponents == FJ_HALATION_TAIL_COMPONENTS);
+    static_assert(kHalationMaxBounces == FJ_HALATION_MAX_BOUNCES);
     static_assert(static_cast<std::uint32_t>(OutputEncoding::ColorSpace::sRGB) == FJ_OUTPUT_SRGB);
     static_assert(static_cast<std::uint32_t>(OutputEncoding::ColorSpace::DCI_P3) == FJ_OUTPUT_DCI_P3);
     static_assert(static_cast<std::uint32_t>(OutputEncoding::ColorSpace::DisplayP3) == FJ_OUTPUT_DISPLAY_P3);
@@ -138,17 +142,41 @@ namespace {
         const FjHalationGaussian& source,
         ScatterHalationGaussianDescriptor& out,
         std::string& diagnostic) {
-        if (source.kind > FJ_HALATION_YVV_REPLICATE || source.radius < 0 ||
-            (source.kind == FJ_HALATION_FIR_REFLECT && source.radius > 9)) {
+        const bool fir = source.kind == FJ_HALATION_FIR_REFLECT;
+        if (source.kind > FJ_HALATION_YVV_REPLICATE_FACTORED ||
+            (fir ? source.radius < 1 || source.radius > 9 : source.radius != 0)) {
             return invalid_descriptor(diagnostic, "optics.scatter_halation.gaussian");
+        }
+        const std::size_t firCount = fir ? static_cast<std::size_t>(2 * source.radius + 1) : 0;
+        for (std::size_t i = 0; i < out.firWeights.size(); ++i) {
+            const float weight = source.fir_weights[i];
+            if (i < firCount ? !std::isfinite(weight) || weight < 0.0f
+                             : weight != 0.0f || std::signbit(weight)) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.fir_weights");
+            }
+        }
+        if (source.kind == FJ_HALATION_YVV_REPLICATE || source.kind == FJ_HALATION_YVV_REPLICATE_FACTORED) {
+            if (!std::all_of(std::begin(source.yvv), std::end(source.yvv), [](float value) {
+                    return std::isfinite(value);
+                })) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.yvv");
+            }
+            if (source.kind == FJ_HALATION_YVV_REPLICATE_FACTORED &&
+                (!(source.yvv[0] > 0.0f && source.yvv[0] < 1.0f &&
+                   source.yvv[1] > 0.0f && static_cast<double>(source.yvv[1]) < 2.0 * (1.0 + source.yvv[2]) &&
+                   source.yvv[2] > 0.0f && source.yvv[2] < 1.0f) ||
+                 source.yvv[3] != 0.0f || std::signbit(source.yvv[3]))) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.yvv_factors");
+            }
+        } else if (!std::all_of(std::begin(source.yvv), std::end(source.yvv), [](float value) {
+                       return value == 0.0f && !std::signbit(value);
+                   })) {
+            return invalid_descriptor(diagnostic, "optics.scatter_halation.unused_yvv");
         }
         out.kind = static_cast<ScatterHalationGaussianKind>(source.kind);
         out.radius = source.radius;
         std::copy_n(source.fir_weights, out.firWeights.size(), out.firWeights.begin());
-        out.B = source.feedforward;
-        out.B1 = source.feedback[0];
-        out.B2 = source.feedback[1];
-        out.B3 = source.feedback[2];
+        std::copy_n(source.yvv, out.yvv.size(), out.yvv.begin());
         return true;
     }
 
@@ -180,7 +208,7 @@ namespace {
         JuicerCuda::PreparedDescriptors& out,
         std::string& diagnostic) {
         constexpr std::uint32_t kOpticsFlags =
-            FJ_OPTICS_CAMERA_DIFFUSION | FJ_OPTICS_ENLARGER_DIFFUSION | FJ_OPTICS_SCATTER_HALATION;
+            FJ_OPTICS_CAMERA_DIFFUSION | FJ_OPTICS_ENLARGER_DIFFUSION | FJ_OPTICS_SCATTER_HALATION | FJ_OPTICS_HIGHLIGHT_BOOST;
         if ((source.flags & ~kOpticsFlags) != 0 ||
             (!Spektrafilm::scan_route_is_print(out.route) &&
              (source.flags & FJ_OPTICS_ENLARGER_DIFFUSION) != 0)) {
@@ -215,29 +243,81 @@ namespace {
             return invalid_descriptor(diagnostic, "optics.inactive_diffusion");
         }
         if ((source.flags & FJ_OPTICS_SCATTER_HALATION) != 0) {
-            if (source.scatter_halation.recipe_hash == 0) {
+            const FjScatterHalation& halation = source.scatter_halation;
+            if (halation.recipe_hash == 0) {
                 return invalid_descriptor(diagnostic, "optics.scatter_halation.recipe_hash");
             }
             ScatterHalationFrameDescriptor descriptor{};
-            descriptor.recipeHash = source.scatter_halation.recipe_hash;
-            descriptor.scatterAmount = source.scatter_halation.scatter_amount;
+            descriptor.recipeHash = halation.recipe_hash;
+            descriptor.scatterAmount = halation.scatter_amount;
+            descriptor.bounceCount = halation.bounce_count;
+            descriptor.renormalize = halation.renormalize != 0;
+            if (!(descriptor.scatterAmount >= 0.0f && descriptor.scatterAmount <= 2.0f) ||
+                descriptor.bounceCount > descriptor.bounceWeights.size() || halation.renormalize > 1 ||
+                (descriptor.bounceCount == 0 && descriptor.renormalize)) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.schedule");
+            }
+            double weightSum = 0.0;
+            for (std::size_t component = 0; component < descriptor.bounceWeights.size(); ++component) {
+                const float weight = halation.bounce_weights[component];
+                if (component < descriptor.bounceCount ? !(weight > 0.0f && weight <= 1.0f)
+                                                       : weight != 0.0f || std::signbit(weight)) {
+                    return invalid_descriptor(diagnostic, "optics.scatter_halation.bounce_weights");
+                }
+                descriptor.bounceWeights[component] = weight;
+                weightSum += weight;
+            }
+            if (descriptor.bounceCount != 0 && std::abs(weightSum - 1.0) > 4 * std::numeric_limits<float>::epsilon()) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.bounce_weights");
+            }
+            bool hasReflection = false;
             for (std::size_t channel = 0; channel < descriptor.channels.size(); ++channel) {
-                const FjHalationChannel& input = source.scatter_halation.channels[channel];
+                const FjHalationChannel& input = halation.channels[channel];
                 ScatterHalationChannelDescriptor& output = descriptor.channels[channel];
                 output.totalStrength = input.total_strength;
+                output.tailWeight = input.tail_weight;
+                if (!std::isfinite(output.totalStrength) || output.totalStrength < 0.0f ||
+                    !(output.tailWeight >= 0.0f && output.tailWeight <= 1.0f)) {
+                    return invalid_descriptor(diagnostic, "optics.scatter_halation.channel");
+                }
+                hasReflection |= output.totalStrength > 0.0f;
                 if (!decode_halation_gaussian(input.core, output.core, diagnostic)) {
                     return false;
                 }
                 for (std::size_t component = 0; component < output.tail.size(); ++component) {
-                    if (!decode_halation_gaussian(input.tail[component], output.tail[component], diagnostic) ||
-                        !decode_halation_gaussian(input.bounce[component], output.bounce[component], diagnostic)) {
+                    if (!decode_halation_gaussian(input.tail[component], output.tail[component], diagnostic)) {
+                        return false;
+                    }
+                }
+                for (std::size_t component = 0; component < output.bounce.size(); ++component) {
+                    if (component >= descriptor.bounceCount && input.bounce[component].kind != FJ_HALATION_IDENTITY) {
+                        return invalid_descriptor(diagnostic, "optics.scatter_halation.unused_bounce");
+                    }
+                    if (!decode_halation_gaussian(input.bounce[component], output.bounce[component], diagnostic)) {
                         return false;
                     }
                 }
             }
+            if (hasReflection != (descriptor.bounceCount != 0)) {
+                return invalid_descriptor(diagnostic, "optics.scatter_halation.reflection");
+            }
             out.halation = descriptor;
         } else if (source.scatter_halation.recipe_hash != 0) {
             return invalid_descriptor(diagnostic, "optics.inactive_scatter_halation");
+        }
+        const auto& boost = source.highlight_boost;
+        if ((source.flags & FJ_OPTICS_HIGHLIGHT_BOOST) != 0) {
+            constexpr double maxGain = 1048576.0;
+            if (boost.recipe_hash == 0 || !(boost.protection >= 0.184 && boost.protection <= 0.184 * maxGain) ||
+                !(boost.sharpness >= 1.0 && boost.sharpness <= 28.0) || !(boost.peak_gain >= 1.0 && boost.peak_gain <= maxGain) ||
+                source.full_frame.width <= 0 || source.full_frame.height <= 0) {
+                return invalid_descriptor(diagnostic, "optics.highlight_boost");
+            }
+            out.highlightBoost = JuicerCuda::HighlightBoostDescriptor{boost.recipe_hash, boost.protection, boost.sharpness, boost.peak_gain};
+        } else if (boost.recipe_hash != 0 || boost.protection != 0.0 || std::signbit(boost.protection) ||
+                   boost.sharpness != 0.0 || std::signbit(boost.sharpness) ||
+                   boost.peak_gain != 0.0 || std::signbit(boost.peak_gain)) {
+            return invalid_descriptor(diagnostic, "optics.inactive_highlight_boost");
         }
         return true;
     }

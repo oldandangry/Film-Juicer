@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include "prepared_descriptors.h"
+#include "prepared_product_fixture.h"
 #include "preparation_fixture.h"
 #include "owner_fixture.h"
 #include "RenderValues.h"
@@ -265,6 +266,12 @@ namespace {
             source.halation = frame;
             JuicerCudaTest::encode_prepared_descriptors(source, wire);
             JuicerCuda::PreparedDescriptors decoded;
+            if (input.at("name") == "unusual-scalars-preserved") {
+                EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic));
+                EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=optics.scatter_halation.schedule");
+                caseEvent.passed();
+                continue;
+            }
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
             EXPECT_TRUE(JuicerTestSupport::matches_halation_frame(decoded.halation, row.at("descriptor")));
             if (decoded.halation) {
@@ -273,6 +280,143 @@ namespace {
             }
             caseEvent.passed();
         }
+    }
+
+    TEST(PreparedProjection, AdvancedHalationUsesRustScheduleAtNativeDecode) {
+        JuicerTestSupport::RuntimeFixture runtime;
+        runtime.create(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "Resources");
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.camera_film_format_long_edge_mm = 8.0f;
+        auto& controls = snapshot.values.scatter_halation;
+        controls = {1, 0.75f, 1.0f, 1.0f, 1.0f, 1, {0.125, 0.0, 0.5}, {60.0, 70.0, 50.0}, {1, 5, 0, 0, 0.5, {3.5, 6.0, 10.0}, {3.0, 3.0, 3.0}, {0.0, 0.5, 1.0}}};
+        const auto prepared = JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot);
+        constexpr FjExtent extent{-3, 7, 7680, 4320};
+        FjPreparedFramePolicy policy{};
+        ASSERT_EQ(fj_test_prepared_state_frame_policy(prepared.borrow(), &extent, &policy, nullptr).category, FJ_STATUS_SUCCESS);
+        auto input = make_fixed_input();
+        input.optics = policy.optics;
+        JuicerCuda::PreparedDescriptors decoded;
+        std::string diagnostic;
+        ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
+        ASSERT_TRUE(decoded.halation);
+        const auto& schedule = *decoded.halation;
+        EXPECT_EQ(schedule.recipeHash, policy.optics.scatter_halation.recipe_hash);
+        EXPECT_EQ(schedule.bounceCount, 5u);
+        EXPECT_EQ(schedule.bounceWeights, (std::array{16.0f / 31.0f, 8.0f / 31.0f, 4.0f / 31.0f, 2.0f / 31.0f, 1.0f / 31.0f}));
+        EXPECT_FALSE(schedule.renormalize);
+        EXPECT_EQ(schedule.channels[0].tailWeight, 0.0f);
+        EXPECT_EQ(schedule.channels[1].tailWeight, 0.5f);
+        EXPECT_EQ(schedule.channels[2].tailWeight, 1.0f);
+        EXPECT_EQ(schedule.channels[0].tail[0].kind, ScatterHalationGaussianKind::Identity);
+        EXPECT_EQ(schedule.channels[1].bounce[4].kind, ScatterHalationGaussianKind::Identity);
+        EXPECT_EQ(schedule.channels[2].core.kind, ScatterHalationGaussianKind::Identity);
+        EXPECT_EQ(schedule.channels[0].bounce[4].kind, ScatterHalationGaussianKind::YvvReplicateFactored);
+        for (std::size_t i = 0; i < schedule.channels[0].bounce[4].yvv.size(); ++i) {
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(schedule.channels[0].bounce[4].yvv[i]),
+                      std::bit_cast<std::uint32_t>(policy.optics.scatter_halation.channels[0].bounce[4].yvv[i]));
+        }
+        const auto& valid = policy.optics.scatter_halation.channels[0].bounce[4];
+        ASSERT_GT(valid.yvv[0], 0.0f);
+        ASSERT_LT(valid.yvv[0], 1.0f);
+        ASSERT_GT(valid.yvv[1], 0.0f);
+        ASSERT_LT(static_cast<double>(valid.yvv[1]), 2.0 * (1.0 + valid.yvv[2]));
+        ASSERT_GT(valid.yvv[2], 0.0f);
+        ASSERT_LT(valid.yvv[2], 1.0f);
+        ASSERT_EQ(std::bit_cast<std::uint32_t>(valid.yvv[3]), 0u);
+
+        struct InvalidFactors {
+            const char* name;
+            void (*mutate)(FjHalationGaussian&);
+        };
+        const InvalidFactors cases[] = {
+            {"h zero", [](FjHalationGaussian& v) {
+                 v.yvv[0] = 0.0f;
+             }},
+            {"h one", [](FjHalationGaussian& v) {
+                 v.yvv[0] = 1.0f;
+             }},
+            {"h nonfinite", [](FjHalationGaussian& v) {
+                 v.yvv[0] = std::numeric_limits<float>::quiet_NaN();
+             }},
+            {"g zero", [](FjHalationGaussian& v) {
+                 v.yvv[1] = 0.0f;
+             }},
+            {"g bound", [](FjHalationGaussian& v) {
+                 v.yvv[1] = 4.0f;
+             }},
+            {"g nonfinite", [](FjHalationGaussian& v) {
+                 v.yvv[1] = std::numeric_limits<float>::infinity();
+             }},
+            {"t zero", [](FjHalationGaussian& v) {
+                 v.yvv[2] = 0.0f;
+             }},
+            {"t one", [](FjHalationGaussian& v) {
+                 v.yvv[2] = 1.0f;
+             }},
+            {"t nonfinite", [](FjHalationGaussian& v) {
+                 v.yvv[2] = std::numeric_limits<float>::quiet_NaN();
+             }},
+            {"unused fourth nonzero", [](FjHalationGaussian& v) {
+                 v.yvv[3] = 1.0f;
+             }},
+            {"unused fourth negative zero", [](FjHalationGaussian& v) {
+                 v.yvv[3] = -0.0f;
+             }},
+        };
+        for (const auto& test : cases) {
+            auto malformed = input;
+            test.mutate(malformed.optics.scatter_halation.channels[0].bounce[4]);
+            JuicerCuda::PreparedDescriptors rejected;
+            std::string error;
+            EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(malformed, rejected, error)) << test.name;
+            EXPECT_FALSE(error.empty()) << test.name;
+        }
+    }
+
+    TEST(PreparedProjection, HighlightBoostIsIndependentAndRejectsDirtyInactivePayload) {
+        JuicerTestSupport::RuntimeFixture runtime;
+        runtime.create(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "Resources");
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.scatter_halation.active = 0;
+        snapshot.values.highlight_boost_ev = 2.0;
+        snapshot.values.highlight_protection_ev = 4.0;
+        snapshot.values.highlight_boost_range = 1.0;
+        const auto prepared = JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot);
+        constexpr FjExtent extent{-3, 7, 256, 17};
+        FjPreparedFramePolicy policy{};
+        ASSERT_EQ(fj_test_prepared_state_frame_policy(prepared.borrow(), &extent, &policy, nullptr).category, FJ_STATUS_SUCCESS);
+        auto input = make_fixed_input();
+        input.optics = policy.optics;
+        EXPECT_EQ(input.optics.flags, FJ_OPTICS_HIGHLIGHT_BOOST);
+        EXPECT_EQ(input.optics.full_frame.x, extent.x);
+        EXPECT_EQ(input.optics.full_frame.y, extent.y);
+        EXPECT_EQ(input.optics.full_frame.width, extent.width);
+        EXPECT_EQ(input.optics.full_frame.height, extent.height);
+        JuicerCuda::PreparedDescriptors decoded;
+        std::string diagnostic;
+        ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
+        ASSERT_TRUE(decoded.highlightBoost);
+        EXPECT_FALSE(decoded.halation);
+        EXPECT_EQ(decoded.highlightBoost->recipeHash, policy.optics.highlight_boost.recipe_hash);
+        EXPECT_DOUBLE_EQ(decoded.highlightBoost->protection, 2.944);
+        EXPECT_DOUBLE_EQ(decoded.highlightBoost->sharpness, 1.0);
+        EXPECT_DOUBLE_EQ(decoded.highlightBoost->peakGain, 4.0);
+        input.optics.highlight_boost.peak_gain = std::numeric_limits<double>::infinity();
+        EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic));
+        EXPECT_FALSE(decoded.highlightBoost);
+        EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=optics.highlight_boost");
+
+        snapshot.values.highlight_boost_ev = -0.0;
+        snapshot.values.highlight_protection_ev = std::numeric_limits<double>::quiet_NaN();
+        const auto bypass = JuicerTestSupport::prepare_product(runtime.borrow().assets, snapshot);
+        ASSERT_EQ(fj_test_prepared_state_frame_policy(bypass.borrow(), &extent, &policy, nullptr).category, FJ_STATUS_SUCCESS);
+        input.optics = policy.optics;
+        EXPECT_EQ(input.optics.flags, 0u);
+        EXPECT_EQ(input.optics.highlight_boost.recipe_hash, 0u);
+        EXPECT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
+        input.optics.highlight_boost.protection = -0.0;
+        EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic));
+        EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=optics.inactive_highlight_boost");
     }
 
     // Fixed projection contract only; complete spectral spans and CUDA admission have separate fixtures.
@@ -316,6 +460,10 @@ namespace {
         input.optics.scatter_halation.recipe_hash = 206;
         input.optics.scatter_halation.scatter_amount = 0.375f;
         input.optics.scatter_halation.channels[0].total_strength = 0.125f;
+        input.optics.scatter_halation.bounce_count = 2;
+        input.optics.scatter_halation.bounce_weights[0] = 0.75f;
+        input.optics.scatter_halation.bounce_weights[1] = 0.25f;
+        input.optics.scatter_halation.renormalize = 1;
         input.optics.scatter_halation.channels[1].total_strength = 0.25f;
         input.optics.scatter_halation.channels[2].total_strength = 0.5f;
         auto& core = input.optics.scatter_halation.channels[0].core;
@@ -326,10 +474,10 @@ namespace {
         core.fir_weights[2] = 0.25f;
         auto& tail = input.optics.scatter_halation.channels[1].tail[2];
         tail.kind = FJ_HALATION_YVV_REPLICATE;
-        tail.feedforward = 0.625f;
-        tail.feedback[0] = 0.5f;
-        tail.feedback[1] = -0.1875f;
-        tail.feedback[2] = 0.0625f;
+        tail.yvv[0] = 0.625f;
+        tail.yvv[1] = 0.5f;
+        tail.yvv[2] = -0.1875f;
+        tail.yvv[3] = 0.0625f;
         input.optics.scatter_halation.channels[2].bounce[1] = core;
 
         input.spatial_dir.render_extent = {-3, 7, 64, 48};
@@ -643,10 +791,10 @@ namespace {
         EXPECT_FLOAT_EQ(actual.halation->channels[0].core.firWeights[1], 0.5f);
         const auto& tail = actual.halation->channels[1].tail[2];
         EXPECT_EQ(tail.kind, ScatterHalationGaussianKind::YvvReplicate);
-        EXPECT_FLOAT_EQ(tail.B, 0.625f);
-        EXPECT_FLOAT_EQ(tail.B1, 0.5f);
-        EXPECT_FLOAT_EQ(tail.B2, -0.1875f);
-        EXPECT_FLOAT_EQ(tail.B3, 0.0625f);
+        EXPECT_FLOAT_EQ(tail.yvv[0], 0.625f);
+        EXPECT_FLOAT_EQ(tail.yvv[1], 0.5f);
+        EXPECT_FLOAT_EQ(tail.yvv[2], -0.1875f);
+        EXPECT_FLOAT_EQ(tail.yvv[3], 0.0625f);
         EXPECT_EQ(actual.halation->channels[2].bounce[1].radius, 1);
     }
 
@@ -791,7 +939,7 @@ namespace {
         source.halation.emplace();
         source.halation->recipeHash = 608;
         source.halation->channels[2].bounce[0].kind = ScatterHalationGaussianKind::YvvReplicate;
-        source.halation->channels[2].bounce[0].B2 = -0.3125f;
+        source.halation->channels[2].bounce[0].yvv[2] = -0.3125f;
         source.spatialDir.hash = 609;
         source.spatialDir.dirRecipeHash = 610;
         source.spatialDir.filterPlan.componentCount = 1;
@@ -854,7 +1002,7 @@ namespace {
         EXPECT_EQ(actual.grain.recipe_hash, 613u);
         EXPECT_EQ(actual.grain.density_layers_hash, 0u);
         EXPECT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].kind, FJ_HALATION_YVV_REPLICATE);
-        EXPECT_FLOAT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].feedback[1], -0.3125f);
+        EXPECT_FLOAT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].yvv[2], -0.3125f);
         EXPECT_EQ(actual.spatial_dir.hash, 609u);
         EXPECT_EQ(actual.spatial_dir.component_count, 1u);
         EXPECT_EQ(actual.spatial_dir.components[0].reference_operator, FJ_DIR_OPERATOR_IDENTITY);
@@ -1057,13 +1205,25 @@ namespace {
                  value.optics.flags &= ~FJ_OPTICS_SCATTER_HALATION;
              }},
             {"halation enum", [](FjPreparedHostData& value) {
-                 value.optics.scatter_halation.channels[0].core.kind = 3;
+                 value.optics.scatter_halation.channels[0].core.kind = 4;
              }},
             {"halation negative radius", [](FjPreparedHostData& value) {
                  value.optics.scatter_halation.channels[0].core.radius = -1;
              }},
             {"halation FIR storage", [](FjPreparedHostData& value) {
                  value.optics.scatter_halation.channels[0].core.radius = 10;
+             }},
+            {"halation bounce count", [](FjPreparedHostData& value) {
+                 value.optics.scatter_halation.bounce_count = FJ_HALATION_MAX_BOUNCES + 1;
+             }},
+            {"halation bounce weight", [](FjPreparedHostData& value) {
+                 value.optics.scatter_halation.bounce_weights[0] = std::numeric_limits<float>::quiet_NaN();
+             }},
+            {"halation unused bounce", [](FjPreparedHostData& value) {
+                 value.optics.scatter_halation.channels[0].bounce[FJ_HALATION_MAX_BOUNCES - 1].kind = FJ_HALATION_FIR_REFLECT;
+             }},
+            {"halation unused YVV coefficient", [](FjPreparedHostData& value) {
+                 value.optics.scatter_halation.channels[0].core.yvv[0] = 1.0f;
              }},
             {"DIR count", [](FjPreparedHostData& value) {
                  value.spatial_dir.component_count = 5;

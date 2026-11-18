@@ -82,9 +82,13 @@ pub const FJ_DIFFUSION_CINEBLOOM: u32 = 3;
 pub const FJ_OPTICS_CAMERA_DIFFUSION: u32 = 1;
 pub const FJ_OPTICS_ENLARGER_DIFFUSION: u32 = 2;
 pub const FJ_OPTICS_SCATTER_HALATION: u32 = 4;
+pub const FJ_OPTICS_HIGHLIGHT_BOOST: u32 = 8;
 pub const FJ_HALATION_IDENTITY: u32 = 0;
 pub const FJ_HALATION_FIR_REFLECT: u32 = 1;
 pub const FJ_HALATION_YVV_REPLICATE: u32 = 2;
+pub const FJ_HALATION_YVV_REPLICATE_FACTORED: u32 = 3;
+pub const FJ_HALATION_TAIL_COMPONENTS: u32 = 3;
+pub const FJ_HALATION_MAX_BOUNCES: u32 = 5;
 pub const FJ_DIR_OPERATOR_NONE: u32 = 0;
 pub const FJ_DIR_OPERATOR_IDENTITY: u32 = 1;
 pub const FJ_DIR_OPERATOR_FIR_REFLECT: u32 = 2;
@@ -885,8 +889,7 @@ pub struct FjHalationGaussian {
     pub kind: u32,
     pub radius: i32,
     pub fir_weights: [f32; 19usize],
-    pub feedforward: f32,
-    pub feedback: [f32; 3usize],
+    pub yvv: [f32; 4usize],
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
@@ -898,22 +901,21 @@ const _: () = {
         [::core::mem::offset_of!(FjHalationGaussian, radius) - 4usize];
     ["Offset of field: FjHalationGaussian::fir_weights"]
         [::core::mem::offset_of!(FjHalationGaussian, fir_weights) - 8usize];
-    ["Offset of field: FjHalationGaussian::feedforward"]
-        [::core::mem::offset_of!(FjHalationGaussian, feedforward) - 84usize];
-    ["Offset of field: FjHalationGaussian::feedback"]
-        [::core::mem::offset_of!(FjHalationGaussian, feedback) - 88usize];
+    ["Offset of field: FjHalationGaussian::yvv"]
+        [::core::mem::offset_of!(FjHalationGaussian, yvv) - 84usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct FjHalationChannel {
     pub core: FjHalationGaussian,
     pub tail: [FjHalationGaussian; 3usize],
-    pub bounce: [FjHalationGaussian; 3usize],
+    pub bounce: [FjHalationGaussian; 5usize],
     pub total_strength: f32,
+    pub tail_weight: f32,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjHalationChannel"][::core::mem::size_of::<FjHalationChannel>() - 704usize];
+    ["Size of FjHalationChannel"][::core::mem::size_of::<FjHalationChannel>() - 908usize];
     ["Alignment of FjHalationChannel"][::core::mem::align_of::<FjHalationChannel>() - 4usize];
     ["Offset of field: FjHalationChannel::core"]
         [::core::mem::offset_of!(FjHalationChannel, core) - 0usize];
@@ -922,25 +924,57 @@ const _: () = {
     ["Offset of field: FjHalationChannel::bounce"]
         [::core::mem::offset_of!(FjHalationChannel, bounce) - 400usize];
     ["Offset of field: FjHalationChannel::total_strength"]
-        [::core::mem::offset_of!(FjHalationChannel, total_strength) - 700usize];
+        [::core::mem::offset_of!(FjHalationChannel, total_strength) - 900usize];
+    ["Offset of field: FjHalationChannel::tail_weight"]
+        [::core::mem::offset_of!(FjHalationChannel, tail_weight) - 904usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct FjScatterHalation {
     pub recipe_hash: u64,
     pub scatter_amount: f32,
+    pub bounce_count: u32,
+    pub bounce_weights: [f32; 5usize],
+    pub renormalize: u32,
     pub channels: [FjHalationChannel; 3usize],
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjScatterHalation"][::core::mem::size_of::<FjScatterHalation>() - 2128usize];
+    ["Size of FjScatterHalation"][::core::mem::size_of::<FjScatterHalation>() - 2768usize];
     ["Alignment of FjScatterHalation"][::core::mem::align_of::<FjScatterHalation>() - 8usize];
     ["Offset of field: FjScatterHalation::recipe_hash"]
         [::core::mem::offset_of!(FjScatterHalation, recipe_hash) - 0usize];
     ["Offset of field: FjScatterHalation::scatter_amount"]
         [::core::mem::offset_of!(FjScatterHalation, scatter_amount) - 8usize];
+    ["Offset of field: FjScatterHalation::bounce_count"]
+        [::core::mem::offset_of!(FjScatterHalation, bounce_count) - 12usize];
+    ["Offset of field: FjScatterHalation::bounce_weights"]
+        [::core::mem::offset_of!(FjScatterHalation, bounce_weights) - 16usize];
+    ["Offset of field: FjScatterHalation::renormalize"]
+        [::core::mem::offset_of!(FjScatterHalation, renormalize) - 36usize];
     ["Offset of field: FjScatterHalation::channels"]
-        [::core::mem::offset_of!(FjScatterHalation, channels) - 12usize];
+        [::core::mem::offset_of!(FjScatterHalation, channels) - 40usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjHighlightBoost {
+    pub recipe_hash: u64,
+    pub protection: f64,
+    pub sharpness: f64,
+    pub peak_gain: f64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjHighlightBoost"][::core::mem::size_of::<FjHighlightBoost>() - 32usize];
+    ["Alignment of FjHighlightBoost"][::core::mem::align_of::<FjHighlightBoost>() - 8usize];
+    ["Offset of field: FjHighlightBoost::recipe_hash"]
+        [::core::mem::offset_of!(FjHighlightBoost, recipe_hash) - 0usize];
+    ["Offset of field: FjHighlightBoost::protection"]
+        [::core::mem::offset_of!(FjHighlightBoost, protection) - 8usize];
+    ["Offset of field: FjHighlightBoost::sharpness"]
+        [::core::mem::offset_of!(FjHighlightBoost, sharpness) - 16usize];
+    ["Offset of field: FjHighlightBoost::peak_gain"]
+        [::core::mem::offset_of!(FjHighlightBoost, peak_gain) - 24usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -951,10 +985,11 @@ pub struct FjOptics {
     pub enlarger: FjDiffusion,
     pub diffusion_hash: u64,
     pub scatter_halation: FjScatterHalation,
+    pub highlight_boost: FjHighlightBoost,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjOptics"][::core::mem::size_of::<FjOptics>() - 2384usize];
+    ["Size of FjOptics"][::core::mem::size_of::<FjOptics>() - 3056usize];
     ["Alignment of FjOptics"][::core::mem::align_of::<FjOptics>() - 8usize];
     ["Offset of field: FjOptics::flags"][::core::mem::offset_of!(FjOptics, flags) - 0usize];
     ["Offset of field: FjOptics::full_frame"]
@@ -965,6 +1000,8 @@ const _: () = {
         [::core::mem::offset_of!(FjOptics, diffusion_hash) - 248usize];
     ["Offset of field: FjOptics::scatter_halation"]
         [::core::mem::offset_of!(FjOptics, scatter_halation) - 256usize];
+    ["Offset of field: FjOptics::highlight_boost"]
+        [::core::mem::offset_of!(FjOptics, highlight_boost) - 3024usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1621,7 +1658,7 @@ pub struct FjPreparedHostData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6152usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6824usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1664,13 +1701,13 @@ const _: () = {
     ["Offset of field: FjPreparedHostData::optics"]
         [::core::mem::offset_of!(FjPreparedHostData, optics) - 1520usize];
     ["Offset of field: FjPreparedHostData::spatial_dir"]
-        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 3904usize];
+        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4576usize];
     ["Offset of field: FjPreparedHostData::grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, grain) - 4424usize];
+        [::core::mem::offset_of!(FjPreparedHostData, grain) - 5096usize];
     ["Offset of field: FjPreparedHostData::effects"]
-        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5232usize];
+        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5904usize];
     ["Offset of field: FjPreparedHostData::noise"]
-        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6064usize];
+        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6736usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;

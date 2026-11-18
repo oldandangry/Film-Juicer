@@ -1,7 +1,7 @@
 # Foreign ABI evidence
 
 `Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
-C++20 consumers. It compares 575 size, alignment, offset, tag and flag facts,
+C++20 consumers. It compares 615 size, alignment, offset, tag and flag facts,
 including the opaque owner's pointer and the nullable abort callback. Both
 native languages check the reviewed values in `cuda_abi_facts.inc`. Bindgen's
 constant layout assertions also compile in Rust. All six operation signatures

@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import statistics
 import subprocess
 import sys
@@ -21,6 +22,35 @@ execution = importlib.import_module("execution")
 verify = importlib.import_module("verify")
 
 ROWS = ("negative-direct", "negative-print", "negative-direct-grain", "negative-print-grain")
+HALATION_EXTENTS = {
+    f"halation-{size}-{route}{spatial}": extent
+    for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))
+    for spatial in ("", "-spatial", "-boost", "-composed-boost")
+    for route in ("direct", "print")
+}
+HALATION_EXTENTS.update(
+    {f"halation-{size}-direct-boost-zero": extent for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))}
+)
+MATCHED_HIGHLIGHT_WORKLOADS = (
+    "halation-1080p-direct-boost",
+    "halation-1080p-print-boost",
+    "halation-1080p-direct-composed-boost",
+    "halation-1080p-print-composed-boost",
+    "halation-uhd-direct-boost",
+    "halation-uhd-print-boost",
+    "halation-uhd-direct-composed-boost",
+    "halation-uhd-print-composed-boost",
+    "halation-1080p-direct-boost-zero",
+    "halation-uhd-direct-boost-zero",
+)
+COMPARISONS = ("standard", "matched-highlight")
+HALATION_REFERENCE = "31a4d5d94b1576a6b2dadc7f6eb8e918c62224e5"
+REFERENCE_PROOF = (
+    ("reference-production-result.json", "result.json"),
+    ("reference-production-contract.json", "production-contract.json"),
+    ("reference-production-source.json", "candidate.json"),
+    ("reference-production-source.patch", "candidate.patch"),
+)
 LANES = ("shipping", "observed")
 SIDES = ("reference", "candidate")
 REVISION = "19ede96179d5b27b3f65c2deaf9be8822d407d02"
@@ -62,6 +92,13 @@ def identities(inputs):
         if actual != entry["sha256"]:
             raise ValueError(f"{key} identity mismatch")
         result[key] = actual
+    if "matched_highlight_baseline" in inputs:
+        entry = inputs["matched_highlight_baseline"]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        if actual != entry.get("sha256"):
+            raise ValueError("matched highlight baseline manifest identity mismatch")
+        result["matched_highlight_baseline"] = actual
     for side in SIDES:
         result[side] = {}
         for key in ("shipping", "observed", "resources", "observed_resources"):
@@ -133,6 +170,171 @@ def candidate_qualification(
     }
 
 
+def reference_qualification(proof, preset, module_hash, *, check_inputs, comparison="standard"):
+    snapshot = json.loads(proof[2])
+    if comparison == "standard" and (
+        snapshot.get("head") != HALATION_REFERENCE or snapshot.get("new_files_base64") or proof[3]
+    ):
+        raise ValueError("halation reference must be the clean pinned revision")
+    if comparison not in COMPARISONS:
+        raise ValueError("unknown OFX comparison mode")
+    # A matched comparison intentionally binds the retained prior candidate.
+    # Its consumed source paths may now refer to candidate files changed by the
+    # implementation, so validate the copied closure and source proof instead.
+    return candidate_qualification(
+        *proof, preset, module_hash, check_inputs=check_inputs if comparison == "standard" else False
+    )
+
+
+def validate_matched_highlight_baseline(
+    inputs,
+    preset,
+    identities_result,
+    *,
+    manifest_bytes=None,
+    build_result_bytes=None,
+    build_snapshot_bytes=None,
+    build_patch_bytes=None,
+):
+    def require(condition, message):
+        if not condition:
+            raise ValueError(message)
+
+    baseline_input = inputs.get("matched_highlight_baseline")
+    if not isinstance(baseline_input, dict) or not isinstance(baseline_input.get("path"), str):
+        raise ValueError("matched-highlight comparison requires the retained baseline artifacts manifest")
+    manifest_path = Path(baseline_input["path"]).resolve(strict=manifest_bytes is None)
+    data = manifest_path.read_bytes() if manifest_bytes is None else manifest_bytes
+    if hashlib.sha256(data).hexdigest() != baseline_input.get("sha256"):
+        raise ValueError("matched-highlight baseline manifest hash mismatch")
+    manifest_hash = hashlib.sha256(data).hexdigest()
+    manifest = json.loads(data)
+    baseline = manifest.get(preset)
+    if not isinstance(baseline, dict):
+        raise ValueError("matched-highlight baseline manifest lacks this preset")
+    module_dir = "Win64" if preset.startswith("windows") else "Linux-x86-64"
+    shipping_relative = f"Contents/{module_dir}/juicer.ofx"
+    observed_relative = f"Contents/{module_dir}/JuicerOfxMeasurementModule.ofx"
+    resource_prefix = "Contents/Resources/"
+    members = baseline.get("members")
+    if not isinstance(members, dict):
+        raise ValueError("matched-highlight baseline member inventory missing")
+    resource_members = {
+        name[len(resource_prefix) :]: checksum for name, checksum in members.items() if name.startswith(resource_prefix)
+    }
+    require(resource_members, "matched-highlight baseline resources missing")
+    reference = inputs["reference"]
+    shipping_bundle = Path(baseline["shipping"]).resolve(strict=manifest_bytes is None)
+    observed_bundle = Path(baseline["observed"]).resolve(strict=manifest_bytes is None)
+    require(
+        Path(reference["shipping"]["path"]).resolve(strict=manifest_bytes is None)
+        == shipping_bundle / shipping_relative,
+        "matched-highlight reference shipping module path mismatch",
+    )
+    require(
+        Path(reference["observed"]["path"]).resolve(strict=manifest_bytes is None)
+        == observed_bundle / observed_relative,
+        "matched-highlight reference observed module path mismatch",
+    )
+    require(
+        identities_result["reference"]["shipping"] == members.get(shipping_relative),
+        "matched-highlight reference shipping module hash mismatch",
+    )
+    require(
+        identities_result["reference"]["observed"]
+        == baseline.get("observed_module_sha256")
+        == members.get(observed_relative),
+        "matched-highlight reference observed module hash mismatch",
+    )
+    require(
+        identities_result["reference"]["shipping"] != identities_result["candidate"]["shipping"]
+        and identities_result["reference"]["observed"] != identities_result["candidate"]["observed"],
+        "matched-highlight baseline and candidate modules must be distinct",
+    )
+    require(
+        identities_result["reference"]["resources"]
+        == identities_result["reference"]["observed_resources"]
+        == resource_members,
+        "matched-highlight reference resource identity mismatch",
+    )
+    require(
+        identities_result["candidate"]["resources"]
+        == identities_result["candidate"]["observed_resources"]
+        == resource_members,
+        "matched-highlight candidate resource identity mismatch",
+    )
+    for side in SIDES:
+        for module_key, resource_key in (("shipping", "resources"), ("observed", "observed_resources")):
+            module_path = Path(inputs[side][module_key]["path"]).resolve(strict=manifest_bytes is None)
+            resource_path = Path(inputs[side][resource_key]["path"]).resolve(strict=manifest_bytes is None)
+            require(
+                resource_path == module_path.parent.parent / "Resources",
+                "matched-highlight module-relative Resources path mismatch",
+            )
+    if manifest_bytes is None:
+        require(inventory(observed_bundle) == members, "matched-highlight observed bundle inventory mismatch")
+    build_result_path = Path(baseline.get("build_result", "")).resolve(strict=build_result_bytes is None)
+    build_directory = build_result_path.parent
+    build_data = build_result_path.read_bytes() if build_result_bytes is None else build_result_bytes
+    build_result = json.loads(build_data)
+    require(
+        build_result.get("schema") == "native-build-v1"
+        and build_result.get("status") == "passed"
+        and build_result.get("preset") == preset
+        and "JuicerOfxMeasurementModule" in build_result.get("targets", [])
+        and bool(build_result.get("commands"))
+        and all(
+            command.get("returncode") == 0
+            and command.get("drained") is True
+            and command.get("process_status") == "completed"
+            for command in build_result["commands"]
+        ),
+        "matched-highlight observed module build receipt is incomplete",
+    )
+    if build_result_bytes is None:
+        qualification = importlib.import_module("qualification")
+        require(
+            qualification.read_native_result(build_directory).get("status") == "passed",
+            "matched-highlight observed module build result is invalid",
+        )
+    snapshot_path = build_directory / "candidate.json"
+    patch_path = build_directory / "candidate.patch"
+    if build_snapshot_bytes is None:
+        require(snapshot_path.is_file(), "matched-highlight observed source snapshot missing")
+        snapshot_bytes = snapshot_path.read_bytes()
+    else:
+        snapshot_bytes = build_snapshot_bytes
+    if build_patch_bytes is None:
+        require(patch_path.is_file(), "matched-highlight observed source patch missing")
+        patch_bytes = patch_path.read_bytes()
+    else:
+        patch_bytes = build_patch_bytes
+    for name, content in (("candidate.json", snapshot_bytes), ("candidate.patch", patch_bytes)):
+        member = build_result.get("members", {}).get(name, {})
+        require(
+            member.get("sha256") == hashlib.sha256(content).hexdigest() and member.get("bytes") == len(content),
+            "matched-highlight observed source proof identity mismatch",
+        )
+    binding = {
+        "manifest_sha256": manifest_hash,
+        "shipping_module_sha256": identities_result["reference"]["shipping"],
+        "observed_module_sha256": identities_result["reference"]["observed"],
+        "observed_build_result_sha256": hashlib.sha256(build_data).hexdigest(),
+        "observed_build_source_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+        "observed_build_patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
+    }
+    return {
+        "binding": binding,
+        "manifest_bytes": data,
+        "build_result_bytes": build_data,
+        "build_snapshot_bytes": snapshot_bytes,
+        "build_patch_bytes": patch_bytes,
+        "build_result_sha256": hashlib.sha256(build_data).hexdigest(),
+        "build_snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+        "build_patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
+    }
+
+
 def nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
@@ -144,25 +346,67 @@ def validate_sample(sample, mode, lane, row):
         or (sample.get("mode"), sample.get("lane"), sample.get("workload")) != (mode, lane, row)
     ):
         raise ValueError("failed or mismatched process sample")
-    if (sample.get("width"), sample.get("height")) != ((7, 5) if mode == "check" else (6048, 4032)):
+    extent = (
+        (7, 5)
+        if mode == "check"
+        else ((1920, 1080) if row.startswith("g3-hd-") else (3840, 2160))
+        if row.startswith("g3-")
+        else HALATION_EXTENTS.get(row, (6048, 4032))
+    )
+    if (sample.get("width"), sample.get("height")) != extent:
         raise ValueError("incorrect geometry")
     if not sample.get("controls") or not sample.get("control_types") or not sample.get("device"):
         raise ValueError("missing controls or device")
     renders = sample.get("renders", [])
-    if len(renders) != (15 if mode == "check" else 71):
+    g3 = row.startswith("g3-")
+    cycles = 1 if g3 else 3
+    if len(renders) != ((3 if mode == "check" else 41) if g3 else (15 if mode == "check" else 71)):
         raise ValueError("incomplete render membership")
     warmups = 10 if mode == "measure" else 1
     samples = 30 if mode == "measure" else 1
     expected = [("cold", 0, 0)]
     expected += [("warmup", 0, index) for index in range(warmups)]
     expected += [("warm", 0, index) for index in range(samples)]
-    expected += [(phase, 0, index) for index in range(3) for phase in ("changed", "changed-reuse")]
-    for cycle in (1, 2):
-        expected.append(("cycle-cold", cycle, 0))
-        expected += [("cycle-warmup", cycle, index) for index in range(warmups)]
-        expected.append(("cycle-end", cycle, 0))
+    if not g3:
+        expected += [(phase, 0, index) for index in range(3) for phase in ("changed", "changed-reuse")]
+        for cycle in (1, 2):
+            expected.append(("cycle-cold", cycle, 0))
+            expected += [("cycle-warmup", cycle, index) for index in range(warmups)]
+            expected.append(("cycle-end", cycle, 0))
     if [(r.get("phase"), r.get("cycle"), r.get("index")) for r in renders] != expected:
         raise ValueError("incorrect render order or membership")
+    if row.startswith("g3-"):
+        parts = row.split("-")
+        offset = 0.5 if parts[7] == "half" else 0.0
+        for render in renders:
+            phase, index = render["phase"], render["index"]
+            frame = offset
+            if parts[6] == "varied":
+                if phase in ("warmup", "cycle-warmup"):
+                    frame += index - 10
+                elif phase == "warm":
+                    frame += index
+            if render.get("frame_time") != frame:
+                raise ValueError("incorrect G3 frame sequence")
+        controls = sample["controls"]
+        expected_stock = {"portra": "kodak_portra_400", "gold": "kodak_gold_200", "provia": "fujifilm_provia_100f"}[
+            parts[2]
+        ]
+        expected_route = (
+            "NegativePrintScan"
+            if parts[3] == "print"
+            else ("PositiveDirectScan" if parts[2] == "provia" else "NegativeDirectScan")
+        )
+        for key, expected_value in (
+            ("FilmProfileKey", expected_stock),
+            ("ScanRoute", expected_route),
+            ("GrainActive", int(parts[5] == "on")),
+            ("FilmGammaFactor", 1.0),
+            ("CouplersActive", 0),
+            ("CameraFilmFormatMm", 36.0),
+        ):
+            if controls.get(key) != [expected_value]:
+                raise ValueError(f"incorrect G3 control: {key}")
     for render in renders:
         if (
             render.get("callback_status") != 0
@@ -195,17 +439,20 @@ def validate_sample(sample, mode, lane, row):
     if any(not r.get("output_checked") or not r.get("output_valid") for r in required_checked):
         raise ValueError("missing required output validation")
     edits = sample.get("edits") or []
-    if (
-        len(edits) != 3
-        or [e.get("gamma") for e in edits] != [1.1, 1.0, 1.1]
-        or any(e.get("status") not in (0, 14) or not nonnegative(e.get("edit_ns")) for e in edits)
+    if (g3 and edits) or (
+        not g3
+        and (
+            len(edits) != 3
+            or [e.get("gamma") for e in edits] != [1.1, 1.0, 1.1]
+            or any(e.get("status") not in (0, 14) or not nonnegative(e.get("edit_ns")) for e in edits)
+        )
     ):
         raise ValueError("invalid edit membership")
     timings = sample.get("timings") or {}
     if any(not nonnegative(timings.get(k)) for k in ("module_open_ns", "load_ns", "describe_ns", "unload_ns")):
         raise ValueError("incomplete lifecycle timings")
     if any(
-        not isinstance(timings.get(k), list) or len(timings[k]) != 3 or not all(nonnegative(v) for v in timings[k])
+        not isinstance(timings.get(k), list) or len(timings[k]) != cycles or not all(nonnegative(v) for v in timings[k])
         for k in ("create_ns", "author_ns", "destroy_ns")
     ):
         raise ValueError("incomplete per-instance timings")
@@ -219,8 +466,8 @@ def validate_sample(sample, mode, lane, row):
         or not life.get("context_restored")
         or not life.get("module_closed")
         or life.get("callback_error")
-        or life.get("effects_created") != 3
-        or life.get("effects_destroyed") != 3
+        or life.get("effects_created") != cycles
+        or life.get("effects_destroyed") != cycles
     ):
         raise ValueError("invalid lifecycle")
     memory = sample.get("memory") or []
@@ -228,9 +475,10 @@ def validate_sample(sample, mode, lane, row):
     endpoints.update(
         (name, cycle, 0)
         for name in ("after-create", "after-cold", "after-warmups", "after-destroy")
-        for cycle in range(3)
+        for cycle in range(cycles)
     )
-    endpoints.update(("after-edit", 0, index) for index in range(3))
+    if not g3:
+        endpoints.update(("after-edit", 0, index) for index in range(3))
     if len(memory) != len(endpoints) or {(m.get("name"), m.get("cycle"), m.get("index")) for m in memory} != endpoints:
         raise ValueError("incomplete memory endpoint membership")
     if any(
@@ -316,9 +564,47 @@ def validate_sample(sample, mode, lane, row):
 
 
 def workloads(value):
-    if not isinstance(value, list) or not value or value != [row for row in ROWS if row in value]:
+    available = (*ROWS, *HALATION_EXTENTS)
+    if not isinstance(value, list) or not value or value != [row for row in available if row in value]:
         raise ValueError("workloads must be a nonempty ordered subset without duplicates")
     return value
+
+
+def check_reference_workloads(selection, has_reference_production_result):
+    if any((row in HALATION_EXTENTS) != has_reference_production_result for row in selection):
+        raise ValueError("halation workloads require a qualified reference production closure")
+
+
+def validate_comparison(comparison, selected, has_reference_production_result):
+    if comparison not in COMPARISONS:
+        raise ValueError("unknown OFX comparison mode")
+    if comparison == "matched-highlight":
+        if not has_reference_production_result:
+            raise ValueError("matched-highlight comparison requires a reference production closure")
+        if tuple(selected) != MATCHED_HIGHLIGHT_WORKLOADS:
+            raise ValueError("matched-highlight comparison requires all eight boosted and two zero-boost workloads")
+
+
+def check_halation_side(sample, row, side, comparison="standard"):
+    if row not in HALATION_EXTENTS:
+        return
+    if comparison == "matched-highlight":
+        if sample.get("advanced_halation_available") is not True:
+            raise ValueError("matched highlight comparison requires advanced controls on both modules")
+        expected_boost = 4.0 if row.endswith("-boost") else 0.0
+        if (
+            sample.get("controls", {}).get("Exposure") != [6.0]
+            or sample.get("halation_boost_ev") != expected_boost
+            or sample.get("halation_protection_ev") != 0.0
+        ):
+            raise ValueError("matched highlight comparison requires exposure 6, matching boost, and zero protection")
+        return
+    candidate = side == "candidate"
+    if sample.get("advanced_halation_available") is not candidate:
+        raise ValueError("unexpected advanced halation control surface")
+    expected_boost = 4.0 if candidate and row.endswith("-boost") else 0.0
+    if sample.get("halation_boost_ev") != expected_boost:
+        raise ValueError("unexpected highlight boost for the paired workload")
 
 
 def evidence_file(directory, name, expected_hash):
@@ -353,14 +639,70 @@ def read_run(directory, mode):
             key: inputs[side][key]["files" if key in ("resources", "observed_resources") else "sha256"]
             for key in ("shipping", "observed", "resources", "observed_resources")
         }
+    comparison = result.get("comparison", "standard")
+    reference_binding = result.get("reference_qualification")
+    validate_comparison(comparison, selected, reference_binding is not None)
+    if comparison == "matched-highlight":
+        declared["matched_highlight_baseline"] = inputs.get("matched_highlight_baseline", {}).get("sha256")
     if declared != result["identities"]:
         raise ValueError("input identity evidence mismatch")
     preset = result.get("preset")
-    if preset not in SHIPPING or declared["reference"]["shipping"] != SHIPPING[preset]["reference"]:
-        raise ValueError("offline reference differs from the approved fixed bundle")
+    check_reference_workloads(selected, reference_binding is not None)
+    if preset not in SHIPPING:
+        raise ValueError("unknown native Release preset")
+    if reference_binding is None:
+        if declared["reference"]["shipping"] != SHIPPING[preset]["reference"]:
+            raise ValueError("offline reference differs from the approved fixed bundle")
+    else:
+        proof = tuple(evidence_file(directory, name, evidence[name]).read_bytes() for name, _ in REFERENCE_PROOF)
+        if (
+            reference_qualification(
+                proof,
+                preset,
+                declared["reference"]["shipping"],
+                check_inputs=False,
+                comparison=comparison,
+            )
+            != reference_binding
+        ):
+            raise ValueError("offline halation reference differs from its production closure")
+    if comparison == "matched-highlight":
+        baseline_manifest = evidence_file(
+            directory,
+            "matched-highlight-baseline-artifacts.json",
+            result["matched_highlight_baseline_binding"]["manifest_sha256"],
+        ).read_bytes()
+        baseline_build_result = evidence_file(
+            directory,
+            "matched-highlight-observed-build-result.json",
+            result["matched_highlight_baseline_binding"]["observed_build_result_sha256"],
+        ).read_bytes()
+        baseline_build_snapshot = evidence_file(
+            directory,
+            "matched-highlight-observed-candidate.json",
+            result["matched_highlight_baseline_binding"]["observed_build_source_sha256"],
+        ).read_bytes()
+        baseline_build_patch = evidence_file(
+            directory,
+            "matched-highlight-observed-candidate.patch",
+            result["matched_highlight_baseline_binding"]["observed_build_patch_sha256"],
+        ).read_bytes()
+        actual_baseline_binding = validate_matched_highlight_baseline(
+            inputs,
+            preset,
+            declared,
+            manifest_bytes=baseline_manifest,
+            build_result_bytes=baseline_build_result,
+            build_snapshot_bytes=baseline_build_snapshot,
+            build_patch_bytes=baseline_build_patch,
+        )["binding"]
+        if actual_baseline_binding != result.get("matched_highlight_baseline_binding"):
+            raise ValueError("matched-highlight baseline artifact binding mismatch")
     binding = result.get("candidate_qualification")
-    if binding is None and declared["candidate"]["shipping"] != SHIPPING[preset]["candidate"]:
-        raise ValueError("offline candidate qualification missing")
+    if binding is None and (
+        comparison == "matched-highlight" or declared["candidate"]["shipping"] != SHIPPING[preset]["candidate"]
+    ):
+        raise ValueError("offline candidate production qualification missing")
     if binding is not None:
         production_result = evidence_file(
             directory, "candidate-production-result.json", evidence["candidate-production-result.json"]
@@ -440,6 +782,7 @@ def read_run(directory, mode):
             raise ValueError("incorrect sample file")
         sample = json.loads(evidence_file(directory, member["file"], evidence[member["file"]]).read_text())
         validate_sample(sample, mode, key[0], key[1])
+        check_halation_side(sample, key[1], key[3], comparison)
         if platform_path(sample.get("resources", "")) != platform_path(expected_command[6]):
             raise ValueError("driver resource path mismatch")
         if key[1] in controls and controls[key[1]] != (sample["controls"], sample["control_types"]):
@@ -482,6 +825,9 @@ def offline_report(directories):
         raise ValueError("one native Release run per OS required")
     if len({tuple(result.get("workloads", ROWS)) for result, _ in runs}) != 1:
         raise ValueError("native reports require identical workloads")
+    comparisons = {result.get("comparison", "standard") for result, _ in runs}
+    if len(comparisons) != 1:
+        raise ValueError("native reports require identical comparison modes")
     summary = {}
     for directory, (result, samples) in zip(directories, runs):
         os_summary = {}
@@ -507,6 +853,7 @@ def offline_report(directories):
                         )
                         measured = {
                             "warm_callback_ns": callback["median"],
+                            "warm_callback_p95_ns": callback["p95"],
                             "warm_stream_interval_ms": stream["median"],
                             "module_open_ns": sample["timings"]["module_open_ns"],
                             "load_ns": sample["timings"]["load_ns"],
@@ -595,6 +942,7 @@ def offline_report(directories):
         summary[result["preset"]] = {"identities": result["identities"], "rows": os_summary}
     return {
         "schema": 1,
+        "comparison": next(iter(comparisons)),
         "comparisons": summary,
         "decision": "requires investigation and owner review",
         "limitations": "Stream intervals include host gaps, not pure kernel time. Process peaks include fixture and driver. Pinned values cover upload-pool staging only; scan-error pinned bytes and complete pinned drainage are not quantified. Cold means process/owner cold, not cold storage. Grain randomness remains production-owned. Observed timings include instrumentation overhead; inspect smaller repeatable regressions and retention separately.",
@@ -607,13 +955,37 @@ def campaign(args):
     if not args.preset.endswith("release"):
         raise ValueError("campaign requires Release")
     selected = workloads(args.workloads)
+    comparison = args.comparison
+    validate_comparison(comparison, selected, args.reference_production_result is not None)
+    check_reference_workloads(selected, args.reference_production_result is not None)
     directory = (
         ROOT / "out/validation" / args.preset / "s7-b-performance-memory" / execution.name_component(args.run_id)
     )
     with execution.OutputLease(ROOT, ROOT / "out/build" / args.preset), execution.OutputLease(ROOT):
         inputs = json.loads(Path(args.inputs).read_text())
         entry = identities(inputs)
-        if entry["reference"]["shipping"] != SHIPPING[args.preset]["reference"]:
+        matched_baseline = None
+        if comparison == "matched-highlight":
+            if not args.candidate_production_result:
+                raise ValueError("matched-highlight comparison requires both production closures")
+            matched_baseline = validate_matched_highlight_baseline(inputs, args.preset, entry)
+        reference_binding = None
+        reference_proof = ()
+        if args.reference_production_result:
+            result_path = Path(args.reference_production_result).resolve(strict=True)
+            reference_proof = (result_path.read_bytes(),) + tuple(
+                (result_path.parent / source).read_bytes() for _, source in REFERENCE_PROOF[1:]
+            )
+            reference_binding = reference_qualification(
+                reference_proof,
+                args.preset,
+                entry["reference"]["shipping"],
+                check_inputs=True,
+                comparison=comparison,
+            )
+            if not args.candidate_production_result:
+                raise ValueError("halation comparison requires the candidate production closure")
+        elif entry["reference"]["shipping"] != SHIPPING[args.preset]["reference"]:
             raise ValueError("reference module differs from the approved fixed bundle")
         production_result = production_contract = production_snapshot = production_patch = None
         binding = None
@@ -640,6 +1012,19 @@ def campaign(args):
         (directory / "candidate.patch").write_bytes(patch)
         execution.write_json(directory / "candidate.json", source)
         execution.write_json(directory / "inputs.json", inputs)
+        for (name, _), content in zip(REFERENCE_PROOF, reference_proof):
+            (directory / name).write_bytes(content)
+        if matched_baseline is not None:
+            (directory / "matched-highlight-baseline-artifacts.json").write_bytes(matched_baseline["manifest_bytes"])
+            (directory / "matched-highlight-observed-build-result.json").write_bytes(
+                matched_baseline["build_result_bytes"]
+            )
+            (directory / "matched-highlight-observed-candidate.json").write_bytes(
+                matched_baseline["build_snapshot_bytes"]
+            )
+            (directory / "matched-highlight-observed-candidate.patch").write_bytes(
+                matched_baseline["build_patch_bytes"]
+            )
         if binding is not None:
             (directory / "candidate-production-result.json").write_bytes(production_result)
             (directory / "candidate-production-contract.json").write_bytes(production_contract)
@@ -656,6 +1041,11 @@ def campaign(args):
             "samples": [],
             "commands": run.commands,
             "candidate_qualification": binding,
+            "reference_qualification": reference_binding,
+            "comparison": comparison,
+            "matched_highlight_baseline_binding": (
+                matched_baseline["binding"] if matched_baseline is not None else None
+            ),
             "workloads": selected,
         }
         try:
@@ -684,6 +1074,8 @@ def campaign(args):
                     or check.get("preset") != args.preset
                     or check.get("source") != source
                     or check.get("candidate_qualification") != binding
+                    or check.get("reference_qualification") != reference_binding
+                    or check.get("comparison", "standard") != comparison
                     or check.get("workloads", list(ROWS)) != selected
                 ):
                     raise ValueError("matching completed compatibility check required")
@@ -726,6 +1118,7 @@ def campaign(args):
                                 )
                             sample = json.loads(target.read_text())
                             validate_sample(sample, args.operation, lane, row)
+                            check_halation_side(sample, row, side, comparison)
                             if Path(sample.get("resources", "")).resolve() != Path(command[6]).resolve():
                                 raise ValueError("driver resource path mismatch")
                             if row in controls and controls[row] != (sample["controls"], sample["control_types"]):
@@ -736,6 +1129,23 @@ def campaign(args):
             result["error"] = str(error)
         try:
             result["identities_unchanged"] = identities(inputs) == entry
+            if reference_binding is not None:
+                result["identities_unchanged"] = (
+                    result["identities_unchanged"]
+                    and reference_qualification(
+                        reference_proof,
+                        args.preset,
+                        entry["reference"]["shipping"],
+                        check_inputs=True,
+                        comparison=comparison,
+                    )
+                    == reference_binding
+                )
+            if matched_baseline is not None:
+                final_baseline = validate_matched_highlight_baseline(inputs, args.preset, entry)
+                result["identities_unchanged"] = (
+                    result["identities_unchanged"] and final_baseline["binding"] == matched_baseline["binding"]
+                )
             if binding is not None:
                 result["identities_unchanged"] = (
                     result["identities_unchanged"]
@@ -758,6 +1168,15 @@ def campaign(args):
             result["status"] = "failed"
             result["completion_error"] = str(error)
         evidence_names = ["candidate.patch", "candidate.json", "inputs.json"]
+        if reference_binding is not None:
+            evidence_names += [name for name, _ in REFERENCE_PROOF]
+        if matched_baseline is not None:
+            evidence_names += [
+                "matched-highlight-baseline-artifacts.json",
+                "matched-highlight-observed-build-result.json",
+                "matched-highlight-observed-candidate.json",
+                "matched-highlight-observed-candidate.patch",
+            ]
         if binding is not None:
             evidence_names += [
                 "candidate-production-result.json",
@@ -956,6 +1375,251 @@ def check_row(driver, shipping, observed, resources, directory, row):
         controls = (sample["controls"], sample["control_types"])
 
 
+G3_PRODUCT_DIRS = ("src", "rust", "native", "cmake", "Resources", "third_party", ".cargo")
+G3_PRODUCT_FILES = (
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    ".gitattributes",
+)
+
+
+def g3_product_source(source, patch):
+    prefixes = tuple(f"{name}/" for name in G3_PRODUCT_DIRS)
+
+    def product(name):
+        return name.startswith(prefixes) or name in G3_PRODUCT_FILES
+
+    # The verifier emits binary Git patches with no renames. Quoted paths
+    # retain the ASCII repository directory prefix.
+    starts = tuple(f"diff --git {quote}a/{prefix}".encode() for prefix in prefixes for quote in ("", '"'))
+    files = {f"diff --git a/{name} b/{name}".encode() for name in G3_PRODUCT_FILES}
+    sections = re.split(rb"(?m)(?=^diff --git )", patch)
+    return (
+        {name: value for name, value in source["inputs"].items() if product(name)},
+        {name: value for name, value in source["new_files_base64"].items() if product(name)},
+        [section for section in sections if section.startswith(starts) or section.partition(b"\n")[0] in files],
+    )
+
+
+def g3_production_source(snapshot, production_patch, source, patch, *, root):
+    """Bind the index, tracked worktree changes and added product inputs."""
+    production = json.loads(snapshot)
+    if production["head"] != source["head"]:
+        if not all(re.fullmatch(r"[0-9a-f]{40,64}", value) for value in (production["head"], source["head"])):
+            raise ValueError("invalid production source revision")
+        difference = subprocess.run(
+            ["git", "diff", "--quiet", production["head"], source["head"], "--", *G3_PRODUCT_DIRS, *G3_PRODUCT_FILES],
+            cwd=root,
+            check=False,
+        )
+        if difference.returncode != 0:
+            raise ValueError("production witness product base revision differs")
+    if g3_product_source(production, production_patch) != g3_product_source(source, patch):
+        raise ValueError("production witness product source or membership differs")
+
+
+def g3_production_binding(proof, preset, selected, source, patch, *, root):
+    binding = candidate_qualification(*proof, preset, selected["shipping"], check_inputs=True)
+    g3_production_source(proof[2], proof[3], source, patch, root=root)
+    contract = json.loads(proof[1])
+    module = contract["loaded_module"]["file"]
+    path_type = PureWindowsPath if PureWindowsPath(module).drive else PurePosixPath
+    resources = path_type(module).parent.parent / "Resources"
+    qualified = {
+        path_type(name).relative_to(resources).as_posix(): hashes["sha256_after"]
+        for name, hashes in contract["consumed_inputs"].items()
+        if path_type(name).is_relative_to(resources)
+    }
+    if not qualified or selected["resources"] != qualified or inventory(Path(str(resources))) != qualified:
+        raise ValueError("shipping module-relative Resources differ from qualified bundle")
+    return binding
+
+
+def g3_identities(inputs):
+    result = {}
+    for key in ("driver",):
+        entry = inputs[key]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        if actual != entry["sha256"]:
+            raise ValueError(f"{key} identity mismatch")
+        result[key] = actual
+    result["candidate"] = {}
+    for key in ("shipping", "resources"):
+        entry = inputs["candidate"][key]
+        entry["path"] = str(Path(entry["path"]).resolve(strict=True))
+        actual = inventory(entry["path"])
+        expected = entry["files" if key == "resources" else "sha256"]
+        if actual != expected:
+            raise ValueError(f"candidate {key} identity mismatch")
+        result["candidate"][key] = actual
+    module = Path(inputs["candidate"]["shipping"]["path"])
+    if Path(inputs["candidate"]["resources"]["path"]) != (module.parent.parent / "Resources").resolve(strict=True):
+        raise ValueError("shipping module-relative Resources mismatch")
+    return result
+
+
+def g3_route(args):
+    """Run a current production route witness under the native owner."""
+    if args.inputs and (args.module or args.resources):
+        raise ValueError("--inputs cannot be combined with --module or --resources")
+    if args.mode not in ("check", "measure"):
+        raise ValueError("invalid G3 route mode")
+    if args.preset not in SHIPPING or args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("G3 route requires a native Release preset")
+    if args.g3_manifest:
+        grain_g3 = importlib.import_module("grain_g3")
+        manifest_path = Path(args.g3_manifest).resolve(strict=True)
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if manifest.get("schema") != "grain-g3-workloads-v1" or manifest.get("rows") != grain_g3.expand_rows(
+            manifest["workloads"], manifest["carriers"]
+        ):
+            raise ValueError("G3 manifest membership mismatch")
+        selections = []
+        stock_names = {"kodak_portra_400": "portra", "kodak_gold_200": "gold", "fujifilm_provia_100f": "provia"}
+        for row in manifest["rows"]:
+            if row["preset"] != args.preset or row["role"] != "decision":
+                continue
+            current = manifest["workloads"][row["workload"]]["current"]
+            size = {(1920, 1080): "hd", (3840, 2160): "uhd"}[(current["width"], current["height"])]
+            stock = stock_names[current["stock"]]
+            route = {0: "direct", 1: "print", 2: "direct"}[current["route"]]
+            if (current["route"] == 2) != (stock == "provia") or current["long_edge_mm"] != 36.0:
+                raise ValueError("unsupported G3 route facts")
+            offset = {0.0: "integer", 0.5: "half"}[row["offset"]]
+            for enabled in ("off", "on"):
+                workload = f"g3-{size}-{stock}-{route}-{current['look']}-{enabled}-{row['time_mode']}-{offset}"
+                selections.append((row["id"], workload))
+        if len(selections) != 88 or len(set(selections)) != 88:
+            raise ValueError("incorrect G3 route membership")
+    else:
+        manifest_path = None
+        manifest_bytes = None
+        selections = [("single", args.workload)]
+    for _, workload in selections:
+        parts = workload.split("-")
+        if (
+            len(parts) != 8
+            or parts[0] != "g3"
+            or parts[1] not in ("hd", "uhd")
+            or parts[2] not in ("portra", "gold", "provia")
+            or parts[3] not in ("direct", "print")
+            or parts[4] not in ("default", "expensive", "simple")
+            or parts[5] not in ("on", "off")
+            or parts[6] not in ("varied", "unchanged")
+            or parts[7] not in ("integer", "half")
+            or (parts[2] != "portra" and parts[3] != "direct")
+        ):
+            raise ValueError("invalid G3 route workload")
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    with execution.OutputLease(ROOT, ROOT / "out/build" / args.preset), execution.OutputLease(ROOT):
+        if args.inputs:
+            inputs = json.loads(Path(args.inputs).read_text())
+        else:
+            if not args.module or not args.resources:
+                raise ValueError("provide both --module and --resources")
+            driver = (
+                ROOT
+                / "out/build"
+                / args.preset
+                / "tests/bin"
+                / ("JuicerOfxMeasurement.exe" if os.name == "nt" else "JuicerOfxMeasurement")
+            )
+            inputs = {
+                "driver": {"path": str(driver), "sha256": inventory(driver)},
+                "candidate": {
+                    "shipping": {"path": args.module, "sha256": inventory(args.module)},
+                    "resources": {"path": args.resources, "files": inventory(args.resources)},
+                },
+            }
+        entry = g3_identities(inputs)
+        result_path = Path(args.candidate_production_result).resolve(strict=True)
+        proof = [result_path.read_bytes()] + [
+            (result_path.parent / name).read_bytes()
+            for name in ("production-contract.json", "candidate.json", "candidate.patch")
+        ]
+        source, patch, _ = verify.capture_native_source(ROOT, "tests/benchmarks/ofx.py", domain_tests=True)
+        binding = g3_production_binding(proof, args.preset, entry["candidate"], source, patch, root=ROOT)
+        directory.mkdir(parents=True, exist_ok=False)
+        run = execution.NativeRun(ROOT, directory)
+        execution.write_json(directory / "candidate.json", source)
+        (directory / "candidate.patch").write_bytes(patch)
+        execution.write_json(directory / "inputs.json", inputs)
+        if manifest_bytes is not None:
+            (directory / "g3-manifest.json").write_bytes(manifest_bytes)
+        for name, data in zip(
+            ("production-result.json", "production-contract.json", "production-source.json", "production-source.patch"),
+            proof,
+        ):
+            (directory / name).write_bytes(data)
+        result = {
+            "schema": 1,
+            "operation": "g3-route",
+            "status": "failed",
+            "preset": args.preset,
+            "selections": selections,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest() if manifest_bytes else None,
+            "mode": args.mode,
+            "production_qualification": binding,
+            "identities": entry,
+            "source": source,
+            "commands": run.commands,
+            "samples": [],
+            "intervals": "callback stream events include host submission gaps; active-kernel time is unmeasured",
+        }
+        try:
+            for index, (row_id, workload) in enumerate(selections):
+                name = f"shipping-{index:03d}"
+                target = directory / f"{name}.json"
+                command = [
+                    inputs["driver"]["path"],
+                    "--mode",
+                    args.mode,
+                    "--module",
+                    inputs["candidate"]["shipping"]["path"],
+                    "--resources",
+                    inputs["candidate"]["resources"]["path"],
+                    "--lane",
+                    "shipping",
+                    "--workload",
+                    workload,
+                    "--output",
+                    str(target),
+                ]
+                member = {"row": row_id, "workload": workload, "file": target.name, "status": "started"}
+                result["samples"].append(member)
+                environment = {key: value for key, value in os.environ.items() if key.upper() != "JUICER_DIAGNOSTICS"}
+                run.command(name, command, env=environment)
+                sample = json.loads(target.read_text())
+                validate_sample(sample, args.mode, "shipping", workload)
+                if Path(sample["resources"]).resolve() != Path(command[6]).resolve():
+                    raise ValueError("driver resource path mismatch")
+                member.update(status="passed", sha256=execution.digest(target))
+            final, final_patch, _ = verify.capture_native_source(ROOT, "tests/benchmarks/ofx.py", domain_tests=True)
+            if (
+                final != source
+                or final_patch != patch
+                or g3_identities(inputs) != entry
+                or (manifest_path is not None and manifest_path.read_bytes() != manifest_bytes)
+            ):
+                raise ValueError("source or inputs changed during G3 route witness")
+            if g3_production_binding(proof, args.preset, entry["candidate"], final, final_patch, root=ROOT) != binding:
+                raise ValueError("production closure changed during G3 route witness")
+            result["status"] = "passed"
+        except Exception as error:
+            result["error"] = str(error)
+        if all(command["drained"] for command in run.commands):
+            run.publish(result)
+        else:
+            execution.write_json(directory / "incomplete.json", result)
+        if result["status"] != "passed":
+            raise ValueError(result.get("error", "G3 route witness failed"))
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="operation", required=True)
@@ -965,7 +1629,18 @@ def main():
         command.add_argument("--inputs", required=True)
         command.add_argument("--run-id", required=True)
         command.add_argument("--candidate-production-result")
-        command.add_argument("--workloads", nargs="+", choices=ROWS, default=list(ROWS))
+        command.add_argument("--reference-production-result")
+        command.add_argument("--comparison", choices=COMPARISONS, default="standard")
+        command.add_argument("--workloads", nargs="+", choices=(*ROWS, *HALATION_EXTENTS), default=list(ROWS))
+    command = sub.add_parser("g3-route")
+    for option in ("preset", "run-id", "candidate-production-result", "mode"):
+        command.add_argument("--" + option, required=True)
+    command.add_argument("--inputs")
+    command.add_argument("--module")
+    command.add_argument("--resources")
+    selection = command.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--workload")
+    selection.add_argument("--g3-manifest")
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)
@@ -974,7 +1649,9 @@ def main():
     command.add_argument("--runs", nargs=2, required=True)
     command.add_argument("--output", required=True)
     args = parser.parse_args()
-    if args.operation == "report":
+    if args.operation == "g3-route":
+        g3_route(args)
+    elif args.operation == "report":
         execution.write_json(Path(args.output), offline_report(args.runs))
     elif args.operation == "prepare-reference":
         prepare_reference(args)

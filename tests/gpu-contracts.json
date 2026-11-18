@@ -76,6 +76,10 @@
       "protocol": "gtest",
       "registrations": 1
     },
+    "JuicerGrainPrototype": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerDirExposureCacheTests": {
       "protocol": "gtest",
       "registrations": 1
@@ -106,11 +110,11 @@
     "ScatterHalation.Gpu.HostContracts": 18,
     "ScatterHalation.Gpu.PreparedFrame": 3,
     "ScatterHalation.Gpu.TerminalRetention": 2,
-    "ScatterHalation.Gpu.FocusedCudaReference": 10,
+    "ScatterHalation.Gpu.FocusedCudaReference": 12,
     "ScatterHalation.Gpu.RouteBoundaries": 4,
     "ScatterHalation.Gpu.CapturedCarrier": 3,
     "ScatterHalation.Gpu.ZeroWork": 3,
-    "ScatterHalation.Gpu.Lifecycle": 4,
+    "ScatterHalation.Gpu.Lifecycle": 5,
     "Ofx.Gpu.Render": 1,
     "Ofx.Gpu.RenderTrace": 1,
     "Ofx.Gpu.ProcessorReference": 1,
@@ -196,6 +200,20 @@
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
+    "Grain.Gpu.FilmReference": {
+      "listed": 8,
+      "terminal": 8,
+      "required": [
+        ["film-reference", "g2-geometry-and-temporal"],
+        ["film-reference", "chroma-projection"],
+        ["film-reference", "rectangles-wrap-and-seams"],
+        ["film-reference", "dense-minimum-footprint"],
+        ["film-reference", "endpoints-seed-roi-alpha-padding"],
+        ["film-reference", "zero-noise-identity"],
+        ["film-reference", "disabled-no-bank"],
+        ["film-reference", "unsupported-frame"]
+      ]
+    },
     "Ffi.Gpu.PreparedStateLifetime": {
       "listed": 31,
       "terminal": 333,

@@ -1052,6 +1052,26 @@ class NativeBoundary(unittest.TestCase):
                         self.assertNotIn(pattern, data + pattern)
             print("Gaussian ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
 
+    def test_scatter_precision_hooks_are_absent_from_ordinary_objects(self):
+        build = product_build()
+        compdb = json.loads((build / "compile_commands.json").read_bytes())
+        ordinary = [row for row in compdb if "juicer_native.dir" in row["command"]]
+        self.assertTrue(ordinary)
+        self.assertFalse(any("JUICER_SCATTER_HALATION_PRECISION_TEST_HOOK" in row["command"] for row in ordinary))
+        path = (
+            build
+            / "CMakeFiles/juicer_native.dir/src/Cuda/Film"
+            / ("JuicerCudaScatterHalation.cu" + (".obj" if os.name == "nt" else ".o"))
+        )
+        nm = find_llvm_nm()
+        self.assertTrue(nm, "qualified LLVM nm required for scatter precision isolation")
+        symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)]).decode(errors="replace")
+        self.assertIn("launch_scatter_halation(", symbols)
+        self.assertNotRegex(
+            symbols, r"launch_scatter_halation_precision|scatter_halation_precision_registers|factored_coefficients"
+        )
+        print("Scatter precision ordinary-object isolation", path, hashlib.sha256(path.read_bytes()).hexdigest())
+
     def test_retired_scanner_post_constructor_stays_deleted(self):
         scanner = "".join(
             (ROOT / path).read_text(encoding="utf-8")

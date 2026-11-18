@@ -1188,6 +1188,15 @@ is also available from the shared tooling entry, bringing current Debug tooling
 membership to fourteen. These registrations execute no performance campaign.
 Upload-pool state arrays use available, reserved, in-flight, quarantined order.
 
+### Film grain reference prototype
+
+`Grain.Host.FilmReferenceOracle` checks the synthetic rectangle and constant-light
+oracle. `Grain.Gpu.FilmReference` checks CUDA agreement, density endpoints,
+seams, deterministic sampling, fractional time, physical geometry, reduced
+chroma and carrier preservation. Both use the nonshipping `JuicerGrainPrototype`
+target. See the [benchmark guide](benchmarks/README.md#film-grain-reference-prototype)
+for explicit same-bank reference capture, calibration and stage measurements.
+
 ### Grain scratch maintenance benchmark
 
 The ordinary `Grain.Gpu.ScratchReuse` CTest runs the bounded correctness and

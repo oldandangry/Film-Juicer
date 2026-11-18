@@ -27,6 +27,7 @@ namespace {
     constexpr std::array kRows{"temporal/initial", "temporal/time_a", "temporal/time_b", "temporal/backward", "temporal/repeat", "temporal/preset", "temporal/reset", "temporal/undo", "temporal/redo", "temporal/invalid", "temporal/recovery", "geometry/changed_size", "geometry/half_scale", "geometry/origin", "effects/full_frame", "identity/fixed", "failure/message_order", "failure/recovery", "failure/holds", "time/valid_after_rejection"};
     constexpr std::array kSupplemental{"fixed/negative-print", "fixed/positive-direct", "fixed/positive-print", "fixed/combined-print", "fixed/glare-plus-zero", "fixed/glare-minus-zero", "time/positive_zero", "time/negative_zero", "time/negative_half", "time/below_negative_one", "time/below_positive_one", "time/nan", "time/positive_infinity", "time/negative_infinity", "abort/terminal_recovery"};
     constexpr std::array kIdentityPairs{"direct-exposure-small", "direct-exposure-zero", "print-exposure-small", "print-exposure-zero", "print-medium-exposure-small"};
+    constexpr std::array kCarrierRows{"highlight/direct-scatter", "highlight/print-reflection", "highlight/positive-direct-diffusion", "highlight/positive-print-composed"};
     constexpr std::uint64_t kSession = 0x20260923;
     constexpr std::uint64_t kInstance = 0x641207;
     constexpr std::uint64_t kClip = 0x5312;
@@ -72,6 +73,97 @@ namespace {
                                  "render frame, identity or submission observation");
         return images.pixels(images.read());
     }
+    void check_highlight_carrier(std::size_t index) {
+        using namespace JuicerCuda::ExecutorTest;
+        constexpr int width = 97;
+        constexpr int height = 37;
+        const bool print = index == 1 || index == 3;
+        const bool cameraDiffusion = index >= 2;
+        const bool spatial = index != 2;
+        ofx_test::DeviceImages images({width, height, 4});
+        ofx_test::RenderHost fixture;
+        fixture.configure(images, {-13, 7});
+        const auto set = [&](const char* name, std::vector<ofx_test::InstanceValue> values) {
+            fixture.host().set_value(fixture.effect(), name, std::move(values));
+        };
+        set("FilmProfileKey", {std::string(index >= 2 ? "fujifilm_provia_100f" : "kodak_portra_400")});
+        set("ScanRoute", {std::string(print ? "NegativePrintScan" : "NegativeDirectScan")});
+        set("CameraAutoExposure", {0});
+        set("CameraFilmFormatMm", {8.0});
+        set("CouplersActive", {1});
+        set("CouplersDiffusionSizeUm", {120.0});
+        set("CameraDiffusionEnabled", {cameraDiffusion ? 1 : 0});
+        set("HalationActive", {spatial ? 1 : 0});
+        set("HalationScatterAmount", {index == 1 ? 0.0 : 1.0});
+        set("HalationAmount", {index == 0 ? 0.0 : 1.0});
+        set("HalationHighlightBoostEv", {2.0});
+        set("HalationHighlightProtectionEv", {0.0});
+        set("HalationHighlightBoostRange", {1.0});
+        const auto capture = [&](double exposure) {
+            set("Exposure", {exposure});
+            change(fixture, "Exposure", kOfxChangeUserEdited, 37.0);
+            CarrierReadbacks readbacks;
+            set_carrier_observer(&readbacks);
+            try {
+                (void)render(fixture, images, 37.0);
+            } catch (...) {
+                set_carrier_observer(nullptr);
+                throw;
+            }
+            set_carrier_observer(nullptr);
+            return readbacks;
+        };
+        const auto initial = capture(0.0);
+        const auto increased = capture(1.0);
+        const auto stage = [](const CarrierReadbacks& captured, CarrierStage which) -> const CarrierReadback& {
+            return captured.at(static_cast<std::size_t>(which));
+        };
+        const auto& raw = stage(increased, CarrierStage::Exposure);
+        const auto& boost = stage(increased, CarrierStage::Boost);
+        const auto& camera = stage(increased, CarrierStage::CameraDiffusion);
+        const auto& halation = stage(increased, CarrierStage::Spatial);
+        const auto& log = stage(increased, CarrierStage::DirLog);
+        const auto& initialRaw = stage(initial, CarrierStage::Exposure);
+        ofx_test::require_render(raw.count == 1 && initialRaw.count == 1 && boost.count == 1 &&
+                                     camera.count == static_cast<unsigned>(cameraDiffusion) &&
+                                     halation.count == static_cast<unsigned>(spatial),
+                                 "each configured carrier stage executes once");
+        double peak = 0.0;
+        for (const auto& plane : raw.rgb) {
+            peak = std::max(peak, static_cast<double>(*std::max_element(plane.begin(), plane.end())));
+        }
+        constexpr double onset = 0.184;
+        ofx_test::require_render(peak > onset, "boost observation requires an active global maximum");
+        const auto shape = [](double t) {
+            return std::expm1(t) - t;
+        };
+        const auto denominator = shape((peak - onset) / peak);
+        const auto& final = spatial ? halation : cameraDiffusion ? camera
+                                                                 : boost;
+        unsigned logPlanes = 0;
+        for (std::size_t channel = 0; channel < raw.rgb.size(); ++channel) {
+            logPlanes += !log.rgb[channel].empty() ? 1U : 0U;
+            for (std::size_t i = 0; i < raw.rgb[channel].size(); ++i) {
+                const float x = raw.rgb[channel][i];
+                RenderAssertions::require_same_bits("manual gain precedes boost", x, 2.0f * initialRaw.rgb[channel][i]);
+                const float y = boost.rgb[channel][i];
+                if (x <= onset) {
+                    RenderAssertions::require_same_bits("below-onset carrier", y, x);
+                } else if (x == peak) {
+                    RenderAssertions::require_same_bits("RGB global peak", y, 4.0f * x);
+                } else {
+                    const double expected = x + 3.0 * peak * shape((x - onset) / peak) / denominator;
+                    ofx_test::require_render(std::abs(y - expected) <= 2e-6 * expected, "boost uses the same image-global peak in all channels");
+                }
+                if (!log.rgb[channel].empty()) {
+                    const float expected = std::log10(final.rgb[channel][i] * log.routeCorrection + 1e-10f);
+                    ofx_test::require_render(std::abs(log.rgb[channel][i] - expected) <= 2e-6f, "DIR cached log consumes the post-optical carrier");
+                }
+            }
+        }
+        ofx_test::require_render(log.count == 1 && logPlanes >= 2, "at least two first-consumer DIR log planes observed");
+    }
+
     void report_control_differences(const FjPreparationParams& actual, const FjPreparationParams& expected) {
         const auto field = [](const char* name, double left, double right) {
             if (std::bit_cast<std::uint64_t>(left) != std::bit_cast<std::uint64_t>(right))
@@ -706,6 +798,8 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         for (const auto* id : kSupplemental)
             JuicerTests::list_case(kCaller, id);
+        for (const auto* id : kCarrierRows)
+            JuicerTests::list_case(kCaller, id);
         for (const auto* pair : kIdentityPairs)
             for (const char* suffix : {"A", "B"})
                 JuicerTests::list_case(kCaller, std::string("identity/") + pair + "/" + suffix);
@@ -714,12 +808,18 @@ int main(int argc, char** argv) try {
     JuicerTests::CaseLog log;
     std::vector<std::string> ids(kRows.begin(), kRows.end());
     ids.insert(ids.end(), kSupplemental.begin(), kSupplemental.end());
+    ids.insert(ids.end(), kCarrierRows.begin(), kCarrierRows.end());
     ids.reserve(ids.size() + kIdentityPairs.size() * 2);
     for (const auto* pair : kIdentityPairs)
         for (const char* suffix : {"A", "B"})
             ids.emplace_back(std::string("identity/") + pair + "/" + suffix);
     JuicerTests::Cohort rows(std::string(kCaller), ids);
     run(rows);
+    for (std::size_t index = 0; index < kCarrierRows.size(); ++index) {
+        auto row = rows.case_event(kCarrierRows[index]);
+        check_highlight_carrier(index);
+        row.passed();
+    }
     log.finish();
     return 0;
 } catch (const std::exception& error) {

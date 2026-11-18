@@ -26,7 +26,7 @@ use crate::film_recipe_bridge::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::optics_bridge::{
-    FjDiffusionParams, FjSpatialOpticsRecipe, FjDiffusionRecipe, FjLensBlurRecipe, FjHalationRecipe,
+    FjDiffusionParams, FjSpatialOpticsRecipe, FjDiffusionRecipe, FjLensBlurRecipe,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::scanner_bridge::{
@@ -92,6 +92,20 @@ pub(crate) struct FjOutputBoundaryOwner {
 }
 
 #[repr(C)]
+#[derive(Default)]
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjHalationShape {
+    pub(crate) present: u32,
+    pub(crate) bounce_count: i32,
+    pub(crate) renormalize: u32,
+    pub(crate) reserved: u32,
+    pub(crate) bounce_decay: f64,
+    pub(crate) scatter_core_um: [f64; 3],
+    pub(crate) scatter_tail_um: [f64; 3],
+    pub(crate) scatter_tail_weight: [f64; 3],
+}
+
+#[repr(C)]
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPreparationHalation {
     pub(crate) active: u32,
@@ -99,6 +113,48 @@ pub(crate) struct FjPreparationHalation {
     pub(crate) scatter_spatial_scale: f32,
     pub(crate) halation_amount: f32,
     pub(crate) halation_spatial_scale: f32,
+    pub(crate) reflection_source: u32,
+    pub(crate) reflection_strength: [f64; 3],
+    pub(crate) first_sigma_um: [f64; 3],
+    pub(crate) shape: FjHalationShape,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl From<&recipe::HalationControls> for FjPreparationHalation {
+    fn from(controls: &recipe::HalationControls) -> Self {
+        let (reflection_source, reflection_strength, first_sigma_um) = match controls.reflection {
+            recipe::HalationReflectionSource::Profile => (0, [0.0; 3], [0.0; 3]),
+            recipe::HalationReflectionSource::Custom {
+                strength,
+                first_sigma_um,
+            } => (1, strength, first_sigma_um),
+        };
+        let shape = controls.shape;
+        Self {
+            active: u32::from(controls.active),
+            scatter_amount: controls.scatter_amount,
+            scatter_spatial_scale: controls.scatter_spatial_scale,
+            halation_amount: controls.halation_amount,
+            halation_spatial_scale: controls.halation_spatial_scale,
+            reflection_source,
+            reflection_strength,
+            first_sigma_um,
+            shape: if shape == optics::HalationShape::default() {
+                FjHalationShape::default()
+            } else {
+                FjHalationShape {
+                    present: 1,
+                    bounce_count: shape.bounce_count,
+                    renormalize: u32::from(shape.renormalize),
+                    reserved: 0,
+                    bounce_decay: shape.bounce_decay,
+                    scatter_core_um: shape.scatter_core_um,
+                    scatter_tail_um: shape.scatter_tail_um,
+                    scatter_tail_weight: shape.scatter_tail_weight,
+                }
+            },
+        }
+    }
 }
 #[repr(C)]
 #[cfg(any(test, feature = "test-support"))]
@@ -157,6 +213,9 @@ pub(crate) struct FjPreparationParams {
     pub(crate) scan_route: u32,
     pub(crate) glare_active: u32,
     pub(crate) camera_filter_override: u32,
+    pub(crate) highlight_boost_ev: f64,
+    pub(crate) highlight_protection_ev: f64,
+    pub(crate) highlight_boost_range: f64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -302,6 +361,47 @@ fn flag(value: u32) -> Result<bool, Failure> {
         _ => Err(Failure::Input("invalid preparation boolean representation")),
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+fn halation(input: &FjPreparationHalation) -> Result<recipe::HalationControls, Failure> {
+    let active = flag(input.active)?;
+    let mut controls = optics::halation(
+        active,
+        [
+            input.scatter_amount,
+            input.scatter_spatial_scale,
+            input.halation_amount,
+            input.halation_spatial_scale,
+        ]
+        .map(f64::from),
+    )
+    .map_err(Failure::Input)?;
+    if !active {
+        return Ok(controls);
+    }
+    if input.shape.reserved != 0 {
+        return Err(Failure::Input("invalid halation shape reserved field"));
+    }
+    if flag(input.shape.present)? {
+        controls.shape = optics::HalationShape {
+            scatter_core_um: input.shape.scatter_core_um,
+            scatter_tail_um: input.shape.scatter_tail_um,
+            scatter_tail_weight: input.shape.scatter_tail_weight,
+            bounce_count: input.shape.bounce_count,
+            bounce_decay: input.shape.bounce_decay,
+            renormalize: flag(input.shape.renormalize)?,
+        };
+    }
+    controls.reflection = match input.reflection_source {
+        0 => recipe::HalationReflectionSource::Profile,
+        1 => recipe::HalationReflectionSource::Custom {
+            strength: input.reflection_strength,
+            first_sigma_um: input.first_sigma_um,
+        },
+        _ => return Err(Failure::Input("invalid halation reflection source")),
+    };
+    Ok(controls)
+}
 #[cfg(any(test, feature = "test-support"))]
 fn diffusion(input: &FjDiffusionParams) -> Result<optics::DiffusionParams, Failure> {
     Ok(optics::DiffusionParams {
@@ -405,6 +505,9 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
         scan_route,
         glare_active,
         camera_filter_override,
+        highlight_boost_ev,
+        highlight_protection_ev,
+        highlight_boost_range,
     } = input;
     let scan_route = match scan_route {
         0 => ScanRoute::NegativeDirect,
@@ -472,12 +575,11 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
         hanatos2025_adaptation_surface: *hanatos2025_adaptation_surface,
         camera_auto_exposure_enabled: *camera_auto_exposure_enabled,
         camera_metering_method: *camera_metering_method,
-        scatter_halation: recipe::HalationControls {
-            active: flag(scatter_halation.active)?,
-            scatter_amount: scatter_halation.scatter_amount,
-            scatter_spatial_scale: scatter_halation.scatter_spatial_scale,
-            halation_amount: scatter_halation.halation_amount,
-            halation_spatial_scale: scatter_halation.halation_spatial_scale,
+        scatter_halation: halation(scatter_halation)?,
+        highlight_boost: optics::highlight_boost::Controls {
+            boost_ev: *highlight_boost_ev,
+            protection_ev: *highlight_protection_ev,
+            range: *highlight_boost_range,
         },
         scanner_black_correction: *scanner_black_correction,
         scanner_white_correction: *scanner_white_correction,
@@ -734,16 +836,7 @@ fn optics_projection(value: &optics::Recipe) -> FjSpatialOpticsRecipe {
             sigma_um: lens.sigma_um(),
             hash: lens.hash(),
         },
-        scatter_halation: FjHalationRecipe {
-            scatter_active: u32::from(halation.scatter_active()),
-            back_reflection_active: u32::from(halation.back_reflection_active()),
-            scatter_amount: halation.scatter_amount(),
-            scatter_spatial_scale: halation.scatter_spatial_scale(),
-            halation_spatial_scale: halation.halation_spatial_scale(),
-            first_sigma_um: *halation.first_sigma_um(),
-            total_strength: *halation.total_strength(),
-            hash: halation.hash(),
-        },
+        scatter_halation: crate::optics_bridge::project_halation(halation),
         enlarger_diffusion: diffusion_projection(value.enlarger_diffusion()),
         hash: value.hash(),
     }
@@ -2509,8 +2602,9 @@ pub(crate) fn layout_facts() -> &'static [usize] {
         FjInputHullView => [center_xy, xy, hash, entry_identity],
         FjOutputBoundaryView => [cmax, transform_hash, contract_hash, hash, entry_identity],
         FjOutputBoundarySource => [output_space, d65_xyz_to_native_rgb, transform_hash],
-        FjPreparationHalation => [active, scatter_amount, scatter_spatial_scale, halation_amount, halation_spatial_scale],
-        FjPreparationParams => [print_exposure, print_preflash_exposure, print_gamma_factor, preflash_m_filter_cc, preflash_y_filter_cc, print_shadow_compensation_factor, print_shadow_compensation_density, print_shadow_compensation_transition, glare_percent, glare_roughness, glare_blur_sigma_px, camera_exposure_compensation_ev, camera_film_format_long_edge_mm, film_gamma_factor, scanner_lens_blur_sigma_px, scanner_black_level, scanner_white_level, gate_weave_amount, scanner_unsharp_mask, print_ui_ymc_cc, camera_filter_uv, camera_filter_ir, camera_diffusion, enlarger_diffusion, dir_couplers, film_profile_key, print_profile_key, spectral_upsampling_mode, ref_ill, enl_ill, normalize_print_exposure, print_exposure_compensation, input_color_space, input_cctf_decoding, input_compression_enabled, hanatos2025_adaptation_window, hanatos2025_adaptation_surface, camera_auto_exposure_enabled, camera_metering_method, scatter_halation, scanner_black_correction, scanner_white_correction, scanner_lut_resolution, output_color_space, output_cctf_encoding, output_gamut_compression_enabled, grain, film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount, scan_route, glare_active, camera_filter_override],
+        FjHalationShape => [present, bounce_count, renormalize, reserved, bounce_decay, scatter_core_um, scatter_tail_um, scatter_tail_weight],
+        FjPreparationHalation => [active, scatter_amount, scatter_spatial_scale, halation_amount, halation_spatial_scale, reflection_source, reflection_strength, first_sigma_um, shape],
+        FjPreparationParams => [print_exposure, print_preflash_exposure, print_gamma_factor, preflash_m_filter_cc, preflash_y_filter_cc, print_shadow_compensation_factor, print_shadow_compensation_density, print_shadow_compensation_transition, glare_percent, glare_roughness, glare_blur_sigma_px, camera_exposure_compensation_ev, camera_film_format_long_edge_mm, film_gamma_factor, scanner_lens_blur_sigma_px, scanner_black_level, scanner_white_level, gate_weave_amount, scanner_unsharp_mask, print_ui_ymc_cc, camera_filter_uv, camera_filter_ir, camera_diffusion, enlarger_diffusion, dir_couplers, film_profile_key, print_profile_key, spectral_upsampling_mode, ref_ill, enl_ill, normalize_print_exposure, print_exposure_compensation, input_color_space, input_cctf_decoding, input_compression_enabled, hanatos2025_adaptation_window, hanatos2025_adaptation_surface, camera_auto_exposure_enabled, camera_metering_method, scatter_halation, scanner_black_correction, scanner_white_correction, scanner_lut_resolution, output_color_space, output_cctf_encoding, output_gamut_compression_enabled, grain, film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount, scan_route, glare_active, camera_filter_override, highlight_boost_ev, highlight_protection_ev, highlight_boost_range],
         FjPreparedSpectralView => [lambda_nm, illuminant, observer_xyz, weighted_xyz, dyes_cmy, baseline_min, baseline_mid, inv_yn, white_xyz, has_baseline, illuminant_hash, hash],
         FjPreparedInputPolicy => [meter, band_pass_active, apply_hanatos_window, apply_hanatos_surface, projection_illuminant, input_compression_active, film_format_long_edge_mm, uv, ir, hanatos_spectral_blur, nominal_white_xyz, projection_white_xyz, hanatos_window, hanatos_surface_rgb, input_hull_hash, tc_source_hash],
         FjPreparedScannerPolicy => [black_correction, white_correction, glare_active, black_level, white_level, glare_percent, glare_roughness, glare_blur_sigma_px, lens_blur_sigma_px, unsharp_sigma_px, unsharp_amount],

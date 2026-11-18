@@ -101,35 +101,40 @@ const EMPTY_HALATION_GAUSSIAN: sys::FjHalationGaussian = sys::FjHalationGaussian
     kind: 0,
     radius: 0,
     fir_weights: [0.0; 19],
-    feedforward: 0.0,
-    feedback: [0.0; 3],
+    yvv: [0.0; 4],
 };
 
 const EMPTY_HALATION_CHANNEL: sys::FjHalationChannel = sys::FjHalationChannel {
     core: EMPTY_HALATION_GAUSSIAN,
-    tail: [EMPTY_HALATION_GAUSSIAN; 3],
-    bounce: [EMPTY_HALATION_GAUSSIAN; 3],
+    tail: [EMPTY_HALATION_GAUSSIAN; optics::HALATION_TAIL_COMPONENTS],
+    bounce: [EMPTY_HALATION_GAUSSIAN; optics::HALATION_MAX_BOUNCES],
     total_strength: 0.0,
+    tail_weight: 0.0,
 };
 
 fn halation_gaussian(value: &optics::HalationGaussian) -> sys::FjHalationGaussian {
     sys::FjHalationGaussian {
         kind: match value.kind() {
-            optics::HalationGaussianKind::Identity => 0,
-            optics::HalationGaussianKind::FirReflect => 1,
-            optics::HalationGaussianKind::YvvReplicate => 2,
+            optics::HalationGaussianKind::Identity => sys::FJ_HALATION_IDENTITY,
+            optics::HalationGaussianKind::FirReflect => sys::FJ_HALATION_FIR_REFLECT,
+            optics::HalationGaussianKind::YvvReplicate => sys::FJ_HALATION_YVV_REPLICATE,
+            optics::HalationGaussianKind::YvvReplicateFactored => {
+                sys::FJ_HALATION_YVV_REPLICATE_FACTORED
+            }
         },
         radius: value.radius(),
         fir_weights: *value.fir_weights(),
-        feedforward: value.yvv()[0],
-        feedback: [value.yvv()[1], value.yvv()[2], value.yvv()[3]],
+        yvv: *value.yvv(),
     }
 }
 
-fn halation_projection(value: &optics::HalationFrame) -> sys::FjScatterHalation {
+pub(crate) fn halation_projection(value: &optics::HalationFrame) -> sys::FjScatterHalation {
     sys::FjScatterHalation {
         recipe_hash: value.recipe_hash(),
         scatter_amount: value.scatter_amount(),
+        bounce_count: value.bounce_count() as u32,
+        bounce_weights: *value.bounce_weights(),
+        renormalize: u32::from(value.renormalize()),
         channels: std::array::from_fn(|channel| {
             let source = &value.channels()[channel];
             sys::FjHalationChannel {
@@ -137,15 +142,19 @@ fn halation_projection(value: &optics::HalationFrame) -> sys::FjScatterHalation 
                 tail: source.tail().each_ref().map(halation_gaussian),
                 bounce: source.bounce().each_ref().map(halation_gaussian),
                 total_strength: source.total_strength(),
+                tail_weight: source.tail_weight(),
             }
         }),
     }
 }
 
-fn empty_halation() -> sys::FjScatterHalation {
+pub(crate) fn empty_halation() -> sys::FjScatterHalation {
     sys::FjScatterHalation {
         recipe_hash: 0,
         scatter_amount: 0.0,
+        bounce_count: 0,
+        bounce_weights: [0.0; optics::HALATION_MAX_BOUNCES],
+        renormalize: 0,
         channels: [EMPTY_HALATION_CHANNEL; 3],
     }
 }
@@ -162,6 +171,24 @@ fn halation_error(error: optics::HalationFrameError) -> Error {
     let diagnostic = match error {
         optics::HalationFrameError::PixelSize => {
             "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+        }
+        optics::HalationFrameError::BounceCount => {
+            "ResourceDescriptorMismatch component=scatter_halation field=bounce_count"
+        }
+        optics::HalationFrameError::AdvancedRadius {
+            field,
+            channel,
+            index,
+            sigma_px,
+        } => {
+            return Error {
+                #[cfg(any(test, feature = "test-support"))]
+                category: sys::FJ_STATUS_PREPARATION_FAILURE,
+                diagnostic: format!(
+                    "ResourceDescriptorMismatch component=scatter_halation field={} channel={channel} index={index:?} sigma_px={sigma_px} reason=advanced_radius",
+                    field.name(),
+                ),
+            };
         }
         optics::HalationFrameError::Gaussian {
             field: optics::HalationFrameField::ScatterCore,
@@ -253,6 +280,12 @@ pub(super) fn prepare(
         enlarger: empty_diffusion(),
         diffusion_hash: 0,
         scatter_halation: empty_halation(),
+        highlight_boost: sys::FjHighlightBoost {
+            recipe_hash: 0,
+            protection: 0.0,
+            sharpness: 0.0,
+            peak_gain: 0.0,
+        },
     };
     if let Some(frame) = diffusion {
         projected_optics.full_frame = sys::FjExtent {
@@ -281,6 +314,16 @@ pub(super) fn prepare(
     if let Some(frame) = halation {
         projected_optics.flags |= sys::FJ_OPTICS_SCATTER_HALATION;
         projected_optics.scatter_halation = halation_projection(&frame);
+    }
+    if let Some(boost) = optics_recipe.highlight_boost() {
+        projected_optics.full_frame = full_frame;
+        projected_optics.flags |= sys::FJ_OPTICS_HIGHLIGHT_BOOST;
+        projected_optics.highlight_boost = sys::FjHighlightBoost {
+            recipe_hash: boost.hash(),
+            protection: boost.protection(),
+            sharpness: boost.sharpness(),
+            peak_gain: boost.peak_gain(),
+        };
     }
 
     Ok(super::edge::FjPreparedFramePolicy {

@@ -1484,13 +1484,14 @@ class CudaQualityTests(unittest.TestCase):
 
     def test_release_definition_and_optimization_are_taken_from_database(self) -> None:
         args = [arg.replace("JUICER_DIAGNOSTICS_COMPILED=1", "JUICER_DIAGNOSTICS_COMPILED=0") for arg in self.arguments]
-        args += ["-O3", "-Xptxas=-O3"]
+        args += ["-O3", "-Xptxas=-O3", "-lineinfo"]
         if os.name == "nt":
             args += ["-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF"]
         _, _, frontend = check_quality.cuda_frontend_arguments(self.root, self.entry(args))
         self.assertIn("JUICER_DIAGNOSTICS_COMPILED=0", frontend)
         self.assertNotIn("JUICER_DIAGNOSTICS_COMPILED=1", frontend)
         self.assertIn("-O3", frontend)
+        self.assertNotIn("-lineinfo", frontend)
 
     def test_unknown_or_incomplete_options_fail_instead_of_weakening_analysis(self) -> None:
         cases = (

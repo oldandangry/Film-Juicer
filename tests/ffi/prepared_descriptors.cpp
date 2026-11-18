@@ -110,10 +110,7 @@ namespace {
         out.kind = static_cast<std::uint32_t>(source.kind);
         out.radius = source.radius;
         std::copy(source.firWeights.begin(), source.firWeights.end(), out.fir_weights);
-        out.feedforward = source.B;
-        out.feedback[0] = source.B1;
-        out.feedback[1] = source.B2;
-        out.feedback[2] = source.B3;
+        std::copy(source.yvv.begin(), source.yvv.end(), out.yvv);
         return out;
     }
 
@@ -151,15 +148,19 @@ namespace {
             out.flags |= FJ_OPTICS_SCATTER_HALATION;
             out.scatter_halation.recipe_hash = source.halation->recipeHash;
             out.scatter_halation.scatter_amount = source.halation->scatterAmount;
+            out.scatter_halation.bounce_count = source.halation->bounceCount;
+            out.scatter_halation.renormalize = source.halation->renormalize;
+            std::copy(source.halation->bounceWeights.begin(), source.halation->bounceWeights.end(), out.scatter_halation.bounce_weights);
             for (std::size_t channel = 0; channel < source.halation->channels.size(); ++channel) {
                 const auto& input = source.halation->channels[channel];
                 FjHalationChannel& output = out.scatter_halation.channels[channel];
                 output.total_strength = input.totalStrength;
+                output.tail_weight = input.tailWeight;
                 output.core = encode_halation_gaussian(input.core);
-                for (std::size_t component = 0; component < input.tail.size(); ++component) {
+                for (std::size_t component = 0; component < input.tail.size(); ++component)
                     output.tail[component] = encode_halation_gaussian(input.tail[component]);
+                for (std::size_t component = 0; component < input.bounce.size(); ++component)
                     output.bounce[component] = encode_halation_gaussian(input.bounce[component]);
-                }
             }
         }
     }

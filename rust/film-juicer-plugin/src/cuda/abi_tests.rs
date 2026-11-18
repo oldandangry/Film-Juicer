@@ -255,19 +255,28 @@ static FACTS: &[usize] = &[
     offset_of!(FjHalationGaussian, kind),
     offset_of!(FjHalationGaussian, radius),
     offset_of!(FjHalationGaussian, fir_weights),
-    offset_of!(FjHalationGaussian, feedforward),
-    offset_of!(FjHalationGaussian, feedback),
+    offset_of!(FjHalationGaussian, yvv),
     size_of::<FjHalationChannel>(),
     align_of::<FjHalationChannel>(),
     offset_of!(FjHalationChannel, core),
     offset_of!(FjHalationChannel, tail),
     offset_of!(FjHalationChannel, bounce),
     offset_of!(FjHalationChannel, total_strength),
+    offset_of!(FjHalationChannel, tail_weight),
     size_of::<FjScatterHalation>(),
     align_of::<FjScatterHalation>(),
     offset_of!(FjScatterHalation, recipe_hash),
     offset_of!(FjScatterHalation, scatter_amount),
+    offset_of!(FjScatterHalation, bounce_count),
+    offset_of!(FjScatterHalation, bounce_weights),
+    offset_of!(FjScatterHalation, renormalize),
     offset_of!(FjScatterHalation, channels),
+    size_of::<FjHighlightBoost>(),
+    align_of::<FjHighlightBoost>(),
+    offset_of!(FjHighlightBoost, recipe_hash),
+    offset_of!(FjHighlightBoost, protection),
+    offset_of!(FjHighlightBoost, sharpness),
+    offset_of!(FjHighlightBoost, peak_gain),
     size_of::<FjOptics>(),
     align_of::<FjOptics>(),
     offset_of!(FjOptics, flags),
@@ -276,6 +285,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjOptics, enlarger),
     offset_of!(FjOptics, diffusion_hash),
     offset_of!(FjOptics, scatter_halation),
+    offset_of!(FjOptics, highlight_boost),
     size_of::<FjDirGaussian>(),
     align_of::<FjDirGaussian>(),
     offset_of!(FjDirGaussian, sigma_px),
@@ -581,9 +591,13 @@ static FACTS: &[usize] = &[
     FJ_OPTICS_CAMERA_DIFFUSION as usize,
     FJ_OPTICS_ENLARGER_DIFFUSION as usize,
     FJ_OPTICS_SCATTER_HALATION as usize,
+    FJ_OPTICS_HIGHLIGHT_BOOST as usize,
     FJ_HALATION_IDENTITY as usize,
     FJ_HALATION_FIR_REFLECT as usize,
     FJ_HALATION_YVV_REPLICATE as usize,
+    FJ_HALATION_YVV_REPLICATE_FACTORED as usize,
+    FJ_HALATION_TAIL_COMPONENTS as usize,
+    FJ_HALATION_MAX_BOUNCES as usize,
     FJ_DIR_OPERATOR_NONE as usize,
     FJ_DIR_OPERATOR_IDENTITY as usize,
     FJ_DIR_OPERATOR_FIR_REFLECT as usize,
@@ -654,7 +668,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 601);
+        assert_eq!(FACTS.len(), 615);
     }
 
     #[test]

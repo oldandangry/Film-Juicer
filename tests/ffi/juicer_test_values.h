@@ -580,6 +580,13 @@ typedef struct FjFilmRecipeFailure {
 #define FJ_OPTICS_FIELD_SIGMA_UM UINT32_C(15)
 
 #define FJ_OPTICS_FIELD_TOTAL_STRENGTH UINT32_C(16)
+#define FJ_OPTICS_FIELD_SCATTER_CORE UINT32_C(17)
+#define FJ_OPTICS_FIELD_SCATTER_TAIL UINT32_C(18)
+#define FJ_OPTICS_FIELD_SCATTER_TAIL_WEIGHT UINT32_C(19)
+#define FJ_OPTICS_FIELD_FIRST_BOUNCE_SIGMA UINT32_C(20)
+#define FJ_OPTICS_FIELD_REFLECTION_STRENGTH UINT32_C(21)
+#define FJ_OPTICS_FIELD_BOUNCE_COUNT UINT32_C(22)
+#define FJ_OPTICS_FIELD_BOUNCE_DECAY UINT32_C(23)
 
 typedef struct FjDiffusionParams {
     uint32_t active;
@@ -661,6 +668,9 @@ typedef struct FjHalationRecipe {
     float first_sigma_um[3];
     float total_strength[3];
     uint64_t hash;
+    double scatter_core_um[3], scatter_tail_um[3];
+    float scatter_tail_weight[3], bounce_weights[FJ_HALATION_MAX_BOUNCES];
+    uint32_t bounce_count, schedule_flags;
 } FjHalationRecipe;
 
 typedef struct FjSpatialOpticsRecipe {
@@ -1192,6 +1202,8 @@ typedef struct FjFrameGeometryFailure {
 #define FJ_HALATION_FRAME_GAUSSIAN UINT32_C(3)
 
 #define FJ_HALATION_FRAME_PANIC UINT32_C(4)
+#define FJ_HALATION_FRAME_ADVANCED_RADIUS UINT32_C(5)
+#define FJ_HALATION_FRAME_BOUNCE_COUNT UINT32_C(6)
 
 #define FJ_HALATION_FRAME_FIELD_NONE UINT32_C(0)
 
@@ -1202,6 +1214,7 @@ typedef struct FjFrameGeometryFailure {
 #define FJ_HALATION_FRAME_FIELD_SCATTER_TAIL UINT32_C(3)
 
 #define FJ_HALATION_FRAME_FIELD_BOUNCE UINT32_C(4)
+#define FJ_HALATION_FRAME_FIELD_BOUNCE_COUNT UINT32_C(5)
 
 typedef struct FjHalationFrameInput {
     FjHalationRecipe recipe;
@@ -1353,9 +1366,20 @@ typedef struct FjOutputBoundaryView {
     uintptr_t entry_identity;
 } FjOutputBoundaryView;
 
+typedef struct FjHalationShape {
+    uint32_t present;
+    int32_t bounce_count;
+    uint32_t renormalize, reserved;
+    double bounce_decay;
+    double scatter_core_um[3], scatter_tail_um[3], scatter_tail_weight[3];
+} FjHalationShape;
+
 typedef struct FjPreparationHalation {
     uint32_t active;
     float scatter_amount, scatter_spatial_scale, halation_amount, halation_spatial_scale;
+    uint32_t reflection_source;
+    double reflection_strength[3], first_sigma_um[3];
+    FjHalationShape shape;
 } FjPreparationHalation;
 
 typedef struct FjPreparationParams {
@@ -1381,6 +1405,7 @@ typedef struct FjPreparationParams {
     FjVisualGrainParams grain;
     float film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount;
     uint32_t scan_route, glare_active, camera_filter_override;
+    double highlight_boost_ev, highlight_protection_ev, highlight_boost_range;
 } FjPreparationParams;
 
 typedef struct FjPreparedSpectralView {

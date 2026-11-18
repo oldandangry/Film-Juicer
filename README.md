@@ -221,6 +221,10 @@ Emulsion scatter spreads light within the film. Halation models light returning 
 
 **Add halation** enables the scatter/halation stage and is on by default. Separate amount and spatial-scale controls adjust scatter and halation, with the film profile supplying the halation response. The scale controls change the spread; the amount controls change its contribution.
 
+**Advanced Halation** exposes RGB scatter core widths, tail scales and tail weights. **Reflection Source: Profile** follows the selected film stock; **Custom** uses your saved RGB reflection strengths and first-bounce widths. Custom starts from fixed defaults, so switching from Profile can change the image immediately. Switching stocks or returning to Profile preserves the saved Custom values. Widths are in micrometres and scale with the camera film format. **Bounces** and **Bounce Decay** control the reflection spread; **Renormalize** preserves uniform exposure, while turning it off makes the reflection additive.
+
+**Highlight Reconstruction** works independently of **Add halation**. **Highlight Boost (EV)** sets the maximum boost in stops; zero disables it. **Highlight Protection (EV)** sets the onset above a film-linear exposure of 0.184. **Highlight Boost Range** concentrates the response near the peak at zero and spreads it more broadly above the onset at one. The response uses the brightest film-linear RGB sample in the rendered frame, after exposure and before camera diffusion and spatial halation. Preview resolution can therefore affect the measured peak and the result.
+
 Camera and print diffusion are separate stages, with Glimmerglass, Black Pro-Mist, Pro-Mist, and CineBloom families. Camera diffusion acts before film development. Print diffusion acts on the enlarger exposure before print development. Core, halo, bloom, warmth, and scale controls let you adjust the selected family's response.
 
 Start by choosing where you want the diffusion to happen. That decision usually matters more than another small adjustment to its radius.

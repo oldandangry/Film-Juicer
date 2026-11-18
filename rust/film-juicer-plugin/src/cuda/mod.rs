@@ -18,6 +18,8 @@ pub(crate) mod edge;
 
 mod frame;
 mod frame_policy;
+#[cfg(feature = "test-support")]
+pub(crate) use frame_policy::{empty_halation, halation_projection};
 #[allow(
     unsafe_code,
     reason = "call-local scanner and Gaussian candidates back the synchronous native preparation callbacks"

@@ -980,8 +980,8 @@ def cuda_frontend_arguments(root: Path, entry: CompilationEntry) -> tuple[Path, 
             operand()
         elif argument in {"-g", "-O0", "-O1", "-O2", "-O3"}:
             frontend.append(argument)
-        elif argument in {"-forward-unknown-to-host-compiler", "--cudart=hybrid", "-Xptxas=-O3"}:
-            # Driver dispatch, runtime linking and assembler optimization do not configure the AST.
+        elif argument in {"-forward-unknown-to-host-compiler", "--cudart=hybrid", "-Xptxas=-O3", "-lineinfo"}:
+            # Driver dispatch, runtime linking, assembler optimization and line tables do not configure the AST.
             continue
         else:
             raise QualityError(f"unsupported NVCC option {argument}: {entry.path}")

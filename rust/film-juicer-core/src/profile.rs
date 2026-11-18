@@ -1,6 +1,7 @@
 //! Catalog discovery, authored profile sources and immutable sampled profiles.
 
 mod sampled;
+pub(crate) use sampled::is_legacy_halation;
 pub use sampled::{
     FilmProcessingDefaults, FilmProfile, PrintDensityCurves, PrintDensityError, PrintProfile,
     ProfileCompletionError, ProfileCompletionErrorKind, ProfileTables,

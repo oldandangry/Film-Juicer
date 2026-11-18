@@ -7,6 +7,10 @@
     "Prepare.Host.StateProducts"
   ],
   "targets": {
+    "JuicerGrainPrototype": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerOfxAbiTests": {
       "protocol": "custom",
       "registrations": 1
@@ -417,6 +421,13 @@
     "SpectralOwner.MallettAndCmfFailureClearingAndConsumption": 2,
     "RenderAssertions.RejectsNonFiniteActualAndExpected": 1,
     "RenderAssertions.RejectsEveryHashAndSeedLane": 1
+  },
+  "native_membership": {
+    "Grain.Host.FilmReferenceOracle": {
+      "listed": 2,
+      "terminal": 2,
+      "required": [["film-reference", "known-rectangles-and-constant"], ["film-reference", "signed-film-time"]]
+    }
   },
   "cuda_free_required": [
     "Rust.Core",
