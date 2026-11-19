@@ -2,7 +2,11 @@
 
 use crate::assets::{PortraGrainBank, PortraGrainTable};
 
+#[cfg(feature = "grain-preview")]
 pub(crate) const MIN_FOOTPRINT: f32 = 0.25;
+// The 8 mm, Size 4 µm proxy of an 8192-pixel Full raster uses this cell pitch.
+// Internal samples use the subtexel convex-light certificate below.
+pub(crate) const MIN_PROXY_SAMPLE_FOOTPRINT: f32 = 8_000.0 / (8_192.0 * 4.0);
 pub(crate) const CALIBRATED_MAX_FOOTPRINT: f32 = 37.5;
 pub(crate) const SINGLE_WRAP_MAX_FOOTPRINT: f32 = 255.0;
 // 120 mm at Size 0.5 µm on a one-pixel rendered long edge.
@@ -35,7 +39,7 @@ pub(crate) fn allowances(
     gain: f32,
 ) -> Option<[f32; 2]> {
     let width = f64::from(table.footprint);
-    if !(MIN_FOOTPRINT..=MAX_FOOTPRINT).contains(&table.footprint) {
+    if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&table.footprint) {
         return None;
     }
     // Subdivide the placed rectangle into equal pieces with widths inside the
@@ -258,6 +262,7 @@ mod tests {
         for width in (1..=150)
             .map(|quarter| quarter as f32 / 4.0)
             .chain([
+                MIN_PROXY_SAMPLE_FOOTPRINT,
                 1.0_f32.next_down(),
                 1.0_f32.next_up(),
                 CALIBRATED_MAX_FOOTPRINT.next_up(),

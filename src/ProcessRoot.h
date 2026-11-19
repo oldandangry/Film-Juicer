@@ -32,6 +32,9 @@ namespace Scanner {
 
 namespace JuicerCuda {
     struct PipelineRunParams;
+    namespace FilmGrain {
+        struct ProxyWorkspace;
+    }
     namespace ResourceManager {
         struct DeviceContextKey;
         struct ScratchRequestDescriptor;
@@ -308,6 +311,7 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             JuicerCuda::PreparedVisualGrainView visual_grain_resources() const noexcept;
             const JuicerCuda::FilmGrain::FilmQuad* film_grain_bank() const noexcept;
+            JuicerCuda::FilmGrain::ProxyWorkspace* film_proxy_workspace() const noexcept;
             const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
             film_juicer_effects_descriptor() const noexcept;
             VisualGrainWorkspaceView visual_grain_workspace(

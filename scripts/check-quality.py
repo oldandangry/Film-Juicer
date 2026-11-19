@@ -44,7 +44,12 @@ REPRESENTATIVE_NATIVE_FILES = (
     "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
     "tests/hash/hash_contract_test.cpp",
 )
-MOTION_REPLAY_HEADERS = {"tests/grain/motion-replay.h", "tests/grain/motion-replay.inc"}
+MOTION_REPLAY_HEADERS = {
+    "tests/grain/film-ofx-apertures.inc",
+    "tests/grain/motion-density.inc",
+    "tests/grain/motion-replay.h",
+    "tests/grain/motion-replay.inc",
+}
 
 
 class QualityError(RuntimeError):

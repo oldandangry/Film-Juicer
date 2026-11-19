@@ -16,6 +16,7 @@ namespace JuicerCuda::FilmGrain {
     constexpr int kSeam = 16;
     constexpr int kLayings = 2;
     constexpr float kMinFootprint = 0.25F;
+    constexpr float kMinProxySampleFootprint = 0.244140625F;
     constexpr float kCalibratedMaxFootprint = 37.5F;
     constexpr float kSingleWrapMaxFootprint = static_cast<float>(kTileSide - 1);
     constexpr float kMaxFootprint = 240000.0F; // 120 mm at Size 0.5 µm on one pixel.
@@ -49,6 +50,30 @@ namespace JuicerCuda::FilmGrain {
     static_assert(sizeof(FilmQuad) == 16 && alignof(FilmQuad) == 16);
     constexpr std::size_t kQuadEntries = static_cast<std::size_t>(kRecords) * kLevels * kTileSide * kTileSide;
 
+    struct ProxyGrid {
+        double extent[2]{};
+        double step[2]{};
+        double origin[2]{};
+    };
+
+    constexpr std::uint64_t kProxySerialSamples = 4096;
+    constexpr unsigned int kProxyPixelsPerBatch = 16;
+    constexpr unsigned int kProxyBlocksPerPixel = 64;
+    constexpr unsigned int kProxySamplesPerBlock = 4096;
+
+    struct ApertureSum {
+        double light[kRecords];
+        double area;
+    };
+
+    struct ProxyWorkspace {
+        ApertureSum partial[kProxyPixelsPerBatch][kProxyBlocksPerPixel];
+        ApertureSum total[kProxyPixelsPerBatch];
+    };
+
+    // Upper bound on the number of Full cells touched by any rendered pixel.
+    std::uint64_t proxy_sample_bound(const double (&extent)[2], const double (&step)[2]) noexcept;
+
     struct FilmFrame {
         float pitch = 0.F;
         int originX = 0;
@@ -62,6 +87,8 @@ namespace JuicerCuda::FilmGrain {
         std::uint32_t nextSeed = 0;
         float temporalFraction = 0.F;
         float chromaFraction = 1.F;
+        ProxyGrid proxy{};
+        ProxyWorkspace* proxyWorkspace = nullptr;
     };
 
     struct FilmPlanes {

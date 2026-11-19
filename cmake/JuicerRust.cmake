@@ -7,6 +7,7 @@ if(CMAKE_SCRIPT_MODE_FILE AND DEFINED JUICER_RUST_TESTS_METADATA_MODE)
         JUICER_RUST_TESTS_TARGET_DIR
         JUICER_RUST_TESTS_BINARIES_METADATA
         JUICER_RUST_TESTS_CARGO_METADATA
+        JUICER_RUST_TESTS_FEATURES
         JUICER_RUST_TESTS_PROFILE)
         if(NOT DEFINED ${required_variable} OR "${${required_variable}}" STREQUAL "")
             message(FATAL_ERROR "Missing ${required_variable} for Rust test metadata preparation")
@@ -21,7 +22,7 @@ if(CMAKE_SCRIPT_MODE_FILE AND DEFINED JUICER_RUST_TESTS_METADATA_MODE)
             --format-version 1
             --locked
             --no-default-features
-            --features film-juicer-plugin/test-support
+            --features "${JUICER_RUST_TESTS_FEATURES}"
             --filter-platform "${JUICER_RUST_TESTS_TARGET}"
             --manifest-path "${JUICER_RUST_TESTS_ROOT}/Cargo.toml"
         WORKING_DIRECTORY "${JUICER_RUST_TESTS_ROOT}"
@@ -55,7 +56,7 @@ if(CMAKE_SCRIPT_MODE_FILE AND DEFINED JUICER_RUST_TESTS_METADATA_MODE)
             --workspace
             --tests
             --no-default-features
-            --features film-juicer-plugin/test-support
+            --features "${JUICER_RUST_TESTS_FEATURES}"
             --target "${JUICER_RUST_TESTS_TARGET}"
             --target-dir "${JUICER_RUST_TESTS_TARGET_DIR}"
             ${JUICER_RUST_TESTS_PROFILE_ARGUMENT}
@@ -198,6 +199,10 @@ if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
         "${JUICER_RUST_TESTS_METADATA_DIR}/binaries.json")
     set(JUICER_RUST_TESTS_CARGO_METADATA
         "${JUICER_RUST_TESTS_METADATA_DIR}/cargo.json")
+    set(JUICER_RUST_TESTS_FEATURES "film-juicer-plugin/test-support")
+    if(JUICER_GRAIN_PREVIEW AND NOT JUICER_CUDA_FREE_TESTS)
+        string(APPEND JUICER_RUST_TESTS_FEATURES ",film-juicer-plugin/grain-preview")
+    endif()
     set(JUICER_RUST_TESTS_PROFILE "${JUICER_RUST_CARGO_PROFILE}")
     add_custom_target(juicer_rust_tests
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_RUST_TESTS_METADATA_DIR}"
@@ -210,6 +215,7 @@ if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
             "-DJUICER_RUST_TESTS_TARGET_DIR=${JUICER_RUST_TESTS_TARGET_DIR}"
             "-DJUICER_RUST_TESTS_BINARIES_METADATA=${JUICER_RUST_TESTS_BINARIES_METADATA}"
             "-DJUICER_RUST_TESTS_CARGO_METADATA=${JUICER_RUST_TESTS_CARGO_METADATA}"
+            "-DJUICER_RUST_TESTS_FEATURES=${JUICER_RUST_TESTS_FEATURES}"
             "-DJUICER_RUST_TESTS_PROFILE=${JUICER_RUST_TESTS_PROFILE}"
             -P "${JUICER_RUST_SOURCE_DIR}/cmake/JuicerRust.cmake"
         WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
@@ -275,6 +281,7 @@ function(juicer_add_rust_artifact variant rust_target)
         IMPORTED_LOCATION "${archive}"
         JUICER_RUST_VARIANT "${variant}"
         INTERFACE_JUICER_RUST_VARIANT "${variant}"
+        JUICER_RUST_FEATURES "${features}"
         JUICER_RUST_FEATURE_INPUT "${feature_input}"
         JUICER_RUST_BUILD_STAMP "${stamp}"
         JUICER_RUST_TARGET_DIR "${directory}")
@@ -371,16 +378,18 @@ function(juicer_write_rust_artifacts)
             endforeach()
         endif()
     endforeach()
-    set(json "{\n\"schema\":\"rust-artifacts-v1\",\n\"build\":\"${CMAKE_BINARY_DIR}\",\n\"variants\":{")
+    set(json "{\n\"schema\":\"rust-artifacts-v2\",\n\"build\":\"${CMAKE_BINARY_DIR}\",\n\"variants\":{")
     set(separator "")
     foreach(rust_target IN ITEMS film_juicer_rust film_juicer_rust_test_support)
         if(NOT TARGET ${rust_target})
             continue()
         endif()
         get_target_property(variant ${rust_target} JUICER_RUST_VARIANT)
-        set(features "")
-        if(variant STREQUAL "test-support")
-            set(features "\"test-support\"")
+        get_target_property(features ${rust_target} JUICER_RUST_FEATURES)
+        if(features STREQUAL "none")
+            set(features "")
+        else()
+            set(features "\"${features}\"")
         endif()
         string(APPEND json "${separator}\"${variant}\":{\"archive\":\"$<TARGET_FILE:${rust_target}>\",\"features\":[${features}],"
             "\"feature_input\":\"$<TARGET_PROPERTY:${rust_target},JUICER_RUST_FEATURE_INPUT>\","

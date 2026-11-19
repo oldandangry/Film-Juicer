@@ -161,7 +161,7 @@ namespace GrainPrototype {
             require(apply_film_variant(resident, tables, frame, carrier.planes(), nullptr, FilmVariant::Quad, FilmBlock::Block32x8) == cudaErrorInvalidValue, "canonical owner accepted quad layout");
         }
 
-        std::vector<float> render_production_quad(const DeviceFilmQuads& quads, const FilmTables& sourceTables, const FilmFrame& reference, const DeviceCarrier& carrier) {
+        std::vector<float> render_production_quad(const DeviceFilmQuads& quads, const FilmTables& sourceTables, const FilmFrame& reference, const DeviceCarrier& carrier, JuicerCuda::FilmGrain::ProxyGrid proxy = {}) {
             JuicerCuda::FilmGrain::FilmTables tables{};
             tables.footprint = sourceTables.footprint;
             for (int record = 0; record < kRecords; ++record) {
@@ -186,6 +186,16 @@ namespace GrainPrototype {
             frame.enabled = reference.enabled;
             frame.temporalFraction = reference.temporalFraction;
             frame.chromaFraction = reference.chromaFraction;
+            frame.proxy = proxy;
+            using JuicerCuda::FilmGrain::ProxyWorkspace;
+            ProxyWorkspace* scratch = nullptr;
+            if (JuicerCuda::FilmGrain::proxy_sample_bound(proxy.extent, proxy.step) > JuicerCuda::FilmGrain::kProxySerialSamples)
+                check_cuda(cudaMalloc(&scratch, sizeof(ProxyWorkspace)));
+            const std::unique_ptr<ProxyWorkspace, decltype([](ProxyWorkspace* ptr) {
+                                      static_cast<void>(cudaFree(ptr));
+                                  })>
+                workspace(scratch);
+            frame.proxyWorkspace = workspace.get();
             std::copy_n(reference.amounts, kRecords, frame.amounts);
             const auto planes = carrier.planes();
             check_cuda(JuicerCuda::FilmGrain::apply(
@@ -371,6 +381,236 @@ namespace GrainPrototype {
                           << " min_delta_density=" << minDelta << " max_delta_density=" << maxDelta
                           << " subtexel_crossing_samples=" << crossings << ' ';
                 errors.report("production-proxy-footprint");
+            }
+        }
+
+        void production_proxy_matches_full() {
+            constexpr int scale = 8;
+            constexpr float fullPitch = static_cast<float>(72000.0 / 4832);
+            constexpr float proxyPitch = fullPitch * scale;
+            constexpr float net = 0.2F;
+            auto bank = read_film_bank(JUICER_GRAIN_TEST_BANK, 37.5F, JUICER_GRAIN_TEST_TABLES);
+            for (auto& record : bank.tables.records)
+                for (auto& level : record.levels)
+                    level.meanDensity = -std::log10(level.meanLight);
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            const FilmFrame proxy{proxyPitch, 1, 1, 12, 10, 12, 1179208781U, true};
+            const auto planeWords = static_cast<std::size_t>(proxy.stride) * static_cast<std::size_t>(proxy.height);
+            DeviceCarrier carrier(planeWords);
+            carrier.write(std::vector<float>(4 * planeWords, net));
+            bank.tables.footprint = fullPitch;
+            const auto actual = render_production_quad(quads, bank.tables, proxy, carrier, {{4832, 2016}, {scale, scale}, {}});
+
+            bool withinBudget = true;
+            for (int record = 0; record < kRecords; ++record) {
+                double actualSquares = 0;
+                double expectedSquares = 0;
+                double actualSum = 0;
+                double expectedSum = 0;
+                double cross = 0;
+                double maxError = 0;
+                double maxBudget = 0;
+                for (int y = 0; y < proxy.height; ++y) {
+                    for (int x = 0; x < proxy.width; ++x) {
+                        const int column = proxy.originX + x;
+                        const int row = proxy.originY + y;
+                        double light = 0;
+                        double sampleBudget = 0;
+                        for (int dy = 0; dy < scale; ++dy) {
+                            for (int dx = 0; dx < scale; ++dx) {
+                                const auto fine = evaluate_sample(bank, {
+                                                                            .pitch = fullPitch,
+                                                                            .x = column * scale + dx,
+                                                                            .y = row * scale + dy,
+                                                                            .seed = proxy.seed,
+                                                                            .record = record,
+                                                                            .net = net,
+                                                                        });
+                                light += std::pow(10.0, -fine.delta);
+                                sampleBudget = std::max(sampleBudget, fine.roundingBound);
+                            }
+                        }
+                        // The clean density is constant. A uniform error bound on all
+                        // Full densities carries through their transmission reduction.
+                        const double expected = -std::log10(light / (scale * scale));
+                        const double measured = static_cast<double>(actual[static_cast<std::size_t>(record) * planeWords +
+                                                                           static_cast<std::size_t>(y * proxy.stride + x)]) -
+                                                net;
+                        const double signedError = measured - expected;
+                        const double budget = sampleBudget + 4 * std::numeric_limits<float>::epsilon();
+                        withinBudget &= std::abs(signedError) <= budget;
+                        maxError = std::max(maxError, std::abs(signedError));
+                        maxBudget = std::max(maxBudget, budget);
+                        actualSquares += measured * measured;
+                        expectedSquares += expected * expected;
+                        actualSum += measured;
+                        expectedSum += expected;
+                        cross += measured * expected;
+                        if (column == 4 && row == 4)
+                            std::cout << std::setprecision(10) << "proxy seam (4,4) record=" << record
+                                      << " measured_D=" << measured << " Full_D=" << expected
+                                      << " signed_error_D=" << signedError << " budget_D=" << budget << '\n';
+                    }
+                }
+                const auto count = static_cast<double>(planeWords);
+                const double correlation = (cross - actualSum * expectedSum / count) /
+                                           std::sqrt((actualSquares - actualSum * actualSum / count) * (expectedSquares - expectedSum * expectedSum / count));
+                std::cout << std::setprecision(10) << "proxy patch record=" << record
+                          << " measured_RMS_D=" << std::sqrt(actualSquares / count)
+                          << " Full_RMS_D=" << std::sqrt(expectedSquares / count) << " correlation=" << correlation
+                          << " max_error_D=" << maxError << " max_budget_D=" << maxBudget << '\n';
+            }
+            std::cout << std::flush;
+            require(withinBudget, "wide proxy differs from the independent Full transmission reduction");
+        }
+
+        void production_proxy_apertures() {
+            auto bank = read_film_bank(JUICER_GRAIN_TEST_BANK, 37.5F, JUICER_GRAIN_TEST_TABLES);
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            constexpr int fineSide = 20;
+            constexpr int proxySide = 3;
+            constexpr std::array densities{-0.125F, 0.625F, 1.25F};
+            auto flat = [](int stride, int side) {
+                constexpr std::array net{-0.125F, 0.625F, 1.25F};
+                const auto words = static_cast<std::size_t>(stride) * static_cast<std::size_t>(side);
+                std::vector<float> carrier(4 * words, -17.F);
+                for (std::size_t record = 0; record < net.size(); ++record)
+                    for (int row = 0; row < side; ++row)
+                        std::fill_n(carrier.data() + record * words + static_cast<std::size_t>(row * stride), side, net[record]);
+                return carrier;
+            };
+            const auto fineInput = flat(fineSide, fineSide);
+            DeviceCarrier fineCarrier(static_cast<std::size_t>(fineSide) * fineSide);
+            const auto proxyInput = flat(proxySide + 1, proxySide);
+            DeviceCarrier proxyCarrier(static_cast<std::size_t>(proxySide + 1) * proxySide);
+            for (const float width : {std::nextafter(37.5F, 100.F), 255.F, 256.F, 512.F, 521.5F}) {
+                // Unequal axis scales, partial first/last cells, a fractional
+                // frame, different developed densities and Colour below one.
+                constexpr double stepX = 5.125;
+                constexpr double stepY = 4.375;
+                constexpr double originX = -0.25;
+                constexpr double originY = 0.625;
+                const auto pitch = static_cast<float>(width / stepX);
+                bank.tables.footprint = pitch;
+                FilmFrame fine{pitch, 0, 0, fineSide, fineSide, fineSide, 1179208781U, true};
+                fine.nextSeed = 2741821501U;
+                fine.temporalFraction = 0.375F;
+                fine.chromaFraction = 0.24F;
+                std::fill_n(fine.amounts, kRecords, 2.F);
+                fineCarrier.write(fineInput);
+                const auto full = render_production_quad(quads, bank.tables, fine, fineCarrier);
+
+                FilmFrame proxy = fine;
+                proxy.pitch = width;
+                proxy.width = proxySide;
+                proxy.height = proxySide;
+                proxy.stride = proxySide + 1;
+                proxyCarrier.write(proxyInput);
+                const auto reduced = render_production_quad(quads, bank.tables, proxy, proxyCarrier, {{fineSide, fineSide}, {stepX, stepY}, {originX, originY}});
+                Errors errors;
+                for (std::size_t record = 0; record < densities.size(); ++record) {
+                    for (int y = 0; y < proxySide; ++y) {
+                        for (int x = 0; x < proxySide; ++x) {
+                            double light = 0;
+                            double area = 0;
+                            for (int row = 0; row < fineSide; ++row) {
+                                const double height = std::max(0.0, std::min(row + 1.0, (y + 1) * stepY + originY) - std::max<double>(row, y * stepY + originY));
+                                for (int column = 0; column < fineSide; ++column) {
+                                    const double weight = height * std::max(0.0, std::min(column + 1.0, (x + 1) * stepX + originX) - std::max<double>(column, x * stepX + originX));
+                                    const auto index = record * fineSide * fineSide + static_cast<std::size_t>(row * fineSide + column);
+                                    light += weight * std::pow(10.0, static_cast<double>(densities[record]) - full[index]);
+                                    area += weight;
+                                }
+                            }
+                            const auto index = record * proxySide * (proxySide + 1) + static_cast<std::size_t>(y * (proxySide + 1) + x);
+                            const double delta = static_cast<double>(reduced[index]) - densities[record];
+                            // The reference uses identical Full Float32 words.
+                            // Only exp/log, accumulation and output rounding differ.
+                            errors.measure(delta, -std::log10(light / area), 8 * std::numeric_limits<float>::epsilon(), x, y, static_cast<int>(record));
+                        }
+                        const auto padding = record * proxySide * (proxySide + 1) + static_cast<std::size_t>((y + 1) * (proxySide + 1) - 1);
+                        require(same_words(reduced[padding], proxyInput[padding]), "proxy aperture changed padding");
+                    }
+                }
+                const auto alpha = static_cast<std::ptrdiff_t>(kRecords) * proxySide * (proxySide + 1);
+                require(std::equal(reduced.begin() + alpha, reduced.end(), proxyInput.begin() + alpha, same_words),
+                        "proxy aperture changed alpha");
+                require(reduced[0] != reduced[1], "independent placements collapsed to a whole-period constant");
+                std::cout << "proxy_width_texels=" << width << ' ';
+                errors.report("production-proxy-apertures");
+            }
+        }
+
+        void compare_proxy_to_full(const FilmFrame& fine, const JuicerCuda::FilmGrain::ProxyGrid& grid, const FilmFrame& proxy) {
+            constexpr float density = 0.625F;
+            auto bank = read_film_bank(JUICER_GRAIN_TEST_BANK, 37.5F, JUICER_GRAIN_TEST_TABLES);
+            bank.tables.footprint = fine.pitch;
+            DeviceFilmQuads quads;
+            check_cuda(quads.upload(pack_film_quads(bank)));
+            const auto fullWords = static_cast<std::size_t>(fine.stride) * fine.height;
+            const auto proxyWords = static_cast<std::size_t>(proxy.stride) * proxy.height;
+            const DeviceCarrier fullCarrier(fullWords);
+            const DeviceCarrier proxyCarrier(proxyWords);
+            fullCarrier.write(std::vector<float>(4 * fullWords, density));
+            proxyCarrier.write(std::vector<float>(4 * proxyWords, density));
+            const auto full = render_production_quad(quads, bank.tables, fine, fullCarrier);
+            const auto actual = render_production_quad(quads, bank.tables, proxy, proxyCarrier, grid);
+            Errors errors;
+            for (int record = 0; record < kRecords; ++record) {
+                const auto fullOffset = static_cast<std::size_t>(record) * fullWords;
+                const auto proxyOffset = static_cast<std::size_t>(record) * proxyWords;
+                for (int y = 0; y < proxy.height; ++y) {
+                    const int firstRow = static_cast<int>(y * grid.step[1]);
+                    const int endRow = static_cast<int>((y + 1) * grid.step[1]);
+                    for (int x = 0; x < proxy.width; ++x) {
+                        const int firstColumn = static_cast<int>(x * grid.step[0]);
+                        const int endColumn = static_cast<int>((x + 1) * grid.step[0]);
+                        double light = 0.0;
+                        for (int row = firstRow; row < endRow; ++row)
+                            for (int column = firstColumn; column < endColumn; ++column)
+                                light += std::pow(10.0, static_cast<double>(density) - full[fullOffset + static_cast<std::size_t>(row * fine.stride + column)]);
+                        const double area = (endColumn - firstColumn) * (endRow - firstRow);
+                        const double delta = static_cast<double>(actual[proxyOffset + static_cast<std::size_t>(y * proxy.stride + x)]) - density;
+                        errors.measure(delta, -std::log10(light / area), 2e-6, x, y, record);
+                    }
+                }
+                const auto begin = actual.begin() + static_cast<std::ptrdiff_t>(proxyOffset);
+                const auto [minimum, maximum] = std::minmax_element(begin, begin + static_cast<std::ptrdiff_t>(proxyWords));
+                require(*minimum < *maximum, "proxy grain lost spatial variation");
+            }
+            errors.report("proxy Full transmission");
+        }
+
+        void production_proxy_grouped_whole_period() {
+            constexpr int period = 500;
+            FilmFrame fine{32.F, 0, 0, 2 * period, period, 2 * period, 1179208781U, true};
+            fine.nextSeed = 2741821501U;
+            fine.temporalFraction = 0.375F;
+            fine.chromaFraction = 0.24F;
+            std::fill_n(fine.amounts, kRecords, 2.F);
+            FilmFrame proxy = fine;
+            proxy.pitch = 32.F * period;
+            proxy.width = 2;
+            proxy.height = 1;
+            proxy.stride = 2;
+            compare_proxy_to_full(fine, {{2 * period, period}, {period, period}, {}}, proxy);
+        }
+
+        void production_proxy_unequal_axis() {
+            constexpr int side = 16;
+            constexpr float pitch = 36000.F / 4832.F;
+            const FilmFrame fine{pitch, 0, 0, side, side, side, 1179208781U, true};
+            for (const auto& step : {std::array{4, 8}, std::array{8, 4}}) {
+                FilmFrame proxy = fine;
+                proxy.pitch = pitch * 4.F;
+                proxy.width = side / step[0];
+                proxy.height = side / step[1];
+                proxy.stride = proxy.width;
+                const JuicerCuda::FilmGrain::ProxyGrid grid{
+                    {side, side}, {static_cast<double>(step[0]), static_cast<double>(step[1])}, {}};
+                compare_proxy_to_full(fine, grid, proxy);
             }
         }
 
@@ -644,6 +884,10 @@ namespace GrainPrototype {
         constexpr std::array kGpuCases{
             Case{"production-quad-g3-parity", production_quad_matches_g3},
             Case{"production-proxy-footprint", production_proxy_footprint},
+            Case{"production-proxy-matches-full", production_proxy_matches_full},
+            Case{"production-proxy-apertures", production_proxy_apertures},
+            Case{"production-proxy-grouped-whole-period", production_proxy_grouped_whole_period},
+            Case{"production-proxy-unequal-axis", production_proxy_unequal_axis},
             Case{"g2-geometry-and-temporal", g2_geometry_and_temporal},
             Case{"chroma-projection", chroma_projection},
             Case{"rectangles-wrap-and-seams", rectangles_and_seams},

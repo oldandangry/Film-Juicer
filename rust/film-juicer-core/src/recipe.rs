@@ -1652,7 +1652,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
 #[cfg(feature = "grain-preview")]
 #[derive(Clone, Copy)]
 pub enum PreviewFrame {
-    Raster { long_edge_px: i32 },
+    Raster(grain::preview::Raster),
     Thumbnail,
 }
 
@@ -1688,27 +1688,28 @@ fn prepare_state(
             ) {
                 return Err(ControlError::FilmGrain.into());
             }
-            let Some(PreviewFrame::Raster { long_edge_px }) = frame else {
+            let Some(PreviewFrame::Raster(raster)) = frame else {
                 return Err(PrepareError::FilmGrainGeometry);
             };
             let long_edge_mm = params.camera_film_format_long_edge_mm;
-            let footprint = controls.footprint(long_edge_mm, long_edge_px);
-            if !(density::portra::MIN_FOOTPRINT..=density::portra::MAX_FOOTPRINT)
-                .contains(&footprint)
-            {
-                return Err(PrepareError::FilmGrainFootprint {
-                    long_edge_mm,
-                    size_um: controls.texel_pitch_um,
-                    width_texels: footprint,
-                });
+            let footprint = controls.footprint(long_edge_mm, raster.long_edge_px);
+            let (sample_pitch, sampling) = raster.sampling(controls, long_edge_mm, footprint);
+            for (width_texels, minimum) in [
+                (footprint, density::portra::MIN_FOOTPRINT),
+                (sample_pitch, density::portra::MIN_PROXY_SAMPLE_FOOTPRINT),
+            ] {
+                if !(minimum..=density::portra::MAX_FOOTPRINT).contains(&width_texels) {
+                    return Err(PrepareError::FilmGrainFootprint {
+                        long_edge_mm,
+                        size_um: controls.texel_pitch_um,
+                        width_texels,
+                    });
+                }
             }
             let bank = assets.portra_grain_bank()?;
-            let table = assets.portra_grain_table(&bank, footprint)?;
+            let table = assets.portra_grain_table(&bank, sample_pitch)?;
             Ok::<_, PrepareError>(grain::preview::Recipe::new(
-                bank,
-                table,
-                controls,
-                long_edge_px,
+                bank, table, controls, raster, footprint, sampling,
             ))
         })
         .transpose()?;

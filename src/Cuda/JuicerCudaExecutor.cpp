@@ -1390,6 +1390,23 @@ namespace {
                          int height,
                          GrainBinding& grain,
                          const ExecutionErrors& errors) {
+        const bool proxy = input.sample_step[0] != 0.0 || input.sample_step[1] != 0.0;
+        enum class Axis : std::uint8_t {
+            X,
+            Y
+        };
+        const auto sample_axis_supported = [&input](Axis axis, int origin, int size) {
+            const auto index = static_cast<std::size_t>(axis);
+            const double extent = input.sample_extent[index];
+            const double step = input.sample_step[index];
+            const double start = input.sample_origin[index];
+            const double firstEnd = std::fma(origin + 1.0, step, start);
+            const double lastStart = std::fma(static_cast<double>(origin) + size - 1.0, step, start);
+            return std::isfinite(extent) && extent > 0.0 &&
+                   std::isfinite(step) && step > 0.0 && std::isfinite(start) &&
+                   (std::ceil(extent) - 0.5) * input.sample_pitch < 262144.0 - JuicerCuda::FilmGrain::kPlacementBlock &&
+                   firstEnd > 0.0 && lastStart < extent;
+        };
         const auto axis_supported = [pitch = static_cast<double>(input.pitch)](int origin, int size) {
             if (size <= 0)
                 return false;
@@ -1407,10 +1424,14 @@ namespace {
             !std::isfinite(input.gain) || input.gain < 0.f ||
             !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.f || input.chroma_fraction > 1.f ||
             !axis_supported(input.origin_x, width) || !axis_supported(input.origin_y, height) ||
+            (proxy && (!std::isfinite(input.sample_pitch) || input.sample_pitch < JuicerCuda::FilmGrain::kMinProxySampleFootprint ||
+                       input.sample_pitch > JuicerCuda::FilmGrain::kMaxFootprint ||
+                       !sample_axis_supported(Axis::X, input.origin_x, width) ||
+                       !sample_axis_supported(Axis::Y, input.origin_y, height))) ||
             !(grain.filmBank = preparedFrame.film_grain_bank())) {
             errors.fail_stage("film_grain_binding", "invalid Film grain frame", cudaErrorInvalidValue);
         }
-        grain.filmTables.footprint = input.pitch;
+        grain.filmTables.footprint = proxy ? input.sample_pitch : input.pitch;
         for (int record = 0; record < 3; ++record) {
             const auto& src = input.records[record];
             auto& dst = grain.filmTables.records[record];
@@ -1430,6 +1451,12 @@ namespace {
         grain.filmFrame.nextSeed = input.next_seed;
         grain.filmFrame.temporalFraction = input.temporal_fraction;
         grain.filmFrame.chromaFraction = input.chroma_fraction;
+        if (proxy) {
+            grain.filmFrame.proxyWorkspace = preparedFrame.film_proxy_workspace();
+            std::copy_n(input.sample_extent, 2, grain.filmFrame.proxy.extent);
+            std::copy_n(input.sample_step, 2, grain.filmFrame.proxy.step);
+            std::copy_n(input.sample_origin, 2, grain.filmFrame.proxy.origin);
+        }
         std::fill_n(grain.filmFrame.amounts, 3, input.gain);
     }
 
@@ -1707,9 +1734,19 @@ namespace {
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
-        if (grainStageActive) {
+        auto filmFrame = grain.filmFrame;
+        bool applyGrain = grainStageActive;
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+        if (grain.filmBank) {
+            launchError = JuicerTests::GrainMotion::before_grain(
+                filmFrame, grain.filmTables.footprint, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
+            if (launchError != cudaSuccess)
+                errors.fail_stage("motion_density_transfer", "grain motion density transfer failed", launchError);
+        }
+#endif
+        if (applyGrain) {
             launchError = grain.filmBank
-                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, grain.filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
+                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
                               : juicer_cuda_apply_visual_grain(
                                     &grain.payload,
                                     &grain.kernels,
@@ -1730,6 +1767,14 @@ namespace {
                     "direct visual grain launch failed",
                     launchError);
             }
+#if defined(JUICER_GRAIN_MOTION_REPLAY)
+            if (grain.filmBank) {
+                launchError = JuicerTests::GrainMotion::after_grain(
+                    {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream));
+                if (launchError != cudaSuccess)
+                    errors.fail_stage("motion_film_density_readback", "grain motion Film density readback failed", launchError);
+            }
+#endif
         }
         if (filmEffectsActive && !grainDebugActive) {
             launchError = juicer_cuda_apply_film_defects(
@@ -2302,7 +2347,7 @@ namespace {
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
         if (grain.filmBank) {
             launchError = JuicerTests::GrainMotion::before_grain(
-                filmFrame, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
+                filmFrame, grain.filmTables.footprint, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
             if (launchError != cudaSuccess) {
                 errors.fail_stage("motion_density_transfer", "grain motion density transfer failed", launchError);
             }

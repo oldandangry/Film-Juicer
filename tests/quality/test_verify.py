@@ -507,6 +507,15 @@ class CtestDispatchTests(unittest.TestCase):
         self.subtest_cases = PREVIEW_CASES
         build = self.root / "preview-build"
         preview_contracts = {}
+
+        def preview_scope(name, target, runtime):
+            return {
+                "targets": {target: {"protocol": "custom", "registrations": 1}},
+                "required": [name],
+                "native_cohorts": {name: 1},
+                "native_membership": {name: {"listed": 1, "terminal": 1, "required": [["preview", runtime]]}},
+            }
+
         for runtime in ("host", "gpu"):
             name = runtime.title() + ".Preview"
             target = runtime.title() + "PreviewTarget"
@@ -514,12 +523,11 @@ class CtestDispatchTests(unittest.TestCase):
             contract = json.loads(contract_path.read_text())
             contract["native_cohorts"] = {}
             contract["native_membership"] = {}
-            contract["grain_preview"] = {
-                "targets": {target: {"protocol": "custom", "registrations": 1}},
-                "required": [name],
-                "native_cohorts": {name: 1},
-                "native_membership": {name: {"listed": 1, "terminal": 1, "required": [["preview", runtime]]}},
-            }
+            contract["grain_preview"] = preview_scope(name, target, runtime)
+            if runtime == "gpu":
+                contract["grain_preview_motion_replay"] = preview_scope(
+                    "Gpu.MotionReplay", "MotionReplayTarget", runtime
+                )
             contract_path.write_text(json.dumps(contract))
             preview_contracts[runtime] = contract
 
@@ -530,11 +538,19 @@ class CtestDispatchTests(unittest.TestCase):
                 self.assertEqual(self.cache["JUICER_GRAIN_PREVIEW"], value)
                 self.assertEqual(preview, value != "OFF")
                 self.args.run_id = "preview-" + value.lower()
+                expected_additions = {}
                 for runtime, contract in preview_contracts.items():
                     targets = {target: str(self.build / target) for target in contract["targets"]}
-                    name = runtime.title() + ".Preview"
-                    target = runtime.title() + "PreviewTarget"
-                    if preview:
+                    self.tests.pop(runtime.title() + ".Preview", None)
+                    if runtime == "gpu":
+                        self.tests.pop("Gpu.MotionReplay", None)
+                    additions = [contract["grain_preview"]] if preview else []
+                    if preview and runtime == "gpu" and os.name != "nt":
+                        additions.append(contract["grain_preview_motion_replay"])
+                    expected_additions[runtime] = additions
+                    for addition in additions:
+                        (name,) = addition["required"]
+                        (target,) = addition["targets"]
                         targets[target] = str(self.build / target)
                         ordinary = self.tests[runtime.title() + ".Fixture"]
                         self.tests[name] = {
@@ -542,8 +558,6 @@ class CtestDispatchTests(unittest.TestCase):
                             "name": name,
                             "command": [*ordinary["command"][:-1], targets[target]],
                         }
-                    else:
-                        self.tests.pop(name, None)
                     (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps(targets))
                 verify.native_tests(self.args)
                 result = self.finish.call_args.args[1]
@@ -552,12 +566,15 @@ class CtestDispatchTests(unittest.TestCase):
                 directory = self.root / "out/validation" / self.preset / "results" / self.args.run_id
                 for runtime, contract in preview_contracts.items():
                     actual = json.loads((directory / (runtime + "-contracts.json")).read_text())
-                    addition = contract["grain_preview"]
+                    additions = expected_additions[runtime]
                     self.assertEqual(
-                        actual["required"], contract["required"] + (addition["required"] if preview else [])
+                        actual["required"],
+                        contract["required"] + [name for addition in additions for name in addition["required"]],
                     )
                     for field in ("targets", "native_cohorts", "native_membership"):
-                        expected = {**contract[field], **(addition[field] if preview else {})}
+                        expected = dict(contract[field])
+                        for addition in additions:
+                            expected.update(addition[field])
                         self.assertEqual(actual[field], expected, field)
 
     def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):

@@ -2,7 +2,7 @@
 //! FilmGrainTiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 use super::{AssetError, Assets};
 use crate::film::density::portra::{
-    CALIBRATED_MAX_FOOTPRINT, MAX_FOOTPRINT, MIN_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT,
+    CALIBRATED_MAX_FOOTPRINT, MAX_FOOTPRINT, MIN_PROXY_SAMPLE_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT,
 };
 use crate::hash;
 use serde::Deserialize;
@@ -162,7 +162,7 @@ impl Assets {
         footprint: f32,
     ) -> Result<Arc<PortraGrainTable>, AssetError> {
         let fail = |e| AssetError::PortraGrain(Arc::new(e));
-        if !(MIN_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
+        if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
             return Err(fail(PortraGrainError::Invalid("unsupported footprint")));
         }
         let request = {

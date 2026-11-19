@@ -250,6 +250,60 @@ namespace GrainPrototype {
         }
     } // namespace
 
+    void calibrate_subtexel(FilmBank& bank, float pitch) {
+        bank.tables.footprint = pitch;
+        constexpr int side = 128;
+        constexpr int samples = side * side;
+        const double width = pitch;
+        std::array<std::vector<double>, kLevels> densities;
+        for (auto& level : densities)
+            level.resize(samples);
+        for (int record = 0; record < kRecords; ++record) {
+            auto& levels = bank.tables.records[record].levels;
+            const FilmProbe probe{.seed = 0x5a3f1e1dU, .record = record};
+            for (int i = 0; i < samples; ++i) {
+                const double x = (i % side * 7919 % 4096) * width;
+                const double y = (i / side * 104729 % 4096) * width;
+                const int bx = static_cast<int>((x + width / 2) / kPlacementBlock);
+                const int by = static_cast<int>((y + width / 2) / kPlacementBlock);
+                const auto hash = placement(bx, by, probe, 0);
+                const auto orientation = (hash >> 16U) & 7U;
+                const double u = x - static_cast<double>(bx) * kPlacementBlock;
+                const double v = y - static_cast<double>(by) * kPlacementBlock;
+                const double left = (orientation & 1U) ? kPlacementBlock - u - width : u;
+                const double top = (orientation & 2U) ? kPlacementBlock - v - width : v;
+                const bool swap = (orientation & 4U) != 0;
+                const double tx = (swap ? top : left) + kPlacementMargin + (hash & 255U);
+                const double ty = (swap ? left : top) + kPlacementMargin + ((hash >> 8U) & 255U);
+                for (int level = 0; level < kLevels; ++level) {
+                    const auto offset = (static_cast<std::size_t>(record) * kLevels + level) * kTileEntries;
+                    const double deviation = integrate(bank.sums.data() + offset, {tx, tx + width}, {ty, ty + width});
+                    const float light = levels[level].meanLight + static_cast<float>(deviation / (width * width));
+                    densities[level][i] = -std::log10(std::max(static_cast<double>(light), 1e-9));
+                }
+            }
+            std::array<double, kLevels> means{};
+            for (int level = 0; level < kLevels; ++level) {
+                for (double density : densities[level])
+                    means[level] += density / samples;
+                levels[level].meanDensity = static_cast<float>(means[level]);
+            }
+            for (int level = 0; level + 1 < kLevels; ++level) {
+                double aa = 0, bb = 0, ab = 0;
+                for (int i = 0; i < samples; ++i) {
+                    const double a = densities[level][i] - means[level];
+                    const double b = densities[level + 1][i] - means[level + 1];
+                    aa += a * a;
+                    bb += b * b;
+                    ab += a * b;
+                }
+                levels[level].correlation = aa > 0 && bb > 0
+                                                ? static_cast<float>(std::clamp(ab / std::sqrt(aa * bb), -1.0, 1.0))
+                                                : 1.F;
+            }
+        }
+    }
+
     OracleSample evaluate_sample(const FilmBank& bank, FilmProbe probe) {
         const auto& table = bank.tables.records[probe.record];
         // Use the represented density and the pinned Float32 level coordinate.

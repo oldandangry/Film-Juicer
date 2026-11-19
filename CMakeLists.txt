@@ -192,21 +192,21 @@ add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
 
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
-if(BUILD_TESTING)
-    add_subdirectory(tests EXCLUDE_FROM_ALL)
-endif()
 
 # The motion witness adds a density tap to its local executor only. It uses the
 # production Rust preview and the same native archive as the OFX module.
 if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(JuicerGrainMotionReplay EXCLUDE_FROM_ALL
         src/Cuda/JuicerCudaExecutor.cpp
-        tests/ffi/production-ofx-render.cpp
+        tests/ffi/production-ofx-render.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
         tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
     target_include_directories(JuicerGrainMotionReplay PRIVATE
         "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi"
         "${PROJECT_SOURCE_DIR}/tests/grain")
-    target_compile_definitions(JuicerGrainMotionReplay PRIVATE JUICER_GRAIN_MOTION_REPLAY=1)
+    target_compile_definitions(JuicerGrainMotionReplay PRIVATE
+        JUICER_GRAIN_MOTION_REPLAY=1
+        JUICER_GRAIN_TEST_BANK="${PROJECT_SOURCE_DIR}/Resources/grain/portra-400"
+        JUICER_GRAIN_TEST_TABLES="${PROJECT_SOURCE_DIR}/tests/grain/portra-table-fixtures")
     target_link_libraries(JuicerGrainMotionReplay PRIVATE
         juicer_core film_juicer_rust juicer_dependencies CUDA::cuda_driver)
     set_target_properties(JuicerGrainMotionReplay PROPERTIES
@@ -223,6 +223,9 @@ else()
 endif()
 set(JUICER_GRAIN_MOTION_REPLAY_CONFIGURED "${juicer_motion_replay_configured}" CACHE INTERNAL
     "Whether native quality can analyze the configured motion replay consumers")
+if(BUILD_TESTING)
+    add_subdirectory(tests EXCLUDE_FROM_ALL)
+endif()
 
 juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
     ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS} ${juicer_motion_replay_target})

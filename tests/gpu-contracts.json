@@ -203,11 +203,15 @@
   },
   "native_membership": {
     "Grain.Gpu.FilmReference": {
-      "listed": 10,
-      "terminal": 10,
+      "listed": 14,
+      "terminal": 14,
       "required": [
         ["film-reference", "production-quad-g3-parity"],
         ["film-reference", "production-proxy-footprint"],
+        ["film-reference", "production-proxy-matches-full"],
+        ["film-reference", "production-proxy-apertures"],
+        ["film-reference", "production-proxy-grouped-whole-period"],
+        ["film-reference", "production-proxy-unequal-axis"],
         ["film-reference", "g2-geometry-and-temporal"],
         ["film-reference", "chroma-projection"],
         ["film-reference", "rectangles-wrap-and-seams"],
@@ -256,8 +260,8 @@
     },
     "native_membership": {
       "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 15,
-        "terminal": 15,
+        "listed": 19,
+        "terminal": 19,
         "required": [
           [
             "grain-preview-render",
@@ -318,7 +322,39 @@
           [
             "grain-preview-render",
             "negative-print-thumbnails"
-          ]
+          ],
+          ["grain-preview-render", "negative-direct-8mm-proxy"],
+          ["grain-preview-render", "negative-print-8mm-proxy"],
+          ["grain-preview-render", "negative-direct-clipped-quarter"],
+          ["grain-preview-render", "negative-print-clipped-quarter"]
+        ]
+      }
+    }
+  },
+  "grain_preview_motion_replay": {
+    "targets": {
+      "JuicerGrainMotionReplay": {
+        "protocol": "custom",
+        "registrations": 1
+      }
+    },
+    "required": [
+      "Grain.Gpu.FilmOfxApertures"
+    ],
+    "native_cohorts": {
+      "Grain.Gpu.FilmOfxApertures": 1
+    },
+    "native_membership": {
+      "Grain.Gpu.FilmOfxApertures": {
+        "listed": 6,
+        "terminal": 6,
+        "required": [
+          ["film-ofx-apertures", "clipped-quarter-direct"],
+          ["film-ofx-apertures", "clipped-quarter-print"],
+          ["film-ofx-apertures", "whole-period"],
+          ["film-ofx-apertures", "unequal-4-by-8"],
+          ["film-ofx-apertures", "unequal-8-by-4"],
+          ["film-ofx-apertures", "8mm-proxy"]
         ]
       }
     }

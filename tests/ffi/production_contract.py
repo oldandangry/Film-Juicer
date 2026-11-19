@@ -165,6 +165,8 @@ def production_module_export_names(output, windows):
 
 def execute(arguments):
     from execution import NativeRun, OutputLease, windows_vctip
+    from qualification import grain_preview_enabled
+    from verify import cache_values
     from qualification import validate_production_contract
     import math
 
@@ -209,11 +211,10 @@ def execute(arguments):
         cache = build / "CMakeCache.txt"
         ninja = build / "build.ninja"
         compdb_path = build / "compile_commands.json"
-        cache_text = cache.read_text()
-        assert "BUILD_TESTING:BOOL=OFF" in cache_text
-        variant = re.search(r"(?m)^JUICER_GRAIN_PREVIEW:BOOL=(ON|OFF)$", cache_text)
-        assert variant is not None
-        preview = variant.group(1) == "ON"
+        configuration = cache_values(build)
+        assert configuration.get("BUILD_TESTING") == "OFF"
+        assert "JUICER_GRAIN_PREVIEW" in configuration
+        preview = grain_preview_enabled(configuration["JUICER_GRAIN_PREVIEW"])
         module_name = "juicer-grain-preview" if preview else "juicer"
         descriptor = (
             root / "tests/ofx" / ("descriptor_manifest_grain_preview.json" if preview else "descriptor_manifest.json")

@@ -507,6 +507,10 @@ static FACTS: &[usize] = &[
     offset_of!(FjFilmGrain, temporal_fraction),
     offset_of!(FjFilmGrain, gain),
     offset_of!(FjFilmGrain, chroma_fraction),
+    offset_of!(FjFilmGrain, sample_pitch),
+    offset_of!(FjFilmGrain, sample_extent),
+    offset_of!(FjFilmGrain, sample_step),
+    offset_of!(FjFilmGrain, sample_origin),
     size_of::<FjPreparedHostData>(),
     align_of::<FjPreparedHostData>(),
     offset_of!(FjPreparedHostData, route),
@@ -690,7 +694,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 637);
+        assert_eq!(FACTS.len(), 641);
     }
 
     #[test]

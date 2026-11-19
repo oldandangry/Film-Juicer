@@ -21,4 +21,5 @@ namespace GrainPrototype {
 
     // The oracle integrates piecewise constant texels from the frozen words.
     OracleSample evaluate_sample(const FilmBank& bank, FilmProbe probe);
+    void calibrate_subtexel(FilmBank& bank, float pitch);
 } // namespace GrainPrototype

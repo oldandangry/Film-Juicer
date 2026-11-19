@@ -1,81 +1,6 @@
 // Copyright 2026 MUAStudio Inc. SPDX-License-Identifier: Apache-2.0
 // The offline witness uses the real OFX callbacks and the replay host above.
 
-enum class MotionPass : std::uint8_t {
-    Capture,
-    Film,
-    Replay,
-    GrainOff
-};
-using MotionSeedPair = std::array<std::uint32_t, 2>;
-
-struct MotionDensity {
-    MotionPass pass;
-    std::span<float> density;
-    std::optional<MotionSeedPair> seeds;
-    bool captureFilm = false;
-    JuicerCuda::FilmGrain::FilmFrame admitted{};
-    bool visited = false;
-    bool filmCaptured = false;
-
-    cudaError_t transfer(JuicerCuda::FilmGrain::FilmFrame& frame,
-                         JuicerCuda::FilmGrain::FilmPlanes planes,
-                         cudaStream_t stream,
-                         bool& applyGrain) noexcept {
-        const auto size = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
-        if (visited || pass == MotionPass::GrainOff || frame.stride != frame.width || density.size() != size * 3)
-            return cudaErrorInvalidValue;
-        visited = true;
-        if (seeds) {
-            frame.seed = (*seeds)[0];
-            frame.nextSeed = (*seeds)[1];
-        }
-        admitted = frame;
-        applyGrain = pass == MotionPass::Film;
-        if (applyGrain)
-            return cudaSuccess;
-
-        return copy_density(planes, stream, pass == MotionPass::Capture ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice);
-    }
-
-    cudaError_t capture_film_density(JuicerCuda::FilmGrain::FilmPlanes planes, cudaStream_t stream) noexcept {
-        if (!captureFilm)
-            return cudaSuccess;
-        if (!visited || pass != MotionPass::Film || filmCaptured)
-            return cudaErrorInvalidValue;
-        const auto result = copy_density(planes, stream, cudaMemcpyDeviceToHost);
-        filmCaptured = result == cudaSuccess;
-        return result;
-    }
-
-    cudaError_t copy_density(JuicerCuda::FilmGrain::FilmPlanes planes, cudaStream_t stream, cudaMemcpyKind direction) noexcept {
-        const auto size = density.size() / 3;
-        cudaError_t copied = cudaSuccess;
-        std::size_t offset = 0;
-        for (float* plane : {planes.cyan, planes.magenta, planes.yellow}) {
-            float* host = density.data() + offset;
-            copied = direction == cudaMemcpyDeviceToHost
-                         ? cudaMemcpyAsync(host, plane, size * sizeof(float), direction, stream)
-                         : cudaMemcpyAsync(plane, host, size * sizeof(float), direction, stream);
-            if (copied != cudaSuccess)
-                break;
-            offset += size;
-        }
-        const auto completed = cudaStreamSynchronize(stream);
-        return copied == cudaSuccess ? completed : copied;
-    }
-};
-
-thread_local MotionDensity* motionDensity = nullptr;
-struct MotionDensityScope {
-    explicit MotionDensityScope(MotionDensity& density) noexcept {
-        motionDensity = &density;
-    }
-    ~MotionDensityScope() {
-        motionDensity = nullptr;
-    }
-};
-
 Json read_motion_json(const std::filesystem::path& path) {
     std::ifstream input(path);
     require(static_cast<bool>(input), "motion manifest or sampler receipt unavailable");
@@ -99,31 +24,6 @@ void reverse_motion_rows(std::span<float> pixels, std::size_t rowSize, int heigh
         auto last = pixels.subspan(static_cast<std::size_t>(height - 1 - y) * rowSize, rowSize);
         std::swap_ranges(first.begin(), first.end(), last.begin());
     }
-}
-
-void project_motion_density(std::span<const float> input, std::span<float> grained, double fraction) {
-    // Use the double-precision oracle in grain_prototype.cpp's chroma projection witness.
-    constexpr std::array weights{.2126, .7152, .0722};
-    const auto planeWords = input.size() / weights.size();
-    for (std::size_t pixel = 0; pixel < planeWords; ++pixel) {
-        std::array<double, weights.size()> before{}, after{};
-        double beforeY = 0, afterY = 0;
-        for (std::size_t record = 0; record < weights.size(); ++record) {
-            before[record] = std::pow(10.0, -static_cast<double>(input[record * planeWords + pixel]));
-            after[record] = std::pow(10.0, -static_cast<double>(grained[record * planeWords + pixel]));
-            beforeY += weights[record] * before[record];
-            afterY += weights[record] * after[record];
-        }
-        for (std::size_t record = 0; record < weights.size(); ++record) {
-            const double gray = before[record] * (afterY / beforeY);
-            const double expected = -std::log10(std::lerp(gray, after[record], fraction));
-            grained[record * planeWords + pixel] = static_cast<float>(expected);
-        }
-    }
-    require(std::all_of(grained.begin(), grained.end(), [](float value) {
-                return std::isfinite(value);
-            }),
-            "nonfinite projected motion density");
 }
 
 std::uint32_t motion_seed(const Json& value) {
@@ -200,10 +100,11 @@ Json set_motion_controls(InstanceHost& host, OfxImageEffectHandle effect, const 
 
 int grain_motion_replay(const std::filesystem::path& manifestPath, const std::filesystem::path& outputPath) {
     const auto input = read_motion_json(manifestPath);
+    const bool direct = input.value("negative_direct", false);
     const Case test{
         .id = "portra-motion",
-        .routeName = "negative-print",
-        .route = "NegativePrintScan",
+        .routeName = direct ? "negative-direct" : "negative-print",
+        .route = direct ? "NegativeDirectScan" : "NegativePrintScan",
         .components = input.at("components").get<int>(),
         .width = input.at("width").get<int>(),
         .height = input.at("height").get<int>(),
@@ -211,6 +112,8 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
     const auto frameRate = input.at("frame_rate").get<double>();
     const auto longEdge = input.at("long_edge_mm").get<double>();
     const auto rowOrder = input.at("row_order").get<std::string>();
+    const auto fullWidth = input.value("full_width", test.width);
+    const auto fullHeight = input.value("full_height", test.height);
     const auto& frames = input.at("frames");
     const auto* sampler = input.contains("fotufilm") ? &input.at("fotufilm") : nullptr;
     const auto captureFilm = input.value("capture_film_density", false);
@@ -220,7 +123,8 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
         projectionFraction = input.at("fotufilm_projection_fraction").get<double>();
         require(sampler && *projectionFraction >= 0.0 && *projectionFraction <= 1.0, "invalid Fotufilm projection fraction");
     }
-    require(test.width > 0 && test.height > 0 &&
+    require(test.width > 0 && test.height > 0 && fullWidth >= test.width && fullHeight >= test.height &&
+                ((fullWidth == test.width) == (fullHeight == test.height)) &&
                 (test.components == 3 || test.components == 4) &&
                 test.width <= std::numeric_limits<int>::max() / (test.components * static_cast<int>(sizeof(float))) &&
                 test.height <= std::numeric_limits<int>::max() / test.width,
@@ -262,6 +166,7 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
             "motion OFX context description failed");
     auto* effect = host.create_effect();
     const auto filmControls = set_motion_controls(host, effect, input.value("parameters", Json::object()), longEdge);
+    host.set_value(effect, "ScanRoute", {std::string(test.route)});
     const auto expectedChroma = filmControls.at("FilmGrainChromaFraction").get<float>();
 
     const auto rowSize = static_cast<std::size_t>(test.width) * static_cast<std::size_t>(test.components);
@@ -282,6 +187,19 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
         host.set_image_property(effect, clip, kOfxImagePropRowBytes, {static_cast<int>(rowSize * sizeof(float))});
     }
     auto* args = host.action_args();
+    if (input.contains("geometry")) {
+        const auto& mapping = input.at("geometry");
+        const auto rod = mapping.at("canonical_rod").get<std::array<double, 4>>();
+        const auto bounds = mapping.at("bounds").get<std::array<int, 4>>();
+        require(static_cast<std::int64_t>(bounds[2]) - bounds[0] == test.width &&
+                    static_cast<std::int64_t>(bounds[3]) - bounds[1] == test.height,
+                "motion geometry bounds differ from the image shape");
+        set_grain_geometry(host, effect, {{rod[0], rod[1], rod[2], rod[3]}, {bounds[0], bounds[1], bounds[2], bounds[3]}, mapping.at("action_scale").get<std::array<double, 2>>()});
+    } else if (fullWidth != test.width) {
+        host.set_property(args, kOfxImageEffectPropRenderScale, {static_cast<double>(test.width) / fullWidth, static_cast<double>(test.height) / fullHeight});
+        for (const auto* clip : {"Source", "Output"})
+            host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, static_cast<double>(fullWidth), static_cast<double>(fullHeight)});
+    }
     host.set_property(args, kOfxPropTime, {frames.front().at("time").get<double>()});
     require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "motion OFX instance creation failed");
     lifecycle.created(effect);
@@ -323,7 +241,7 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
                 "nonfinite motion OFX output");
         if (rowOrder == "top-down")
             reverse_motion_rows(output, rowSize, test.height);
-        return tap.admitted;
+        return std::pair{tap.admitted, tap.samplePitch};
     };
 
     const auto upload_source = [&](const Json& frame) {
@@ -370,7 +288,7 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
         write_pixels(cleanDensity, density);
         if (projectionFraction)
             std::copy(density.begin(), density.end(), ungrainedDensity.begin());
-        const auto filmFrame = render(MotionPass::Film, seeds);
+        const auto [filmFrame, samplePitch] = render(MotionPass::Film, seeds);
         require(filmFrame.chromaFraction == expectedChroma, "admitted Film Colour differs from the motion host control");
         require(filmFrame.pitch == expectedWidth, "admitted Film footprint differs from the motion host controls");
         require(output != clean, "Film v1 did not change the motion frame");
@@ -421,6 +339,7 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
                        {"stride", filmFrame.stride},
                        {"origin", {filmFrame.originX, filmFrame.originY}},
                        {"footprint", filmFrame.pitch},
+                       {"sample_pitch", samplePitch},
                        {"film_long_edge_mm", readLongEdge},
                        {"film_format_preset", readPreset},
                        {"glare_active", std::get<int>(host.value(effect, "GlareActive").front())},

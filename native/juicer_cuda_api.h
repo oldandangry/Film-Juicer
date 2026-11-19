@@ -773,6 +773,12 @@ typedef struct FjFilmGrain {
     float temporal_fraction;
     float gain;
     float chroma_fraction;
+    /* Full sample lattice for a wide proxy, measured from the Full origin.
+       A zero step on both axes selects the ordinary rendered-pixel sampler. */
+    float sample_pitch;
+    double sample_extent[2];
+    double sample_step[2];
+    double sample_origin[2];
 } FjFilmGrain;
 
 /* Complete invocation-local host input. Fixed records copy resolved coefficients;

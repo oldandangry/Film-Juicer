@@ -307,27 +307,154 @@ namespace JuicerCuda::FilmGrain {
             return grained;
         }
 
+        // Coordinates are in the selected raster or Full sampling lattice.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        __device__ void grain_at(const FilmQuad* sums, const FilmTables& tables, const FilmFrame& frame, float pitch, int x, int y, const float (&input)[kRecords], float (&grained)[kRecords]) {
+            bool changed = false;
+            grained[0] = grain_quad<0>(sums, tables, pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[0], x, y, input[0], changed);
+            grained[1] = grain_quad<1>(sums, tables, pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[1], x, y, input[1], changed);
+            grained[2] = grain_quad<2>(sums, tables, pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[2], x, y, input[2], changed);
+            if (changed && frame.chromaFraction < 1.F)
+                reduce_chroma(input, grained, frame.chromaFraction);
+        }
+
         __global__ void apply_quad(const FilmQuad* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes) {
             const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
             const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
             if (x >= frame.width || y >= frame.height)
                 return;
             const auto index = static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.stride) + static_cast<std::size_t>(x);
-            const float cyan = planes.cyan[index];
-            const float magenta = planes.magenta[index];
-            const float yellow = planes.yellow[index];
-            bool changed = false;
+            const float input[kRecords]{planes.cyan[index], planes.magenta[index], planes.yellow[index]};
             float grained[kRecords];
-            grained[0] = grain_quad<0>(sums, tables, frame.pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[0], x + frame.originX, y + frame.originY, cyan, changed);
-            grained[1] = grain_quad<1>(sums, tables, frame.pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[1], x + frame.originX, y + frame.originY, magenta, changed);
-            grained[2] = grain_quad<2>(sums, tables, frame.pitch, frame.seed, frame.nextSeed, frame.temporalFraction, frame.amounts[2], x + frame.originX, y + frame.originY, yellow, changed);
-            if (changed && frame.chromaFraction < 1.F) {
-                const float input[kRecords]{cyan, magenta, yellow};
-                reduce_chroma(input, grained, frame.chromaFraction);
-            }
+            grain_at(sums, tables, frame, frame.pitch, x + frame.originX, y + frame.originY, input, grained);
             planes.cyan[index] = grained[0];
             planes.magenta[index] = grained[1];
             planes.yellow[index] = grained[2];
+        }
+
+        struct Aperture {
+            double start;
+            double end;
+
+            __device__ int first_cell() const {
+                return static_cast<int>(start);
+            }
+
+            __device__ int end_cell() const {
+                return static_cast<int>(ceil(end));
+            }
+
+            __device__ double overlap(int cell) const {
+                return fmin(end, cell + 1.0) - fmax(start, static_cast<double>(cell));
+            }
+        };
+
+        __device__ Aperture aperture(const ProxyGrid& grid, int axis, int pixel) {
+            return {
+                fmax(0.0, fma(static_cast<double>(pixel), grid.step[axis], grid.origin[axis])),
+                fmin(grid.extent[axis], fma(pixel + 1.0, grid.step[axis], grid.origin[axis])),
+            };
+        }
+
+        // The Rust film bounds enclose the clean and grained density within
+        // a 64 D span. Relative light and its area sum fit in Float64.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        __device__ void add_proxy_cell(const FilmQuad* sums, const FilmTables& tables, const FilmFrame& frame, int column, int row, const float (&input)[kRecords], double area, ApertureSum& integral) {
+            float grained[kRecords];
+            grain_at(sums, tables, frame, tables.footprint, column, row, input, grained);
+            for (int record = 0; record < kRecords; ++record)
+                integral.light[record] += area * exp10(static_cast<double>(input[record]) - grained[record]);
+            integral.area += area;
+        }
+
+        __device__ void merge_proxy_sum(ApertureSum& total, const ApertureSum& partial) {
+            for (int record = 0; record < kRecords; ++record)
+                total.light[record] += partial.light[record];
+            total.area += partial.area;
+        }
+
+        __device__ void write_proxy_density(FilmPlanes planes, std::size_t index, const ApertureSum& total) {
+            float* records[kRecords]{planes.cyan, planes.magenta, planes.yellow};
+            for (int record = 0; record < kRecords; ++record) {
+                // With zero grain the same overlap sums preserve the input word.
+                if (total.light[record] != total.area)
+                    records[record][index] = static_cast<float>(records[record][index] - log10(total.light[record] / total.area));
+            }
+        }
+
+        __global__ void apply_proxy(const FilmQuad* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes) {
+            const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+            const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+            if (x >= frame.width || y >= frame.height)
+                return;
+            const auto index = static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.stride) + static_cast<std::size_t>(x);
+            const float input[kRecords]{planes.cyan[index], planes.magenta[index], planes.yellow[index]};
+            const auto horizontal = aperture(frame.proxy, 0, x + frame.originX);
+            const auto vertical = aperture(frame.proxy, 1, y + frame.originY);
+            ApertureSum total{};
+            for (int row = vertical.first_cell(); row < vertical.end_cell(); ++row) {
+                const double height = vertical.overlap(row);
+                for (int column = horizontal.first_cell(); column < horizontal.end_cell(); ++column)
+                    add_proxy_cell(sums, tables, frame, column, row, input, horizontal.overlap(column) * height, total);
+            }
+            write_proxy_density(planes, index, total);
+        }
+
+        constexpr unsigned int kProxyThreads = 128;
+
+        struct ProxyBatch {
+            std::size_t firstPixel;
+            std::uint64_t firstSample;
+            unsigned int blocksPerPixel;
+            bool lastPass;
+        };
+
+        __global__ void integrate_proxy_batch(const FilmQuad* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes, ProxyBatch batch) {
+            const auto width = static_cast<std::size_t>(frame.width);
+            const auto pixel = batch.firstPixel + blockIdx.y;
+            const auto x = pixel % width;
+            const auto y = pixel / width;
+            const auto index = y * static_cast<std::size_t>(frame.stride) + x;
+            const float input[kRecords]{planes.cyan[index], planes.magenta[index], planes.yellow[index]};
+            const auto horizontal = aperture(frame.proxy, 0, static_cast<int>(x) + frame.originX);
+            const auto vertical = aperture(frame.proxy, 1, static_cast<int>(y) + frame.originY);
+            const auto columns = static_cast<std::uint64_t>(horizontal.end_cell() - horizontal.first_cell());
+            const auto rows = static_cast<std::uint64_t>(vertical.end_cell() - vertical.first_cell());
+            const auto first = batch.firstSample + static_cast<std::uint64_t>(blockIdx.x) * kProxySamplesPerBlock;
+            const auto count = columns * rows;
+            const auto stop = first + kProxySamplesPerBlock;
+            const auto end = stop < count ? stop : count;
+            ApertureSum integral{};
+            for (auto cell = first + threadIdx.x; cell < end; cell += kProxyThreads) {
+                const auto column = horizontal.first_cell() + static_cast<int>(cell % columns);
+                const auto row = vertical.first_cell() + static_cast<int>(cell / columns);
+                add_proxy_cell(sums, tables, frame, column, row, input, horizontal.overlap(column) * vertical.overlap(row), integral);
+            }
+            __shared__ ApertureSum partial[kProxyThreads];
+            partial[threadIdx.x] = integral;
+            for (unsigned int stride = kProxyThreads / 2; stride != 0; stride /= 2) {
+                __syncthreads();
+                if (threadIdx.x < stride)
+                    merge_proxy_sum(partial[threadIdx.x], partial[threadIdx.x + stride]);
+            }
+            if (threadIdx.x == 0)
+                frame.proxyWorkspace->partial[blockIdx.y][blockIdx.x] = partial[0];
+        }
+
+        __global__ void combine_proxy_batch(FilmFrame frame, FilmPlanes planes, ProxyBatch batch) {
+            const auto slot = threadIdx.x;
+            auto& workspace = *frame.proxyWorkspace;
+            ApertureSum total = batch.firstSample == 0 ? ApertureSum{} : workspace.total[slot];
+            for (unsigned int block = 0; block < batch.blocksPerPixel; ++block)
+                merge_proxy_sum(total, workspace.partial[slot][block]);
+            if (batch.lastPass) {
+                const auto pixel = batch.firstPixel + slot;
+                const auto width = static_cast<std::size_t>(frame.width);
+                const auto index = (pixel / width) * static_cast<std::size_t>(frame.stride) + pixel % width;
+                write_proxy_density(planes, index, total);
+            } else {
+                workspace.total[slot] = total;
+            }
         }
 
     } // namespace

@@ -734,6 +734,7 @@ namespace JuicerProcess {
             Spektrafilm::kDefaultScanRoute;
         bool visualGrainPrepared = false;
         const JuicerCuda::FilmGrain::FilmQuad* filmGrainBank = nullptr;
+        void* filmProxyWorkspace = nullptr;
         bool frameUseEventSubmitted = false;
 
         void set_failure(
@@ -3801,6 +3802,10 @@ namespace JuicerProcess {
         return _state ? _state->filmGrainBank : nullptr;
     }
 
+    JuicerCuda::FilmGrain::ProxyWorkspace* Root::PreparedCudaFrame::film_proxy_workspace() const noexcept {
+        return _state ? static_cast<JuicerCuda::FilmGrain::ProxyWorkspace*>(_state->filmProxyWorkspace) : nullptr;
+    }
+
     Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
     Root::PreparedCudaFrame::capture_film_density_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
@@ -5345,6 +5350,17 @@ namespace JuicerProcess {
         if (request.filmGrain && !JuicerCuda::ensure_film_grain_uploaded(
                                      *frame._state->resources, *request.filmGrain, frame._state->filmGrainBank, outError)) {
             recordFailure("prepare_film_grain", "CUDA Film grain bank preparation failed");
+            frame.abort();
+            return frame;
+        }
+        if (request.filmGrain &&
+            JuicerCuda::FilmGrain::proxy_sample_bound(request.filmGrain->sample_extent, request.filmGrain->sample_step) >
+                JuicerCuda::FilmGrain::kProxySerialSamples &&
+            !frame._state->allocate_device_bytes(&frame._state->filmProxyWorkspace,
+                                                 sizeof(JuicerCuda::FilmGrain::ProxyWorkspace),
+                                                 "Film proxy transmission reduction",
+                                                 outError)) {
+            recordFailure("prepare_film_proxy", "CUDA Film proxy workspace preparation failed");
             frame.abort();
             return frame;
         }

@@ -40,17 +40,20 @@
 #include "case_results.h"
 
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
+#include <optional>
+#ifndef _WIN32
 #include <cerrno>
 #include <cstring>
 #include <iomanip>
-#include <optional>
 #include <sstream>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include "motion-replay.h"
 #include "juicer_ofx_api.h"
+#include "film_oracle.h"
 #endif
 
 namespace {
@@ -85,7 +88,43 @@ namespace {
         Case{"negative-print-larger-formats", "negative-print", "NegativePrintScan", 0, 4, 92, 46},
         Case{"negative-direct-thumbnails", "negative-direct", "NegativeDirectScan", 0, 4, 92, 46},
         Case{"negative-print-thumbnails", "negative-print", "NegativePrintScan", 0, 4, 92, 46},
+        Case{"negative-direct-8mm-proxy", "negative-direct", "NegativeDirectScan", 0, 4, 32, 16},
+        Case{"negative-print-8mm-proxy", "negative-print", "NegativePrintScan", 0, 4, 32, 16},
+        Case{"negative-direct-clipped-quarter", "negative-direct", "NegativeDirectScan", 0, 4, 1208, 2},
+        Case{"negative-print-clipped-quarter", "negative-print", "NegativePrintScan", 0, 4, 1208, 2},
     };
+    struct GrainGeometry {
+        OfxRectD canonical;
+        OfxRectI bounds;
+        std::array<double, 2> scale;
+    };
+    constexpr GrainGeometry kEightMmProxy{{0, 0, 8192, 4096}, {0, 0, 32, 16}, {1.0 / 256, 1.0 / 256}};
+    constexpr GrainGeometry kClippedQuarter{{0, 4, 4832, 12}, {0, 0, 1208, 2}, {0.25, 0.125}};
+    constexpr GrainGeometry kOffsetQuarter{{0, 4, 4832, 12}, {0, 1, 1208, 3}, {0.25, 0.25}};
+
+    void set_grain_geometry(InstanceHost& host, OfxImageEffectHandle effect, const GrainGeometry& geometry) {
+        const auto& [x1, y1, x2, y2] = geometry.bounds;
+        const std::vector<InstanceValue> bounds{x1, y1, x2, y2};
+        host.set_property(host.action_args(), kOfxImageEffectPropRenderWindow, bounds);
+        host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {geometry.scale[0], geometry.scale[1]});
+        for (const auto* clip : {"Source", "Output"}) {
+            host.set_image_property(effect, clip, kOfxImagePropBounds, bounds);
+            host.set_image_property(effect, clip, kOfxImagePropRegionOfDefinition, bounds);
+            host.set_clip_region(effect, clip, geometry.canonical);
+        }
+    }
+
+    std::vector<float> flat_grain_source(const Case& test) {
+        auto source = initial_source(test);
+        const int pitch = test.width * test.components + kPitchPadding;
+        for (int row = 0; row < test.height; ++row) {
+            for (int column = 0; column < test.width; ++column) {
+                const auto pixel = static_cast<std::size_t>(row) * pitch + static_cast<std::size_t>(column) * test.components;
+                std::fill_n(source.data() + pixel, 3, 0.18F);
+            }
+        }
+        return source;
+    }
     constexpr std::array<Case, 8> kHalationCases{{{"negative-direct-ae-off", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
                                                   {"negative-direct-ae-on", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
                                                   {"negative-print-ae-off", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
@@ -516,7 +555,9 @@ namespace {
             const bool smallerFormats = std::string_view(test.id).ends_with("-smaller-formats");
             const bool largerFormats = std::string_view(test.id).ends_with("-larger-formats");
             const bool thumbnails = std::string_view(test.id).ends_with("-thumbnails");
-            if (proxy || smallerFormats || thumbnails)
+            const bool eightMmProxy = std::string_view(test.id).ends_with("-8mm-proxy");
+            const bool clippedQuarter = std::string_view(test.id).ends_with("-clipped-quarter");
+            if (proxy || smallerFormats || thumbnails || eightMmProxy || clippedQuarter)
                 host.set_value(effect, "GlareActive", {0});
             host.set_value(effect, "CameraFilmFormatPreset", {2});
             host.set_value(effect, "CameraFilmFormatMm", {36.0});
@@ -546,6 +587,36 @@ namespace {
                 }
                 return words;
             };
+            if (eightMmProxy || clippedQuarter) {
+                source = flat_grain_source(test);
+                change("CouplersActive", {0});
+                change("GrainModel", {std::string("film_v1")});
+                change("FilmGrainAmountEv", {0.0});
+                change("FilmGrainChromaFraction", {1.0});
+                change("FilmGrainTexelPitchUm", {eightMmProxy ? 4.0 : 1.0});
+                if (eightMmProxy) {
+                    change("CameraFilmFormatPreset", {0});
+                    change("CameraFilmFormatMm", {8.0});
+                }
+                set_grain_geometry(host, effect, eightMmProxy ? kEightMmProxy : kClippedQuarter);
+                change("GrainActive", {0});
+                const auto clean = render(0.0);
+                change("GrainActive", {1});
+                const auto paused = render(0.0);
+                require(paused != clean && render(0.0) == paused, "expected active grain and an exact paused repeat");
+                if (clippedQuarter) {
+                    set_grain_geometry(host, effect, kOffsetQuarter);
+                    change("GrainActive", {0});
+                    require(render(0.0) == clean, "clipped and square Quarter clean RGB words differ");
+                    change("GrainActive", {1});
+                    require(render(0.0) == paused, "clipped and square Quarter grained RGB words differ");
+                }
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"paused_repeat", true}});
+                require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                device.release_images();
+                event.passed();
+                continue;
+            }
             if (proxy || smallerFormats || largerFormats || thumbnails) {
                 auto resize = [&](int width, int height) {
                     device.release_images();
@@ -768,11 +839,13 @@ namespace {
                         require(render(37.0) != off, "proxy Film v1 did not change delivered pixels");
                     }
                 }
-                change("FilmGrainTexelPitchUm", {1.0});
+                change("FilmGrainTexelPitchUm", {0.5});
                 geometry(1);
                 const auto full = render(37.0);
                 geometry(4);
-                (void)render(37.0);
+                const auto paused = render(37.0);
+                require(render(38.0) != paused, "wide proxy grain did not advance on a static source");
+                require(render(37.0) == paused, "wide proxy did not return bit-exactly to the paused frame");
                 geometry(1);
                 require(render(37.0) == full, "Full output changed after Quarter");
                 host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {0.5, 0.5});
@@ -787,7 +860,7 @@ namespace {
                         "inconsistent action scale did not report geometry error");
                 host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {1.0, 1.0});
                 require(render(37.0) == full, "valid frame did not recover after geometry error");
-                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"proxy_scales", {1.0, 0.5, 0.25, 0.125}}, {"sizes_um", {0.5, 1.0, 4.0}}, {"full_returned", true}, {"geometry_recovered", true}});
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"proxy_scales", {1.0, 0.5, 0.25, 0.125}}, {"sizes_um", {0.5, 1.0, 4.0}}, {"wide_proxy_advanced_and_returned", true}, {"full_returned", true}, {"geometry_recovered", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
                 event.passed();
@@ -1183,17 +1256,22 @@ namespace {
         return 0;
     }
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
+#include "motion-density.inc"
+#include "film-ofx-apertures.inc"
+#ifndef _WIN32
 #include "motion-replay.inc"
+#endif
 #endif
 } // namespace
 
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
 cudaError_t JuicerTests::GrainMotion::before_grain(
     JuicerCuda::FilmGrain::FilmFrame& frame,
+    float samplePitch,
     JuicerCuda::FilmGrain::FilmPlanes planes,
     cudaStream_t stream,
     bool& applyGrain) {
-    return motionDensity ? motionDensity->transfer(frame, planes, stream, applyGrain) : cudaSuccess;
+    return motionDensity ? motionDensity->transfer(frame, samplePitch, planes, stream, applyGrain) : cudaSuccess;
 }
 
 cudaError_t JuicerTests::GrainMotion::after_grain(
@@ -1205,7 +1283,18 @@ cudaError_t JuicerTests::GrainMotion::after_grain(
 int main(int argc, char** argv) {
     try {
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
-        if (argc == 3)
+        if (argc >= 2 && std::string_view(argv[1]) == "--grain-preview-apertures") {
+            if (JuicerTests::list_requested(argc, argv)) {
+                for (const auto& witness : kOfxApertures)
+                    JuicerTests::list_case(kApertureCaller, witness.id);
+                return std::fflush(stdout) == 0 ? 0 : 1;
+            }
+            require(argc == 2, "aperture witness arguments");
+            return grain_preview_apertures();
+        }
+#endif
+#if defined(JUICER_GRAIN_MOTION_REPLAY) && !defined(_WIN32)
+        if (argc == 3 && !std::string_view(argv[1]).starts_with("--"))
             return grain_motion_replay(argv[1], argv[2]);
 #endif
         if (argc >= 3 && std::string_view(argv[1]) == "--grain-preview-witness") {

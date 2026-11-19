@@ -910,11 +910,15 @@ def native_tests(args):
             if not standalone and not cuda_free and grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW")):
                 for runtime in ("host", "gpu"):
                     contract = contracts[runtime]
-                    preview = contract["grain_preview"]
-                    contract["targets"].update(preview["targets"])
-                    contract["required"].extend(preview["required"])
-                    contract["native_cohorts"].update(preview["native_cohorts"])
-                    contract["native_membership"].update(preview["native_membership"])
+                    sections = ["grain_preview"]
+                    if runtime == "gpu" and args.preset.startswith("linux-"):
+                        sections.append("grain_preview_motion_replay")
+                    for section in sections:
+                        preview = contract[section]
+                        contract["targets"].update(preview["targets"])
+                        contract["required"].extend(preview["required"])
+                        contract["native_cohorts"].update(preview["native_cohorts"])
+                        contract["native_membership"].update(preview["native_membership"])
                     (directory / (runtime + "-contracts.json")).write_text(json.dumps(contract, indent=2) + "\n")
             candidate["configuration"] = {
                 k: cache.get(k)

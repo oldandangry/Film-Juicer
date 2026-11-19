@@ -1669,10 +1669,14 @@ pub struct FjFilmGrain {
     pub temporal_fraction: f32,
     pub gain: f32,
     pub chroma_fraction: f32,
+    pub sample_pitch: f32,
+    pub sample_extent: [f64; 2usize],
+    pub sample_step: [f64; 2usize],
+    pub sample_origin: [f64; 2usize],
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjFilmGrain"][::core::mem::size_of::<FjFilmGrain>() - 704usize];
+    ["Size of FjFilmGrain"][::core::mem::size_of::<FjFilmGrain>() - 760usize];
     ["Alignment of FjFilmGrain"][::core::mem::align_of::<FjFilmGrain>() - 8usize];
     ["Offset of field: FjFilmGrain::bank_hash"]
         [::core::mem::offset_of!(FjFilmGrain, bank_hash) - 0usize];
@@ -1692,6 +1696,14 @@ const _: () = {
     ["Offset of field: FjFilmGrain::gain"][::core::mem::offset_of!(FjFilmGrain, gain) - 696usize];
     ["Offset of field: FjFilmGrain::chroma_fraction"]
         [::core::mem::offset_of!(FjFilmGrain, chroma_fraction) - 700usize];
+    ["Offset of field: FjFilmGrain::sample_pitch"]
+        [::core::mem::offset_of!(FjFilmGrain, sample_pitch) - 704usize];
+    ["Offset of field: FjFilmGrain::sample_extent"]
+        [::core::mem::offset_of!(FjFilmGrain, sample_extent) - 712usize];
+    ["Offset of field: FjFilmGrain::sample_step"]
+        [::core::mem::offset_of!(FjFilmGrain, sample_step) - 728usize];
+    ["Offset of field: FjFilmGrain::sample_origin"]
+        [::core::mem::offset_of!(FjFilmGrain, sample_origin) - 744usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]

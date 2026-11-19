@@ -244,11 +244,10 @@ impl Published {
     fn matches(
         &self,
         identity: u64,
-        #[cfg(feature = "grain-preview")] film_long_edge_px: Option<i32>,
+        #[cfg(feature = "grain-preview")] film_raster: Option<crate::film::grain::preview::Raster>,
     ) -> bool {
         #[cfg(feature = "grain-preview")]
-        let same_geometry =
-            self.state.film_grain().map(|grain| grain.long_edge_px()) == film_long_edge_px;
+        let same_geometry = self.state.film_grain().map(|grain| grain.raster()) == film_raster;
         #[cfg(not(feature = "grain-preview"))]
         let same_geometry = true;
         self.identity == identity && same_geometry
@@ -646,11 +645,11 @@ impl Publication {
             })
         };
         #[cfg(feature = "grain-preview")]
-        let film_long_edge_px = match frame.filter(|_| input.film_grain_selected()) {
+        let film_raster = match frame.filter(|_| input.film_grain_selected()) {
             // This render owns the grain-free state. Leave the timeline
             // publication and the geometry it was prepared for in place.
             Some(crate::recipe::PreviewFrame::Thumbnail) => return prepare(),
-            Some(crate::recipe::PreviewFrame::Raster { long_edge_px }) => Some(long_edge_px),
+            Some(crate::recipe::PreviewFrame::Raster(raster)) => Some(raster),
             None => None,
         };
         let _rebuild = self.rebuild.lock().map_err(|_| Error::Poisoned)?;
@@ -660,7 +659,7 @@ impl Publication {
                 && published.matches(
                     input.identity,
                     #[cfg(feature = "grain-preview")]
-                    film_long_edge_px,
+                    film_raster,
                 )
             {
                 return Ok(Arc::clone(&published.state));
@@ -1026,7 +1025,10 @@ mod tests {
             };
             publication.stage(valid(1, film_params(36.0))).unwrap();
             let admit = |long_edge_px| {
-                let frame = recipe::PreviewFrame::Raster { long_edge_px };
+                let frame = recipe::PreviewFrame::Raster(crate::film::grain::preview::Raster {
+                    long_edge_px,
+                    full_grid: None,
+                });
                 publication.admit_preview_frame(
                     publication.frame_input().unwrap(),
                     frame,
@@ -1074,7 +1076,65 @@ mod tests {
             );
             assert_ne!(landscape.film_bounds().hash(), current.film_bounds().hash());
             assert_eq!(landscape_grain.table().footprint, 1.8625828);
-            assert_eq!(landscape_grain.long_edge_px(), 4832);
+            assert_eq!(landscape_grain.raster().long_edge_px, 4832);
+        }
+    }
+
+    #[cfg(feature = "grain-preview")]
+    #[test]
+    fn film_proxy_publication_uses_full_grid_and_encloses_its_densities() {
+        use crate::film::grain::preview::{ProxyGrid, Raster};
+        let assets = assets();
+        for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
+            let publication = Publication::new();
+            let mut captured = params(route, 1);
+            captured.camera_film_format_long_edge_mm = 36.0;
+            captured.film_grain = Some(film::grain::preview::Controls {
+                amount_ev: 0.0,
+                texel_pitch_um: 0.5,
+                chroma_fraction: 0.24,
+            });
+            publication.stage(valid(1, captured)).unwrap();
+            let admit = |long_edge_px, full_grid| {
+                let frame = recipe::PreviewFrame::Raster(Raster {
+                    long_edge_px,
+                    full_grid,
+                });
+                publication
+                    .admit_preview_frame(publication.frame_input().unwrap(), frame, |params| {
+                        recipe::prepare_for_frame(&assets, params, frame)
+                    })
+                    .unwrap()
+            };
+            let full = admit(4832, None);
+            let grid = ProxyGrid {
+                extent: [4832.0, 2016.0],
+                step: [8.0; 2],
+                origin: [0.0; 2],
+            };
+            let eighth = admit(604, Some(grid));
+            assert!(std::ptr::eq(
+                full.film_grain().unwrap().table(),
+                eighth.film_grain().unwrap().table(),
+            ));
+            assert_eq!(full.film_bounds().hash(), eighth.film_bounds().hash());
+            assert_eq!(full.scanner().lut().hash(), eighth.scanner().lut().hash());
+            assert!(Arc::ptr_eq(&eighth, &admit(604, Some(grid))));
+            let other = admit(
+                604,
+                Some(ProxyGrid {
+                    extent: [2416.0, 1008.0],
+                    step: [4.0; 2],
+                    ..grid
+                }),
+            );
+            assert!(!Arc::ptr_eq(&eighth, &other));
+            assert_ne!(
+                eighth.film_grain().unwrap().table().footprint,
+                other.film_grain().unwrap().table().footprint,
+            );
+            assert_eq!(eighth.film_grain().unwrap().footprint(), 72000.0 / 604.0);
+            assert_eq!(admit(4832, None).hash(), full.hash());
         }
     }
 

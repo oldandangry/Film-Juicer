@@ -217,19 +217,9 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         .as_ref()
         .is_ok_and(|input| input.film_grain_selected());
     #[cfg(feature = "grain-preview")]
-    let preview_frame = if film_selected && callback.thumbnail(&owner.handles) {
-        film_juicer_core::recipe::PreviewFrame::Thumbnail
-    } else {
-        film_juicer_core::recipe::PreviewFrame::Raster {
-            long_edge_px: full.width.max(full.height),
-        }
-    };
+    let film_thumbnail = film_selected && callback.thumbnail(&owner.handles);
     #[cfg(feature = "grain-preview")]
-    let film_canonical = if film_selected
-        && matches!(
-            preview_frame,
-            film_juicer_core::recipe::PreviewFrame::Raster { .. }
-        ) {
+    let film_canonical = if film_selected && !film_thumbnail {
         let canonical = callback.canonical_region(&owner.handles, args.time)?;
         if !complete_frame_mapping(&args, source, destination, window, canonical)
             || !(-1_000_000.0..=1_000_000.0).contains(&args.time)
@@ -246,6 +236,31 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         Some(canonical)
     } else {
         None
+    };
+    #[cfg(feature = "grain-preview")]
+    let preview_frame = if film_thumbnail {
+        film_juicer_core::recipe::PreviewFrame::Thumbnail
+    } else {
+        use film_juicer_core::film::grain::preview::{ProxyGrid, Raster};
+        let full_grid = film_canonical
+            .filter(|_| args.scale.into_iter().all(|scale| scale < 1.0))
+            .map(|canonical| {
+                let minimum = [canonical[0].floor(), canonical[1].floor()];
+                let extent = std::array::from_fn(|axis| canonical[axis + 2].ceil() - minimum[axis]);
+                let step = args.scale.map(f64::recip);
+                let origin = std::array::from_fn(|axis| {
+                    f64::from(source.definition[axis]) / args.scale[axis] - minimum[axis]
+                });
+                ProxyGrid {
+                    extent,
+                    step,
+                    origin,
+                }
+            });
+        film_juicer_core::recipe::PreviewFrame::Raster(Raster {
+            long_edge_px: full.width.max(full.height),
+            full_grid,
+        })
     };
     #[cfg(not(feature = "grain-preview"))]
     let film_canonical = None;

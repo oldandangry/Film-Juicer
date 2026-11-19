@@ -1960,7 +1960,12 @@ class SelectionAndEvidenceTests(unittest.TestCase):
                 check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
 
     def test_motion_replay_headers_require_consumers_when_configured(self) -> None:
-        headers = ["tests/grain/motion-replay.h", "tests/grain/motion-replay.inc"]
+        headers = [
+            "tests/grain/film-ofx-apertures.inc",
+            "tests/grain/motion-density.inc",
+            "tests/grain/motion-replay.h",
+            "tests/grain/motion-replay.inc",
+        ]
         consumer = "tests/grain/replay.cpp"
         entries = [check_quality.CompilationEntry(consumer, "compiler")]
         cases = (
@@ -1980,7 +1985,9 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             (root / "tests/grain").mkdir(parents=True)
             for header in headers:
                 (root / header).touch()
-            (root / consumer).write_text('#include "motion-replay.h"\n#include "motion-replay.inc"\n', encoding="utf-8")
+            (root / consumer).write_text(
+                "".join(f'#include "{Path(header).name}"\n' for header in headers), encoding="utf-8"
+            )
             for case, configured, selected, compilation, missing in cases:
                 with (
                     self.subTest(case=case),

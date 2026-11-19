@@ -24,7 +24,7 @@ pub(super) fn film_grain(
         return Ok(None);
     };
     let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
-    if recipe.long_edge_px() != full.width.max(full.height)
+    if recipe.raster().long_edge_px != full.width.max(full.height)
         || !(-1_000_000.0..=1_000_000.0).contains(&frame.time_frames)
     {
         return Err(fail(
@@ -54,6 +54,7 @@ pub(super) fn film_grain(
         film_seed(frame.session_seed, frame.clip_token, index + 1)
     };
     let sums = recipe.bank().sums();
+    let sampling = recipe.sampling();
     Ok(Some(sys::FjFilmGrain {
         bank_hash: recipe.bank().identity(),
         sums: sys::FjFloatSpan {
@@ -65,10 +66,14 @@ pub(super) fn film_grain(
         origin_y: 0,
         seed,
         next_seed,
-        pitch: table.footprint,
+        pitch: recipe.footprint(),
         temporal_fraction: fraction,
         gain: recipe.gain(),
         chroma_fraction: recipe.chroma_fraction(),
+        sample_pitch: table.footprint,
+        sample_extent: sampling.map_or([0.0; 2], |grid| grid.extent),
+        sample_step: sampling.map_or([0.0; 2], |grid| grid.step),
+        sample_origin: sampling.map_or([0.0; 2], |grid| grid.origin),
     }))
 }
 
