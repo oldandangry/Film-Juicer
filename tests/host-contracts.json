@@ -434,6 +434,7 @@
     "Rust.Bridge"
   ],
   "grain_preview": {
+    "rust_core_publication": "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities",
     "targets": {
       "JuicerProductionPreparedRenderProbe": {
         "protocol": "custom",

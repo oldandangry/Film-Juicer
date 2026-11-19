@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 import sys
 import subprocess
 import tempfile
@@ -283,6 +284,7 @@ class PythonResultTests(unittest.TestCase):
             },
         }
         result = {
+            "schema": "native-tests-v1",
             "preset": preset,
             "status": "passed",
             "scope": "focused",
@@ -531,6 +533,702 @@ class PythonWorkerTests(unittest.TestCase):
         self.assertEqual(code, 7, log)
         self.assertFalse(execution["outcomes_valid"])
         self.assertNotIn(".discovery.json", payloads)
+
+
+class RustReceiptBundleTests(unittest.TestCase):
+    publication = "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities"
+    target = "x86_64-unknown-linux-gnu"
+
+    def test_offline_windows_rustc_probe_requires_verbose_native_host(self):
+        source = PureWindowsPath("C:/configured")
+        programs = {
+            "cmake": ("cmake.exe", "--version", "cmake version 4.3"),
+            "ctest": ("ctest.exe", "--version", "ctest version 4.3"),
+            "cargo": ("cargo.exe", "--version", "cargo 1.98.1 fixture"),
+            "nextest": ("cargo-nextest.exe", "--version", "cargo-nextest 0.9.143 fixture"),
+        }
+        cases = (
+            ("invalid-argument", "--not-a-rustc-option", "x86_64-pc-windows-msvc", "rustc probe must use -Vv"),
+            ("foreign-host", "-Vv", self.target, "rustc host differs from configured native target"),
+        )
+        self.subtest_cases = tuple(name for name, _, _, _ in cases)
+        for name, argument, host, message in cases:
+            with self.subTest(case=name):
+                programs["rustc"] = ("rustc.exe", argument, f"rustc 1.98.1 fixture\nhost: {host}")
+                records = [
+                    {
+                        "name": tool,
+                        "command": [str(source / "bin" / executable), flag],
+                        "returncode": 0,
+                        "output": output,
+                    }
+                    for tool, (executable, flag, output) in programs.items()
+                ]
+                candidate = {
+                    "preset": "windows-clang-release",
+                    "version_commands": records,
+                    "versions": {record["name"]: record["output"] for record in records},
+                }
+                probe = {
+                    "directory": str(source),
+                    "command": [
+                        str(source / "bin" / "python.exe"),
+                        "-B",
+                        str(source / "scripts" / "verify.py"),
+                        "tool-versions",
+                        *(arg for row in records for arg in ("--tool", row["name"], row["command"][0])),
+                    ],
+                }
+                with self.assertRaisesRegex(ValueError, message):
+                    qualification.rust_test_tool_paths(candidate, probe, source, PureWindowsPath)
+
+    test_offline_windows_rustc_probe_requires_verbose_native_host.required_subtests = True
+
+    def bundle(
+        self,
+        root,
+        *,
+        preview=True,
+        build_kind="product",
+        selected=("Rust.Core", "Rust.Bridge"),
+        historical=False,
+        legacy=False,
+        with_junit_digest=False,
+        with_junit_id=False,
+        defect="",
+    ):
+        with_junit_digest = with_junit_digest or with_junit_id
+        features = ["grain-preview", "test-support"] if preview and build_kind == "product" else ["test-support"]
+        downgraded = defect.startswith("schema-downgrade")
+        stripped = defect in {"schema-downgrade-all", "schema-downgrade-no-artifact"}
+        claimed = ["test-support"] if downgraded or defect in {"features", "combined"} else features
+        request = {
+            "build_kind": build_kind,
+            "grain_preview": preview and build_kind == "product",
+            "target": self.target,
+            "profile": "debug",
+            "cargo_features": "film-juicer-plugin/test-support"
+            + (",film-juicer-plugin/grain-preview" if preview and build_kind == "product" else ""),
+        }
+        names = ("film-juicer-core", "film-juicer-plugin")
+        binary_names = ("film_juicer_core", "film_juicer_plugin")
+        source = "/configured"
+        rust_source = "/foreign" if defect == "foreign-checkout" else source
+        build = source + "/out/build/linux-debug"
+        if build_kind == "cuda-free":
+            build += "/host-tests"
+        run_dir = f"{source}/out/validation/linux-debug/results/fixture"
+        run_ids = {
+            "Rust.Core": "27bd2e7d-132c-4df9-9359-9cb6eb35b7c1",
+            "Rust.Bridge": "31a5cd0b-a04e-47de-87d8-1662de8f3b2f",
+        }
+        target_dir = rust_source + "/out/build/linux-debug/cargo/test-support"
+        paths = [f"{target_dir}/metadata/binaries.json", f"{target_dir}/metadata/cargo.json"]
+        ids = {name: f"path+file://{rust_source}/rust/{name}#0.1.0" for name in names}
+        cargo = {
+            "workspace_root": "/foreign" if defect == "foreign-metadata" else rust_source,
+            "target_directory": "/foreign/cargo/test-support" if defect == "foreign-metadata" else target_dir,
+            "workspace_members": list(ids.values()),
+            "packages": [
+                {
+                    "id": ids[name],
+                    "name": name,
+                    "manifest_path": f"{rust_source}/rust/{name}/Cargo.toml",
+                    "targets": [{"name": binary, "test": True, "kind": ["lib"]}],
+                }
+                for name, binary in zip(names, binary_names)
+            ],
+            "resolve": {"nodes": [{"id": ids[name], "features": claimed} for name in names]},
+        }
+        platform = {"triple": self.target}
+        reported_target = {"triple": "x86_64-pc-windows-msvc"} if defect == "prepared-platforms" else platform
+        prepared_names = names[1:] if defect == "bridge-incomplete" else names
+        binaries = {
+            "rust-build-meta": {
+                "target-directory": target_dir,
+                "base-output-directories": [self.target + "/debug"],
+                "target-platform": self.target,
+                "target-platforms": [reported_target],
+                "platforms": {"host": {"platform": platform}, "targets": [{"platform": reported_target}]},
+            },
+            "rust-binaries": {
+                name: {
+                    "binary-id": name,
+                    "binary-name": binary,
+                    "package-id": ids[name],
+                    "kind": "lib",
+                    "binary-path": f"{target_dir}/{self.target}/debug/deps/{binary}-123",
+                    "build-platform": "target",
+                }
+                for name, binary in zip(names, binary_names)
+                if name in prepared_names
+            },
+        }
+        if defect == "aliased-binaries":
+            binaries["rust-binaries"][names[1]]["binary-path"] = binaries["rust-binaries"][names[0]]["binary-path"]
+        tests = []
+        documents = {}
+        for registration, package, short in zip(("Rust.Core", "Rust.Bridge"), names, ("core", "bridge")):
+            command = [
+                "/foreign/missing.exe" if defect == "foreign-python" and short == "core" else "/python",
+                f"{rust_source}/scripts/verify.py",
+                "rust-tests",
+                "--preset",
+                "linux-debug",
+                "--cargo",
+                "/cargo",
+                "--nextest",
+                "/nextest",
+                "--binaries-metadata",
+                paths[0],
+                "--cargo-metadata",
+                paths[1],
+                "--config-file",
+                f"{rust_source}/.config/nextest.toml",
+                "--package",
+                short,
+            ]
+            if not historical and not stripped and defect != "schema-downgrade-execution":
+                command += ["--request", json.dumps(request)]
+            tests.append(
+                {
+                    "name": registration,
+                    "command": command,
+                    "properties": [{"name": "LABELS", "value": ["host", "product"]}],
+                }
+            )
+            if registration not in selected:
+                continue
+            suites = {}
+            xml = []
+            suite_tests = 0
+            case_start = "2026-11-19T18:10:00+01:00"
+            if short == "bridge" and "Rust.Core" in selected:
+                case_start = "2026-11-19T18:10:42+01:00"
+                if defect in {"early-bridge-report", "early-bridge-digest"}:
+                    case_start = "2026-11-19T18:10:12+01:00"
+            if defect == "stale-case-timestamps" and short == "core":
+                case_start = "2026-11-19T17:10:00+01:00"
+            for owner in prepared_names:
+                # Reproduce the 340 + 41 function shape, including the explicit publication witness.
+                count = 340 if owner == names[0] else 41
+                cases = [f"test_{i:03}" for i in range(count)]
+                if owner == names[0]:
+                    cases[0] = qualification.OPTICS_FUNCTION
+                    cases[1] = self.publication
+                    if (
+                        not request["grain_preview"]
+                        or downgraded
+                        or defect in {"missing", "combined", "discovery-only"}
+                    ):
+                        cases.remove(self.publication)
+                matched = owner == package
+                suite = {
+                    **binaries["rust-binaries"][owner],
+                    "package-name": owner,
+                    "status": "listed",
+                    "testcases": {
+                        case: {"ignored": False, "filter-match": {"status": "matches" if matched else "mismatch"}}
+                        for case in cases
+                    },
+                }
+                if defect == "filtered" and owner == names[0] and matched:
+                    suite["testcases"][self.publication]["filter-match"]["status"] = "mismatch"
+                suites[owner] = suite
+                xml_cases = cases + ([self.publication] if owner == names[0] and defect == "discovery-only" else [])
+                xml.append(f'<testsuite name="{owner}" tests="{len(xml_cases)}">')
+                suite_tests += len(xml_cases)
+                for case in xml_cases:
+                    terminal = "" if matched else "<skipped/>"
+                    if case == self.publication and matched and defect in {"skipped", "failed"}:
+                        terminal = "<skipped/>" if defect == "skipped" else "<failure/>"
+                    timestamp = f' timestamp="{case_start}"' if matched else ""
+                    xml.append(f'<testcase name="{case}"{timestamp}>{terminal}</testcase>')
+                xml.append("</testsuite>")
+            common = ["/nextest", "nextest"]
+            config_dir = "/foreign/old-run" if defect == "foreign-nextest-config" and short == "core" else run_dir
+            junit_dir = "/foreign/old-run" if defect == "foreign-nextest-junit" and short == "core" else run_dir
+            metadata = [
+                "--config-file",
+                f"{config_dir}/{registration}.nextest.toml",
+                "--user-config-file",
+                "none",
+                "--profile",
+                "default",
+                "--binaries-metadata",
+                paths[0],
+                "--cargo-metadata",
+                paths[1],
+                "-E",
+                f"package(={package})",
+            ]
+            execution = {
+                "schema": "rust-test-execution-v2" if historical else "rust-test-execution-v3",
+                "registration": registration,
+                "package": package,
+                "cargo": "/cargo",
+                "features": claimed,
+                "required_binaries": [[ids[package], binary_names[names.index(package)]]],
+                "discovered_binaries": list(prepared_names),
+                "doctests": {"status": "none", "source_files_scanned": 1, "code_fence_sources": []},
+                "commands": [
+                    {"command": [*common, operation, *metadata, *suffix], "returncode": 0}
+                    for operation, suffix in (
+                        ("list", ["--message-format", "json"]),
+                        ("run", ["--test-threads", "1", "--retries", "0", "--no-fail-fast", "--no-tests", "fail"]),
+                    )
+                ],
+            }
+            if legacy or downgraded:
+                execution.pop("schema")
+                execution["features"] = "test-support"
+            if not historical and (not downgraded or defect == "schema-downgrade-execution"):
+                execution.update({"request": request, "package_id": ids[package]})
+            if defect == "binding" and registration == "Rust.Core":
+                execution.pop("request")
+            if defect == "package" and registration == "Rust.Core":
+                execution["package_id"] = ids[names[1]]
+            if defect == "binary" and registration == "Rust.Core":
+                suites[names[0]]["binary-path"] = "/wrong/binary"
+            discovery_build = binaries["rust-build-meta"]
+            if defect == "discovery-build":
+                discovery_build = {
+                    **discovery_build,
+                    "target-platform": "x86_64-pc-windows-msvc",
+                    "base-output-directories": ["x86_64-pc-windows-msvc/release"],
+                }
+            junit_start = case_start
+            if defect == "stale-case-timestamps" and short == "core":
+                junit_start = "2026-11-19T18:10:00+01:00"
+            if defect == "stale-junit" and short == "core":
+                junit_start = "2026-11-19T17:10:00+01:00"
+            duration = "90" if defect == "foreign-junit-and-digest" and short == "core" else "30"
+            junit_id = (
+                "c152d1c9-d1b0-4e78-b084-ab6f73332167"
+                if defect == "foreign-junit-run-id" and short == "core"
+                else run_ids[registration]
+            )
+            junit = (
+                f'<testsuites tests="{suite_tests}" timestamp="{junit_start}" time="{duration}" uuid="{junit_id}">'
+                + "".join(xml)
+                + "</testsuites>"
+            )
+            if with_junit_digest:
+                execution["schema"] = "rust-test-execution-v4"
+                if defect != "missing-junit-digest" or short != "core":
+                    execution["junit_sha256"] = hashlib.sha256(junit.encode()).hexdigest()
+                if defect == "stale-junit-digest" and short == "core":
+                    junit = junit.replace("T18:10:00", "T18:10:12")
+                if defect == "downgraded-junit-schema":
+                    execution["schema"] = "rust-test-execution-v3"
+            documents.update(
+                {
+                    registration + ".discovery.json": {"rust-suites": suites, "rust-build-meta": discovery_build},
+                    registration + ".execution.json": execution,
+                    registration + ".xml": junit,
+                    registration + ".nextest.toml": (
+                        f'[profile.default.junit]\npath = "{junit_dir}/{registration}.xml"\n'
+                    ),
+                    registration + ".rows.jsonl": "",
+                }
+            )
+        host = {
+            "schema": "native-host-contracts-v1",
+            "targets": {},
+            "required": [],
+            "rust_cohorts": {name: 0 for name in names},
+        }
+        if (
+            not historical
+            and not stripped
+            and defect
+            not in {
+                "schema-downgrade-registration",
+                "schema-downgrade-execution",
+            }
+        ):
+            host["grain_preview"] = {"rust_core_publication": self.publication}
+        if build_kind == "cuda-free":
+            host["targets"] = {"probe": {"cuda_free": True, "protocol": "custom", "registrations": 1}}
+            host["required"] = host["cuda_free_required"] = ["Probe"]
+            tests.append(
+                {
+                    "name": "Probe",
+                    "command": ["native-case", "--protocol", "custom", "--", "/probe"],
+                    "properties": [{"name": "LABELS", "value": ["host", "product"]}],
+                }
+            )
+        candidate = {
+            "head": "source",
+            "preset": "linux-debug",
+            "inputs": {"source": "identity"},
+            "configuration": {
+                "BUILD_TESTING": "ON",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "JUICER_GRAIN_PREVIEW": "ON" if preview else "OFF",
+                "CMAKE_HOME_DIRECTORY": source + "/tests/host" if build_kind == "cuda-free" else source,
+            },
+        }
+        if (
+            not historical
+            and not stripped
+            and defect
+            not in {
+                "candidate-binding",
+                "schema-downgrade-registration",
+                "schema-downgrade-execution",
+            }
+        ):
+            candidate["configuration"]["rust_tests"] = request
+        tools = {
+            "cmake": "/qualified/cmake",
+            "ctest": "/qualified/ctest",
+            "cargo": "/cargo",
+            "rustc": "/rustc",
+            "nextest": "/nextest",
+        }
+        if defect == "foreign-cargo-tool":
+            tools["cargo"] = "/foreign/cargo"
+            tools["rustc"] = "/foreign/rustc"
+        if defect == "foreign-nextest-tool":
+            tools["nextest"] = "/foreign/nextest"
+        candidate["versions"] = {
+            "cmake": "cmake version 4.3",
+            "ctest": "ctest version 4.3",
+            "cargo": "cargo 1.98.1 fixture",
+            "rustc": f"rustc 1.98.1 fixture\nhost: {self.target}",
+            "nextest": "cargo-nextest 0.9.143 fixture",
+        }
+        if defect.startswith("unqualified-"):
+            tool = defect.removeprefix("unqualified-")
+            label = "cargo-nextest" if tool == "nextest" else tool
+            candidate["versions"][tool] = f"{label} 0.0.1 fixture"
+        candidate["version_commands"] = [
+            {
+                "name": name,
+                "command": [program, "-Vv" if name == "rustc" else "--version"],
+                "returncode": 0,
+                "output": candidate["versions"][name],
+            }
+            for name, program in tools.items()
+        ]
+        artifact_schema = None
+        if defect == "legacy-preview":
+            artifact_schema = "rust-artifacts-v1"
+        elif build_kind == "product" and defect not in {"missing-artifact", "schema-downgrade-no-artifact"}:
+            artifact_schema = "rust-artifacts-v2"
+        if artifact_schema:
+            candidate["features"] = {"rust_artifacts": "rust-artifacts.json"}
+            archive_build = "C:/foreign/out/build/windows-clang-release" if defect == "foreign-artifact" else build
+            archive_target = "x86_64-pc-windows-msvc" if defect == "foreign-artifact" else self.target
+            archive_name = "film_juicer_plugin.lib" if defect == "foreign-artifact" else "libfilm_juicer_plugin.a"
+            archive_profile = "release" if defect in {"foreign-artifact", "wrong-artifact-profile"} else "debug"
+            production = ["grain-preview"] if artifact_schema == "rust-artifacts-v2" and preview else []
+            variants = {}
+            for variant, variant_features in (("production", production), ("test-support", ["test-support"])):
+                directory = f"{archive_build}/cargo/{variant}"
+                variants[variant] = {
+                    "archive": f"{directory}/{archive_target}/{archive_profile}/{archive_name}",
+                    "target_dir": directory,
+                    "feature_input": f"{directory}/features.txt",
+                    "stamp": f"{directory}/build.stamp",
+                    "features": variant_features,
+                }
+            documents["rust-artifacts.json"] = {
+                "schema": artifact_schema,
+                "build": archive_build,
+                "native_archive": f"{archive_build}/{'juicer_core.lib' if defect == 'foreign-artifact' else 'libjuicer_core.a'}",
+                "consumers": {"juicer": {"binary": f"{archive_build}/juicer.ofx", "variant": "production"}},
+                "variants": variants,
+            }
+        ctest_cases = []
+        for name in selected:
+            witness = ""
+            if with_junit_id and (defect != "missing-junit-run-id" or name != "Rust.Core"):
+                witness = f'<properties><property name="juicer_nextest_run_id" value="{run_ids[name]}"/></properties>'
+            ctest_cases.append(f'<testcase name="{name}" status="run" time="40">{witness}</testcase>')
+        documents.update(
+            {
+                "candidate.json": candidate,
+                "candidate.patch": "patch",
+                "registration.json": {"tests": tests},
+                "target-discovery.json": {},
+                "host-contracts.json": host,
+                "host-targets.json": {"probe": "/probe"} if build_kind == "cuda-free" else {},
+                "gpu-contracts.json": {"schema": "native-gpu-contracts-v1", "targets": {}, "required": []},
+                "gpu-targets.json": {},
+                "python-contracts.json": {"schema": "python-contracts-v1", "registrations": {}},
+                "python-targets.json": {},
+                "rust-cargo.json": cargo,
+                "rust-binaries.json": binaries,
+                "ctest.xml": '<testsuites><testsuite timestamp="2026-11-19T18:10:00" time="84">'
+                + "".join(ctest_cases)
+                + "</testsuite></testsuites>",
+            }
+        )
+        payloads = {
+            name: (value if isinstance(value, str) else json.dumps(value)).encode() for name, value in documents.items()
+        }
+        invoked = ("Rust.Bridge",) if defect == "outer-selection" else selected
+        build_target = "juicer_rust_test_support_build" if defect == "outer-build-target" else "juicer_rust_tests"
+        schema = "native-tests-v1" if historical or downgraded else "native-tests-v2"
+        if with_junit_digest and defect != "downgraded-junit-schema":
+            schema = "native-tests-v3"
+        if with_junit_id and defect != "downgraded-junit-id-schema":
+            schema = "native-tests-v4"
+        result = {
+            "schema": schema,
+            "status": "passed",
+            "preset": "linux-debug",
+            "scope": "focused",
+            "runtime": "host",
+            "groups": [],
+            "selection": list(selected),
+            "build_kind": build_kind,
+            "candidate_head": "source",
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
+            "case_files": {},
+            "rust_artifacts": bool(artifact_schema),
+            "commands": [
+                {
+                    "name": "registration",
+                    "command": [
+                        tools["ctest"],
+                        "--test-dir",
+                        "/foreign/build" if defect == "foreign-inventory" else build,
+                        "--show-only=json-v1",
+                    ],
+                    "directory": source,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                },
+                {
+                    "name": "build",
+                    "command": [
+                        "/foreign/cmake" if defect == "foreign-cmake" else tools["cmake"],
+                        "--build",
+                        build,
+                        "--target",
+                        build_target,
+                        "--",
+                        "-k0",
+                    ],
+                    "directory": source,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                },
+                {
+                    "name": "versions",
+                    "command": [
+                        "/python",
+                        "-B",
+                        f"{source}/scripts/verify.py",
+                        "tool-versions",
+                        "--tool",
+                        "cmake",
+                        tools["cmake"],
+                        "--tool",
+                        "ctest",
+                        "/foreign/ctest" if defect == "foreign-version-probe" else tools["ctest"],
+                        "--tool",
+                        "cargo",
+                        tools["cargo"],
+                        "--tool",
+                        "rustc",
+                        tools["rustc"],
+                        "--tool",
+                        "nextest",
+                        tools["nextest"],
+                    ],
+                    "directory": source,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                },
+                {
+                    "name": "ctest-host",
+                    "command": [
+                        "/foreign/ctest" if defect == "foreign-ctest" else tools["ctest"],
+                        "--test-dir",
+                        "/foreign/out/build/linux-debug" if defect == "outer-build" else build,
+                        "--no-tests=error",
+                        "--output-on-failure",
+                        "--output-junit",
+                        run_dir + "/ctest-host.xml",
+                        "-j",
+                        "1",
+                        "-R",
+                        "^(" + "|".join(map(re.escape, sorted(invoked))) + ")$",
+                    ],
+                    "directory": source,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                },
+            ],
+            "members": {
+                name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in payloads.items()
+            },
+        }
+        for name, data in payloads.items():
+            (root / name).write_bytes(data)
+        (root / "result.json").write_text(json.dumps(result))
+
+    def test_offline_rust_preview_receipts(self):
+        cases = (
+            ("preview", {}, False),
+            ("preview-junit-digest", {"with_junit_digest": True}, False),
+            ("preview-junit-run-id", {"with_junit_id": True}, False),
+            ("off", {"preview": False}, False),
+            ("cuda-free", {"build_kind": "cuda-free"}, False),
+            ("core-only", {"selected": ("Rust.Core",)}, False),
+            ("bridge-only", {"selected": ("Rust.Bridge",)}, False),
+            ("bridge-incomplete", {"selected": ("Rust.Bridge",), "defect": "bridge-incomplete"}, True),
+            ("historical", {"historical": True}, False),
+            ("legacy-label", {"historical": True, "legacy": True, "preview": False}, False),
+            ("legacy-preview", {"historical": True, "legacy": True, "defect": "legacy-preview"}, False),
+            ("historical-features", {"historical": True, "defect": "features"}, True),
+            ("historical-missing", {"historical": True, "defect": "missing"}, True),
+            ("historical-combined", {"historical": True, "defect": "combined"}, True),
+            *(
+                (name, {"with_junit_id": True, "defect": name}, True)
+                for name in (
+                    "foreign-junit-run-id",
+                    "missing-junit-run-id",
+                    "downgraded-junit-id-schema",
+                    "foreign-artifact",
+                    "wrong-artifact-profile",
+                    "unqualified-cargo",
+                    "unqualified-rustc",
+                    "unqualified-nextest",
+                )
+            ),
+            *(
+                (name, {"with_junit_digest": True, "defect": name}, True)
+                for name in (
+                    "stale-junit-digest",
+                    "missing-junit-digest",
+                    "downgraded-junit-schema",
+                    "foreign-junit-and-digest",
+                    "early-bridge-digest",
+                    "missing-artifact",
+                )
+            ),
+            *(
+                (name, {"defect": name}, True)
+                for name in (
+                    "features",
+                    "missing",
+                    "combined",
+                    "discovery-only",
+                    "package",
+                    "binary",
+                    "filtered",
+                    "skipped",
+                    "failed",
+                    "binding",
+                    "candidate-binding",
+                    "foreign-checkout",
+                    "foreign-metadata",
+                    "outer-build",
+                    "schema-downgrade",
+                    "schema-downgrade-registration",
+                    "schema-downgrade-execution",
+                    "schema-downgrade-all",
+                    "schema-downgrade-no-artifact",
+                    "outer-selection",
+                    "outer-build-target",
+                    "foreign-nextest-config",
+                    "foreign-nextest-junit",
+                    "stale-junit",
+                    "stale-case-timestamps",
+                    "early-bridge-report",
+                    "foreign-inventory",
+                    "foreign-cmake",
+                    "foreign-ctest",
+                    "foreign-version-probe",
+                    "foreign-python",
+                    "foreign-cargo-tool",
+                    "foreign-nextest-tool",
+                    "prepared-platforms",
+                    "discovery-build",
+                    "aliased-binaries",
+                )
+            ),
+        )
+        self.subtest_cases = tuple(name for name, _, _ in cases)
+        for name, options, rejected in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.bundle(root, **options)
+                if rejected:
+                    messages = {
+                        "features": "workspace features",
+                        "missing": "required Rust core publication",
+                        "combined": "workspace features",
+                        "discovery-only": "unexpected framework terminal",
+                        "package": "execution binding",
+                        "binary": "discovery differs",
+                        "filtered": "package function",
+                        "skipped": "required framework case skipped",
+                        "failed": "duplicate/failed framework case",
+                        "binding": "execution binding",
+                        "candidate-binding": "Rust test request",
+                        "foreign-checkout": "Rust CTest registration differs",
+                        "foreign-metadata": "Cargo metadata differs from configured workspace or target directory",
+                        "outer-build": "differs from the configured outer CTest invocation",
+                        "schema-downgrade": "current Rust test bindings",
+                        "schema-downgrade-registration": "current Rust test bindings",
+                        "schema-downgrade-execution": "current Rust execution binding",
+                        "schema-downgrade-all": "preview Rust execution requires resolved feature evidence",
+                        "schema-downgrade-no-artifact": "product Rust receipt requires its separate artifact description",
+                        "outer-selection": "outer CTest invocation",
+                        "outer-build-target": "outer build did not prepare",
+                        "foreign-nextest-config": "Rust nextest commands differ",
+                        "foreign-nextest-junit": "Rust nextest JUnit path differs",
+                        "stale-junit": "nextest JUnit timestamp is outside the retained CTest run",
+                        "stale-case-timestamps": "nextest JUnit case timestamp is outside the reported run",
+                        "early-bridge-report": "nextest JUnit starts before preceding CTest cases",
+                        "early-bridge-digest": "nextest JUnit starts before preceding CTest cases",
+                        "foreign-junit-and-digest": "nextest JUnit duration exceeds the retained CTest case",
+                        "missing-artifact": "product Rust receipt requires its separate artifact description",
+                        "foreign-junit-run-id": "Rust JUnit run ID differs",
+                        "missing-junit-run-id": "Rust JUnit run ID differs",
+                        "downgraded-junit-id-schema": "current Rust JUnit run ID in an older result",
+                        "foreign-artifact": "Rust artifact manifest differs from the configured build",
+                        "wrong-artifact-profile": "Rust artifact paths differ from the configured build",
+                        "unqualified-cargo": "qualified Rust/Cargo",
+                        "unqualified-rustc": "qualified Rust/Cargo",
+                        "unqualified-nextest": "qualified Rust/Cargo",
+                        "stale-junit-digest": "Rust JUnit digest differs",
+                        "missing-junit-digest": "Rust JUnit digest differs",
+                        "downgraded-junit-schema": "current Rust JUnit binding",
+                        "foreign-inventory": "registration did not use the configured build and CTest executable",
+                        "foreign-cmake": "outer build did not prepare",
+                        "foreign-ctest": "outer CTest invocation",
+                        "foreign-version-probe": "native tool probes differ",
+                        "foreign-python": "Rust CTest registration differs",
+                        "foreign-cargo-tool": "Rust CTest tools differ from version probes",
+                        "foreign-nextest-tool": "Rust CTest tools differ from version probes",
+                        "prepared-platforms": "prepared Rust binaries differ from configured target or profile",
+                        "discovery-build": "discovery build metadata differs",
+                        "bridge-incomplete": "missing or unexpected prepared Rust test binaries",
+                        "aliased-binaries": "duplicate prepared Rust test executable path",
+                        "historical-features": "workspace features",
+                        "historical-missing": "required Rust core publication",
+                        "historical-combined": "workspace features",
+                    }
+                    with self.assertRaisesRegex(ValueError, messages[name]):
+                        qualification.read_native_result(root)
+                else:
+                    self.assertEqual(qualification.read_native_result(root)["status"], "passed")
+
+
+RustReceiptBundleTests.test_offline_rust_preview_receipts.required_subtests = True
 
 
 class MembershipTests(unittest.TestCase):
@@ -818,7 +1516,9 @@ class CollectionTests(unittest.TestCase):
             if completed:
                 original = Path(completed)
                 result = json.loads((original / "result.json").read_bytes())
-                self.assertEqual(result["schema"], "native-tests-v1")
+                self.assertIn(
+                    result["schema"], {"native-tests-v1", "native-tests-v2", "native-tests-v3", "native-tests-v4"}
+                )
                 qualification.tests_result_members(result)
                 payloads = {name: (original / name).read_bytes() for name in result["members"]}
             for name, data in payloads.items():

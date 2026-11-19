@@ -522,7 +522,7 @@ class HostResultTests(unittest.TestCase):
 import collections, json, pathlib, runpy, sys
 root = pathlib.Path(sys.argv[1]).resolve()
 # Import stdlib before the guard; the reader itself may open only bundled files.
-import argparse, hashlib, xml.etree.ElementTree, time, pkgutil, __future__
+import argparse, datetime, hashlib, xml.etree.ElementTree, time, tomllib, pkgutil, __future__
 argparse.ArgumentParser()
 opened = collections.Counter()
 def audit(event, args):

@@ -95,6 +95,7 @@ juicer_register_tooling_tests(
 set(JUICER_RUST_TEST_RUNNER
     "${Python3_EXECUTABLE}" "${JUICER_TEST_ROOT}/scripts/verify.py" rust-tests
     --preset "${JUICER_TEST_PRESET_NAME}"
+    --request "${JUICER_RUST_TESTS_REQUEST}"
     --cargo "${JUICER_CARGO_EXECUTABLE}"
     --nextest "${JUICER_NEXTEST_EXECUTABLE}"
     --binaries-metadata "${JUICER_RUST_TESTS_BINARIES_METADATA}"

@@ -192,6 +192,7 @@ endif()
 set(JUICER_RUST_PRODUCTION_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/production")
 set(JUICER_RUST_TEST_SUPPORT_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/test-support")
 
+unset(JUICER_RUST_TESTS_REQUEST CACHE)
 if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
     set(JUICER_RUST_TESTS_TARGET_DIR "${JUICER_RUST_TEST_SUPPORT_TARGET_DIR}")
     set(JUICER_RUST_TESTS_METADATA_DIR "${JUICER_RUST_TESTS_TARGET_DIR}/metadata")
@@ -199,11 +200,20 @@ if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
         "${JUICER_RUST_TESTS_METADATA_DIR}/binaries.json")
     set(JUICER_RUST_TESTS_CARGO_METADATA
         "${JUICER_RUST_TESTS_METADATA_DIR}/cargo.json")
+    set(rust_tests_build_kind product)
+    if(JUICER_CUDA_FREE_TESTS)
+        set(rust_tests_build_kind cuda-free)
+    endif()
+    set(rust_tests_preview false)
     set(JUICER_RUST_TESTS_FEATURES "film-juicer-plugin/test-support")
     if(JUICER_GRAIN_PREVIEW AND NOT JUICER_CUDA_FREE_TESTS)
+        set(rust_tests_preview true)
         string(APPEND JUICER_RUST_TESTS_FEATURES ",film-juicer-plugin/grain-preview")
     endif()
     set(JUICER_RUST_TESTS_PROFILE "${JUICER_RUST_CARGO_PROFILE}")
+    set(JUICER_RUST_TESTS_REQUEST
+        "{\"build_kind\":\"${rust_tests_build_kind}\",\"grain_preview\":${rust_tests_preview},\"target\":\"${JUICER_RUST_TARGET}\",\"profile\":\"${JUICER_RUST_TESTS_PROFILE}\",\"cargo_features\":\"${JUICER_RUST_TESTS_FEATURES}\"}"
+        CACHE INTERNAL "Configured request for both nextest registrations")
     add_custom_target(juicer_rust_tests
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_RUST_TESTS_METADATA_DIR}"
         COMMAND "${CMAKE_COMMAND}"

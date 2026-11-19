@@ -20,6 +20,7 @@ from preview_configuration import PREVIEW_CASES, configure_preview_option
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import verify
 import execution
+import qualification
 from verify import cache_values
 
 
@@ -872,75 +873,198 @@ class CloseoutCliTests(unittest.TestCase):
 
 
 class RustDiscoveryTests(unittest.TestCase):
-    def test_discovery_package_id_is_verified_before_nextest_run(self):
-        cases = (("matches", "bridge"), ("other-package", "core"), ("missing-package", None))
-        self.subtest_cases = tuple(case for case, _ in cases)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            package = root / "plugin"
-            package.mkdir()
-            (package / "lib.rs").write_text("fn fixture() {}\n", encoding="utf-8")
-            cargo = {
-                "packages": [
-                    {
-                        "id": "bridge",
-                        "name": "film-juicer-plugin",
-                        "manifest_path": str(package / "Cargo.toml"),
-                        "targets": [{"name": "plugin", "test": True, "kind": ["staticlib"]}],
+    def test_rust_discovery_and_execution_follow_configured_request(self):
+        publication = qualification.PREVIEW_PUBLICATION_FUNCTION
+        cases = (
+            ("preview", "core", True, "product", None, ["list", "run"]),
+            ("off", "core", False, "product", None, ["list", "run"]),
+            ("cuda-free", "core", False, "cuda-free", None, ["list", "run"]),
+            ("bridge-only", "bridge", True, "product", None, ["list", "run"]),
+            ("features", "core", True, "product", "workspace features", []),
+            ("bridge-with-stale-core", "bridge", True, "product", "workspace features", []),
+            ("bridge-incomplete", "bridge", True, "product", "missing or unexpected prepared Rust test binaries", []),
+            ("foreign-paths", "core", True, "product", "Rust test input paths differ", []),
+            ("foreign-metadata", "core", True, "product", "Cargo metadata differs", []),
+            ("foreign-manifest", "core", True, "product", "manifest differs", []),
+            ("prepared-platforms", "core", True, "product", "configured target or profile", []),
+            ("discovery-build", "core", True, "product", "discovery build metadata differs", ["list"]),
+            ("aliased-binaries", "core", True, "product", "duplicate prepared Rust test executable path", []),
+            ("missing", "core", True, "product", "required Rust core publication", ["list"]),
+            ("combined-380", "core", True, "product", "workspace features", []),
+            ("discovery-only", "core", True, "product", "required Rust core publication", ["list"]),
+            ("wrong-package", "core", True, "product", "discovery package ID differs", ["list"]),
+            ("wrong-binary", "core", True, "product", "discovery differs", ["list"]),
+            ("filtered", "core", True, "product", "package function", ["list"]),
+            ("skipped", "core", True, "product", "required framework case skipped", ["list", "run"]),
+            ("failed", "core", True, "product", "duplicate/failed framework case", ["list", "run"]),
+        )
+        self.subtest_cases = tuple(case[0] for case in cases)
+        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        target = qualification.PRESET_TARGETS[preset]
+        features = ["grain-preview", "test-support"]
+        for case, package, preview, build_kind, error, commands in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary_names = qualification.RUST_TEST_PACKAGES
+                source = root / "foreign" if case == "foreign-paths" else root
+                build = source / "out" / "build" / preset / "cargo" / "test-support"
+                metadata = build / "metadata"
+                metadata.mkdir(parents=True)
+                bundle = root / "bundle"
+                bundle.mkdir()
+                request = {
+                    "build_kind": build_kind,
+                    "grain_preview": preview,
+                    "target": target,
+                    "profile": "debug",
+                    "cargo_features": "film-juicer-plugin/test-support"
+                    + (",film-juicer-plugin/grain-preview" if preview else ""),
+                }
+                args = SimpleNamespace(
+                    package=package,
+                    preset=preset,
+                    request=request,
+                    cargo=Path("cargo"),
+                    nextest=Path("cargo-nextest"),
+                    cargo_metadata=metadata / "cargo.json",
+                    binaries_metadata=metadata / "binaries.json",
+                    config_file=source / ".config" / "nextest.toml",
+                )
+                args.config_file.parent.mkdir(parents=True)
+                cargo = {
+                    "workspace_root": str(source),
+                    "target_directory": str(build),
+                    "packages": [],
+                    "workspace_members": list(binary_names),
+                    "resolve": {"nodes": []},
+                }
+                platform = {"triple": target}
+                reported_target = {"triple": "unsupported"} if case == "prepared-platforms" else platform
+                binaries = {
+                    "rust-build-meta": {
+                        "target-directory": str(build),
+                        "target-platform": target,
+                        "base-output-directories": [target + "/debug"],
+                        "target-platforms": [reported_target],
+                        "platforms": {"host": {"platform": platform}, "targets": [{"platform": reported_target}]},
                     },
-                    {"id": "core", "name": "film-juicer-core"},
-                ],
-                "resolve": {"nodes": [{"id": "bridge", "features": ["grain-preview", "test-support"]}]},
-            }
-            binaries = {
-                "rust-binaries": {"bridge": {"binary-id": "bridge", "package-id": "bridge", "binary-name": "plugin"}}
-            }
-            args = SimpleNamespace(
-                package="bridge",
-                cargo=Path("cargo"),
-                nextest=Path("cargo-nextest"),
-                cargo_metadata=root / "cargo.json",
-                binaries_metadata=root / "binaries.json",
-                config_file=root / "nextest.toml",
-            )
-            args.cargo_metadata.write_text(json.dumps(cargo), encoding="utf-8")
-            args.binaries_metadata.write_text(json.dumps(binaries), encoding="utf-8")
-            args.config_file.write_text("", encoding="utf-8")
-            for case, package_id in cases:
-                with self.subTest(case=case):
-                    bundle = root / case
-                    bundle.mkdir()
-                    suite = {"testcases": {"abi": {"filter-match": {"status": "matches"}, "ignored": False}}}
-                    if package_id is not None:
-                        suite["package-id"] = package_id
+                    "rust-binaries": {},
+                }
+                suites = {}
+                junit = ["<testsuites>"]
+                for owner, binary in binary_names.items():
+                    package_dir = source / "rust" / binary
+                    package_dir.mkdir(parents=True)
+                    (package_dir / "lib.rs").write_text("fn fixture() {}", encoding="utf-8")
+                    target_name = binary.replace("-", "_")
+                    cargo["packages"].append(
+                        {
+                            "id": owner,
+                            "name": binary,
+                            "manifest_path": str(package_dir / "Cargo.toml"),
+                            "targets": [{"name": target_name, "test": True, "kind": ["lib"]}],
+                        }
+                    )
+                    stale = case in {"features", "combined-380"} or case == "bridge-with-stale-core" and owner == "core"
+                    cargo["resolve"]["nodes"].append(
+                        {"id": owner, "features": features if preview and not stale else ["test-support"]}
+                    )
+                    prepared = {
+                        "binary-id": binary,
+                        "package-id": owner,
+                        "binary-name": target_name,
+                        "kind": "lib",
+                        "build-platform": "target",
+                        "binary-path": str(build / target / "debug" / "deps" / target_name),
+                    }
+                    binaries["rust-binaries"][binary] = prepared
+                    names = [f"test_{index}" for index in range(338 if owner == "core" else 41)]
+                    if owner == "core":
+                        names.append(qualification.OPTICS_FUNCTION)
+                        if preview and case not in {"missing", "combined-380"}:
+                            names.append(publication)
+                    matches = owner == package
+                    suites[binary] = {
+                        **prepared,
+                        "testcases": {
+                            name: {"ignored": False, "filter-match": {"status": "matches" if matches else "mismatch"}}
+                            for name in names
+                            if name != publication or case != "discovery-only"
+                        },
+                    }
+                    junit.append(f'<testsuite name="{binary}" tests="{len(names)}">')
+                    for name in names:
+                        terminal = "" if matches else "<skipped/>"
+                        if name == publication and matches:
+                            terminal = {"skipped": "<skipped/>", "failed": "<failure/>"}.get(case, "")
+                        junit.append(f'<testcase name="{name}">{terminal}</testcase>')
+                    junit.append("</testsuite>")
+                junit.append("</testsuites>")
+                discovery_build = binaries["rust-build-meta"]
+                if case == "discovery-build":
+                    discovery_build = {**discovery_build, "base-output-directories": [target + "/release"]}
+                if case == "foreign-metadata":
+                    cargo["workspace_root"] = str(root / "foreign")
+                if case == "foreign-manifest":
+                    cargo["packages"][1]["manifest_path"] = str(root / "foreign" / "Cargo.toml")
+                suite = suites[binary_names["core"]]
+                if case == "bridge-incomplete":
+                    del binaries["rust-binaries"][binary_names["core"]]
+                    del suites[binary_names["core"]]
+                if case == "aliased-binaries":
+                    binary_path = suite["binary-path"]
+                    binaries["rust-binaries"][binary_names["bridge"]]["binary-path"] = binary_path
+                    suites[binary_names["bridge"]]["binary-path"] = binary_path
+                if case == "wrong-package":
+                    suite["package-id"] = "bridge"
+                if case == "wrong-binary":
+                    suite["binary-path"] = str(root / "foreign-binary")
+                if case == "filtered":
+                    suite["testcases"][publication]["filter-match"]["status"] = "mismatch"
+                args.cargo_metadata.write_text(json.dumps(cargo), encoding="utf-8")
+                args.binaries_metadata.write_text(json.dumps(binaries), encoding="utf-8")
+                args.config_file.write_text("", encoding="utf-8")
+                (bundle / "host-contracts.json").write_text(
+                    json.dumps(
+                        {
+                            "rust_cohorts": {name: 0 for name in binary_names.values()},
+                            "grain_preview": {"rust_core_publication": publication},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                registration = "Rust.Core" if package == "core" else "Rust.Bridge"
 
-                    def nextest(command, *, env, stdout=None):
-                        if command[2] == "list":
-                            stdout.write(json.dumps({"rust-suites": {"bridge": suite}}).encode())
-                            return subprocess.CompletedProcess(command, 0)
+                def nextest(command, *, env, stdout=None):
+                    if command[2] == "list":
+                        stdout.write(json.dumps({"rust-suites": suites, "rust-build-meta": discovery_build}).encode())
+                    else:
                         self.assertEqual(command[2], "run")
-                        (bundle / "Rust.Bridge.xml").write_text(
-                            '<testsuite name="bridge"><testcase name="abi"/></testsuite>', encoding="utf-8"
-                        )
+                        (bundle / (registration + ".xml")).write_text("".join(junit), encoding="utf-8")
                         Path(env["FJ_RUST_ROWS"]).write_bytes(b"")
-                        return subprocess.CompletedProcess(command, 0)
+                    return subprocess.CompletedProcess(command, 0)
 
-                    (bundle / "host-contracts.json").write_text('{"rust_cohorts":{"bridge":0}}', encoding="utf-8")
-                    with (
-                        patch.dict(os.environ, {"FJ_HOST_BUNDLE": str(bundle)}, clear=True),
-                        patch.object(verify.subprocess, "run", side_effect=nextest) as run,
-                    ):
-                        if case == "matches":
-                            self.assertEqual(verify.rust_tests(args), 0)
-                            self.assertEqual([call.args[0][2] for call in run.call_args_list], ["list", "run"])
-                        else:
-                            with self.assertRaisesRegex(ValueError, "discovery package ID differs"):
-                                verify.rust_tests(args)
-                            self.assertEqual([call.args[0][2] for call in run.call_args_list], ["list"])
-                    execution = json.loads((bundle / "Rust.Bridge.execution.json").read_bytes())
-                    self.assertEqual(execution["features"], ["grain-preview", "test-support"])
+                with (
+                    patch.object(verify, "ROOT", root),
+                    patch.dict(os.environ, {"FJ_HOST_BUNDLE": str(bundle)}, clear=True),
+                    patch.object(verify.subprocess, "run", side_effect=nextest) as run,
+                ):
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            verify.rust_tests(args)
+                    else:
+                        self.assertEqual(verify.rust_tests(args), 0)
+                    self.assertEqual([call.args[0][2] for call in run.call_args_list], commands)
+                if not error:
+                    execution = json.loads((bundle / (registration + ".execution.json")).read_bytes())
+                    self.assertEqual(execution["schema"], "rust-test-execution-v4")
+                    junit = (bundle / (registration + ".xml")).read_bytes()
+                    self.assertEqual(execution["junit_sha256"], hashlib.sha256(junit).hexdigest())
+                    self.assertEqual(execution["package_id"], package)
+                    self.assertEqual(execution["features"], features if preview else ["test-support"])
+                    self.assertEqual(execution["request"], request)
 
-    test_discovery_package_id_is_verified_before_nextest_run.required_subtests = True
+    test_rust_discovery_and_execution_follow_configured_request.required_subtests = True
 
 
 CtestDispatchTests.test_cmake_preview_option_merges_host_and_gpu_registration_contracts.required_subtests = True

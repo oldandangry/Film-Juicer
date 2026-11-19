@@ -25,7 +25,13 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
 
 from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
-from qualification import collect_bundles, grain_preview_enabled
+from qualification import (
+    RUST_TEST_BUILD_TARGET,
+    RUST_TEST_PATH_FLAGS,
+    RUST_TEST_REGISTRATIONS,
+    collect_bundles,
+    grain_preview_enabled,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {
@@ -134,12 +140,25 @@ def quality_command(preset, selection):
 
 def rust_tests(args):
     """Run one Rust test package from CMake-prepared nextest binaries."""
-    from qualification import framework_terminals, rust_membership
+    import hashlib
 
-    package = getattr(args, "package", "core")
-    package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}.get(package)
-    if package_name is None:
-        raise ValueError("Rust test package must be core or bridge")
+    from qualification import (
+        RUST_TEST_PACKAGES,
+        framework_terminals,
+        require_rust_core_publication,
+        rust_case_events,
+        rust_core_publication,
+        rust_membership,
+        rust_nextest_commands,
+        rust_test_binaries,
+        rust_test_package,
+        validate_rust_test_build,
+        validate_rust_test_paths,
+        validate_rust_test_request,
+    )
+
+    package = args.package
+    package_name = RUST_TEST_PACKAGES[package]
     registration = "Rust.Core" if package == "core" else "Rust.Bridge"
     if os.environ.get("FJ_RUST_FILTER") or os.environ.get("FJ_OPTICS_BUNDLE"):
         raise ValueError(
@@ -173,6 +192,12 @@ def rust_tests(args):
     execution_path = bundle / f"{registration}.execution.json"
     config_path = bundle / f"{registration}.nextest.toml"
 
+    request = args.request
+    preview = request.get("grain_preview")
+    validate_rust_test_request(request, args.preset, request.get("build_kind"), preview)
+    paths = {flag: str(getattr(args, flag.replace("-", "_"))) for flag in RUST_TEST_PATH_FLAGS}
+    validate_rust_test_paths(paths, ROOT, args.preset)
+
     # Cargo metadata supplies the test-target contract independently of the
     # nextest discovery it will later validate. This catches a missing lib or
     # integration-test binary without maintaining a second list of test names.
@@ -181,30 +206,15 @@ def rust_tests(args):
     bookkeeping_reads = len(cargo_bytes) + len(binaries_bytes)
     cargo_metadata = json.loads(cargo_bytes)
     binaries_metadata = json.loads(binaries_bytes)
-    packages = {row["id"]: row for row in cargo_metadata["packages"]}
-    selected_package = next((row for row in packages.values() if row["name"] == package_name), None)
-    if selected_package is None:
-        raise ValueError("Cargo metadata omits Rust test package: " + package_name)
-    from qualification import rust_package_features
-
-    resolved_features = rust_package_features(cargo_metadata, selected_package["id"])
-    expected_binaries = {
-        (selected_package["id"], target["name"])
-        for target in selected_package["targets"]
-        if target.get("test") and any(kind in target["kind"] for kind in ("test", "lib", "staticlib"))
-    }
-    actual_binaries = {
-        (binary["package-id"], binary["binary-name"])
-        for binary in binaries_metadata["rust-binaries"].values()
-        if binary.get("package-id") == selected_package["id"]
-    }
-    missing_binaries = expected_binaries - actual_binaries
-    unexpected_binaries = actual_binaries - expected_binaries
-    if not expected_binaries or missing_binaries or unexpected_binaries:
-        raise ValueError(
-            "Rust test binary contract differs from Cargo targets: "
-            + repr({"missing": sorted(missing_binaries), "unexpected": sorted(unexpected_binaries)})
-        )
+    resolved_features = validate_rust_test_build(request, args.preset, ROOT, cargo_metadata, binaries_metadata)
+    selected_package = rust_test_package(cargo_metadata, package)
+    package_id = selected_package["id"]
+    expected_binaries = sorted([package_id, target] for target in rust_test_binaries(selected_package))
+    contract_path = bundle / "host-contracts.json"
+    contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json").read_bytes()
+    bookkeeping_reads += len(contract_bytes)
+    contract = json.loads(contract_bytes)
+    publication = rust_core_publication(contract) if preview and package == "core" else None
 
     source_root = Path(selected_package["manifest_path"]).parent
     doctest_sources = []
@@ -237,32 +247,16 @@ def rust_tests(args):
     config_bytes = args.config_file.read_bytes()
     bookkeeping_reads += len(config_bytes)
     config_path.write_text(config_bytes.decode("utf-8") + "\npath = " + json.dumps(str(junit_path)) + "\n")
-    common = [str(args.nextest), "nextest"]
-    metadata = [
-        "--config-file",
-        str(config_path),
-        "--user-config-file",
-        "none",
-        "--profile",
-        "default",
-        "--binaries-metadata",
-        str(args.binaries_metadata),
-        "--cargo-metadata",
-        str(args.cargo_metadata),
-    ]
-    filter_expr = "package(=" + package_name + ")"
-    metadata.extend(["-E", filter_expr])
     environment = dict(os.environ)
     environment.pop("FJ_HOST_BUNDLE", None)
     environment.pop("FJ_OPTICS_CASES", None)
     environment.pop("FJ_RUST_ROWS", None)
     environment["FJ_RUST_ROWS"] = str(bundle / (registration + ".rows.jsonl"))
-    commands = [
-        [*common, "list", *metadata, "--message-format", "json"],
-        [*common, "run", *metadata, "--test-threads", "1", "--retries", "0", "--no-fail-fast", "--no-tests", "fail"],
-    ]
+    commands = rust_nextest_commands(paths, package, str(config_path))
     records = []
     discovery_bytes = 0
+    discovered_binaries = []
+    junit_sha256 = None
     try:
         started = time.perf_counter()
         with discovery_path.open("xb") as output:
@@ -274,39 +268,40 @@ def rust_tests(args):
         discovery = discovery_path.read_bytes()
         discovery_bytes = len(discovery)
         discovery_document = json.loads(discovery)
-        discovered_binaries = set(discovery_document["rust-suites"])
-        if any(binary["binary-id"] != key for key, binary in binaries_metadata["rust-binaries"].items()):
-            raise ValueError("prepared nextest binary ID differs from inventory key")
-        expected_tests, filtered_tests = rust_membership(discovery_document, package, cargo_metadata, binaries_metadata)
+        discovered_binaries = sorted(discovery_document["rust-suites"])
+        expected_tests, filtered_tests = rust_membership(
+            discovery_document, package, cargo_metadata, binaries_metadata, bound=True
+        )
+        if publication is not None:
+            require_rust_core_publication(publication, expected_tests, cargo_metadata, binaries_metadata)
         started = time.perf_counter()
         completed = subprocess.run(commands[1], env=environment)
         records.append(
             {"command": commands[1], "returncode": completed.returncode, "seconds": time.perf_counter() - started}
         )
         if completed.returncode == 0:
-            framework_terminals(junit_path.read_bytes(), expected_tests, nextest=True, filtered=filtered_tests)
-            from qualification import rust_case_events
-
-            contract_path = bundle / "host-contracts.json"
-            contract_bytes = (
-                contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json"
-            ).read_bytes()
+            junit = junit_path.read_bytes()
+            bookkeeping_reads += len(junit)
+            framework_terminals(junit, expected_tests, nextest=True, filtered=filtered_tests)
+            junit_sha256 = hashlib.sha256(junit).hexdigest()
             row_bytes = (bundle / (registration + ".rows.jsonl")).read_bytes()
-            bookkeeping_reads += len(contract_bytes) + len(row_bytes)
-            contract = json.loads(contract_bytes)
+            bookkeeping_reads += len(row_bytes)
             rust_case_events(row_bytes, contract, expected_tests)
         return completed.returncode
     finally:
         write_json(
             execution_path,
             {
-                "schema": "rust-test-execution-v2",
+                "schema": "rust-test-execution-v4",
                 "registration": registration,
+                "request": request,
                 "package": package_name,
+                "package_id": package_id,
                 "cargo": str(args.cargo),
                 "features": resolved_features,
-                "required_binaries": sorted(expected_binaries),
-                "discovered_binaries": sorted(discovered_binaries) if "discovered_binaries" in locals() else [],
+                "required_binaries": expected_binaries,
+                "discovered_binaries": discovered_binaries,
+                "junit_sha256": junit_sha256,
                 "doctests": {
                     "status": "none",
                     "source_files_scanned": scanned_source_count,
@@ -315,10 +310,7 @@ def rust_tests(args):
                 },
                 "commands": records,
                 "discovery_read_bytes": discovery_bytes,
-                "bookkeeping_read_bytes": bookkeeping_reads
-                + scanned_source_bytes
-                + discovery_bytes
-                + (junit_path.stat().st_size if junit_path.exists() else 0),
+                "bookkeeping_read_bytes": bookkeeping_reads + scanned_source_bytes + discovery_bytes,
             },
         )
 
@@ -806,7 +798,18 @@ def native_tests(args):
     """Fresh CMake-selected native/Rust/Python execution under one build owner."""
     import xml.etree.ElementTree as ET
     from execution import NativeRun, name_component
-    from qualification import membership, native_registration, python_registration, validate_tests_result
+    from qualification import (
+        RUST_JUNIT_RUN_ID_PROPERTY,
+        membership,
+        native_ctest_command,
+        native_registration,
+        python_registration,
+        rust_junit_run_id,
+        rust_test_registration,
+        validate_rust_test_request,
+        validate_rust_test_versions,
+        validate_tests_result,
+    )
 
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("tests must execute on their native platform")
@@ -852,7 +855,7 @@ def native_tests(args):
         (directory / "registration.json").write_text('{"tests":[]}\n')
         (directory / "target-discovery.json").write_text("{}\n")
         result = {
-            "schema": "native-tests-v1",
+            "schema": "native-tests-v4",
             "status": "failed",
             "preset": args.preset,
             "candidate_head": initial["head"],
@@ -897,7 +900,7 @@ def native_tests(args):
                     "JUICER_NEXTEST_EXECUTABLE": nextest,
                     "Python3_EXECUTABLE": sys.executable,
                 }
-                if any(
+                if "JUICER_RUST_TESTS_REQUEST" not in cache or any(
                     os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v))
                     for k, v in desired.items()
                 ):
@@ -1020,8 +1023,17 @@ def native_tests(args):
                     targets.add(entries[name]["target"])
                 if name in python:
                     targets.update(target_data["python"][name])
-            if selected & {"Rust.Core", "Rust.Bridge"}:
-                targets.add("juicer_rust_tests")
+            rust_selected = selected & RUST_TEST_REGISTRATIONS.keys()
+            if rust_selected:
+                request = json.loads(cache["JUICER_RUST_TESTS_REQUEST"])
+                preview = not cuda_free and grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW"))
+                validate_rust_test_request(request, args.preset, result["build_kind"], preview)
+                candidate["configuration"]["rust_tests"] = request
+                rust_tools = {"python": sys.executable, "cargo": cargo, "nextest": nextest}
+                for registration in inventory["tests"]:
+                    if registration["name"] in rust_selected:
+                        rust_test_registration(registration, args.preset, request, ROOT, rust_tools)
+                targets.add(RUST_TEST_BUILD_TARGET)
             if source_selection:
                 targets.update(source_selection["targets"])
             if targets:
@@ -1063,12 +1075,8 @@ def native_tests(args):
             costs["report_read_bytes"] += len(version_data)
             candidate["version_commands"] = json.loads(version_data)
             candidate["versions"] = {item["name"]: item["output"] for item in candidate["version_commands"]}
-            if not standalone and (
-                not candidate["versions"]["cargo"].startswith("cargo 1.98.1 ")
-                or not candidate["versions"]["rustc"].startswith("rustc 1.98.1 ")
-                or not candidate["versions"]["nextest"].startswith("cargo-nextest 0.9.143 ")
-            ):
-                raise ValueError("qualified Rust/Cargo 1.98.1 and nextest 0.9.143 required")
+            if not standalone:
+                validate_rust_test_versions(candidate["versions"])
             environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
             for name in ("FJ_RUST_FILTER", "FJ_OPTICS_BUNDLE", "FJ_HOST_ROWS"):
                 environment.pop(name, None)
@@ -1097,23 +1105,23 @@ def native_tests(args):
                     junit = directory / ("ctest-" + runtime + ".xml")
                     run.command(
                         "ctest-" + runtime,
-                        [
-                            ctest,
-                            "--test-dir",
-                            str(build),
-                            "--no-tests=error",
-                            "--output-on-failure",
-                            "--output-junit",
-                            str(junit),
-                            "-j",
-                            "1",
-                            "-R",
-                            "^(" + "|".join(map(re.escape, names)) + ")$",
-                        ],
+                        native_ctest_command(ctest, build, junit, names),
                         env=env,
                         timeout=None,
                     )
                     tree = ET.fromstring(junit.read_bytes())
+                    if runtime == "host":
+                        for case in tree.iter("testcase"):
+                            name = case.get("name")
+                            if name not in rust_selected:
+                                continue
+                            report = (directory / (name + ".xml")).read_bytes()
+                            costs["report_read_bytes"] += len(report)
+                            run_id = rust_junit_run_id(ET.fromstring(report))
+                            properties = case.find("properties")
+                            if properties is None:
+                                properties = ET.SubElement(case, "properties")
+                            ET.SubElement(properties, "property", name=RUST_JUNIT_RUN_ID_PROPERTY, value=run_id)
                     combined.extend(list(tree) if tree.tag == "testsuites" else [tree])
                     junit.unlink()
                     if runtime == "gpu":
@@ -1617,7 +1625,8 @@ def main():
     rust = modes.add_parser("rust-tests", help=argparse.SUPPRESS)
     rust.add_argument("--package", choices=("core", "bridge"), required=True)
     rust.add_argument("--preset", required=True, choices=PRESETS)
-    for flag in ("cargo", "nextest", "binaries-metadata", "cargo-metadata", "config-file"):
+    rust.add_argument("--request", type=json.loads, required=True)
+    for flag in RUST_TEST_PATH_FLAGS:
         rust.add_argument("--" + flag, type=Path, required=True)
     versions = modes.add_parser("tool-versions", help=argparse.SUPPRESS)
     versions.add_argument("--tool", nargs=2, action="append", required=True)

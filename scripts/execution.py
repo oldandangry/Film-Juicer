@@ -414,7 +414,15 @@ def _expiry_result(root, directory, result, preset):
     if (
         not isinstance(result, dict)
         or result.get("schema")
-        not in {"native-tests-v1", "native-quality-v1", "native-build-v1", "native-spatial-optics-v1"}
+        not in {
+            "native-tests-v1",
+            "native-tests-v2",
+            "native-tests-v3",
+            "native-tests-v4",
+            "native-quality-v1",
+            "native-build-v1",
+            "native-spatial-optics-v1",
+        }
         or result.get("preset") != preset
     ):
         raise ValueError("unsupported closeout result")
