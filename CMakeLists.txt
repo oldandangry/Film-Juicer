@@ -217,7 +217,12 @@ if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
             "${CMAKE_BINARY_DIR}/grain-motion/Resources"
         VERBATIM)
     set(juicer_motion_replay_target JuicerGrainMotionReplay)
+    set(juicer_motion_replay_configured ON)
+else()
+    set(juicer_motion_replay_configured OFF)
 endif()
+set(JUICER_GRAIN_MOTION_REPLAY_CONFIGURED "${juicer_motion_replay_configured}" CACHE INTERNAL
+    "Whether native quality can analyze the configured motion replay consumers")
 
 juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
     ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS} ${juicer_motion_replay_target})

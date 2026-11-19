@@ -118,8 +118,13 @@ jobs:
         shell: bash
         env:
           QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          JUICER_GRAIN_PREVIEW: 'ON'
         run: |
           set -euo pipefail
+          python -B scripts/verify.py prepare \
+            --preset linux-debug \
+            --targets juicer_analysis_inputs \
+            --run-id "ci-linux-debug-preview-inputs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           if [[ -n "$QUALITY_BASE" && ! "$QUALITY_BASE" =~ ^0+$ ]] \
             && git cat-file -e "${QUALITY_BASE}^{commit}" 2>/dev/null; then
             python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug

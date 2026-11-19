@@ -44,6 +44,7 @@ REPRESENTATIVE_NATIVE_FILES = (
     "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
     "tests/hash/hash_contract_test.cpp",
 )
+MOTION_REPLAY_HEADERS = {"tests/grain/motion-replay.h", "tests/grain/motion-replay.inc"}
 
 
 class QualityError(RuntimeError):
@@ -1056,10 +1057,11 @@ def prepare_native_analysis(
     selected_native: Sequence[str],
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
+    from verify import cache_values
+
+    build_dir = root / "out/build" / arguments.preset
     entries = compilation_entries(root, arguments.preset)
-    runner.consume(
-        [root / "out/build" / arguments.preset / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"]
-    )
+    runner.consume([build_dir / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"])
     validate_translation_units(selected_native, entries, policy)
     format_candidates = (
         arguments.clang_format,
@@ -1091,6 +1093,15 @@ def prepare_native_analysis(
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
     consumers = getattr(arguments, "compiler_consumers", None) or []
     validate_translation_units(consumers, entries, policy)
+    replay_headers = MOTION_REPLAY_HEADERS.intersection(selected_native)
+    if replay_headers and cache_values(build_dir).get("JUICER_GRAIN_MOTION_REPLAY_CONFIGURED") == "OFF":
+        print(
+            "Motion replay is unavailable for compiler analysis in this configuration: "
+            + ", ".join(sorted(replay_headers))
+        )
+        selected_native = [path for path in selected_native if path not in replay_headers]
+        if not selected_native and not consumers:
+            return []
     translation_units = sorted(set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers))
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
@@ -1100,7 +1111,6 @@ def prepare_native_analysis(
         if entry.path in translation_units:
             consumed.update(included_paths(root.resolve(), entry, includes, edges))
     runner.consume([root / path for path in sorted(consumed)])
-    build_dir = root / "out/build" / arguments.preset
     commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
         if PurePosixPath(translation_unit).suffix.lower() == ".cu":

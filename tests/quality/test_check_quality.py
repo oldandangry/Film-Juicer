@@ -1959,6 +1959,52 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(check_quality.QualityError, "no consuming translation unit"):
                 check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
 
+    def test_motion_replay_headers_require_consumers_when_configured(self) -> None:
+        headers = ["tests/grain/motion-replay.h", "tests/grain/motion-replay.inc"]
+        consumer = "tests/grain/replay.cpp"
+        entries = [check_quality.CompilationEntry(consumer, "compiler")]
+        cases = (
+            ("unavailable", "OFF", headers, [], None),
+            ("configured", "ON", headers, entries, None),
+            ("configured-without-consumer", "ON", headers, [], headers[0]),
+            ("cache-without-availability", "", headers, [], headers[0]),
+            ("unrelated-header", "OFF", [*headers, "tests/other.h"], [], "tests/other.h"),
+        )
+        self.subtest_cases = tuple(case[0] for case in cases)
+        policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+        arguments = argparse.Namespace(preset="linux-debug", clang_format=None, clang_tidy=None)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            build_dir = root / "out/build/linux-debug"
+            build_dir.mkdir(parents=True)
+            (root / "tests/grain").mkdir(parents=True)
+            for header in headers:
+                (root / header).touch()
+            (root / consumer).write_text('#include "motion-replay.h"\n#include "motion-replay.inc"\n', encoding="utf-8")
+            for case, configured, selected, compilation, missing in cases:
+                with (
+                    self.subTest(case=case),
+                    patch.object(check_quality, "resolve_tool", return_value="tool"),
+                    patch.object(check_quality, "compilation_entries", return_value=compilation),
+                ):
+                    (build_dir / "CMakeCache.txt").write_text(
+                        f"JUICER_GRAIN_MOTION_REPLAY_CONFIGURED:INTERNAL={configured}\n", encoding="utf-8"
+                    )
+                    runner = Mock()
+                    runner.run.side_effect = ["clang-format version 22.1.8", "LLVM version 22.1.8", "", ""]
+                    if missing:
+                        with self.assertRaisesRegex(
+                            check_quality.QualityError, "no consuming translation unit"
+                        ) as error:
+                            check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
+                        self.assertIn(missing, str(error.exception))
+                    else:
+                        commands = check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
+                        self.assertEqual([command.source for command in commands], [consumer] if compilation else [])
+                    runner.run.assert_any_call(
+                        ["tool", "--dry-run", "--Werror", "--style=file", *selected], label="clang-format"
+                    )
+
     def test_include_search_contexts_preserve_order_and_quote_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -2313,6 +2359,7 @@ DependencyContractTests.test_development_preserves_packages_and_uses_only_qualit
 DependencyContractTests.test_selected_clippy_failure_stops_dispatch.required_subtests = True
 CudaQualityTests.test_unknown_or_incomplete_options_fail_instead_of_weakening_analysis.required_subtests = True
 CudaQualityTests.test_missing_cuda_source_or_header_owner_fails.required_subtests = True
+SelectionAndEvidenceTests.test_motion_replay_headers_require_consumers_when_configured.required_subtests = True
 SourceHygieneTests.test_each_violation_fails_with_location_and_log.required_subtests = True
 SourceHygieneTests.test_all_policy_header_extensions_reject_namespace_directives.required_subtests = True
 SourceHygieneTests.test_unreadable_or_invalid_utf8_source_fails.required_subtests = True
