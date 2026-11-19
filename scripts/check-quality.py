@@ -21,7 +21,23 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
-from qualification import PRESET_TARGETS, RUST_POLICY_FILES, RUST_QUALITY_PACKAGES, clippy_forms, quality_scope
+from qualification import (
+    MOTION_REPLAY_EXCLUSION,
+    MOTION_REPLAY_HEADER_CONSUMERS,
+    PRESET_TARGETS,
+    PRODUCT_PREVIEW_KEYS,
+    RUST_POLICY_FILES,
+    RUST_QUALITY_PACKAGES,
+    SOURCE_FILE_POLICY,
+    clippy_forms,
+    read_preview_and_replay_configuration,
+    is_motion_replay_compile_entry,
+    is_motion_replay_target_output,
+    motion_replay_tidy_label,
+    product_artifact_consumers,
+    quality_native_source,
+    quality_scope,
+)
 
 
 ROOT_OWNED_FILES = {
@@ -44,12 +60,6 @@ REPRESENTATIVE_NATIVE_FILES = (
     "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
     "tests/hash/hash_contract_test.cpp",
 )
-MOTION_REPLAY_HEADERS = {
-    "tests/grain/film-ofx-apertures.inc",
-    "tests/grain/motion-density.inc",
-    "tests/grain/motion-replay.h",
-    "tests/grain/motion-replay.inc",
-}
 
 
 class QualityError(RuntimeError):
@@ -75,6 +85,7 @@ class CompilationEntry:
     command: str
     directory: Path = Path(".")
     arguments: tuple[str, ...] = ()
+    output: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,7 @@ class AnalysisCommand:
     directory: Path
     label: str
     source: str = ""
+    replay_headers: tuple[str, ...] = ()
 
 
 class Runner:
@@ -104,6 +116,8 @@ class Runner:
         self.completed_checks: list[str] = []
         self.expected_commands: list[str] = []
         self.rust_quality: dict | None = None
+        self.product_configuration: dict = {}
+        self.replay_compiler_analysis: dict = {}
         self.python_cases: list[str] = []
         self.consumed_inputs: set[str] = set()
         self.command_output_read_bytes = 0
@@ -139,6 +153,7 @@ class Runner:
         label: str,
         display_output: bool = True,
         stdout_only: bool = False,
+        replay_headers: tuple[str, ...] = (),
     ) -> str:
         with self.output_lock:
             safe_label = self._name(label)
@@ -152,6 +167,7 @@ class Runner:
             self.expected_commands.append(command_name)
             print("+", subprocess.list2cmdline(command))
         try:
+            replay = {"replay_headers": replay_headers} if replay_headers else {}
             output_path = self.native_run.command(
                 command_name,
                 command,
@@ -159,6 +175,7 @@ class Runner:
                 env=env,
                 timeout=None,
                 stdout_only=stdout_only,
+                **replay,
             )
         except subprocess.CalledProcessError as exc:
             raise QualityError(
@@ -197,7 +214,8 @@ class Runner:
                     item = next(remaining, None)
                     if item is None:
                         break
-                    future = executor.submit(self.run, item.command, cwd=item.directory, label=item.label)
+                    replay = {"replay_headers": item.replay_headers} if item.replay_headers else {}
+                    future = executor.submit(self.run, item.command, cwd=item.directory, label=item.label, **replay)
                     pending[future] = item
                 if not pending:
                     break
@@ -317,7 +335,7 @@ def run_git(root: Path, arguments: Sequence[str]) -> bytes:
 
 
 def load_policy(root: Path) -> SourcePolicy:
-    path = root / "scripts/source_file_policy.json"
+    path = root / "scripts" / SOURCE_FILE_POLICY
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -403,12 +421,7 @@ def exclusion_reason(path: str, policy: SourcePolicy) -> str | None:
 
 
 def is_native(path: str, policy: SourcePolicy) -> bool:
-    suffix = PurePosixPath(path).suffix.lower()
-    return (
-        suffix in policy.native_extensions
-        and path.startswith(("src/", "native/", "tests/"))
-        and "/fixtures/" not in path
-    )
+    return quality_native_source(path, policy.native_extensions)
 
 
 def check_source_hygiene(root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path) -> None:
@@ -668,9 +681,13 @@ def check_rust(
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
     from verify import cache_values
 
-    raw_preview = cache_values(root / "out/build" / arguments.preset).get("JUICER_GRAIN_PREVIEW")
+    cache = cache_values(root / "out/build" / arguments.preset)
+    raw_preview = cache.get("JUICER_GRAIN_PREVIEW")
     runner.rust_quality = {"JUICER_GRAIN_PREVIEW": raw_preview, "packages": selected_packages}
-    for label, form in clippy_forms(arguments.preset, selected_packages, raw_preview):
+    preview_enabled = None
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
+        preview_enabled, _ = read_preview_and_replay_configuration(cache)
+    for label, form in clippy_forms(arguments.preset, selected_packages, raw_preview, preview=preview_enabled):
         runner.run([*common, *form], env=environment, label=label)
 
 
@@ -717,7 +734,9 @@ def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
         command = raw.get("command") or subprocess.list2cmdline(raw.get("arguments", []))
         if command:
             arguments = tuple(raw["arguments"]) if "arguments" in raw else split_compiler_command(command)
-            entries.append(CompilationEntry(relative, command, Path(raw["directory"]), arguments))
+            entries.append(
+                CompilationEntry(relative, command, Path(raw["directory"]), arguments, raw.get("output", ""))
+            )
     if not entries:
         raise QualityError(f"compilation database contains no owned entries: {path}")
     return entries
@@ -1055,6 +1074,117 @@ def prepare_cuda_analysis(
     return commands
 
 
+def replay_dependencies(root: Path, runner: Runner, entry: CompilationEntry, label: str) -> set[Path]:
+    """Use the configured preprocessor to resolve active replay includes."""
+    arguments = list(entry.arguments)
+    if (
+        arguments.count("-c") != 1
+        or arguments.count("-o") != 1
+        or any(arg.startswith(("@", "-M", "-Wp,")) or arg == "-Xpreprocessor" for arg in arguments[1:])
+    ):
+        raise QualityError(f"unsupported replay dependency probe arguments for {entry.path}")
+    output = arguments.index("-o")
+    if output + 1 == len(arguments) or entry.directory / arguments[output + 1] != entry.directory / entry.output:
+        raise QualityError(f"missing configured compile output for replay dependency probe: {entry.path}")
+    del arguments[output : output + 2]
+    arguments.remove("-c")
+    target = "juicer-replay"
+    try:
+        depfile = runner.run(
+            [*arguments, "-M", "-MF", "-", "-MT", target],
+            cwd=entry.directory,
+            label=label,
+            display_output=False,
+            stdout_only=True,
+        )
+    except QualityError as exc:
+        raise QualityError(f"replay dependency probe failed for {entry.path}: {exc}") from exc
+
+    rule, separator, prerequisites = depfile.replace("\r\n", "\n").replace("\\\n", " ").partition(":")
+    if rule != target or not separator or "\n" in prerequisites.strip():
+        raise QualityError(f"invalid replay dependency output for {entry.path}")
+
+    def unescape(match):
+        slashes, character = match.groups()
+        # GCC doubles literal backslashes before escaped whitespace and adds
+        # one escape before a hash. Other backslashes are literal path bytes.
+        count = len(slashes) - 1 if character == "#" else len(slashes) // 2
+        return "\\" * count + character
+
+    tokens = re.findall(r"(?:\\[ \t]|[^ \t\n])+", prerequisites.strip())
+    paths = {
+        (entry.directory / re.sub(r"(\\+)([ \t#])", unescape, token).replace("$$", "$")).resolve() for token in tokens
+    }
+    if (root / entry.path).resolve() not in paths:
+        raise QualityError(f"replay dependency output omitted its source: {entry.path}")
+    return paths
+
+
+def prepare_motion_replay_analysis(root, runner, clang_tidy, headers, entries):
+    from execution import write_json
+
+    try:
+        _, replay_configured = read_preview_and_replay_configuration(runner.product_configuration)
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
+    if not replay_configured:
+        runner.replay_compiler_analysis = {header: {"excluded": MOTION_REPLAY_EXCLUSION} for header in headers}
+        print("Motion replay is unavailable for compiler analysis in this configuration: " + ", ".join(headers))
+        return []
+
+    database = []
+    commands = []
+    consumers: dict[str, list[str]] = {header: [] for header in headers}
+    header_paths = {header: (root / header).resolve() for header in headers}
+    seen = set()
+    for entry in sorted(entries, key=lambda entry: entry.path):
+        source = entry.path
+        if not is_motion_replay_target_output(source, entry.output):
+            continue
+        if source in seen or not is_motion_replay_compile_entry(source, entry.output, entry.arguments):
+            raise QualityError(f"expected one valid configured motion replay compile entry for {source}")
+        seen.add(source)
+        label = motion_replay_tidy_label(source)
+        inputs = replay_dependencies(root, runner, entry, label.removeprefix("clang-tidy-") + "-dependencies")
+        runner.consume(sorted(inputs))
+        selected_headers = tuple(sorted(header for header, path in header_paths.items() if path in inputs))
+        if not selected_headers:
+            continue
+        for header in selected_headers:
+            consumers[header].append(label)
+        database.append(
+            {
+                "directory": str(entry.directory),
+                "file": str(root / source),
+                "arguments": list(entry.arguments),
+                "output": entry.output,
+            }
+        )
+        commands.append(
+            AnalysisCommand(
+                [clang_tidy, "-p", str(runner.log_dir), "--warnings-as-errors=*", str(root / source)],
+                root,
+                label,
+                source,
+                selected_headers,
+            )
+        )
+    for header in headers:
+        minimum = {motion_replay_tidy_label(source) for source in MOTION_REPLAY_HEADER_CONSUMERS[header]}
+        if minimum - set(consumers[header]):
+            missing = [
+                source
+                for source in MOTION_REPLAY_HEADER_CONSUMERS[header]
+                if motion_replay_tidy_label(source) not in consumers[header]
+            ]
+            raise QualityError(f"missing configured motion replay consumers for {header}: {', '.join(missing)}")
+    write_json(runner.log_dir / "compile_commands.json", database)
+    runner.replay_compiler_analysis = {
+        header: {"commands": [runner.name_prefix + label for label in consumers[header]]} for header in headers
+    }
+    return commands
+
+
 def prepare_native_analysis(
     root: Path,
     runner: Runner,
@@ -1062,8 +1192,6 @@ def prepare_native_analysis(
     selected_native: Sequence[str],
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
-    from verify import cache_values
-
     build_dir = root / "out/build" / arguments.preset
     entries = compilation_entries(root, arguments.preset)
     runner.consume([build_dir / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"])
@@ -1098,15 +1226,13 @@ def prepare_native_analysis(
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
     consumers = getattr(arguments, "compiler_consumers", None) or []
     validate_translation_units(consumers, entries, policy)
-    replay_headers = MOTION_REPLAY_HEADERS.intersection(selected_native)
-    if replay_headers and cache_values(build_dir).get("JUICER_GRAIN_MOTION_REPLAY_CONFIGURED") == "OFF":
-        print(
-            "Motion replay is unavailable for compiler analysis in this configuration: "
-            + ", ".join(sorted(replay_headers))
-        )
+    replay_headers = sorted(MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(selected_native))
+    commands: list[AnalysisCommand] = []
+    if replay_headers:
+        commands = prepare_motion_replay_analysis(root, runner, clang_tidy, replay_headers, entries)
         selected_native = [path for path in selected_native if path not in replay_headers]
         if not selected_native and not consumers:
-            return []
+            return commands
     translation_units = sorted(set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers))
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
@@ -1116,7 +1242,6 @@ def prepare_native_analysis(
         if entry.path in translation_units:
             consumed.update(included_paths(root.resolve(), entry, includes, edges))
     runner.consume([root / path for path in sorted(consumed)])
-    commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
         if PurePosixPath(translation_unit).suffix.lower() == ".cu":
             continue
@@ -1350,11 +1475,15 @@ def quality_main(root, arguments):
     log_dir.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(root / "scripts"))
     from execution import NativeRun, write_json
+    from verify import cache_values
 
     native_run = NativeRun(root, log_dir)
     runner = Runner(
         root, log_dir, jobs=arguments.jobs, native_run=native_run, name_prefix="quality-" if in_bundle else ""
     )
+    cache = cache_values(root / "out/build" / arguments.preset)
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
+        runner.product_configuration = {key: cache.get(key) for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_HOME_DIRECTORY")}
     runner.consume(
         [root / "out/build" / arguments.preset / "CMakeCache.txt", root / ".cargo/config", root / ".cargo/config.toml"]
     )
@@ -1376,6 +1505,18 @@ def quality_main(root, arguments):
     candidate_unchanged = None
     if failure is None:
         try:
+            if MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(selected):
+                shutil.copyfile(root / "scripts" / SOURCE_FILE_POLICY, log_dir / SOURCE_FILE_POLICY)
+                _, replay_configured = read_preview_and_replay_configuration(runner.product_configuration)
+                build = root / "out/build" / arguments.preset
+                manifest = build / "tests/rust-artifacts.json"
+                artifact_data = manifest.read_bytes()
+                product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
+                retained_artifacts = log_dir / manifest.name
+                if not in_bundle:
+                    retained_artifacts.write_bytes(artifact_data)
+                elif retained_artifacts.read_bytes() != artifact_data:
+                    raise QualityError("replay quality artifact description differs from its product receipt")
             result = run_checks(root, arguments, policy, selected, excluded, runner)
             if result != 0:
                 raise QualityError(f"quality checks returned {result}")
@@ -1426,7 +1567,7 @@ def quality_main(root, arguments):
         costs["expiry"] = expiry
         costs["report_read_bytes"] += expiry["read_bytes"]
     checks = {
-        "schema": "native-quality-checks-v2",
+        "schema": "native-quality-checks-v4",
         "status": status,
         "preset": arguments.preset,
         "selected": selected,
@@ -1437,6 +1578,7 @@ def quality_main(root, arguments):
         "expected_commands": expected_commands,
         "commands": commands,
         "rust_quality": runner.rust_quality,
+        "replay_compiler_analysis": runner.replay_compiler_analysis,
         "python_cases": python_cases,
         "consumed_inputs": sorted(consumed_inputs),
         "costs": costs,
@@ -1452,9 +1594,10 @@ def quality_main(root, arguments):
     if candidate is None:
         raise failure or QualityError("could not capture the standalone quality source candidate")
     (log_dir / "candidate.patch").write_bytes(candidate_patch)
-    candidate_record = {**candidate, "preset": arguments.preset}
+    candidate_record = {**candidate, "preset": arguments.preset, "configuration": runner.product_configuration}
     result_payload = {
-        "schema": "native-quality-v1",
+        "schema": "native-quality-v3",
+        "run_id": log_dir.name,
         "status": status,
         "preset": arguments.preset,
         "candidate_head": candidate["head"],

@@ -203,6 +203,7 @@ class PythonResultTests(unittest.TestCase):
         result = {
             **{key: checks[key] for key in ("status", "preset", "selected", "excluded", "mode", "commands")},
             "candidate_head": "source",
+            "schema": "native-quality-v1",
             "candidate_unchanged": True,
             "shipping_isolation": False,
             "members": self.result_members(payloads),
@@ -219,6 +220,266 @@ class PythonResultTests(unittest.TestCase):
         del checks["rust_quality"]
         with self.assertRaisesRegex(ValueError, "declared Rust quality differs"):
             qualification.validate_quality_result(*self.standalone_quality(checks))
+
+    def test_current_replay_compiler_receipt_requires_exact_commands_and_exclusions(self):
+        cases = (
+            ("excluded", False, ""),
+            ("mixed", False, ""),
+            ("mixed-without-ordinary-command", False, "missing ordinary compiler analysis"),
+            ("mixed-without-ordinary-format-and-command", False, "missing formatting for a selected native file"),
+            (
+                "mixed-with-substituted-policy",
+                False,
+                "retained source differs from candidate: scripts/source_file_policy.json",
+            ),
+            ("mixed-with-working-copy-policy", False, ""),
+            ("mixed-with-patched-policy", False, ""),
+            ("analyzed", True, ""),
+            ("missing-exclusion", False, "missing or invented replay header compiler analysis"),
+            ("invented-exclusion", True, "missing or unexpected replay compiler command"),
+            ("wrong-exclusion", False, "incorrect compiler exclusion"),
+            ("missing-evidence", True, "missing or invented replay header compiler analysis"),
+            ("downgraded-evidence", True, "requires compiler analysis evidence"),
+            ("missing-command", True, "missing or unexpected replay compiler command"),
+            ("wrong-compiler-variant", True, "incorrect motion replay compile variant"),
+            ("wrong-replay-define", True, "incorrect motion replay compile variant"),
+            ("wrong-database-path", True, "did not use the retained database"),
+            ("wrong-sibling-database", True, "did not use the retained database"),
+            ("missing-run-identity", True, "missing replay compiler result directory identity"),
+            ("current-excluded", False, ""),
+            ("current-analyzed", True, ""),
+            ("current-extra-consumer", True, ""),
+            ("current-extra-missing-command", True, "missing or unexpected replay compiler command"),
+            ("current-extra-wrong-variant", True, "incorrect motion replay compile variant"),
+            ("current-changed-database", True, "differs from its recorded database execution"),
+            ("current-missing-execution", True, "missing or unexpected replay compiler execution evidence"),
+            ("current-wrong-sibling-database", True, "did not use the retained database"),
+            ("current-coordinated-sibling", True, "differs from its recorded database execution"),
+            (
+                "current-false-replay-off",
+                False,
+                "configured replay availability disagrees with CMake artifact consumers",
+            ),
+            ("current-foreign-artifacts", True, "product artifact description differs from the configured build"),
+            ("current-missing-artifacts", False, "missing CMake artifact description for replay quality"),
+            ("current-downgraded-evidence", True, "requires compiler analysis evidence"),
+        )
+        self.subtest_cases = tuple(case for case, *_ in cases)
+        header = "tests/grain/motion-replay.h"
+        required_sources = ("tests/ffi/production-ofx-render.cpp", "src/Cuda/JuicerCudaExecutor.cpp")
+        extra_source = "tests/grain/film_oracle.cpp"
+        root = "/configured"
+        preset = "linux-debug"
+        build = root + "/out/build/" + preset
+        database_path = root + "/out/validation/" + preset + "/results/fixture"
+        source_policy = Path(verify.__file__).with_name("source_file_policy.json").read_bytes()
+        policy_source = "scripts/source_file_policy.json"
+
+        def git_blob(data):
+            header = b"blob " + str(len(data)).encode() + b"\0"
+            return hashlib.sha1(header + data, usedforsecurity=False).hexdigest()
+
+        policy_blob = git_blob(source_policy)
+        configuration = {
+            "CMAKE_HOME_DIRECTORY": root,
+            "CMAKE_BUILD_TYPE": "Debug",
+            "BUILD_TESTING": "ON",
+            "JUICER_GRAIN_PREVIEW": "TRUE",
+            "JUICER_GRAIN_PREVIEW_CONFIGURED": "ON",
+        }
+        for case_id, replay, error in cases:
+            with self.subTest(case=case_id):
+                current = case_id.startswith("current-")
+                case = case_id.removeprefix("current-")
+                sources = (
+                    sorted((*required_sources, extra_source) if case.startswith("extra-") else required_sources)
+                    if current
+                    else required_sources
+                )
+                for embedded in (False, True):
+                    prefix = "quality-" if embedded else ""
+                    ordinary = "native/ofx_exports.cpp"
+                    selected = [ordinary, header] if case.startswith("mixed") else [header]
+                    formatted = (
+                        [header]
+                        if case in {"mixed-without-ordinary-format-and-command", "mixed-with-substituted-policy"}
+                        else selected
+                    )
+                    checks = self.quality_checks(preset, selected, "development", None, [])
+                    checks["schema"] = "native-quality-checks-v4" if current else "native-quality-checks-v3"
+                    checks["expected_checks"].append("native-quality")
+                    checks["completed_checks"].append("native-quality")
+                    commands = [
+                        self.operation(
+                            prefix + "clang-format", ["fmt", "--dry-run", "--Werror", "--style=file", *formatted]
+                        ),
+                        self.operation(prefix + "clang-tidy-config", ["tidy", "--verify-config"]),
+                    ]
+                    if case in {"mixed", "mixed-with-working-copy-policy", "mixed-with-patched-policy"}:
+                        commands.append(
+                            self.operation(
+                                prefix + "clang-tidy-1-ofx-exports-cpp",
+                                ["tidy", "-p", build, "--warnings-as-errors=*", ordinary],
+                            )
+                        )
+                    analysis = {header: {"excluded": qualification.MOTION_REPLAY_EXCLUSION}}
+                    database = []
+                    if replay:
+                        labels = [
+                            prefix + qualification.motion_replay_tidy_label(source, legacy=not current)
+                            for source in sources
+                        ]
+                        analysis[header] = {"commands": labels}
+                        for label, source in zip(labels, sources):
+                            file = root + "/" + source
+                            target = "JuicerGrainMotionReplay"
+                            if (case == "wrong-compiler-variant" and source == sources[0]) or (
+                                case == "extra-wrong-variant" and source == extra_source
+                            ):
+                                target = "JuicerProductionOfxProbe"
+                            output = f"CMakeFiles/{target}.dir/{source}.o"
+                            flags = (
+                                []
+                                if case == "wrong-replay-define" and source == sources[0]
+                                else ["-DJUICER_GRAIN_MOTION_REPLAY=1"]
+                            )
+                            database.append(
+                                {
+                                    "file": file,
+                                    "directory": build,
+                                    "output": build + "/" + output,
+                                    "arguments": ["c++", *flags, "-o", output, "-c", file],
+                                }
+                            )
+                            if (case == "missing-command" and source == sources[0]) or (
+                                case == "extra-missing-command" and source == extra_source
+                            ):
+                                continue
+                            used_database = database_path
+                            if case == "wrong-database-path":
+                                used_database = build
+                            if case in {"wrong-sibling-database", "coordinated-sibling"}:
+                                used_database = database_path.removesuffix("fixture") + "wrong-sibling"
+                            command = [
+                                "tidy",
+                                "-p",
+                                used_database,
+                                "--warnings-as-errors=*",
+                                file,
+                            ]
+                            commands.append({**self.operation(label, command), "directory": root})
+                    if case == "invented-exclusion":
+                        analysis[header] = {"excluded": qualification.MOTION_REPLAY_EXCLUSION}
+                    if case == "wrong-exclusion":
+                        analysis[header] = {"excluded": "unknown"}
+                    if case == "missing-exclusion":
+                        del analysis[header]
+                    if case == "downgraded-evidence":
+                        checks["schema"] = "native-quality-checks-v3" if current else "native-quality-checks-v2"
+                    if case != "missing-evidence":
+                        checks["replay_compiler_analysis"] = analysis
+                    checks["commands"] = commands
+                    checks["expected_commands"] = [command["name"] for command in commands]
+                    configuration["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"] = "ON" if replay else "OFF"
+                    if embedded:
+                        result, payloads = self.embedded_quality(checks, "TRUE", [])
+                        result["schema"] = "native-tests-v6" if current else "native-tests-v5"
+                    else:
+                        result, payloads = self.standalone_quality(
+                            checks, schema="native-quality-v3" if current else "native-quality-v2", scope="quality"
+                        )
+                    if case != "missing-run-identity":
+                        result["run_id"] = "wrong-sibling" if case == "coordinated-sibling" else "fixture"
+                    candidate = json.loads(payloads["candidate.json"])
+                    candidate["configuration"] = configuration
+                    if current and case != "missing-artifacts":
+                        artifacts = {
+                            "schema": "rust-artifacts-v2",
+                            "build": build if case != "foreign-artifacts" else "/foreign" + build,
+                            "consumers": {
+                                "JuicerGrainMotionReplay": {
+                                    "binary": build + "/grain-motion/bin/JuicerGrainMotionReplay"
+                                }
+                            }
+                            if replay or case == "false-replay-off"
+                            else {},
+                            "variants": {
+                                "production": {
+                                    "archive": "/production/lib.a",
+                                    "target_dir": "/production",
+                                    "features": ["grain-preview"],
+                                },
+                                "test-support": {
+                                    "archive": "/test/lib.a",
+                                    "target_dir": "/test",
+                                    "features": ["test-support"],
+                                },
+                            },
+                        }
+                        payloads["rust-artifacts.json"] = json.dumps(artifacts).encode()
+                        if embedded:
+                            result["rust_artifacts"] = True
+                            candidate["features"] = {"rust_artifacts": "rust-artifacts.json"}
+                    candidate["inputs"][policy_source] = {"git_blob": policy_blob, "mode": "100644"}
+                    policy = source_policy
+                    if case == "mixed-with-substituted-policy":
+                        substituted = json.loads(policy)
+                        substituted["supportedExtensions"].remove(".cpp")
+                        policy = json.dumps(substituted).encode()
+                    if case == "mixed-with-working-copy-policy":
+                        policy = source_policy + b"\n"
+                        candidate["inputs"][policy_source]["worktree_sha256"] = hashlib.sha256(policy).hexdigest()
+                    if case == "mixed-with-patched-policy":
+                        updated = source_policy + b"\n"
+                        payloads["candidate.patch"] = (
+                            f"diff --git a/{policy_source} b/{policy_source}\n"
+                            f"index {policy_blob}..{git_blob(updated)} 100644\n"
+                        ).encode()
+                        policy = updated.replace(b"\n", b"\r\n")
+                    payloads["candidate.json"] = json.dumps(candidate).encode()
+                    payloads["source_file_policy.json"] = policy
+                    if database:
+                        database_bytes = json.dumps(database).encode()
+                        if current:
+                            database_identity = {
+                                "path": database_path + "/compile_commands.json",
+                                "sha256": hashlib.sha256(database_bytes).hexdigest(),
+                            }
+                            for label, source in zip(labels, sources):
+                                if case == "missing-execution" and source == sources[0]:
+                                    continue
+                                payloads[label + qualification.REPLAY_EXECUTION_SUFFIX] = json.dumps(
+                                    {
+                                        "command": [
+                                            "tidy",
+                                            "-p",
+                                            database_path,
+                                            "--warnings-as-errors=*",
+                                            root + "/" + source,
+                                        ],
+                                        "directory": root,
+                                        "headers": [header],
+                                        "database": database_identity,
+                                    }
+                                ).encode()
+                        if case == "changed-database":
+                            database[0]["arguments"].append("-DNON_REPLAY_INPUT=1")
+                            database_bytes = json.dumps(database).encode()
+                        payloads["compile_commands.json"] = database_bytes
+                    result["members"] = self.result_members(payloads)
+                    with tempfile.TemporaryDirectory() as directory:
+                        bundle = Path(directory)
+                        for name, data in payloads.items():
+                            (bundle / name).write_bytes(data)
+                        (bundle / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                        if error:
+                            with self.assertRaisesRegex(ValueError, error):
+                                qualification.read_native_result(bundle)
+                        else:
+                            summary = qualification.read_native_result(bundle)
+                            self.assertEqual(summary["replay_compiler_analysis"], analysis)
+
+    test_current_replay_compiler_receipt_requires_exact_commands_and_exclusions.required_subtests = True
 
     def test_standalone_rejects_development_mode_for_qualification(self):
         checks = self.quality_checks(
@@ -1078,6 +1339,189 @@ class RustReceiptBundleTests(unittest.TestCase):
             (root / name).write_bytes(data)
         (root / "result.json").write_text(json.dumps(result))
 
+    def test_current_product_registration_uses_configured_preview_and_replay(self):
+        cases = (
+            ("preview-off", False, False, ""),
+            ("preview-no-replay", True, False, ""),
+            ("preview-with-replay", True, True, ""),
+            (
+                "drop-preview",
+                True,
+                True,
+                "missing configured product registration contract: Ffi.Gpu.GrainPreviewStaged",
+            ),
+            ("drop-replay", True, True, "missing configured product registration contract: Grain.Gpu.FilmOfxApertures"),
+            ("invent-replay", True, False, "optional product registration in the base catalog"),
+            ("missing-configuration", True, True, "missing configured product preview and replay state"),
+            ("swapped-owners", True, True, "optional product registration differs from its owning command"),
+            ("aperture-wrong-selector", True, True, "optional product registration differs from its owning command"),
+            ("aperture-wrong-runtime", True, True, "optional product registration differs from its owning command"),
+            ("weak-aperture-catalog", True, True, "retained source differs from candidate: tests/gpu-contracts.json"),
+            ("substituted-executable", True, True, "optional product executable differs from configured target output"),
+            ("false-replay-off", True, False, "configured replay availability disagrees with CMake artifact consumers"),
+            ("false-replay-on", True, True, "configured replay availability disagrees with CMake artifact consumers"),
+        )
+        self.subtest_cases = tuple(case for case, *_ in cases)
+        root = Path(verify.__file__).parent.parent
+        aperture = "Grain.Gpu.FilmOfxApertures"
+        staged = "Ffi.Gpu.GrainPreviewStaged"
+        selectors = {
+            "Ffi.Host.GrainPreviewDiscovery": "--grain-preview-discovery",
+            staged: "--grain-preview-witness",
+            aperture: "--grain-preview-apertures",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for case, preview, replay, error in cases:
+                with self.subTest(case=case):
+                    bundle = Path(directory) / case
+                    bundle.mkdir()
+                    self.bundle(bundle, preview=preview, selected=("Rust.Bridge",), with_junit_id=True)
+                    result = json.loads((bundle / "result.json").read_bytes())
+                    payloads = {name: (bundle / name).read_bytes() for name in result["members"]}
+                    candidate = json.loads(payloads["candidate.json"])
+                    candidate["configuration"].update(
+                        JUICER_GRAIN_PREVIEW_CONFIGURED="ON" if preview else "OFF",
+                        JUICER_GRAIN_MOTION_REPLAY_CONFIGURED="ON" if replay else "OFF",
+                    )
+                    if case == "missing-configuration":
+                        del candidate["configuration"]["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"]
+                    inventory = json.loads(payloads["registration.json"])
+                    for runtime in ("host", "gpu"):
+                        member = f"{runtime}-contracts.json"
+                        catalog = json.loads(payloads[member])
+                        source = json.loads((root / "tests" / member).read_bytes())
+                        paths = {}
+                        properties = [{"name": "LABELS", "value": [runtime]}]
+
+                        def register(target, name):
+                            paths[target] = "/configured/out/build/linux-debug/" + target
+                            inventory["tests"].append(
+                                {
+                                    "name": name,
+                                    "command": [
+                                        "native-case",
+                                        "--runtime",
+                                        runtime,
+                                        "--protocol",
+                                        "custom",
+                                        "--",
+                                        paths[target],
+                                        selectors.get(name, name),
+                                    ],
+                                    "properties": properties,
+                                }
+                            )
+
+                        sections = [("grain_preview", preview, runtime == "gpu" and case == "drop-preview")]
+                        if runtime == "gpu":
+                            properties += [
+                                {"name": "TIMEOUT", "value": 0},
+                                {"name": "RESOURCE_LOCK", "value": ["juicer_gpu"]},
+                            ]
+                            target = "JuicerProductionPreparedRenderProbe"
+                            name = "Ffi.Gpu.ProductionPreparedRender"
+                            catalog["targets"][target] = source["targets"][target]
+                            catalog["required"].append(name)
+                            register(target, name)
+                            sections.append(("grain_preview_motion_replay", replay, case == "drop-replay"))
+                        for section, enabled, dropped in sections:
+                            if dropped:
+                                catalog.pop(section, None)
+                                continue
+                            scope = catalog[section] = source[section]
+                            if section == "grain_preview_motion_replay" and case == "invent-replay":
+                                catalog["required"].extend(scope["required"])
+                                for field in ("targets", "native_cohorts", "native_membership"):
+                                    catalog.setdefault(field, {}).update(scope[field])
+                                enabled = True
+                            if not enabled:
+                                continue
+                            (target,) = scope["targets"]
+                            (name,) = scope["required"]
+                            register(target, name)
+                        payloads[member] = json.dumps(catalog).encode()
+                        payloads[f"{runtime}-targets.json"] = json.dumps(paths).encode()
+                    for runtime in ("host", "gpu", "python"):
+                        member = f"{runtime}-contracts.json"
+                        candidate["inputs"][f"tests/{member}"] = {
+                            "worktree_sha256": hashlib.sha256(payloads[member]).hexdigest()
+                        }
+                    artifacts = json.loads(payloads["rust-artifacts.json"])
+                    probe = "JuicerProductionPreparedRenderProbe"
+                    replay_target = "JuicerGrainMotionReplay"
+                    artifacts["consumers"][probe] = {"binary": f"{artifacts['build']}/{probe}", "variant": "none"}
+                    if (replay and case != "false-replay-on") or case == "false-replay-off":
+                        artifacts["consumers"][replay_target] = {
+                            "binary": f"{artifacts['build']}/{replay_target}",
+                            "variant": "production",
+                        }
+                    payloads["rust-artifacts.json"] = json.dumps(artifacts).encode()
+                    if case == "weak-aperture-catalog":
+                        catalog = json.loads(payloads["gpu-contracts.json"])
+                        membership = catalog["grain_preview_motion_replay"]["native_membership"][aperture]
+                        self.assertEqual(membership["listed"], 6)
+                        membership.update(listed=1, terminal=1, required=membership["required"][:1])
+                        payloads["gpu-contracts.json"] = json.dumps(catalog).encode()
+                    if case in {
+                        "preview-with-replay",
+                        "swapped-owners",
+                        "aperture-wrong-selector",
+                        "aperture-wrong-runtime",
+                        "substituted-executable",
+                    }:
+                        tests = {entry["name"]: entry for entry in inventory["tests"]}
+                        if case == "swapped-owners":
+                            tests[aperture]["command"], tests[staged]["command"] = (
+                                tests[staged]["command"],
+                                tests[aperture]["command"],
+                            )
+                        elif case == "aperture-wrong-selector":
+                            tests[aperture]["command"][-1] = "--grain-preview-witness"
+                        elif case == "aperture-wrong-runtime":
+                            tests[aperture]["properties"] = [{"name": "LABELS", "value": ["host"]}]
+                        catalog = qualification.configured_product_contract(
+                            json.loads(payloads["gpu-contracts.json"]), "gpu", candidate["configuration"]
+                        )
+                        paths = json.loads(payloads["gpu-targets.json"])
+                        if case == "substituted-executable":
+                            paths[replay_target] = "/usr/bin/true"
+                            native = tests[aperture]["command"]
+                            native[native.index("--") + 1] = paths[replay_target]
+                            payloads["gpu-targets.json"] = json.dumps(paths).encode()
+                        options = {"runtime": "gpu", "artifact_consumers": artifacts["consumers"]}
+                        if error:
+                            with self.assertRaisesRegex(ValueError, error):
+                                qualification.native_registration(catalog, paths, inventory, **options)
+                        else:
+                            registered = qualification.native_registration(catalog, paths, inventory, **options)
+                            self.assertEqual(
+                                registered[aperture]["command"],
+                                [paths["JuicerGrainMotionReplay"], "--grain-preview-apertures"],
+                            )
+                            aperture_cases = catalog["native_membership"][aperture]
+                            self.assertEqual(aperture_cases["listed"], 6)
+                            self.assertEqual(aperture_cases["terminal"], 6)
+                            self.assertEqual(len(aperture_cases["required"]), 6)
+                    payloads["candidate.json"] = json.dumps(candidate).encode()
+                    payloads["registration.json"] = json.dumps(inventory).encode()
+                    result["schema"] = "native-tests-v6"
+                    result["members"] = PythonResultTests.result_members(payloads)
+                    for name, data in payloads.items():
+                        (bundle / name).write_bytes(data)
+                    (bundle / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                    if error:
+                        # The complete reader checks the host target map before the GPU inventory.
+                        offline_error = "unowned native host executable" if case == "aperture-wrong-runtime" else error
+                        with self.assertRaisesRegex(ValueError, offline_error):
+                            qualification.read_native_result(bundle)
+                    else:
+                        summary = qualification.read_native_result(bundle)
+                        self.assertEqual(summary["ctest_cases"], 1)
+                        self.assertEqual(summary["custom_cases"], 0)
+                        self.assertEqual("Grain.Gpu.FilmOfxApertures" in summary["unselected_registrations"], replay)
+
+    test_current_product_registration_uses_configured_preview_and_replay.required_subtests = True
+
     def test_offline_rust_preview_receipts(self):
         cases = (
             ("preview", {}, False),
@@ -1517,7 +1961,15 @@ class CollectionTests(unittest.TestCase):
                 original = Path(completed)
                 result = json.loads((original / "result.json").read_bytes())
                 self.assertIn(
-                    result["schema"], {"native-tests-v1", "native-tests-v2", "native-tests-v3", "native-tests-v4"}
+                    result["schema"],
+                    {
+                        "native-tests-v1",
+                        "native-tests-v2",
+                        "native-tests-v3",
+                        "native-tests-v4",
+                        "native-tests-v5",
+                        "native-tests-v6",
+                    },
                 )
                 qualification.tests_result_members(result)
                 payloads = {name: (original / name).read_bytes() for name in result["members"]}

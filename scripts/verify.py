@@ -26,11 +26,15 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
 from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
 from qualification import (
+    PRODUCT_PREVIEW_KEYS,
     RUST_TEST_BUILD_TARGET,
     RUST_TEST_PATH_FLAGS,
     RUST_TEST_REGISTRATIONS,
+    SOURCE_FILE_POLICY,
     collect_bundles,
-    grain_preview_enabled,
+    configured_product_contract,
+    read_preview_and_replay_configuration,
+    product_artifact_consumers,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -528,6 +532,10 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
         return data
 
     filemode = git("config", "--type=bool", "--default=true", "--get", "core.filemode").strip() == b"true"
+    source_policy = "scripts/" + SOURCE_FILE_POLICY
+    retained_sources = (
+        {f"tests/{runtime}-contracts.json" for runtime in ("host", "gpu", "python")} if domain_tests else set()
+    )
     explicit = {
         "CMakeLists.txt",
         "CMakePresets.json",
@@ -544,14 +552,14 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
         "tests/ffi/output-color-development.json",
         "tests/film/optics-fixtures/manifest.json",
         literal_name,
-        "scripts/source_file_policy.json",
+        source_policy,
     }
     roots = ("src", "native", "rust", "scripts", "cmake", "third_party", ".config", ".cargo", ".github/workflows")
     if gpu_witness or domain_tests:
         roots += ("Resources",)
     if domain_tests:
         roots += ("tests",)
-    policy = (root / "scripts/source_file_policy.json").read_bytes()
+    policy = (root / source_policy).read_bytes()
     costs["source_read_bytes"] += len(policy)
     code = set(json.loads(policy)["supportedExtensions"]) | {".rs", ".py", ".cmake", ".toml", ".lock", ".yml", ".yaml"}
     paths = [
@@ -646,6 +654,13 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
                 "mode": "100755" if filemode and info.st_mode & 0o111 else "100644",
             }
             new_files[name] = base64.b64encode(data).decode("ascii")
+        elif name == source_policy:
+            identity["worktree_sha256"] = hashlib.sha256(policy).hexdigest()
+        elif name in retained_sources:
+            reject_links(name)
+            data = (root / name).read_bytes()
+            costs["source_read_bytes"] += len(data)
+            identity["worktree_sha256"] = hashlib.sha256(data).hexdigest()
         inputs[name] = identity
     if not inputs:
         raise ValueError("empty spatial-optics source scope")
@@ -778,11 +793,14 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
     return 0 if result["status"] == "passed" else 1
 
 
-def configure_command(cmake, preset, *, cuda_free=False, testing="ON"):
+def configure_command(cmake, preset, *, cuda_free=False, testing="ON", grain_preview=None):
     command = [cmake, "--preset", preset + ("-host-tests" if cuda_free else "")]
     if cuda_free:
         command += ["-S", str(ROOT / "tests/host")]
-    return [*command, "-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
+    command += ["-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
+    if grain_preview is not None:
+        command.append("-DJUICER_GRAIN_PREVIEW:BOOL=" + grain_preview)
+    return command
 
 
 def check_owner(args):
@@ -855,7 +873,8 @@ def native_tests(args):
         (directory / "registration.json").write_text('{"tests":[]}\n')
         (directory / "target-discovery.json").write_text("{}\n")
         result = {
-            "schema": "native-tests-v4",
+            "schema": "native-tests-v6",
+            "run_id": directory.name,
             "status": "failed",
             "preset": args.preset,
             "candidate_head": initial["head"],
@@ -900,9 +919,14 @@ def native_tests(args):
                     "JUICER_NEXTEST_EXECUTABLE": nextest,
                     "Python3_EXECUTABLE": sys.executable,
                 }
-                if "JUICER_RUST_TESTS_REQUEST" not in cache or any(
-                    os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v))
-                    for k, v in desired.items()
+                missing_product_configuration = not cuda_free and not all(k in cache for k in PRODUCT_PREVIEW_KEYS)
+                if (
+                    missing_product_configuration
+                    or "JUICER_RUST_TESTS_REQUEST" not in cache
+                    or any(
+                        os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v))
+                        for k, v in desired.items()
+                    )
                 ):
                     run.command("configure", configure, vctip_executable=windows_vctip(os.environ))
             build_command = [cmake, "--build", str(build)]
@@ -910,32 +934,25 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
-            if not standalone and not cuda_free and grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW")):
-                for runtime in ("host", "gpu"):
-                    contract = contracts[runtime]
-                    sections = ["grain_preview"]
-                    if runtime == "gpu" and args.preset.startswith("linux-"):
-                        sections.append("grain_preview_motion_replay")
-                    for section in sections:
-                        preview = contract[section]
-                        contract["targets"].update(preview["targets"])
-                        contract["required"].extend(preview["required"])
-                        contract["native_cohorts"].update(preview["native_cohorts"])
-                        contract["native_membership"].update(preview["native_membership"])
-                    (directory / (runtime + "-contracts.json")).write_text(json.dumps(contract, indent=2) + "\n")
             candidate["configuration"] = {
                 k: cache.get(k)
                 for k in (
-                    "BUILD_TESTING",
-                    "JUICER_GRAIN_PREVIEW",
+                    *PRODUCT_PREVIEW_KEYS,
                     "CMAKE_BUILD_TYPE",
                     "CMAKE_CXX_COMPILER",
                     "CMAKE_CUDA_COMPILER",
                     "CMAKE_HOME_DIRECTORY",
                 )
             }
+            preview = False
+            artifact_consumers = None
             if not standalone and not cuda_free:
+                configuration = candidate["configuration"]
+                preview, replay_configured = read_preview_and_replay_configuration(configuration)
+                for runtime in ("host", "gpu"):
+                    contracts[runtime] = configured_product_contract(contracts[runtime], runtime, configuration)
                 artifact_data = (build / "tests/rust-artifacts.json").read_bytes()
+                artifact_consumers = product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
                 costs["report_read_bytes"] += len(artifact_data)
                 (directory / "rust-artifacts.json").write_bytes(artifact_data)
                 candidate["features"]["rust_artifacts"] = "rust-artifacts.json"
@@ -967,7 +984,12 @@ def native_tests(args):
                 if standalone
                 else {
                     runtime: native_registration(
-                        contracts[runtime], target_data[runtime], inventory, runtime=runtime, cuda_free=cuda_free
+                        contracts[runtime],
+                        target_data[runtime],
+                        inventory,
+                        runtime=runtime,
+                        cuda_free=cuda_free,
+                        artifact_consumers=artifact_consumers,
                     )
                     for runtime in ("host", "gpu")
                 }
@@ -1026,7 +1048,6 @@ def native_tests(args):
             rust_selected = selected & RUST_TEST_REGISTRATIONS.keys()
             if rust_selected:
                 request = json.loads(cache["JUICER_RUST_TESTS_REQUEST"])
-                preview = not cuda_free and grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW"))
                 validate_rust_test_request(request, args.preset, result["build_kind"], preview)
                 candidate["configuration"]["rust_tests"] = request
                 rust_tools = {"python": sys.executable, "cargo": cargo, "nextest": nextest}
@@ -1218,7 +1239,9 @@ def fresh_prepare(args):
                 raise ValueError("build cache belongs to another source tree")
             run.command(
                 "configure",
-                configure_command(cmake, args.preset, cuda_free=cuda_free, testing=args.testing),
+                configure_command(
+                    cmake, args.preset, cuda_free=cuda_free, testing=args.testing, grain_preview=args.grain_preview
+                ),
                 vctip_executable=windows_vctip(os.environ),
             )
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
@@ -1241,7 +1264,7 @@ def fresh_prepare(args):
             cache = cache_values(build)
             candidate["configuration"] = {
                 key: cache.get(key)
-                for key in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")
+                for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")
             }
             version_data = run.command(
                 "versions",
@@ -1589,6 +1612,7 @@ def main():
     selected.add_argument("--targets", nargs="+")
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
+    prepare.add_argument("--grain-preview", choices=("ON", "OFF"), help="set the product preview option in CMake")
     prepare.add_argument("--run-id")
     prepare.add_argument("--clean-first", action="store_true")
     prepare.add_argument(

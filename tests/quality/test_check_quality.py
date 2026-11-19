@@ -266,7 +266,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -298,7 +302,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
@@ -356,7 +364,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
-                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ) as runner,
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -371,7 +383,11 @@ class CheckQualityTests(IsolatedOwnerTests):
     def test_native_boundary_failure_blocks_even_documentation_selection(self) -> None:
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
-            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             contextlib.redirect_stdout(io.StringIO()) as output,
@@ -400,7 +416,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[consumer, producer]),
@@ -436,7 +456,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[*consumers, producer]),
@@ -454,7 +478,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                 "argv",
                 [str(SCRIPT_PATH), "--preset", "linux-debug", "--qualification", "--files", "CONTRIBUTING.md"],
             ),
-            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ),
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "check_rust") as rust,
@@ -1960,55 +1988,142 @@ class SelectionAndEvidenceTests(unittest.TestCase):
                 check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
 
     def test_motion_replay_headers_require_consumers_when_configured(self) -> None:
+        from execution import OutputLease
+
+        compiler_name = "clang++" if os.name == "nt" else "g++-13"
+        compiler = shutil.which(compiler_name)
+        self.assertIsNotNone(compiler, f"required replay fixture compiler {compiler_name}")
         headers = [
             "tests/grain/film-ofx-apertures.inc",
             "tests/grain/motion-density.inc",
             "tests/grain/motion-replay.h",
             "tests/grain/motion-replay.inc",
         ]
-        consumer = "tests/grain/replay.cpp"
-        entries = [check_quality.CompilationEntry(consumer, "compiler")]
+        render = "tests/ffi/production-ofx-render.cpp"
+        executor = "src/Cuda/JuicerCudaExecutor.cpp"
+        extra = "tests/grain/film_oracle.cpp"
+        ordinary = "src/ordinary.cpp"
+        other = "src/ordinary.h"
         cases = (
-            ("unavailable", "OFF", headers, [], None),
-            ("configured", "ON", headers, entries, None),
-            ("configured-without-consumer", "ON", headers, [], headers[0]),
-            ("cache-without-availability", "", headers, [], headers[0]),
-            ("unrelated-header", "OFF", [*headers, "tests/other.h"], [], "tests/other.h"),
+            ("unavailable", "OFF", headers, (), (), None),
+            ("configured", "ON", headers, (render, executor), (executor, render), None),
+            ("extra-replay-consumer", "ON", headers, (render, executor, extra), (executor, render, extra), None),
+            ("extra-macro-include", "ON", headers, (render, executor, extra), (executor, render, extra), None),
+            ("extra-inactive-include", "ON", headers, (render, executor, extra), (executor, render), None),
+            ("extra-failed-probe", "ON", headers, (render, executor, extra), (), extra),
+            ("extra-consumer-wrong-variant", "ON", headers, (render, executor, extra), (), extra),
+            ("ordinary-variant-only", "ON", headers, (executor,), (), render),
+            ("configured-without-executor", "ON", headers, (render,), (), executor),
+            ("cache-without-availability", "", headers, (), (), "missing configured product preview and replay state"),
+            ("unrelated-header", "OFF", [*headers, "tests/other.h"], (), (), "tests/other.h"),
+            ("mixed-available", "OFF", [*headers, other], (), (ordinary,), None),
         )
         self.subtest_cases = tuple(case[0] for case in cases)
         policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
         arguments = argparse.Namespace(preset="linux-debug", clang_format=None, clang_tidy=None)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(prefix="replay includes #$ ") as directory:
             root = Path(directory).resolve()
-            build_dir = root / "out/build/linux-debug"
-            build_dir.mkdir(parents=True)
+            build = root / "out/build/linux-debug"
+            build.mkdir(parents=True)
             (root / "tests/grain").mkdir(parents=True)
             for header in headers:
                 (root / header).touch()
-            (root / consumer).write_text(
-                "".join(f'#include "{Path(header).name}"\n' for header in headers), encoding="utf-8"
-            )
-            for case, configured, selected, compilation, missing in cases:
+            for source, includes in (
+                (render, headers),
+                (executor, [headers[2]]),
+                (extra, [headers[2]]),
+                (ordinary, [other]),
+            ):
+                path = root / source
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "".join(f'#include "{(root / header).as_posix()}"\n' for header in includes), encoding="utf-8"
+                )
+            (root / other).touch()
+            ordinary_entries = [check_quality.CompilationEntry(source, "compiler") for source in (render, ordinary)]
+            for case, configured, selected, replay_sources, expected, missing in cases:
+                extra_header = (root / headers[2]).as_posix()
+                extra_include = f'#include "{extra_header}"\n'
+                if case == "extra-macro-include":
+                    extra_include = "#include REPLAY_HEADER\n"
+                elif case == "extra-inactive-include":
+                    extra_include = f"#if 0\n{extra_include}#endif\n"
+                elif case == "extra-failed-probe":
+                    extra_include = '#include "missing-replay-dependency.h"\n'
+                (root / extra).write_text(extra_include, encoding="utf-8")
+                compilation = list(ordinary_entries)
+                for source in replay_sources:
+                    flag = 0 if case == "extra-consumer-wrong-variant" and source == extra else 1
+                    output = f"CMakeFiles/JuicerGrainMotionReplay.dir/{source}.o"
+                    command = (
+                        compiler,
+                        f"-DJUICER_GRAIN_MOTION_REPLAY={flag}",
+                        '-DREPLAY_HEADER="motion-replay.h"',
+                        "-I../../../tests/grain",
+                        "-o",
+                        output,
+                        "-c",
+                        (root / source).as_posix(),
+                    )
+                    compilation.append(check_quality.CompilationEntry(source, "", build, command, output))
+                runner = check_quality.Runner(root, root / "logs" / case)
+                runner.product_configuration = {
+                    "BUILD_TESTING": "ON",
+                    "JUICER_GRAIN_PREVIEW": "ON",
+                    "JUICER_GRAIN_PREVIEW_CONFIGURED": "ON",
+                    "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": configured,
+                }
+                run_probe = runner.run
+
+                def run(command, *, label, **options):
+                    if label.endswith("-dependencies"):
+                        return run_probe(command, label=label, **options)
+                    return {
+                        "clang-format-version": "clang-format version 22.1.8",
+                        "clang-tidy-version": "LLVM version 22.1.8",
+                    }.get(label, "")
+
                 with (
                     self.subTest(case=case),
                     patch.object(check_quality, "resolve_tool", return_value="tool"),
                     patch.object(check_quality, "compilation_entries", return_value=compilation),
+                    patch.object(runner, "run", side_effect=run) as run_command,
+                    OutputLease(root, build),
                 ):
-                    (build_dir / "CMakeCache.txt").write_text(
-                        f"JUICER_GRAIN_MOTION_REPLAY_CONFIGURED:INTERNAL={configured}\n", encoding="utf-8"
-                    )
-                    runner = Mock()
-                    runner.run.side_effect = ["clang-format version 22.1.8", "LLVM version 22.1.8", "", ""]
                     if missing:
-                        with self.assertRaisesRegex(
-                            check_quality.QualityError, "no consuming translation unit"
-                        ) as error:
+                        with self.assertRaises(check_quality.QualityError) as error:
                             check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
                         self.assertIn(missing, str(error.exception))
+                        if case == "extra-failed-probe":
+                            self.assertIn("replay dependency probe failed", str(error.exception))
+                            self.assertFalse((runner.log_dir / "compile_commands.json").exists())
                     else:
                         commands = check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
-                        self.assertEqual([command.source for command in commands], [consumer] if compilation else [])
-                    runner.run.assert_any_call(
+                        self.assertEqual([command.source for command in commands], list(expected))
+                        self.assertEqual(set(runner.replay_compiler_analysis), set(headers))
+                        if configured == "OFF":
+                            self.assertTrue(
+                                all("excluded" in item for item in runner.replay_compiler_analysis.values())
+                            )
+                        else:
+                            database = json.loads((runner.log_dir / "compile_commands.json").read_bytes())
+                            self.assertEqual(
+                                [row["file"] for row in database], [str(root / source) for source in expected]
+                            )
+                            self.assertTrue(
+                                all(command.command[1:3] == ["-p", str(runner.log_dir)] for command in commands)
+                            )
+                            self.assertTrue(
+                                all(command.label == check_quality.Runner._name(command.label) for command in commands)
+                            )
+                            self.assertEqual(
+                                runner.replay_compiler_analysis[headers[2]]["commands"],
+                                [command.label for command in commands if headers[2] in command.replay_headers],
+                            )
+                            self.assertEqual(len(runner.native_run.commands), len(replay_sources))
+                            self.assertTrue(all(command["drained"] for command in runner.native_run.commands))
+                            self.assertEqual(extra in runner.consumed_inputs, extra in replay_sources)
+                    run_command.assert_any_call(
                         ["tool", "--dry-run", "--Werror", "--style=file", *selected], label="clang-format"
                     )
 

@@ -151,7 +151,14 @@ The archive target writes `juicer-grain-preview.ofx.bundle` and
 `juicer-grain-preview-Win64.tar.gz` under
 `out/stage/windows-clang-release/portra-grain-preview/`. The bundle contains
 the Portra 400 grain bank and its notices. To return the same configure cache
-to the standard plug-in, set `JUICER_GRAIN_PREVIEW=OFF` when configuring.
+to the standard plug-in, configure again with preview OFF.
+
+```sh
+cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=OFF
+```
+
+The verifier's `prepare` command accepts `--grain-preview ON` and
+`--grain-preview OFF`. Omit the switch to keep the configured value.
 [Film v1 controls in Resolve](../README.md#portra-400-film-v1-preview)
 
 ## Public test suite

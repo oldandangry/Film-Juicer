@@ -24,7 +24,82 @@ PRESET_TARGETS = {
 RUST_QUALITY_PACKAGES = ("film-juicer-core", "film-juicer-plugin")
 RUST_POLICY_FILES = {"Cargo.lock", "Cargo.toml", "clippy.toml", "rust-toolchain.toml", "rustfmt.toml"}
 RUST_BUILD_FILES = {"CMakeLists.txt", "cmake/JuicerRust.cmake"}
-NATIVE_POLICY_FILES = {".clang-format", ".clang-tidy", "scripts/check-quality.py", "scripts/source_file_policy.json"}
+SOURCE_FILE_POLICY = "source_file_policy.json"
+NATIVE_POLICY_FILES = {".clang-format", ".clang-tidy", "scripts/check-quality.py", "scripts/" + SOURCE_FILE_POLICY}
+PRODUCT_PREVIEW_KEYS = (
+    "BUILD_TESTING",
+    "JUICER_GRAIN_PREVIEW",
+    "JUICER_GRAIN_PREVIEW_CONFIGURED",
+    "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED",
+)
+MOTION_REPLAY_TARGET = "JuicerGrainMotionReplay"
+REPLAY_EXECUTION_SUFFIX = ".replay-execution.json"
+MOTION_REPLAY_RENDER = "tests/ffi/production-ofx-render.cpp"
+MOTION_REPLAY_HEADER_CONSUMERS = {
+    "tests/grain/film-ofx-apertures.inc": (MOTION_REPLAY_RENDER,),
+    "tests/grain/motion-density.inc": (MOTION_REPLAY_RENDER,),
+    "tests/grain/motion-replay.h": (MOTION_REPLAY_RENDER, "src/Cuda/JuicerCudaExecutor.cpp"),
+    "tests/grain/motion-replay.inc": (MOTION_REPLAY_RENDER,),
+}
+MOTION_REPLAY_EXCLUSION = "CMake did not configure the JuicerGrainMotionReplay target"
+OPTIONAL_PRODUCT_REGISTRATIONS = {
+    "Ffi.Host.GrainPreviewDiscovery": (
+        "grain_preview",
+        "host",
+        "JuicerProductionPreparedRenderProbe",
+        "--grain-preview-discovery",
+    ),
+    "Ffi.Gpu.GrainPreviewStaged": (
+        "grain_preview",
+        "gpu",
+        "JuicerProductionPreparedRenderProbe",
+        "--grain-preview-witness",
+    ),
+    "Grain.Gpu.FilmOfxApertures": (
+        "grain_preview_motion_replay",
+        "gpu",
+        MOTION_REPLAY_TARGET,
+        "--grain-preview-apertures",
+    ),
+}
+
+
+def is_motion_replay_target_output(source, output):
+    expected = PurePosixPath(f"CMakeFiles/{MOTION_REPLAY_TARGET}.dir/{source}.o").parts
+    actual = PurePosixPath(output.replace("\\", "/")).parts
+    return actual[-len(expected) :] == expected
+
+
+def is_motion_replay_compile_entry(source, output, arguments):
+    """Identify the CMake target entry that actually enables the guarded includes."""
+    macro = "JUICER_GRAIN_MOTION_REPLAY"
+    options = [arg for arg in arguments if macro in arg]
+    return is_motion_replay_target_output(source, output) and options == ["-D" + macro + "=1"]
+
+
+def motion_replay_tidy_label(source, *, legacy=False):
+    name = re.sub(r"[^a-z0-9-]+", "-", PurePosixPath(source).name.lower()).strip("-")
+    # Two configured source paths can have the same filename.
+    identity = "" if legacy else hashlib.sha256(source.encode()).hexdigest()[:12] + "-"
+    return "clang-tidy-motion-replay-" + identity + name
+
+
+def read_preview_and_replay_configuration(configuration):
+    """Read CMake's effective product and replay decisions, retaining the raw option."""
+    if not isinstance(configuration, dict):
+        raise ValueError("missing configured product preview and replay state")
+    testing, raw_preview, preview, replay = (configuration.get(key) for key in PRODUCT_PREVIEW_KEYS)
+    if (
+        not isinstance(testing, str)
+        or not isinstance(raw_preview, str)
+        or any(value not in ("ON", "OFF") for value in (preview, replay))
+    ):
+        raise ValueError("missing configured product preview and replay state")
+    preview_enabled = preview == "ON"
+    replay_configured = replay == "ON"
+    if replay_configured and (not preview_enabled or not grain_preview_enabled(testing)):
+        raise ValueError("replay target requires a product preview with testing enabled")
+    return preview_enabled, replay_configured
 
 
 def quality_scope(selected, *, qualification):
@@ -39,6 +114,14 @@ def quality_scope(selected, *, qualification):
     return expanded, rust_required
 
 
+def quality_native_source(path, extensions):
+    return (
+        PurePosixPath(path).suffix.lower() in extensions
+        and path.startswith(("src/", "native/", "tests/"))
+        and "/fixtures/" not in path
+    )
+
+
 def grain_preview_enabled(value: str | None) -> bool:
     """Interpret the cached value as CMake's if(JUICER_GRAIN_PREVIEW)."""
     if value is None or value in ("", "0", "NOTFOUND") or value.endswith("-NOTFOUND"):
@@ -46,11 +129,12 @@ def grain_preview_enabled(value: str | None) -> bool:
     return value.upper() not in {"OFF", "NO", "FALSE", "N", "IGNORE"}
 
 
-def clippy_forms(preset, packages, raw_preview):
+def clippy_forms(preset, packages, raw_preview, *, preview=None):
     """Return the required labels and package arguments for Rust quality."""
     profile = "release" if preset.endswith("-release") else "dev"
     profile_args = ["--release"] if profile == "release" else []
-    preview = grain_preview_enabled(raw_preview)
+    if preview is None:
+        preview = grain_preview_enabled(raw_preview)
     for package in packages:
         test_support = package == "film-juicer-plugin"
         variants = [()]
@@ -77,6 +161,8 @@ RUST_EXECUTION_SCHEMAS = {
     "native-tests-v2": "rust-test-execution-v3",
     "native-tests-v3": "rust-test-execution-v4",
     "native-tests-v4": "rust-test-execution-v4",
+    "native-tests-v5": "rust-test-execution-v4",
+    "native-tests-v6": "rust-test-execution-v4",
 }
 OPTICS_TESTS = ["Ffi.Host.SpatialOptics", "Rust.Core"]
 GPU_WITNESS_TEST = "Ffi.Gpu.PreparedBoundary.negative-direct"
@@ -344,7 +430,42 @@ def validate_native_result(result, payloads):
     return summary
 
 
-def native_registration(contract, paths, registration, *, runtime="host", cuda_free=False):
+def configured_product_contract(contract, runtime, configuration):
+    """Apply optional catalog sections selected by CMake to the base inventory."""
+    preview_enabled, replay_configured = read_preview_and_replay_configuration(configuration)
+    enabled = {"grain_preview": preview_enabled, "grain_preview_motion_replay": replay_configured}
+    merged = {
+        **contract,
+        "required": list(contract["required"]),
+        **{field: dict(contract.get(field, {})) for field in ("targets", "native_cohorts", "native_membership")},
+    }
+    for name, (section, expected_runtime, owner, _) in OPTIONAL_PRODUCT_REGISTRATIONS.items():
+        if runtime != expected_runtime:
+            continue
+        if (
+            name in merged["required"]
+            or name in merged["native_cohorts"]
+            or name in merged["native_membership"]
+            or (section == "grain_preview_motion_replay" and owner in merged["targets"])
+        ):
+            raise ValueError("optional product registration in the base catalog: " + name)
+        if not enabled[section]:
+            continue
+        scope = contract.get(section, {})
+        if (
+            scope.get("required") != [name]
+            or set(scope.get("targets", {})) != {owner}
+            or set(scope.get("native_cohorts", {})) != {name}
+            or set(scope.get("native_membership", {})) != {name}
+        ):
+            raise ValueError("missing configured product registration contract: " + name)
+        merged["required"].append(name)
+        for field in ("targets", "native_cohorts", "native_membership"):
+            merged[field].update(scope[field])
+    return merged
+
+
+def native_registration(contract, paths, registration, *, runtime="host", cuda_free=False, artifact_consumers=None):
     """Check independent owning target counts before selecting execution."""
     if cuda_free:
         targets = {
@@ -401,6 +522,22 @@ def native_registration(contract, paths, registration, *, runtime="host", cuda_f
             "rows": test["name"] in contract["targets"][target].get("rows", []),
         }
         counts[target] += 1
+    for name, (_, expected_runtime, owner, selector) in OPTIONAL_PRODUCT_REGISTRATIONS.items():
+        if name not in contract["required"]:
+            continue
+        entry = found.get(name)
+        if (
+            runtime != expected_runtime
+            or entry is None
+            or entry["target"] != owner
+            or entry["command"][1:2] != [selector]
+            or (owner == MOTION_REPLAY_TARGET and len(entry["command"]) != 2)
+        ):
+            raise ValueError("optional product registration differs from its owning command: " + name)
+        if artifact_consumers is not None:
+            binary = artifact_consumers.get(owner, {}).get("binary")
+            if paths[owner] != binary or entry["command"][0] != binary:
+                raise ValueError("optional product executable differs from configured target output: " + name)
     if counts != {t: s["registrations"] for t, s in contract["targets"].items()}:
         raise ValueError("missing native host registration")
     names = [t["name"] for t in registration["tests"]]
@@ -814,6 +951,21 @@ def native_test_build(result, configuration):
     return source, build
 
 
+def product_artifact_consumers(artifacts, build, replay_configured):
+    """Read CMake target outputs from the configured build's artifact description."""
+    path = type(build)
+    if artifacts.get("schema") != "rust-artifacts-v2" or path(artifacts["build"]) != build:
+        raise ValueError("product artifact description differs from the configured build")
+    consumers = artifacts.get("consumers")
+    if not isinstance(consumers, dict) or (MOTION_REPLAY_TARGET in consumers) != replay_configured:
+        raise ValueError("configured replay availability disagrees with CMake artifact consumers")
+    if replay_configured:
+        binary = path(consumers[MOTION_REPLAY_TARGET]["binary"])
+        if not binary.is_relative_to(build) or binary == build or ".." in binary.parts:
+            raise ValueError("replay artifact consumer is outside the configured build")
+    return consumers
+
+
 def validate_rust_artifact_paths(artifacts, result, configuration):
     preset = result["preset"]
     path = rust_test_path(preset)
@@ -1028,7 +1180,7 @@ def rust_receipt_membership(
     if ctest_witness is not None:
         suite, case = ctest_witness
         run_ids = ctest_rust_run_ids(case)
-        if receipt_schema == "native-tests-v4":
+        if receipt_schema in {"native-tests-v4", "native-tests-v5", "native-tests-v6"}:
             if run_ids != [rust_junit_run_id(report)]:
                 raise ValueError("Rust JUnit run ID differs from the retained CTest case")
         elif run_ids:
@@ -1293,7 +1445,11 @@ def read_native_result(bundle, *, result_bytes=None):
         "native-tests-v2": (tests_result_members, validate_tests_result),
         "native-tests-v3": (tests_result_members, validate_tests_result),
         "native-tests-v4": (tests_result_members, validate_tests_result),
+        "native-tests-v5": (tests_result_members, validate_tests_result),
+        "native-tests-v6": (tests_result_members, validate_tests_result),
         "native-quality-v1": (quality_result_members, validate_quality_result),
+        "native-quality-v2": (quality_result_members, validate_quality_result),
+        "native-quality-v3": (quality_result_members, validate_quality_result),
         "native-build-v1": (build_result_members, validate_build_result),
     }
     host = result.get("schema", "").startswith("native-host-") or result.get("schema") == "native-gpu-v1"
@@ -1496,6 +1652,29 @@ def _payloads(result, payloads):
     return candidate
 
 
+def require_candidate_source(candidate, payloads, source):
+    """Bind a retained source member to the independently captured candidate."""
+    data = payloads[PurePosixPath(source).name]
+    identity = candidate["inputs"].get(source)
+    if not isinstance(identity, dict):
+        raise ValueError("missing candidate source identity: " + source)
+    if "worktree_sha256" in identity or "sha256" in identity:
+        matches = hashlib.sha256(data).hexdigest() == identity.get("worktree_sha256", identity.get("sha256"))
+    else:
+        # Earlier receipts retained the Git index and the full-index patch against HEAD.
+        # These JSON sources are tracked as LF text.
+        name = source.encode()
+        header = b"\ndiff --git a/" + name + b" b/" + name + b"\n"
+        section = (b"\n" + payloads["candidate.patch"]).partition(header)[2].split(b"\ndiff --git ", 1)[0]
+        postimage = re.search(rb"^index [0-9a-f]{40}\.\.([0-9a-f]{40})\b", section, re.MULTILINE)
+        expected = postimage[1].decode() if postimage else identity.get("git_blob")
+        data = data.replace(b"\r\n", b"\n")
+        blob = b"blob " + str(len(data)).encode() + b"\0" + data
+        matches = hashlib.sha1(blob, usedforsecurity=False).hexdigest() == expected
+    if not matches:
+        raise ValueError("retained source differs from candidate: " + source)
+
+
 def tests_result_members(result):
     if result.get("scope") not in {"focused", "checkpoint"} or result.get("runtime") not in {"host", "gpu", "all"}:
         raise ValueError("invalid native test scope")
@@ -1626,6 +1805,11 @@ def validate_tests_result(result, payloads):
     tests_result_members(result)
     candidate = _payloads(result, payloads)
     preview_enabled = grain_preview_enabled(candidate.get("configuration", {}).get("JUICER_GRAIN_PREVIEW"))
+    current_product = (
+        result.get("schema") in {"native-tests-v5", "native-tests-v6"} and result["build_kind"] == "product"
+    )
+    if current_product and result["status"] == "passed":
+        preview_enabled, replay_configured = read_preview_and_replay_configuration(candidate.get("configuration"))
     rust_selected = set(result["selection"]) & RUST_TEST_REGISTRATIONS.keys()
     artifacts_retained = "rust-artifacts.json" in payloads
     if (
@@ -1672,8 +1856,18 @@ def validate_tests_result(result, payloads):
             raise ValueError("current product receipt requires the v2 Rust artifact description")
         if artifact_schema == "rust-artifacts-v2":
             validate_rust_artifact_paths(artifacts, result, candidate["configuration"])
+    artifact_consumers = None
+    if current_product:
+        _, build = native_test_build(result, candidate["configuration"])
+        artifact_consumers = product_artifact_consumers(artifacts, build, replay_configured)
     inventory = json.loads(payloads["registration.json"])
+    if current_product:
+        for runtime in ("host", "gpu", "python"):
+            require_candidate_source(candidate, payloads, f"tests/{runtime}-contracts.json")
     contracts = {runtime: json.loads(payloads[runtime + "-contracts.json"]) for runtime in ("host", "gpu", "python")}
+    if current_product:
+        for runtime in ("host", "gpu"):
+            contracts[runtime] = configured_product_contract(contracts[runtime], runtime, candidate["configuration"])
     standalone = result["build_kind"] == "tooling"
     cuda_free = result["build_kind"] == "cuda-free"
     native = (
@@ -1686,6 +1880,7 @@ def validate_tests_result(result, payloads):
                 inventory,
                 runtime=runtime,
                 cuda_free=cuda_free,
+                artifact_consumers=artifact_consumers,
             )
             for runtime in ("host", "gpu")
         }
@@ -1809,13 +2004,27 @@ def validate_tests_result(result, payloads):
             checks = json.loads(payloads["quality.checks.json"])
             if checks["selected"] != result["quality_files"] or checks["preset"] != result["preset"]:
                 raise ValueError("selected-source quality scope differs from execution")
-            if checks["schema"] == "native-quality-checks-v2":
+            if result["schema"] in {"native-tests-v5", "native-tests-v6"}:
+                counts["replay_compiler_analysis"] = validate_replay_compiler_analysis(
+                    checks,
+                    payloads,
+                    candidate,
+                    result.get("run_id"),
+                    prefix="quality-",
+                    execution_evidence=result["schema"] == "native-tests-v6",
+                )
+            if checks["schema"] in {"native-quality-checks-v2", "native-quality-checks-v3", "native-quality-checks-v4"}:
                 invocation = next(command["command"] for command in result["commands"] if command["name"] == "quality")
                 packages = selected_source_quality_packages(invocation, result["preset"], result["quality_files"])
                 if checks.get("mode") != "development":
                     raise ValueError("quality mode differs from the verifier invocation")
                 _, rust_required = quality_scope(result["quality_files"], qualification=False)
-                validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages)
+                validate_clippy_forms(
+                    checks,
+                    rust_required=rust_required,
+                    required_packages=packages,
+                    preview=preview_enabled if current_product else None,
+                )
                 if rust_required and checks["rust_quality"]["JUICER_GRAIN_PREVIEW"] != candidate["configuration"].get(
                     "JUICER_GRAIN_PREVIEW"
                 ):
@@ -1870,7 +2079,7 @@ def selected_source_quality_packages(invocation, preset, files):
     return packages
 
 
-def validate_clippy_forms(checks, *, rust_required, required_packages):
+def validate_clippy_forms(checks, *, rust_required, required_packages, preview=None):
     if ("rust-quality" in checks["expected_checks"]) != rust_required:
         raise ValueError("declared Rust quality differs from the execution scope")
     binding = checks.get("rust_quality")
@@ -1891,7 +2100,7 @@ def validate_clippy_forms(checks, *, rust_required, required_packages):
             raise ValueError("invalid Rust quality package selection")
         if required_packages is not None and set(packages) != set(required_packages):
             raise ValueError("Rust quality packages differ from the execution scope")
-        required = dict(clippy_forms(checks["preset"], packages, raw_preview))
+        required = dict(clippy_forms(checks["preset"], packages, raw_preview, preview=preview))
     elif binding is not None:
         raise ValueError("unexpected Rust quality binding")
     prefix = ["clippy", "--locked", "--target", PRESET_TARGETS[checks["preset"]], "--target-dir"]
@@ -1909,9 +2118,193 @@ def validate_clippy_forms(checks, *, rust_required, required_packages):
         raise ValueError("missing required Clippy forms: " + ", ".join(required))
 
 
+def require_ordinary_compiler_analysis(formatted, translation_extensions, commands, root, build):
+    """Check ordinary analysis remained in scope alongside selected replay headers."""
+    path = type(root)
+    sources = set()
+    for command in commands:
+        if len(command) == 5 and command[1] == "-p" and command[3] == "--warnings-as-errors=*":
+            if path(command[2]) == build:
+                sources.add(root / command[4])
+        elif command[1:2] == ["--warnings-as-errors=*"] and command[4:5] == ["--"]:
+            sources.add(root / command[3])
+    required = {root / source for source in formatted if PurePosixPath(source).suffix.lower() in translation_extensions}
+    if not sources or not required <= sources:
+        raise ValueError("missing ordinary compiler analysis in mixed replay header selection")
+
+
+def replay_database_sources(database, root, build):
+    if not isinstance(database, list) or not database:
+        raise ValueError("invalid motion replay compilation database")
+    path = type(root)
+    sources = set()
+    for entry in database:
+        file = path(entry["file"])
+        if not file.is_relative_to(root) or ".." in file.parts:
+            raise ValueError("incorrect motion replay compile variant")
+        source = file.relative_to(root).as_posix()
+        arguments = entry["arguments"]
+        output = path(entry["output"])
+        if (
+            source in sources
+            or path(entry["directory"]) != build
+            or output != build / f"CMakeFiles/{MOTION_REPLAY_TARGET}.dir/{source}.o"
+            or not isinstance(arguments, list)
+            or not all(isinstance(arg, str) for arg in arguments)
+            or not is_motion_replay_compile_entry(source, str(output), arguments)
+            or not any(arg == "-o" and build / operand == output for arg, operand in zip(arguments, arguments[1:]))
+            or not any(arg == "-c" and path(operand) == file for arg, operand in zip(arguments, arguments[1:]))
+        ):
+            raise ValueError("incorrect motion replay compile variant")
+        sources.add(source)
+    return sources
+
+
+def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, prefix="", execution_evidence=False):
+    expected_schema = "native-quality-checks-v4" if execution_evidence else "native-quality-checks-v3"
+    if checks.get("schema") != expected_schema:
+        raise ValueError("current quality result requires compiler analysis evidence")
+    analysis = checks.get("replay_compiler_analysis")
+    headers = MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(checks["selected"])
+    if not isinstance(analysis, dict) or analysis.keys() != headers:
+        raise ValueError("missing or invented replay header compiler analysis")
+    commands = {item["name"]: item for item in checks["commands"]}
+    recorded = {name for name in commands if name.startswith(prefix + "clang-tidy-motion-replay-")}
+    executions = {
+        name.removesuffix(REPLAY_EXECUTION_SUFFIX) for name in payloads if name.endswith(REPLAY_EXECUTION_SUFFIX)
+    }
+    database_name = "compile_commands.json"
+    if not headers:
+        if recorded or executions or database_name in payloads or SOURCE_FILE_POLICY in payloads:
+            raise ValueError("unexpected replay compiler invocation")
+        return analysis
+
+    configuration = candidate["configuration"]
+    _, replay_configured = read_preview_and_replay_configuration(configuration)
+    formatter = commands.get(prefix + "clang-format", {}).get("command", [])
+    if SOURCE_FILE_POLICY not in payloads:
+        raise ValueError("missing source file policy for the replay compiler receipt")
+    require_candidate_source(candidate, payloads, "scripts/" + SOURCE_FILE_POLICY)
+    policy = json.loads(payloads[SOURCE_FILE_POLICY])
+    extensions = policy.get("supportedExtensions")
+    translation_units = policy.get("translationUnitExtensions")
+    if (
+        policy.get("schemaVersion") != 1
+        or not isinstance(extensions, list)
+        or not isinstance(translation_units, list)
+        or not extensions
+        or not translation_units
+    ):
+        raise ValueError("invalid source file policy for the replay compiler receipt")
+    selected_native = {source for source in checks["selected"] if quality_native_source(source, extensions)}
+    formatted = set(formatter[4:])
+    if (
+        "native-quality" not in checks["expected_checks"]
+        or formatter[1:4] != ["--dry-run", "--Werror", "--style=file"]
+        or not (headers | selected_native) <= formatted
+    ):
+        raise ValueError("missing formatting for a selected native file in the replay compiler receipt")
+    path = rust_test_path(checks["preset"])
+    root = path(configuration["CMAKE_HOME_DIRECTORY"])
+    build = root / "out/build" / checks["preset"]
+    if not root.is_absolute():
+        raise ValueError("invalid configured source directory for the replay compiler receipt")
+    if execution_evidence:
+        if "rust-artifacts.json" not in payloads:
+            raise ValueError("missing CMake artifact description for replay quality")
+        product_artifact_consumers(json.loads(payloads["rust-artifacts.json"]), build, replay_configured)
+    if ordinary := formatted - headers:
+        ordinary_commands = [
+            operation["command"]
+            for name, operation in commands.items()
+            if name.startswith(prefix + "clang-tidy-") and name not in recorded
+        ]
+        require_ordinary_compiler_analysis(ordinary, translation_units, ordinary_commands, root, build)
+    if not replay_configured:
+        if (
+            recorded
+            or executions
+            or database_name in payloads
+            or any(evidence != {"excluded": MOTION_REPLAY_EXCLUSION} for evidence in analysis.values())
+        ):
+            raise ValueError("incorrect compiler exclusion for unavailable motion replay")
+        return analysis
+
+    minimum = {header: MOTION_REPLAY_HEADER_CONSUMERS[header] for header in headers}
+    required_sources = {source for sources in minimum.values() for source in sources}
+    if database_name not in payloads:
+        raise ValueError("missing replay compilation database")
+    database = payloads[database_name]
+    sources = replay_database_sources(json.loads(database), root, build)
+    if not required_sources <= sources or (not execution_evidence and sources != required_sources):
+        raise ValueError("invalid motion replay compilation database")
+    labels = {source: prefix + motion_replay_tidy_label(source, legacy=not execution_evidence) for source in sources}
+    if set(labels.values()) != recorded:
+        raise ValueError("missing or unexpected replay compiler command")
+    if execution_evidence and executions != recorded:
+        raise ValueError("missing or unexpected replay compiler execution evidence")
+    if not isinstance(run_id, str) or run_id in {".", ".."} or path(run_id).parts != (run_id,):
+        raise ValueError("missing replay compiler result directory identity")
+    database_directory = root / "out/validation" / checks["preset"] / "results" / run_id
+    database_identity = {
+        "path": str(database_directory / database_name),
+        "sha256": hashlib.sha256(database).hexdigest(),
+    }
+    verifier = commands.get(prefix + "clang-tidy-config", {}).get("command", [])
+    consumers = {header: [] for header in headers}
+    for source, name in sorted(labels.items()):
+        operation = commands[name]
+        command = operation["command"]
+        if (
+            len(command) != 5
+            or verifier != [command[0], "--verify-config"]
+            or command[1] != "-p"
+            or command[3:] != ["--warnings-as-errors=*", str(root / source)]
+            or path(operation["directory"]) != root
+        ):
+            raise ValueError("incorrect motion replay compiler invocation: " + name)
+        if path(command[2]) != database_directory:
+            raise ValueError("motion replay compiler invocation did not use the retained database")
+        if execution_evidence:
+            execution = json.loads(payloads[name + REPLAY_EXECUTION_SUFFIX])
+            if (
+                execution.get("command") != command
+                or execution.get("directory") != operation["directory"]
+                or execution.get("database") != database_identity
+            ):
+                raise ValueError(
+                    "motion replay compiler invocation differs from its recorded database execution: " + name
+                )
+            covered = execution.get("headers")
+            if (
+                not isinstance(covered, list)
+                or not covered
+                or not set(covered) <= headers
+                or len(set(covered)) != len(covered)
+            ):
+                raise ValueError("invalid replay header compiler execution coverage: " + name)
+            for header in covered:
+                consumers[header].append(name)
+    for header, sources in minimum.items():
+        required = [labels[source] for source in sources]
+        if not execution_evidence:
+            consumers[header] = required
+        elif not set(required) <= set(consumers[header]):
+            raise ValueError("missing required replay header compiler execution coverage: " + header)
+    if analysis != {header: {"commands": names} for header, names in consumers.items()}:
+        raise ValueError("missing or unexpected replay compiler command")
+    return analysis
+
+
 def validate_quality_checks(checks, payloads=None):
     if (
-        checks.get("schema") not in {"native-quality-checks-v1", "native-quality-checks-v2"}
+        checks.get("schema")
+        not in {
+            "native-quality-checks-v1",
+            "native-quality-checks-v2",
+            "native-quality-checks-v3",
+            "native-quality-checks-v4",
+        }
         or checks["status"] != "passed"
         or not checks["expected_checks"]
         or checks.get("python_cases") != ["quality-boundary"]
@@ -1957,7 +2350,7 @@ def validate_quality_checks(checks, payloads=None):
 
 def validate_quality_result(result, payloads):
     quality_result_members(result)
-    _payloads(result, payloads)
+    candidate = _payloads(result, payloads)
     checks = json.loads(payloads["quality.checks.json"])
     if (
         checks["preset"] != result["preset"]
@@ -1967,7 +2360,20 @@ def validate_quality_result(result, payloads):
     ):
         raise ValueError("quality result differs from its executed checks")
     counts = {"quality_checks": 0}
-    if result["status"] == "passed" and checks["schema"] == "native-quality-checks-v2":
+    configuration = candidate.get("configuration", {})
+    if result["status"] == "passed" and result["schema"] in {"native-quality-v2", "native-quality-v3"}:
+        counts["replay_compiler_analysis"] = validate_replay_compiler_analysis(
+            checks,
+            payloads,
+            candidate,
+            result.get("run_id"),
+            execution_evidence=result["schema"] == "native-quality-v3",
+        )
+    if result["status"] == "passed" and checks["schema"] in {
+        "native-quality-checks-v2",
+        "native-quality-checks-v3",
+        "native-quality-checks-v4",
+    }:
         mode = result.get("mode")
         if mode not in {"qualification", "development"} or checks.get("mode") != mode:
             raise ValueError("quality mode differs from the standalone result")
@@ -1983,7 +2389,16 @@ def validate_quality_result(result, payloads):
             qualification_requested = mode == "qualification" and binding is not None
         _, rust_required = quality_scope(result["selected"], qualification=qualification_requested)
         packages = RUST_QUALITY_PACKAGES if mode == "qualification" else None
-        validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages)
+        preview_enabled = None
+        if result["schema"] in {"native-quality-v2", "native-quality-v3"} and configuration:
+            preview_enabled, _ = read_preview_and_replay_configuration(configuration)
+            if (
+                rust_required
+                and binding
+                and binding.get("JUICER_GRAIN_PREVIEW") != configuration["JUICER_GRAIN_PREVIEW"]
+            ):
+                raise ValueError("quality preview value differs from the native configuration")
+        validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages, preview=preview_enabled)
         counts["rust_quality"] = binding
     if result["status"] == "passed":
         counts.update(validate_quality_checks(checks, payloads))

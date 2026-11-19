@@ -89,6 +89,8 @@ class PublicCliTests(unittest.TestCase):
                     "JuicerRouteBridgeTests",
                     "--testing",
                     "ON",
+                    "--grain-preview",
+                    "OFF",
                     "--run-id",
                     "prepare-one",
                 ],
@@ -100,6 +102,12 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.preset, "linux-debug")
         self.assertEqual(args.targets, ["JuicerRouteBridgeTests"])
         self.assertEqual(args.testing, "ON")
+        self.assertEqual(args.grain_preview, "OFF")
+        self.assertIn(
+            "-DJUICER_GRAIN_PREVIEW:BOOL=OFF",
+            verify.configure_command("cmake", args.preset, grain_preview=args.grain_preview),
+        )
+        self.assertFalse(any("JUICER_GRAIN_PREVIEW" in arg for arg in verify.configure_command("cmake", args.preset)))
         self.assertEqual(args.run_id, "prepare-one")
 
     def test_release_off_closure_uses_the_native_prepare_owner(self):
@@ -409,7 +417,8 @@ class CtestDispatchTests(unittest.TestCase):
             json.dumps({"schema": "python-contracts-v1", "registrations": {}})
         )
         (self.build / "tests/python-targets.json").write_text("{}")
-        (self.build / "tests/rust-artifacts.json").write_text("{}")
+        self.artifacts = {"schema": "rust-artifacts-v2", "build": str(self.build), "consumers": {}}
+        (self.build / "tests/rust-artifacts.json").write_text(json.dumps(self.artifacts))
         cargo, nextest = str(self.root / "cargo"), str(self.root / "cargo-nextest")
         self.cache = {
             "CMAKE_HOME_DIRECTORY": str(self.root),
@@ -420,6 +429,9 @@ class CtestDispatchTests(unittest.TestCase):
             "Python3_EXECUTABLE": sys.executable,
             "CMAKE_CXX_COMPILER": "compiler",
             "CMAKE_CUDA_COMPILER": "nvcc",
+            "JUICER_GRAIN_PREVIEW": "OFF",
+            "JUICER_GRAIN_PREVIEW_CONFIGURED": "OFF",
+            "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "OFF",
         }
         self.args = SimpleNamespace(
             preset=self.preset,
@@ -505,9 +517,17 @@ class CtestDispatchTests(unittest.TestCase):
 
     def test_cmake_preview_option_merges_host_and_gpu_registration_contracts(self):
         self.args.runtime, self.args.tests = "host", ["Host.Fixture"]
-        self.subtest_cases = PREVIEW_CASES
+        cases = [(value, False) for value in PREVIEW_CASES] + [("ON", True)]
+        self.subtest_cases = tuple(f"{value}-replay-{replay}" for value, replay in cases)
         build = self.root / "preview-build"
         preview_contracts = {}
+        preview_names = {"host": "Ffi.Host.GrainPreviewDiscovery", "gpu": "Ffi.Gpu.GrainPreviewStaged"}
+        replay_name = "Grain.Gpu.FilmOfxApertures"
+        selectors = {
+            preview_names["host"]: "--grain-preview-discovery",
+            preview_names["gpu"]: "--grain-preview-witness",
+            replay_name: "--grain-preview-apertures",
+        }
 
         def preview_scope(name, target, runtime):
             return {
@@ -518,65 +538,61 @@ class CtestDispatchTests(unittest.TestCase):
             }
 
         for runtime in ("host", "gpu"):
-            name = runtime.title() + ".Preview"
-            target = runtime.title() + "PreviewTarget"
+            name = preview_names[runtime]
+            target = "JuicerProductionPreparedRenderProbe"
             contract_path = self.root / "tests" / (runtime + "-contracts.json")
             contract = json.loads(contract_path.read_text())
             contract["native_cohorts"] = {}
             contract["native_membership"] = {}
             contract["grain_preview"] = preview_scope(name, target, runtime)
             if runtime == "gpu":
-                contract["grain_preview_motion_replay"] = preview_scope(
-                    "Gpu.MotionReplay", "MotionReplayTarget", runtime
-                )
+                contract["grain_preview_motion_replay"] = preview_scope(replay_name, "JuicerGrainMotionReplay", runtime)
             contract_path.write_text(json.dumps(contract))
             preview_contracts[runtime] = contract
 
-        for value in PREVIEW_CASES:
-            with self.subTest(case=value):
+        for (value, replay), case in zip(cases, self.subtest_cases):
+            with self.subTest(case=case):
                 preview = configure_preview_option(self.root, build, value)
                 self.cache["JUICER_GRAIN_PREVIEW"] = cache_values(build)["JUICER_GRAIN_PREVIEW"]
+                self.cache["JUICER_GRAIN_PREVIEW_CONFIGURED"] = "ON" if preview else "OFF"
+                self.cache["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"] = "ON" if replay else "OFF"
                 self.assertEqual(self.cache["JUICER_GRAIN_PREVIEW"], value)
                 self.assertEqual(preview, value != "OFF")
-                self.args.run_id = "preview-" + value.lower()
-                expected_additions = {}
+                self.args.run_id = "preview-" + case.lower()
+                self.artifacts["consumers"] = {}
                 for runtime, contract in preview_contracts.items():
                     targets = {target: str(self.build / target) for target in contract["targets"]}
-                    self.tests.pop(runtime.title() + ".Preview", None)
+                    self.tests.pop(preview_names[runtime], None)
                     if runtime == "gpu":
-                        self.tests.pop("Gpu.MotionReplay", None)
+                        self.tests.pop(replay_name, None)
                     additions = [contract["grain_preview"]] if preview else []
-                    if preview and runtime == "gpu" and os.name != "nt":
+                    if replay and runtime == "gpu":
                         additions.append(contract["grain_preview_motion_replay"])
-                    expected_additions[runtime] = additions
                     for addition in additions:
                         (name,) = addition["required"]
                         (target,) = addition["targets"]
                         targets[target] = str(self.build / target)
+                        self.artifacts["consumers"][target] = {"binary": targets[target]}
                         ordinary = self.tests[runtime.title() + ".Fixture"]
                         self.tests[name] = {
                             **ordinary,
                             "name": name,
-                            "command": [*ordinary["command"][:-1], targets[target]],
+                            "command": [*ordinary["command"][:-1], targets[target], selectors[name]],
                         }
                     (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps(targets))
+                (self.build / "tests/rust-artifacts.json").write_text(json.dumps(self.artifacts))
                 verify.native_tests(self.args)
                 result = self.finish.call_args.args[1]
                 self.assertEqual(result["status"], "passed", result.get("error"))
                 self.assertNotIn("physical_gpu", result)
+                _, _, candidate, *_ = self.finish.call_args.args
+                self.assertEqual(
+                    candidate["configuration"]["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"], "ON" if replay else "OFF"
+                )
                 directory = self.root / "out/validation" / self.preset / "results" / self.args.run_id
                 for runtime, contract in preview_contracts.items():
                     actual = json.loads((directory / (runtime + "-contracts.json")).read_text())
-                    additions = expected_additions[runtime]
-                    self.assertEqual(
-                        actual["required"],
-                        contract["required"] + [name for addition in additions for name in addition["required"]],
-                    )
-                    for field in ("targets", "native_cohorts", "native_membership"):
-                        expected = dict(contract[field])
-                        for addition in additions:
-                            expected.update(addition[field])
-                        self.assertEqual(actual[field], expected, field)
+                    self.assertEqual(actual, contract)
 
     def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):
         timeouts = {
@@ -768,7 +784,13 @@ class CloseoutCliTests(unittest.TestCase):
 
         native.command.side_effect = command
         args = SimpleNamespace(
-            preset=self.preset, run_id="prepare-order", targets=["fixture"], files=None, testing="ON", cuda_free=False
+            preset=self.preset,
+            run_id="prepare-order",
+            targets=["fixture"],
+            files=None,
+            testing="ON",
+            cuda_free=False,
+            grain_preview="ON",
         )
         environment = dict(os.environ)
         environment.pop("FJ_HOST_BUNDLE", None)
@@ -787,6 +809,7 @@ class CloseoutCliTests(unittest.TestCase):
         ):
             self.assertEqual(verify.fresh_prepare(args), 1)
         self.assertEqual(events, ["expiry", "configure"])
+        self.assertIn("-DJUICER_GRAIN_PREVIEW:BOOL=ON", native.command.call_args.args[1])
         self.assertEqual(finish.call_args.args[3]["report_read_bytes"], 17)
 
     def test_removed_receipt_and_recovery_options_are_rejected(self):

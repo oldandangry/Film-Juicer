@@ -57,10 +57,6 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
 endif()
 
 option(JUICER_GRAIN_PREVIEW "Build the private Portra grain preview" OFF)
-if(DEFINED ENV{JUICER_GRAIN_PREVIEW})
-    set(JUICER_GRAIN_PREVIEW "$ENV{JUICER_GRAIN_PREVIEW}" CACHE BOOL
-        "Build the private Portra grain preview" FORCE)
-endif()
 
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
@@ -93,6 +89,9 @@ target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_depende
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(JUICER_GRAIN_PREVIEW)
     set_target_properties(juicer PROPERTIES OUTPUT_NAME "juicer-grain-preview")
+    set(JUICER_GRAIN_PREVIEW_CONFIGURED ON CACHE INTERNAL "Configured product preview")
+else()
+    set(JUICER_GRAIN_PREVIEW_CONFIGURED OFF CACHE INTERNAL "Configured product preview")
 endif()
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
