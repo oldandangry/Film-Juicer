@@ -125,6 +125,8 @@ class RustNamingTests(unittest.TestCase):
         for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
             shutil.copy2(ROOT / name, self.workspace / name)
         shutil.copytree(ROOT / "rust", self.workspace / "rust")
+        portra_table_fixtures = Path("tests/grain/portra-table-fixtures")
+        shutil.copytree(ROOT / portra_table_fixtures, self.workspace / portra_table_fixtures)
 
     def finalize_test(self, workspace: Path) -> None:
         cls = type(self)
