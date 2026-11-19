@@ -21,16 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
-from qualification import PRESET_TARGETS, RUST_QUALITY_PACKAGES, clippy_forms
+from qualification import PRESET_TARGETS, RUST_POLICY_FILES, RUST_QUALITY_PACKAGES, clippy_forms, quality_scope
 
 
-RUST_POLICY_FILES = {
-    "Cargo.lock",
-    "Cargo.toml",
-    "clippy.toml",
-    "rust-toolchain.toml",
-    "rustfmt.toml",
-}
 ROOT_OWNED_FILES = {
     ".clang-format",
     ".clang-tidy",
@@ -39,17 +32,6 @@ ROOT_OWNED_FILES = {
     "CMakePresets.json",
     "CONTRIBUTING.md",
 }
-RUST_BUILD_FILES = {
-    "CMakeLists.txt",
-    "cmake/JuicerRust.cmake",
-}
-NATIVE_POLICY_FILES = {
-    ".clang-format",
-    ".clang-tidy",
-    "scripts/check-quality.py",
-    "scripts/source_file_policy.json",
-}
-QUALITY_RUNNER_PREFIXES = ("tests/quality/",)
 RUST_VERSION = "1.98.1"
 # Direct package dependencies, including inactive target-specific declarations.
 # A new dependency or build hook is an architectural change, not just a lock update.
@@ -421,10 +403,6 @@ def is_native(path: str, policy: SourcePolicy) -> bool:
         and path.startswith(("src/", "native/", "tests/"))
         and "/fixtures/" not in path
     )
-
-
-def is_rust(path: str) -> bool:
-    return path.endswith(".rs") or path in RUST_POLICY_FILES or path.endswith("/Cargo.toml")
 
 
 def check_source_hygiene(root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path) -> None:
@@ -1168,19 +1146,11 @@ def check_build_path(root: Path, preset: str) -> None:
 
 
 def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str], policy: SourcePolicy):
-    runner_changed = (
-        getattr(arguments, "qualification", False)
-        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
-        or any(path in NATIVE_POLICY_FILES for path in selected)
-        or any(path.startswith(".github/workflows/") for path in selected)
-    )
-    rust_required = (
-        runner_changed or any(path in RUST_BUILD_FILES for path in selected) or any(is_rust(path) for path in selected)
-    )
+    expanded, rust_required = quality_scope(selected, qualification=getattr(arguments, "qualification", False))
     native_required = (
         bool(getattr(arguments, "compiler_consumers", None))
-        or runner_changed
-        or any(path in {".clang-format", ".clang-tidy"} or is_native(path, policy) for path in selected)
+        or expanded
+        or any(is_native(path, policy) for path in selected)
     )
     expected = ["source-hygiene", "git-diff-check", "native-boundary-enforcement"]
     if rust_required:
@@ -1189,7 +1159,7 @@ def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str],
         expected.append("native-quality")
     if not selected:
         expected.append("empty-selection")
-    return expected, rust_required, native_required
+    return expected, rust_required, native_required, expanded
 
 
 def complete_check(runner: Runner, name: str) -> None:
@@ -1206,13 +1176,7 @@ def run_checks(
 ) -> int:
     target = PRESET_TARGETS[arguments.preset]
     log_dir = runner.log_dir
-    expected_checks, rust_required, native_required = quality_requirements(arguments, selected, policy)
-    runner_changed = (
-        getattr(arguments, "qualification", False)
-        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
-        or any(path in NATIVE_POLICY_FILES for path in selected)
-        or any(path.startswith(".github/workflows/") for path in selected)
-    )
+    expected_checks, rust_required, native_required, expanded = quality_requirements(arguments, selected, policy)
     runner.expected_checks = expected_checks
     runner.python_cases = ["quality-boundary"]
 
@@ -1294,7 +1258,7 @@ def run_checks(
     native_commands: list[AnalysisCommand] = []
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
-        if runner_changed or any(path in {".clang-format", ".clang-tidy"} for path in selected):
+        if expanded:
             native_files.extend(path for path in REPRESENTATIVE_NATIVE_FILES if (root / path).is_file())
         native_files = sorted(set(native_files))
         if not native_files:
@@ -1379,7 +1343,7 @@ def quality_main(root, arguments):
     runner.consume(
         [root / "out/build" / arguments.preset / "CMakeCache.txt", root / ".cargo/config", root / ".cargo/config.toml"]
     )
-    expected_checks, _, _ = quality_requirements(arguments, selected, policy)
+    expected_checks, _, _, _ = quality_requirements(arguments, selected, policy)
     runner.expected_checks = expected_checks
     runner.python_cases = ["quality-boundary"]
     candidate = None
@@ -1486,6 +1450,7 @@ def quality_main(root, arguments):
         "excluded": excluded,
         "scope": "quality",
         "mode": "development" if getattr(arguments, "development", False) else "qualification",
+        "qualification_requested": getattr(arguments, "qualification", False),
         "members": {},
         "costs": costs,
     }

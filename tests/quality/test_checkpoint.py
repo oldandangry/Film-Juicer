@@ -128,27 +128,7 @@ class PythonResultTests(unittest.TestCase):
                 }
                 if case not in {"missing-binding", "historical"}:
                     checks["rust_quality"] = {"JUICER_GRAIN_PREVIEW": raw, "packages": packages}
-                payloads = {
-                    "candidate.json": json.dumps(
-                        {"head": "source", "preset": preset, "inputs": {"source": "id"}}
-                    ).encode(),
-                    "candidate.patch": b"source patch",
-                    "quality.checks.json": json.dumps(checks).encode(),
-                    "quality-boundary.execution.json": b'{"returncode":0,"outcomes_valid":true}',
-                    "quality-boundary.discovery.json": json.dumps(self.discovery()).encode(),
-                    "quality-boundary.functions.jsonl": self.function_events(),
-                    "quality-boundary.rows.jsonl": self.row_events(),
-                }
-                result = {
-                    **{key: checks[key] for key in ("status", "preset", "selected", "excluded", "mode", "commands")},
-                    "candidate_head": "source",
-                    "candidate_unchanged": True,
-                    "shipping_isolation": False,
-                    "members": {
-                        name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                        for name, data in payloads.items()
-                    },
-                }
+                result, payloads = self.standalone_quality(checks)
                 if error:
                     with self.assertRaisesRegex(ValueError, error):
                         qualification.validate_quality_result(result, payloads)
@@ -156,6 +136,209 @@ class PythonResultTests(unittest.TestCase):
                     self.assertEqual(qualification.validate_quality_result(result, payloads)["status"], "passed")
 
     test_clippy_receipt_derives_required_forms_from_raw_cmake_value.required_subtests = True
+
+    @staticmethod
+    def operation(name, command):
+        return {"name": name, "command": command, "returncode": 0, "drained": True, "process_status": "completed"}
+
+    def quality_checks(self, preset, selected, mode, raw, packages):
+        prefix = [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--target",
+            qualification.PRESET_TARGETS[preset],
+            "--target-dir",
+            "/cargo",
+        ]
+        commands = [self.operation("clippy-version", ["cargo", "clippy", "--version"])]
+        commands += [
+            self.operation(name, prefix + args) for name, args in qualification.clippy_forms(preset, packages, raw)
+        ]
+        expected = ["source-hygiene", "git-diff-check", "native-boundary-enforcement"]
+        if packages:
+            expected.append("rust-quality")
+        return {
+            "schema": "native-quality-checks-v2",
+            "status": "passed",
+            "preset": preset,
+            "selected": selected,
+            "excluded": [],
+            "mode": mode,
+            "expected_checks": expected,
+            "completed_checks": expected.copy(),
+            "expected_commands": [item["name"] for item in commands],
+            "commands": commands,
+            "rust_quality": {"JUICER_GRAIN_PREVIEW": raw, "packages": list(packages)} if packages else None,
+            "python_cases": ["quality-boundary"],
+        }
+
+    def python_payloads(self, key, **execution):
+        return {
+            key + ".execution.json": json.dumps({"returncode": 0, "outcomes_valid": True, **execution}).encode(),
+            key + ".discovery.json": json.dumps(self.discovery()).encode(),
+            key + ".functions.jsonl": self.function_events(),
+            key + ".rows.jsonl": self.row_events(),
+        }
+
+    def quality_payloads(self, checks, **candidate):
+        return {
+            "candidate.json": json.dumps(
+                {"head": "source", "preset": checks["preset"], "inputs": {"source": "id"}, **candidate}
+            ).encode(),
+            "candidate.patch": b"source patch",
+            "quality.checks.json": json.dumps(checks).encode(),
+            **self.python_payloads("quality-boundary"),
+        }
+
+    @staticmethod
+    def result_members(payloads):
+        return {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in payloads.items()
+        }
+
+    def standalone_quality(self, checks, **overrides):
+        payloads = self.quality_payloads(checks)
+        result = {
+            **{key: checks[key] for key in ("status", "preset", "selected", "excluded", "mode", "commands")},
+            "candidate_head": "source",
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
+            "members": self.result_members(payloads),
+            **overrides,
+        }
+        return result, payloads
+
+    def test_standalone_rejects_omitted_rust_quality_scope(self):
+        checks = self.quality_checks(
+            "linux-release", ["cmake/JuicerRust.cmake"], "qualification", "OFF", qualification.RUST_QUALITY_PACKAGES
+        )
+        checks["expected_checks"].remove("rust-quality")
+        checks["completed_checks"].remove("rust-quality")
+        del checks["rust_quality"]
+        with self.assertRaisesRegex(ValueError, "declared Rust quality differs"):
+            qualification.validate_quality_result(*self.standalone_quality(checks))
+
+    def test_standalone_rejects_development_mode_for_qualification(self):
+        checks = self.quality_checks(
+            "windows-clang-release", ["cmake/JuicerRust.cmake"], "development", "1", ["film-juicer-core"]
+        )
+        with self.assertRaisesRegex(ValueError, "quality mode differs from the standalone result"):
+            qualification.validate_quality_result(*self.standalone_quality(checks, mode="qualification"))
+        checks["mode"] = "qualification"
+        with self.assertRaisesRegex(ValueError, "Rust quality packages differ"):
+            qualification.validate_quality_result(*self.standalone_quality(checks))
+
+    def test_standalone_preserves_non_rust_and_forced_qualification(self):
+        checks = self.quality_checks("linux-release", ["CONTRIBUTING.md"], "qualification", None, [])
+        qualification.validate_quality_result(*self.standalone_quality(checks, qualification_requested=False))
+        qualification.validate_quality_result(*self.standalone_quality(checks))
+        with self.assertRaisesRegex(ValueError, "declared Rust quality differs"):
+            qualification.validate_quality_result(*self.standalone_quality(checks, qualification_requested=True))
+        checks = self.quality_checks(
+            "linux-release", ["CONTRIBUTING.md"], "qualification", None, qualification.RUST_QUALITY_PACKAGES
+        )
+        qualification.validate_quality_result(*self.standalone_quality(checks, qualification_requested=True))
+        qualification.validate_quality_result(*self.standalone_quality(checks))
+        checks["expected_checks"].remove("rust-quality")
+        checks["completed_checks"].remove("rust-quality")
+        del checks["rust_quality"]
+        with self.assertRaisesRegex(ValueError, "unexpected Clippy form"):
+            qualification.validate_quality_result(*self.standalone_quality(checks, qualification_requested=False))
+
+    def embedded_quality(self, checks, raw, packages):
+        preset = checks["preset"]
+        test = "Quality.Checkpoint"
+        command = ["python", "test_checkpoint.py"]
+        key = "host-" + hashlib.sha256(json.dumps(command).encode()).hexdigest()[:16]
+        invocation = verify.quality_command(
+            preset,
+            {"files": checks["selected"], "compiler_consumers": ["src/ScanRoute.cpp"], "rust_packages": packages},
+        )
+        payloads = {
+            **self.quality_payloads(
+                checks, configuration={"CMAKE_BUILD_TYPE": "Debug", "BUILD_TESTING": "ON", "JUICER_GRAIN_PREVIEW": raw}
+            ),
+            **self.python_payloads(key, command=command),
+            "registration.json": json.dumps(
+                {"tests": [{"name": test, "command": ["python-tests", "--", *command]}]}
+            ).encode(),
+            "ctest.xml": f'<testsuite><testcase name="{test}" status="run"/></testsuite>'.encode(),
+            "python-contracts.json": json.dumps(
+                {
+                    "schema": "python-contracts-v1",
+                    "registrations": {test: {"source": "tests/quality/test_checkpoint.py", "tooling": True}},
+                }
+            ).encode(),
+            **{
+                name + ".json": b"{}"
+                for name in (
+                    "target-discovery",
+                    "host-contracts",
+                    "gpu-contracts",
+                    "host-targets",
+                    "gpu-targets",
+                    "python-targets",
+                )
+            },
+        }
+        result = {
+            "preset": preset,
+            "status": "passed",
+            "scope": "focused",
+            "runtime": "host",
+            "groups": [],
+            "build_kind": "tooling",
+            "candidate_head": "source",
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
+            "selection": [test],
+            "quality_files": checks["selected"],
+            "case_files": {test: {"key": key, "protocol": "python", "rows": False}},
+            "commands": [self.operation("quality", invocation)],
+            "members": self.result_members(payloads),
+        }
+        return result, payloads
+
+    def test_embedded_binds_quality_to_the_verifier_request(self):
+        core, plugin = qualification.RUST_QUALITY_PACKAGES
+        cases = (
+            (
+                "two-package-request-narrowed",
+                (core, plugin),
+                (core,),
+                "development",
+                "TRUE",
+                "Rust quality packages differ",
+            ),
+            ("default-package-request-narrowed", (), (core,), "development", "TRUE", "Rust quality packages differ"),
+            (
+                "changed-mode",
+                (core, plugin),
+                (core, plugin),
+                "qualification",
+                "TRUE",
+                "quality mode differs from the verifier invocation",
+            ),
+            ("matching-two-packages", (core, plugin), (core, plugin), "development", "TRUE", ""),
+            ("matching-default", (), (core, plugin), "development", "TRUE", ""),
+            ("matching-core-only", (core,), (core,), "development", "TRUE", ""),
+            ("matching-plugin-only", (plugin,), (plugin,), "development", "TRUE", ""),
+            ("foreign-enabled-spelling", (core,), (core,), "development", "ON", "quality preview value differs"),
+            ("off-is-not-null", (core,), (core,), "development", "OFF", "quality preview value differs"),
+        )
+        self.subtest_cases = tuple(case for case, *_ in cases)
+        for case, requested, packages, mode, raw, error in cases:
+            with self.subTest(case=case):
+                checks = self.quality_checks("linux-debug", ["rust/film-juicer-core/src/route.rs"], mode, raw, packages)
+                bundle = self.embedded_quality(checks, None if case == "off-is-not-null" else "TRUE", requested)
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        qualification.validate_tests_result(*bundle)
+                else:
+                    self.assertEqual(qualification.validate_tests_result(*bundle)["status"], "passed")
+
+    test_embedded_binds_quality_to_the_verifier_request.required_subtests = True
 
     def discovery(self, *, rows=True, skip=False, reason=""):
         return {"functions": [{"id": self.function, "skip": skip, "skip_reason": reason, "rows": rows}]}

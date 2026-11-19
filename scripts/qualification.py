@@ -19,6 +19,21 @@ PRESET_TARGETS = {
     "windows-clang-release": "x86_64-pc-windows-msvc",
 }
 RUST_QUALITY_PACKAGES = ("film-juicer-core", "film-juicer-plugin")
+RUST_POLICY_FILES = {"Cargo.lock", "Cargo.toml", "clippy.toml", "rust-toolchain.toml", "rustfmt.toml"}
+RUST_BUILD_FILES = {"CMakeLists.txt", "cmake/JuicerRust.cmake"}
+NATIVE_POLICY_FILES = {".clang-format", ".clang-tidy", "scripts/check-quality.py", "scripts/source_file_policy.json"}
+
+
+def quality_scope(selected, *, qualification):
+    """Derive representative native coverage and Rust quality from the selected paths."""
+    expanded = qualification or any(
+        path.startswith(("tests/quality/", ".github/workflows/")) or path in NATIVE_POLICY_FILES for path in selected
+    )
+    rust_required = expanded or any(
+        path in RUST_BUILD_FILES or path in RUST_POLICY_FILES or path.endswith((".rs", "/Cargo.toml"))
+        for path in selected
+    )
+    return expanded, rust_required
 
 
 def grain_preview_enabled(value: str | None) -> bool:
@@ -1239,14 +1254,18 @@ def validate_tests_result(result, payloads):
             checks = json.loads(payloads["quality.checks.json"])
             if checks["selected"] != result["quality_files"] or checks["preset"] != result["preset"]:
                 raise ValueError("selected-source quality scope differs from execution")
+            if checks["schema"] == "native-quality-checks-v2":
+                invocation = next(command["command"] for command in result["commands"] if command["name"] == "quality")
+                packages = selected_source_quality_packages(invocation, result["preset"], result["quality_files"])
+                if checks.get("mode") != "development":
+                    raise ValueError("quality mode differs from the verifier invocation")
+                _, rust_required = quality_scope(result["quality_files"], qualification=False)
+                validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages)
+                if rust_required and checks["rust_quality"]["JUICER_GRAIN_PREVIEW"] != candidate["configuration"].get(
+                    "JUICER_GRAIN_PREVIEW"
+                ):
+                    raise ValueError("quality preview value differs from the native configuration")
             validate_quality_checks(checks, payloads)
-            binding = checks.get("rust_quality")
-            if (
-                checks["schema"] == "native-quality-checks-v2"
-                and binding is not None
-                and binding["JUICER_GRAIN_PREVIEW"] != candidate["configuration"].get("JUICER_GRAIN_PREVIEW")
-            ):
-                raise ValueError("quality preview value differs from the native configuration")
     return {
         "status": result["status"],
         "preset": result["preset"],
@@ -1272,31 +1291,55 @@ def quality_result_members(result):
     return _flat_members(result, required)
 
 
-def validate_clippy_forms(checks):
-    binding = checks.get("rust_quality")
-    if "rust-quality" not in checks["expected_checks"]:
-        if binding is not None:
-            raise ValueError("unexpected Rust quality binding")
-        return
-    if not isinstance(binding, dict) or set(binding) != {"JUICER_GRAIN_PREVIEW", "packages"}:
-        raise ValueError("missing Rust quality binding")
-    raw_preview = binding["JUICER_GRAIN_PREVIEW"]
-    packages = binding["packages"]
-    if raw_preview is not None and not isinstance(raw_preview, str):
-        raise ValueError("invalid raw CMake preview value")
+def selected_source_quality_packages(invocation, preset, files):
+    """Read the selected-source command emitted by verify.quality_command."""
+    prefix = ["-B", "scripts/check-quality.py", "--preset", preset, "--development", "--files", *files]
+    end = len(prefix) + 1
+    if invocation[1:end] != prefix:
+        raise ValueError("invalid selected-source quality invocation")
+    options = invocation[end:]
+    if options[:1] == ["--compiler-consumers"]:
+        end = next((index for index, arg in enumerate(options[1:], 1) if arg.startswith("-")), len(options))
+        if end == 1:
+            raise ValueError("missing selected-source compiler consumers")
+        options = options[end:]
+    if not options:
+        return RUST_QUALITY_PACKAGES
+    selector, *packages = options
     if (
-        not isinstance(packages, list)
+        selector != "--rust-packages"
         or not packages
         or any(package not in RUST_QUALITY_PACKAGES for package in packages)
-        or len(packages) != len(set(packages))
-        or (checks.get("mode") != "development" and set(packages) != set(RUST_QUALITY_PACKAGES))
     ):
-        raise ValueError("invalid Rust quality package selection")
-    preset = checks.get("preset")
-    if preset not in PRESET_TARGETS:
-        raise ValueError("invalid Rust quality preset")
-    prefix = ["clippy", "--locked", "--target", PRESET_TARGETS[preset], "--target-dir"]
-    required = dict(clippy_forms(preset, packages, raw_preview))
+        raise ValueError("invalid Rust package selector in the verifier invocation")
+    return packages
+
+
+def validate_clippy_forms(checks, *, rust_required, required_packages):
+    if ("rust-quality" in checks["expected_checks"]) != rust_required:
+        raise ValueError("declared Rust quality differs from the execution scope")
+    binding = checks.get("rust_quality")
+    required = {}
+    if rust_required:
+        if not isinstance(binding, dict) or set(binding) != {"JUICER_GRAIN_PREVIEW", "packages"}:
+            raise ValueError("missing Rust quality binding")
+        raw_preview = binding["JUICER_GRAIN_PREVIEW"]
+        packages = binding["packages"]
+        if raw_preview is not None and not isinstance(raw_preview, str):
+            raise ValueError("invalid raw CMake preview value")
+        if (
+            not isinstance(packages, list)
+            or not packages
+            or any(package not in RUST_QUALITY_PACKAGES for package in packages)
+            or len(packages) != len(set(packages))
+        ):
+            raise ValueError("invalid Rust quality package selection")
+        if required_packages is not None and set(packages) != set(required_packages):
+            raise ValueError("Rust quality packages differ from the execution scope")
+        required = dict(clippy_forms(checks["preset"], packages, raw_preview))
+    elif binding is not None:
+        raise ValueError("unexpected Rust quality binding")
+    prefix = ["clippy", "--locked", "--target", PRESET_TARGETS[checks["preset"]], "--target-dir"]
     for operation in checks["commands"]:
         name = operation["name"].removeprefix("quality-")
         command = operation["command"]
@@ -1305,7 +1348,7 @@ def validate_clippy_forms(checks):
         ):
             continue
         args = required.pop(name, None)
-        if args is None or command[1:6] != prefix or not command[6:7] or command[7:] != args:
+        if args is None or command[1:6] != prefix or len(command) < 7 or not command[6] or command[7:] != args:
             raise ValueError("unexpected Clippy form: " + name)
     if required:
         raise ValueError("missing required Clippy forms: " + ", ".join(required))
@@ -1339,8 +1382,6 @@ def validate_quality_checks(checks, payloads=None):
         for command in commands
     ):
         raise ValueError("failed or undrained quality operation")
-    if checks["schema"] == "native-quality-checks-v2":
-        validate_clippy_forms(checks)
     counts = {"quality_checks": len(expected), "python_functions": 0, "python_rows": 0}
     if checks.get("python_cases"):
         if payloads is None:
@@ -1370,9 +1411,27 @@ def validate_quality_result(result, payloads):
         or checks["commands"] != result["commands"]
     ):
         raise ValueError("quality result differs from its executed checks")
-    counts = validate_quality_checks(checks, payloads) if result["status"] == "passed" else {"quality_checks": 0}
+    counts = {"quality_checks": 0}
     if result["status"] == "passed" and checks["schema"] == "native-quality-checks-v2":
-        counts["rust_quality"] = checks.get("rust_quality")
+        mode = result.get("mode")
+        if mode not in {"qualification", "development"} or checks.get("mode") != mode:
+            raise ValueError("quality mode differs from the standalone result")
+        qualification_requested = result.get("qualification_requested")
+        if "qualification_requested" in result and (
+            type(qualification_requested) is not bool or (qualification_requested and mode != "qualification")
+        ):
+            raise ValueError("invalid standalone qualification request")
+        binding = checks.get("rust_quality")
+        # Older standalone results record the mode but omit the explicit flag.
+        # They can still prove full qualification coverage with their Rust binding and commands.
+        if qualification_requested is None:
+            qualification_requested = mode == "qualification" and binding is not None
+        _, rust_required = quality_scope(result["selected"], qualification=qualification_requested)
+        packages = RUST_QUALITY_PACKAGES if mode == "qualification" else None
+        validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages)
+        counts["rust_quality"] = binding
+    if result["status"] == "passed":
+        counts.update(validate_quality_checks(checks, payloads))
     return {
         "status": result["status"],
         "preset": result["preset"],
