@@ -691,9 +691,9 @@ class RustMembershipTests(unittest.TestCase):
 
         self.discovery = {
             "rust-suites": {
-                "core": {"testcases": {OPTICS_FUNCTION: case(True)}},
-                "core::integration": {"testcases": {"fixture": case(True)}},
-                "bridge": {"testcases": {"abi": case(False)}},
+                "core": {"package-id": "core", "testcases": {OPTICS_FUNCTION: case(True)}},
+                "core::integration": {"package-id": "core", "testcases": {"fixture": case(True)}},
+                "bridge": {"package-id": "bridge", "testcases": {"abi": case(False)}},
             }
         }
 

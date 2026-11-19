@@ -25,7 +25,7 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
 
 from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
-from qualification import collect_bundles
+from qualification import collect_bundles, grain_preview_enabled
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {
@@ -134,7 +134,7 @@ def quality_command(preset, selection):
 
 def rust_tests(args):
     """Run one Rust test package from CMake-prepared nextest binaries."""
-    from qualification import framework_terminals
+    from qualification import framework_terminals, rust_membership
 
     package = getattr(args, "package", "core")
     package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}.get(package)
@@ -185,6 +185,9 @@ def rust_tests(args):
     selected_package = next((row for row in packages.values() if row["name"] == package_name), None)
     if selected_package is None:
         raise ValueError("Cargo metadata omits Rust test package: " + package_name)
+    from qualification import rust_package_features
+
+    resolved_features = rust_package_features(cargo_metadata, selected_package["id"])
     expected_binaries = {
         (selected_package["id"], target["name"])
         for target in selected_package["targets"]
@@ -272,28 +275,9 @@ def rust_tests(args):
         discovery_bytes = len(discovery)
         discovery_document = json.loads(discovery)
         discovered_binaries = set(discovery_document["rust-suites"])
-        binary_packages = {
-            binary["binary-id"]: binary["package-id"] for binary in binaries_metadata["rust-binaries"].values()
-        }
-        metadata_binary_ids = set(binary_packages)
-        if not metadata_binary_ids or discovered_binaries != metadata_binary_ids:
-            raise ValueError("nextest discovery does not match prepared workspace binaries")
-        expected_tests = set()
-        filtered_tests = set()
-        for binary_id, suite in discovery_document["rust-suites"].items():
-            for test_name, case in suite["testcases"].items():
-                key = (binary_id, test_name)
-                match = case["filter-match"]["status"]
-                if match == "matches":
-                    if binary_packages.get(binary_id) != selected_package["id"]:
-                        raise ValueError("nextest selected a test from the other Rust package: " + test_name)
-                    if case["ignored"]:
-                        raise ValueError("unexpected ignored Rust test: " + test_name)
-                    expected_tests.add(key)
-                else:
-                    filtered_tests.add(key)
-        if not expected_tests:
-            raise ValueError("Rust nextest selection is empty")
+        if any(binary["binary-id"] != key for key, binary in binaries_metadata["rust-binaries"].items()):
+            raise ValueError("prepared nextest binary ID differs from inventory key")
+        expected_tests, filtered_tests = rust_membership(discovery_document, package, cargo_metadata, binaries_metadata)
         started = time.perf_counter()
         completed = subprocess.run(commands[1], env=environment)
         records.append(
@@ -316,10 +300,11 @@ def rust_tests(args):
         write_json(
             execution_path,
             {
+                "schema": "rust-test-execution-v2",
                 "registration": registration,
                 "package": package_name,
                 "cargo": str(args.cargo),
-                "features": "test-support",
+                "features": resolved_features,
                 "required_binaries": sorted(expected_binaries),
                 "discovered_binaries": sorted(discovered_binaries) if "discovered_binaries" in locals() else [],
                 "doctests": {
@@ -922,7 +907,7 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
-            if not standalone and not cuda_free and cache.get("JUICER_GRAIN_PREVIEW") == "ON":
+            if not standalone and not cuda_free and grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW")):
                 for runtime in ("host", "gpu"):
                     contract = contracts[runtime]
                     preview = contract["grain_preview"]

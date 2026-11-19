@@ -13,6 +13,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from preview_configuration import PREVIEW_CASES, configure_preview_option
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import qualification
 import verify
@@ -21,6 +23,139 @@ from execution import NativeRun, OutputLease
 
 class PythonResultTests(unittest.TestCase):
     function = "sample.TestCase.test_rows"
+
+    def test_rust_execution_features_match_the_resolved_package(self):
+        cargo = {
+            "packages": [
+                {
+                    "id": "bridge",
+                    "name": "film-juicer-plugin",
+                    "targets": [{"name": "bridge", "test": True, "kind": ["staticlib"]}],
+                }
+            ],
+            "resolve": {"nodes": [{"id": "bridge", "features": ["test-support", "grain-preview"]}]},
+        }
+        execution = {
+            "schema": "rust-test-execution-v2",
+            "package": "film-juicer-plugin",
+            "features": ["grain-preview", "test-support"],
+        }
+        qualification.validate_rust_execution_features(execution, "bridge", cargo)
+        with self.assertRaisesRegex(ValueError, "features differ"):
+            qualification.validate_rust_execution_features({**execution, "features": ["test-support"]}, "bridge", cargo)
+        qualification.validate_rust_execution_features({"features": "test-support"}, "bridge", cargo)
+        binaries = {"rust-binaries": {"bridge": {"package-id": "bridge", "binary-name": "bridge"}}}
+        suite = {
+            "package-id": "bridge",
+            "testcases": {"abi": {"ignored": False, "filter-match": {"status": "matches"}}},
+        }
+        discovery = {"rust-suites": {"bridge": suite}}
+        self.assertEqual(
+            qualification.rust_membership(discovery, "bridge", cargo, binaries), ({("bridge", "abi")}, set())
+        )
+        suite["package-id"] = "core"
+        with self.assertRaisesRegex(ValueError, "discovery package ID differs"):
+            qualification.rust_membership(discovery, "bridge", cargo, binaries)
+
+    def test_clippy_receipt_derives_required_forms_from_raw_cmake_value(self):
+        baseline = (("film-juicer-core", ""), ("film-juicer-plugin", ""), ("film-juicer-plugin", "test-support"))
+        preview = (
+            ("film-juicer-core", "grain-preview"),
+            ("film-juicer-plugin", "grain-preview"),
+            ("film-juicer-plugin", "grain-preview,test-support"),
+        )
+        cases = (
+            ("enabled", "TRUE", baseline + preview, ""),
+            ("disabled", "OFF", baseline, ""),
+            ("missing-preview", "1", baseline, "missing required Clippy forms"),
+            ("unexpected-preview", "OFF", baseline + preview, "unexpected Clippy form"),
+            ("missing-binding", "ON", baseline + preview, "missing Rust quality binding"),
+            ("wrong-target", "ON", baseline + preview, "unexpected Clippy form"),
+            ("debug-plugin", "ON", tuple(form for form in baseline + preview if form[0].endswith("-plugin")), ""),
+            ("unconfigured", None, baseline, ""),
+            ("historical", None, baseline, ""),
+        )
+        self.subtest_cases = tuple(case for case, *_ in cases)
+        for case, raw, forms, error in cases:
+            with self.subTest(case=case):
+                debug = case == "debug-plugin"
+                preset = "linux-debug" if debug else "linux-release"
+                profile = "dev" if debug else "release"
+                mode = "development" if debug else "qualification"
+                label_prefix = "quality-clippy" if debug else "clippy"
+                prefix = [
+                    "cargo",
+                    "clippy",
+                    "--locked",
+                    "--target",
+                    "wrong-target" if case == "wrong-target" else "x86_64-unknown-linux-gnu",
+                    "--target-dir",
+                    "/cargo",
+                ]
+                commands = [
+                    {
+                        "name": "-".join((label_prefix, package, *filter(None, features.split(",")), profile)),
+                        "command": [
+                            *prefix,
+                            "-p",
+                            package,
+                            "--all-targets",
+                            *(["--features", features] if features else []),
+                            *([] if debug else ["--release"]),
+                            "--",
+                            "-D",
+                            "warnings",
+                        ],
+                        "returncode": 0,
+                        "drained": True,
+                        "process_status": "completed",
+                    }
+                    for package, features in forms
+                ]
+                packages = ["film-juicer-plugin"] if debug else ["film-juicer-core", "film-juicer-plugin"]
+                checks = {
+                    "schema": "native-quality-checks-v1" if case == "historical" else "native-quality-checks-v2",
+                    "status": "passed",
+                    "preset": preset,
+                    "selected": ["cmake/JuicerRust.cmake"],
+                    "excluded": [],
+                    "mode": mode,
+                    "expected_checks": ["rust-quality"],
+                    "completed_checks": ["rust-quality"],
+                    "expected_commands": [command["name"] for command in commands],
+                    "commands": commands,
+                    "python_cases": ["quality-boundary"],
+                }
+                if case not in {"missing-binding", "historical"}:
+                    checks["rust_quality"] = {"JUICER_GRAIN_PREVIEW": raw, "packages": packages}
+                payloads = {
+                    "candidate.json": json.dumps(
+                        {"head": "source", "preset": preset, "inputs": {"source": "id"}}
+                    ).encode(),
+                    "candidate.patch": b"source patch",
+                    "quality.checks.json": json.dumps(checks).encode(),
+                    "quality-boundary.execution.json": b'{"returncode":0,"outcomes_valid":true}',
+                    "quality-boundary.discovery.json": json.dumps(self.discovery()).encode(),
+                    "quality-boundary.functions.jsonl": self.function_events(),
+                    "quality-boundary.rows.jsonl": self.row_events(),
+                }
+                result = {
+                    **{key: checks[key] for key in ("status", "preset", "selected", "excluded", "mode", "commands")},
+                    "candidate_head": "source",
+                    "candidate_unchanged": True,
+                    "shipping_isolation": False,
+                    "members": {
+                        name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                        for name, data in payloads.items()
+                    },
+                }
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        qualification.validate_quality_result(result, payloads)
+                else:
+                    self.assertEqual(qualification.validate_quality_result(result, payloads)["status"], "passed")
+
+    test_clippy_receipt_derives_required_forms_from_raw_cmake_value.required_subtests = True
 
     def discovery(self, *, rows=True, skip=False, reason=""):
         return {"functions": [{"id": self.function, "skip": skip, "skip_reason": reason, "rows": rows}]}
@@ -297,25 +432,44 @@ class MembershipTests(unittest.TestCase):
 class CollectionTests(unittest.TestCase):
     def test_rust_artifact_description_requires_separate_variants(self):
         cases = (
-            "valid",
-            "missing-member",
-            "archive-alias",
-            "directory-alias",
-            "production-feature",
-            "dropped-description-flag",
+            ("historical-valid", None, False),
+            ("v1-preview-valid", "ON", False),
+            ("missing-member", None, False),
+            ("archive-alias", None, False),
+            ("directory-alias", None, False),
+            ("production-feature", None, False),
+            ("dropped-description-flag", None, False),
+            ("v2-test-support-feature", "ON", True),
+            *((f"v2-{value}-{claim}", value, True) for value in PREVIEW_CASES for claim in ("valid", "mismatch")),
         )
-        self.subtest_cases = cases
-        for case in cases:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        build = root / "build"
+        self.subtest_cases = tuple(case for case, _, _ in cases)
+        for case, value, v2 in cases:
             with self.subTest(case=case):
+                configuration = {}
+                preview = False
+                if value is not None:
+                    preview = configure_preview_option(root, build, value)
+                    raw = verify.cache_values(build)["JUICER_GRAIN_PREVIEW"]
+                    self.assertEqual(raw, value)
+                    self.assertEqual(preview, value != "OFF")
+                    configuration["configuration"] = {"JUICER_GRAIN_PREVIEW": raw}
+                preview_claimed = v2 and (preview != case.endswith("-mismatch"))
                 artifacts = {
-                    "schema": "rust-artifacts-v1",
+                    "schema": "rust-artifacts-v2" if v2 else "rust-artifacts-v1",
                     "variants": {
                         variant: {
                             "archive": f"/unavailable/{variant}/plugin.a",
                             "target_dir": f"/unavailable/{variant}",
                             "features": features,
                         }
-                        for variant, features in (("production", []), ("test-support", ["test-support"]))
+                        for variant, features in (
+                            ("production", ["grain-preview"] if preview_claimed else []),
+                            ("test-support", ["test-support"]),
+                        )
                     },
                 }
                 if case == "archive-alias":
@@ -326,6 +480,8 @@ class CollectionTests(unittest.TestCase):
                     ]
                 elif case == "production-feature":
                     artifacts["variants"]["production"]["features"] = ["test-support"]
+                elif case == "v2-test-support-feature":
+                    artifacts["variants"]["test-support"]["features"] = ["grain-preview", "test-support"]
                 payloads = {
                     name: b"{}"
                     for name in (
@@ -345,6 +501,7 @@ class CollectionTests(unittest.TestCase):
                             {
                                 "head": "source",
                                 "preset": "linux-debug",
+                                **configuration,
                                 "features": {"rust_artifacts": "rust-artifacts.json"},
                             }
                         ).encode(),
@@ -370,8 +527,11 @@ class CollectionTests(unittest.TestCase):
                         for name, data in payloads.items()
                     },
                 }
-                if case == "valid":
+                if case.endswith("-valid"):
                     self.assertEqual(qualification.validate_tests_result(result, payloads)["status"], "failed")
+                elif v2:
+                    with self.assertRaisesRegex(ValueError, "invalid separate Rust artifact description"):
+                        qualification.validate_tests_result(result, payloads)
                 else:
                     with self.assertRaises(ValueError):
                         qualification.validate_tests_result(result, payloads)

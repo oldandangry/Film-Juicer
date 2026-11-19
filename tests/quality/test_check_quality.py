@@ -16,7 +16,13 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+from preview_configuration import PREVIEW_CASES, configure_preview_option
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from verify import cache_values
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts/check-quality.py"
@@ -260,7 +266,7 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -292,7 +298,7 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
@@ -350,7 +356,7 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
-                patch.object(check_quality, "Runner") as runner,
+                patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -365,7 +371,7 @@ class CheckQualityTests(IsolatedOwnerTests):
     def test_native_boundary_failure_blocks_even_documentation_selection(self) -> None:
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             contextlib.redirect_stdout(io.StringIO()) as output,
@@ -394,7 +400,7 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[consumer, producer]),
@@ -430,7 +436,7 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[*consumers, producer]),
@@ -448,7 +454,7 @@ class CheckQualityTests(IsolatedOwnerTests):
                 "argv",
                 [str(SCRIPT_PATH), "--preset", "linux-debug", "--qualification", "--files", "CONTRIBUTING.md"],
             ),
-            patch.object(check_quality, "Runner"),
+            patch.object(check_quality, "Runner", return_value=MagicMock(rust_quality=None)),
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "check_rust") as rust,
@@ -1160,6 +1166,7 @@ class DependencyContractTests(unittest.TestCase):
         *,
         development: bool = False,
         rust_packages: list[str] | None = None,
+        configured_cache: dict[str, str] | None = None,
     ) -> Mock:
         runner = Mock(log_dir=self.root / "logs")
         for package in self.metadata["packages"]:
@@ -1188,6 +1195,7 @@ class DependencyContractTests(unittest.TestCase):
             patch.object(check_quality, "resolve_tool", return_value=sys.executable),
             patch.object(check_quality.shutil, "which", return_value=None),
             patch.object(check_quality, "check_workspace_contract"),
+            patch("verify.cache_values", return_value=configured_cache or {}),
         ):
             check_quality.check_rust(self.root, runner, arguments, target)
         return runner
@@ -1253,6 +1261,62 @@ class DependencyContractTests(unittest.TestCase):
                 for call in calls:
                     self.assertEqual(call.kwargs["env"]["CLIPPY_CONF_DIR"], str(self.root))
 
+    def test_preview_dispatches_release_clippy_for_each_feature_form(self) -> None:
+        preset, target = (
+            ("windows-clang-release", "x86_64-pc-windows-msvc")
+            if os.name == "nt"
+            else ("linux-release", "x86_64-unknown-linux-gnu")
+        )
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        build = root / "build"
+        self.subtest_cases = PREVIEW_CASES
+        for value in PREVIEW_CASES:
+            with self.subTest(case=value):
+                preview = configure_preview_option(root, build, value)
+                cache = cache_values(build)
+                self.assertEqual(cache["JUICER_GRAIN_PREVIEW"], value)
+                self.assertEqual(preview, value != "OFF")
+                runner = self.run_metadata(preset, target, configured_cache=cache)
+                self.assertEqual(
+                    runner.rust_quality,
+                    {"JUICER_GRAIN_PREVIEW": value, "packages": ["film-juicer-core", "film-juicer-plugin"]},
+                )
+                commands = [
+                    call.args[0]
+                    for call in runner.run.call_args_list
+                    if call.kwargs["label"].startswith("clippy-film-juicer-")
+                ]
+                ordinary = [
+                    ("film-juicer-core", ""),
+                    ("film-juicer-plugin", ""),
+                    ("film-juicer-plugin", "test-support"),
+                ]
+                expected = (
+                    [
+                        ordinary[0],
+                        ("film-juicer-core", "grain-preview"),
+                        *ordinary[1:],
+                        ("film-juicer-plugin", "grain-preview"),
+                        ("film-juicer-plugin", "grain-preview,test-support"),
+                    ]
+                    if preview
+                    else ordinary
+                )
+                self.assertEqual(
+                    [
+                        (cmd[cmd.index("-p") + 1], cmd[cmd.index("--features") + 1] if "--features" in cmd else "")
+                        for cmd in commands
+                    ],
+                    expected,
+                )
+                for cmd in commands:
+                    self.assertIn("--all-targets", cmd)
+                    self.assertIn("--release", cmd)
+                    self.assertEqual(cmd[cmd.index("--target") + 1], target)
+                    self.assertEqual(cmd[-3:], ["--", "-D", "warnings"])
+
     def test_development_preserves_packages_and_uses_only_quality_commands(self) -> None:
         preset_cases = (
             ("linux-debug", "dev", []),
@@ -1276,6 +1340,7 @@ class DependencyContractTests(unittest.TestCase):
                     development=True,
                     rust_packages=packages,
                 )
+                self.assertEqual(runner.rust_quality, {"JUICER_GRAIN_PREVIEW": None, "packages": packages})
                 target_flags = [
                     "--target",
                     "x86_64-unknown-linux-gnu",
@@ -2243,6 +2308,7 @@ ParallelAnalysisTests.test_development_cannot_stage_probe_or_complete_qualificat
 DependencyContractTests.test_native_build_hooks_and_links_are_rejected.required_subtests = True
 DependencyContractTests.test_build_or_dev_dependency_requires_contract_change.required_subtests = True
 DependencyContractTests.test_clippy_matches_preset_and_preserves_quality_checks.required_subtests = True
+DependencyContractTests.test_preview_dispatches_release_clippy_for_each_feature_form.required_subtests = True
 DependencyContractTests.test_development_preserves_packages_and_uses_only_quality_commands.required_subtests = True
 DependencyContractTests.test_selected_clippy_failure_stops_dispatch.required_subtests = True
 CudaQualityTests.test_unknown_or_incomplete_options_fail_instead_of_weakening_analysis.required_subtests = True

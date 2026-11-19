@@ -15,9 +15,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from preview_configuration import PREVIEW_CASES, configure_preview_option
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import verify
 import execution
+from verify import cache_values
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -407,7 +410,7 @@ class CtestDispatchTests(unittest.TestCase):
         (self.build / "tests/python-targets.json").write_text("{}")
         (self.build / "tests/rust-artifacts.json").write_text("{}")
         cargo, nextest = str(self.root / "cargo"), str(self.root / "cargo-nextest")
-        cache = {
+        self.cache = {
             "CMAKE_HOME_DIRECTORY": str(self.root),
             "BUILD_TESTING": "ON",
             "CMAKE_BUILD_TYPE": "Debug",
@@ -436,7 +439,7 @@ class CtestDispatchTests(unittest.TestCase):
         self.native = Mock(commands=[])
         self.native.command.side_effect = self.command
         self.enterContext(patch.object(verify, "ROOT", self.root))
-        self.enterContext(patch.object(verify, "cache_values", return_value=cache))
+        self.enterContext(patch.object(verify, "cache_values", return_value=self.cache))
         self.enterContext(patch.object(verify, "capture_native_source", return_value=({"head": "fixture"}, b"", {})))
         self.enterContext(patch.object(verify, "expire_diagnostics", return_value={"read_bytes": 0}))
         self.enterContext(patch.object(verify.shutil, "which", return_value=str(self.root / "cmake")))
@@ -498,6 +501,64 @@ class CtestDispatchTests(unittest.TestCase):
         self.assertNotIn("ctest-gpu", names)
         self.assertNotIn("gpu-exclusion", names)
         self.assertNotIn("physical_gpu", result)
+
+    def test_cmake_preview_option_merges_host_and_gpu_registration_contracts(self):
+        self.args.runtime, self.args.tests = "host", ["Host.Fixture"]
+        self.subtest_cases = PREVIEW_CASES
+        build = self.root / "preview-build"
+        preview_contracts = {}
+        for runtime in ("host", "gpu"):
+            name = runtime.title() + ".Preview"
+            target = runtime.title() + "PreviewTarget"
+            contract_path = self.root / "tests" / (runtime + "-contracts.json")
+            contract = json.loads(contract_path.read_text())
+            contract["native_cohorts"] = {}
+            contract["native_membership"] = {}
+            contract["grain_preview"] = {
+                "targets": {target: {"protocol": "custom", "registrations": 1}},
+                "required": [name],
+                "native_cohorts": {name: 1},
+                "native_membership": {name: {"listed": 1, "terminal": 1, "required": [["preview", runtime]]}},
+            }
+            contract_path.write_text(json.dumps(contract))
+            preview_contracts[runtime] = contract
+
+        for value in PREVIEW_CASES:
+            with self.subTest(case=value):
+                preview = configure_preview_option(self.root, build, value)
+                self.cache["JUICER_GRAIN_PREVIEW"] = cache_values(build)["JUICER_GRAIN_PREVIEW"]
+                self.assertEqual(self.cache["JUICER_GRAIN_PREVIEW"], value)
+                self.assertEqual(preview, value != "OFF")
+                self.args.run_id = "preview-" + value.lower()
+                for runtime, contract in preview_contracts.items():
+                    targets = {target: str(self.build / target) for target in contract["targets"]}
+                    name = runtime.title() + ".Preview"
+                    target = runtime.title() + "PreviewTarget"
+                    if preview:
+                        targets[target] = str(self.build / target)
+                        ordinary = self.tests[runtime.title() + ".Fixture"]
+                        self.tests[name] = {
+                            **ordinary,
+                            "name": name,
+                            "command": [*ordinary["command"][:-1], targets[target]],
+                        }
+                    else:
+                        self.tests.pop(name, None)
+                    (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps(targets))
+                verify.native_tests(self.args)
+                result = self.finish.call_args.args[1]
+                self.assertEqual(result["status"], "passed", result.get("error"))
+                self.assertNotIn("physical_gpu", result)
+                directory = self.root / "out/validation" / self.preset / "results" / self.args.run_id
+                for runtime, contract in preview_contracts.items():
+                    actual = json.loads((directory / (runtime + "-contracts.json")).read_text())
+                    addition = contract["grain_preview"]
+                    self.assertEqual(
+                        actual["required"], contract["required"] + (addition["required"] if preview else [])
+                    )
+                    for field in ("targets", "native_cohorts", "native_membership"):
+                        expected = {**contract[field], **(addition[field] if preview else {})}
+                        self.assertEqual(actual[field], expected, field)
 
     def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):
         timeouts = {
@@ -791,6 +852,81 @@ class CloseoutCliTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 verify.main()
+
+
+class RustDiscoveryTests(unittest.TestCase):
+    def test_discovery_package_id_is_verified_before_nextest_run(self):
+        cases = (("matches", "bridge"), ("other-package", "core"), ("missing-package", None))
+        self.subtest_cases = tuple(case for case, _ in cases)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "plugin"
+            package.mkdir()
+            (package / "lib.rs").write_text("fn fixture() {}\n", encoding="utf-8")
+            cargo = {
+                "packages": [
+                    {
+                        "id": "bridge",
+                        "name": "film-juicer-plugin",
+                        "manifest_path": str(package / "Cargo.toml"),
+                        "targets": [{"name": "plugin", "test": True, "kind": ["staticlib"]}],
+                    },
+                    {"id": "core", "name": "film-juicer-core"},
+                ],
+                "resolve": {"nodes": [{"id": "bridge", "features": ["grain-preview", "test-support"]}]},
+            }
+            binaries = {
+                "rust-binaries": {"bridge": {"binary-id": "bridge", "package-id": "bridge", "binary-name": "plugin"}}
+            }
+            args = SimpleNamespace(
+                package="bridge",
+                cargo=Path("cargo"),
+                nextest=Path("cargo-nextest"),
+                cargo_metadata=root / "cargo.json",
+                binaries_metadata=root / "binaries.json",
+                config_file=root / "nextest.toml",
+            )
+            args.cargo_metadata.write_text(json.dumps(cargo), encoding="utf-8")
+            args.binaries_metadata.write_text(json.dumps(binaries), encoding="utf-8")
+            args.config_file.write_text("", encoding="utf-8")
+            for case, package_id in cases:
+                with self.subTest(case=case):
+                    bundle = root / case
+                    bundle.mkdir()
+                    suite = {"testcases": {"abi": {"filter-match": {"status": "matches"}, "ignored": False}}}
+                    if package_id is not None:
+                        suite["package-id"] = package_id
+
+                    def nextest(command, *, env, stdout=None):
+                        if command[2] == "list":
+                            stdout.write(json.dumps({"rust-suites": {"bridge": suite}}).encode())
+                            return subprocess.CompletedProcess(command, 0)
+                        self.assertEqual(command[2], "run")
+                        (bundle / "Rust.Bridge.xml").write_text(
+                            '<testsuite name="bridge"><testcase name="abi"/></testsuite>', encoding="utf-8"
+                        )
+                        Path(env["FJ_RUST_ROWS"]).write_bytes(b"")
+                        return subprocess.CompletedProcess(command, 0)
+
+                    (bundle / "host-contracts.json").write_text('{"rust_cohorts":{"bridge":0}}', encoding="utf-8")
+                    with (
+                        patch.dict(os.environ, {"FJ_HOST_BUNDLE": str(bundle)}, clear=True),
+                        patch.object(verify.subprocess, "run", side_effect=nextest) as run,
+                    ):
+                        if case == "matches":
+                            self.assertEqual(verify.rust_tests(args), 0)
+                            self.assertEqual([call.args[0][2] for call in run.call_args_list], ["list", "run"])
+                        else:
+                            with self.assertRaisesRegex(ValueError, "discovery package ID differs"):
+                                verify.rust_tests(args)
+                            self.assertEqual([call.args[0][2] for call in run.call_args_list], ["list"])
+                    execution = json.loads((bundle / "Rust.Bridge.execution.json").read_bytes())
+                    self.assertEqual(execution["features"], ["grain-preview", "test-support"])
+
+    test_discovery_package_id_is_verified_before_nextest_run.required_subtests = True
+
+
+CtestDispatchTests.test_cmake_preview_option_merges_host_and_gpu_registration_contracts.required_subtests = True
 
 
 if __name__ == "__main__":

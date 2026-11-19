@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
+from qualification import PRESET_TARGETS, RUST_QUALITY_PACKAGES, clippy_forms
+
 
 RUST_POLICY_FILES = {
     "Cargo.lock",
@@ -48,12 +50,6 @@ NATIVE_POLICY_FILES = {
     "scripts/source_file_policy.json",
 }
 QUALITY_RUNNER_PREFIXES = ("tests/quality/",)
-PRESET_TARGETS = {
-    "linux-debug": "x86_64-unknown-linux-gnu",
-    "linux-release": "x86_64-unknown-linux-gnu",
-    "windows-clang-debug": "x86_64-pc-windows-msvc",
-    "windows-clang-release": "x86_64-pc-windows-msvc",
-}
 RUST_VERSION = "1.98.1"
 # Direct package dependencies, including inactive target-specific declarations.
 # A new dependency or build hook is an architectural change, not just a lock update.
@@ -119,6 +115,7 @@ class Runner:
         self.expected_checks: list[str] = []
         self.completed_checks: list[str] = []
         self.expected_commands: list[str] = []
+        self.rust_quality: dict | None = None
         self.python_cases: list[str] = []
         self.consumed_inputs: set[str] = set()
         self.command_output_read_bytes = 0
@@ -241,7 +238,7 @@ def parse_arguments() -> argparse.Namespace:
         nargs="+",
         help="actual compiler dependency consumers supplied by development verification",
     )
-    parser.add_argument("--rust-packages", nargs="+", choices=("film-juicer-core", "film-juicer-plugin"))
+    parser.add_argument("--rust-packages", nargs="+", choices=RUST_QUALITY_PACKAGES)
     parser.add_argument(
         "--development", action="store_true", help="development checks only; never publishes qualification probes"
     )
@@ -679,27 +676,18 @@ def check_rust(
         "--target-dir",
         str(target_dir),
     ]
-    profile = "release" if arguments.preset.endswith("-release") else "dev"
-    profile_args = ["--release"] if profile == "release" else []
-    selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
+    selected_packages = list(dict.fromkeys(getattr(arguments, "rust_packages", None) or RUST_QUALITY_PACKAGES))
     development = getattr(arguments, "development", False)
     format_packages = (
         [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
     )
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
-    for package in selected_packages:
-        features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
-        runner.run(
-            [*common, "-p", package, "--all-targets", *profile_args, "--", "-D", "warnings"],
-            env=environment,
-            label=f"clippy-{package}-{profile}",
-        )
-        if features:
-            runner.run(
-                [*common, "-p", package, "--all-targets", *features, *profile_args, "--", "-D", "warnings"],
-                env=environment,
-                label=f"clippy-{package}-test-support-{profile}",
-            )
+    from verify import cache_values
+
+    raw_preview = cache_values(root / "out/build" / arguments.preset).get("JUICER_GRAIN_PREVIEW")
+    runner.rust_quality = {"JUICER_GRAIN_PREVIEW": raw_preview, "packages": selected_packages}
+    for label, form in clippy_forms(arguments.preset, selected_packages, raw_preview):
+        runner.run([*common, *form], env=environment, label=label)
 
 
 def split_compiler_command(command: str) -> tuple[str, ...]:
@@ -1459,7 +1447,7 @@ def quality_main(root, arguments):
         costs["expiry"] = expiry
         costs["report_read_bytes"] += expiry["read_bytes"]
     checks = {
-        "schema": "native-quality-checks-v1",
+        "schema": "native-quality-checks-v2",
         "status": status,
         "preset": arguments.preset,
         "selected": selected,
@@ -1469,6 +1457,7 @@ def quality_main(root, arguments):
         "completed_checks": completed_checks,
         "expected_commands": expected_commands,
         "commands": commands,
+        "rust_quality": runner.rust_quality,
         "python_cases": python_cases,
         "consumed_inputs": sorted(consumed_inputs),
         "costs": costs,

@@ -11,6 +11,43 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
 import xml.etree.ElementTree as ET
 
+
+PRESET_TARGETS = {
+    "linux-debug": "x86_64-unknown-linux-gnu",
+    "linux-release": "x86_64-unknown-linux-gnu",
+    "windows-clang-debug": "x86_64-pc-windows-msvc",
+    "windows-clang-release": "x86_64-pc-windows-msvc",
+}
+RUST_QUALITY_PACKAGES = ("film-juicer-core", "film-juicer-plugin")
+
+
+def grain_preview_enabled(value: str | None) -> bool:
+    """Interpret the cached value as CMake's if(JUICER_GRAIN_PREVIEW)."""
+    if value is None or value in ("", "0", "NOTFOUND") or value.endswith("-NOTFOUND"):
+        return False
+    return value.upper() not in {"OFF", "NO", "FALSE", "N", "IGNORE"}
+
+
+def clippy_forms(preset, packages, raw_preview):
+    """Return the required labels and package arguments for Rust quality."""
+    profile = "release" if preset.endswith("-release") else "dev"
+    profile_args = ["--release"] if profile == "release" else []
+    preview = grain_preview_enabled(raw_preview)
+    for package in packages:
+        test_support = package == "film-juicer-plugin"
+        variants = [()]
+        if test_support:
+            variants.append(("test-support",))
+        if preview:
+            variants.append(("grain-preview",))
+            if test_support:
+                variants.append(("grain-preview", "test-support"))
+        for features in variants:
+            label = "-".join(("clippy", package, *features, profile))
+            feature_args = ["--features", ",".join(features)] if features else []
+            yield label, ["-p", package, "--all-targets", *feature_args, *profile_args, "--", "-D", "warnings"]
+
+
 OPTICS_FUNCTION = "optics::tests::matches_frozen_native_words_identities_and_failures"
 OPTICS_TESTS = ["Ffi.Host.SpatialOptics", "Rust.Core"]
 GPU_WITNESS_TEST = "Ffi.Gpu.PreparedBoundary.negative-direct"
@@ -26,7 +63,7 @@ OPTICS_MEMBERS = {
     "nextest.toml",
     "rust-execution.json",
 }
-PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
+PRESETS = tuple(PRESET_TARGETS)
 GROUPS = {"product", "boundary", "tooling", "corpus"}
 
 
@@ -417,6 +454,29 @@ def framework_terminals(payload, expected, *, nextest=False, filtered=frozenset(
         raise ValueError("missing framework case terminal")
 
 
+def rust_package_features(cargo, package_id):
+    matches = [node["features"] for node in cargo["resolve"]["nodes"] if node["id"] == package_id]
+    if len(matches) != 1 or not isinstance(matches[0], list):
+        raise ValueError("missing resolved Rust package features")
+    features = matches[0]
+    if any(not isinstance(feature, str) or not feature for feature in features) or len(set(features)) != len(features):
+        raise ValueError("invalid resolved Rust package features")
+    return sorted(features)
+
+
+def validate_rust_execution_features(execution, package, cargo):
+    if "schema" not in execution and execution.get("features") == "test-support":
+        return  # Historical receipts carry the original hard-coded label.
+    package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}[package]
+    packages = [owner["id"] for owner in cargo["packages"] if owner["name"] == package_name]
+    if execution.get("schema") != "rust-test-execution-v2" or len(packages) != 1:
+        raise ValueError("invalid Rust execution feature receipt")
+    if execution.get("package") != package_name or execution.get("features") != rust_package_features(
+        cargo, packages[0]
+    ):
+        raise ValueError("Rust execution features differ from the selected resolved package")
+
+
 def rust_membership(document, package, cargo, binaries):
     package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}[package]
     owners = [p for p in cargo["packages"] if p["name"] == package_name]
@@ -437,7 +497,10 @@ def rust_membership(document, package, cargo, binaries):
         raise ValueError("missing or unexpected Rust test binary")
     selected, filtered = set(), set()
     for binary, suite in document["rust-suites"].items():
-        owned = binaries["rust-binaries"][binary]["package-id"] == owner["id"]
+        package_id = binaries["rust-binaries"][binary]["package-id"]
+        if not isinstance(package_id, str) or not package_id or suite.get("package-id") != package_id:
+            raise ValueError("nextest discovery package ID differs from prepared binary: " + binary)
+        owned = package_id == owner["id"]
         for name, case in suite["testcases"].items():
             key = (binary, name)
             matches = case["filter-match"]["status"] == "matches"
@@ -612,6 +675,7 @@ def validate_domain_result(result, payloads):
                 )
                 framework_terminals(payloads[name + ".xml"], expected, nextest=True, filtered=filtered)
                 execution = json.loads(payloads[name + ".execution.json"])
+                validate_rust_execution_features(execution, package, json.loads(payloads["rust-cargo.json"]))
                 if (
                     len(execution["commands"]) != 2
                     or any(c["returncode"] != 0 for c in execution["commands"])
@@ -985,6 +1049,7 @@ def _native_cases(result, payloads, entries, contract, selected):
             )
             framework_terminals(payloads[name + ".xml"], expected, nextest=True, filtered=filtered)
             execution = json.loads(payloads[name + ".execution.json"])
+            validate_rust_execution_features(execution, package, json.loads(payloads["rust-cargo.json"]))
             if (
                 len(execution["commands"]) != 2
                 or any(c["returncode"] != 0 for c in execution["commands"])
@@ -1054,12 +1119,15 @@ def validate_tests_result(result, payloads):
     if result.get("rust_artifacts"):
         artifacts = json.loads(payloads["rust-artifacts.json"])
         variants = artifacts["variants"]
+        schema = artifacts["schema"]
+        preview = grain_preview_enabled(candidate.get("configuration", {}).get("JUICER_GRAIN_PREVIEW"))
+        production_features = ["grain-preview"] if schema == "rust-artifacts-v2" and preview else []
         if (
-            artifacts["schema"] != "rust-artifacts-v1"
+            schema not in {"rust-artifacts-v1", "rust-artifacts-v2"}
             or set(variants) != {"production", "test-support"}
             or variants["production"]["archive"] == variants["test-support"]["archive"]
             or variants["production"]["target_dir"] == variants["test-support"]["target_dir"]
-            or variants["production"]["features"] != []
+            or variants["production"]["features"] != production_features
             or variants["test-support"]["features"] != ["test-support"]
             or candidate["features"].get("rust_artifacts") != "rust-artifacts.json"
         ):
@@ -1172,6 +1240,13 @@ def validate_tests_result(result, payloads):
             if checks["selected"] != result["quality_files"] or checks["preset"] != result["preset"]:
                 raise ValueError("selected-source quality scope differs from execution")
             validate_quality_checks(checks, payloads)
+            binding = checks.get("rust_quality")
+            if (
+                checks["schema"] == "native-quality-checks-v2"
+                and binding is not None
+                and binding["JUICER_GRAIN_PREVIEW"] != candidate["configuration"].get("JUICER_GRAIN_PREVIEW")
+            ):
+                raise ValueError("quality preview value differs from the native configuration")
     return {
         "status": result["status"],
         "preset": result["preset"],
@@ -1197,9 +1272,48 @@ def quality_result_members(result):
     return _flat_members(result, required)
 
 
+def validate_clippy_forms(checks):
+    binding = checks.get("rust_quality")
+    if "rust-quality" not in checks["expected_checks"]:
+        if binding is not None:
+            raise ValueError("unexpected Rust quality binding")
+        return
+    if not isinstance(binding, dict) or set(binding) != {"JUICER_GRAIN_PREVIEW", "packages"}:
+        raise ValueError("missing Rust quality binding")
+    raw_preview = binding["JUICER_GRAIN_PREVIEW"]
+    packages = binding["packages"]
+    if raw_preview is not None and not isinstance(raw_preview, str):
+        raise ValueError("invalid raw CMake preview value")
+    if (
+        not isinstance(packages, list)
+        or not packages
+        or any(package not in RUST_QUALITY_PACKAGES for package in packages)
+        or len(packages) != len(set(packages))
+        or (checks.get("mode") != "development" and set(packages) != set(RUST_QUALITY_PACKAGES))
+    ):
+        raise ValueError("invalid Rust quality package selection")
+    preset = checks.get("preset")
+    if preset not in PRESET_TARGETS:
+        raise ValueError("invalid Rust quality preset")
+    prefix = ["clippy", "--locked", "--target", PRESET_TARGETS[preset], "--target-dir"]
+    required = dict(clippy_forms(preset, packages, raw_preview))
+    for operation in checks["commands"]:
+        name = operation["name"].removeprefix("quality-")
+        command = operation["command"]
+        if not name.startswith("clippy-film-juicer-") and (
+            command[1:2] != ["clippy"] or command[1:] == ["clippy", "--version"]
+        ):
+            continue
+        args = required.pop(name, None)
+        if args is None or command[1:6] != prefix or not command[6:7] or command[7:] != args:
+            raise ValueError("unexpected Clippy form: " + name)
+    if required:
+        raise ValueError("missing required Clippy forms: " + ", ".join(required))
+
+
 def validate_quality_checks(checks, payloads=None):
     if (
-        checks.get("schema") != "native-quality-checks-v1"
+        checks.get("schema") not in {"native-quality-checks-v1", "native-quality-checks-v2"}
         or checks["status"] != "passed"
         or not checks["expected_checks"]
         or checks.get("python_cases") != ["quality-boundary"]
@@ -1225,6 +1339,8 @@ def validate_quality_checks(checks, payloads=None):
         for command in commands
     ):
         raise ValueError("failed or undrained quality operation")
+    if checks["schema"] == "native-quality-checks-v2":
+        validate_clippy_forms(checks)
     counts = {"quality_checks": len(expected), "python_functions": 0, "python_rows": 0}
     if checks.get("python_cases"):
         if payloads is None:
@@ -1255,6 +1371,8 @@ def validate_quality_result(result, payloads):
     ):
         raise ValueError("quality result differs from its executed checks")
     counts = validate_quality_checks(checks, payloads) if result["status"] == "passed" else {"quality_checks": 0}
+    if result["status"] == "passed" and checks["schema"] == "native-quality-checks-v2":
+        counts["rust_quality"] = checks.get("rust_quality")
     return {
         "status": result["status"],
         "preset": result["preset"],
