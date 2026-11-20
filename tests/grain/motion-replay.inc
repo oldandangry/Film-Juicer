@@ -150,10 +150,11 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
     std::ofstream reports(outputPath / "frames.jsonl");
     require(static_cast<bool>(reports), "could not open motion receipt");
 
-    require_driver(cuInit(0), "initialize motion CUDA driver");
+    const CudaDriver driver;
+    driver.check(driver.init(0), "initialize motion CUDA driver");
     CUcontext original = nullptr;
-    require_driver(cuCtxGetCurrent(&original), "read initial motion CUDA context");
-    ContextRestore restore(original);
+    driver.check(driver.get_current(&original), "read initial motion CUDA context");
+    ContextRestore restore(driver, original);
     require_cuda(cudaSetDevice(0), "select motion CUDA device");
     auto* plugin = fj_ofx_plugin(0);
     require(plugin && plugin->pluginIdentifier &&

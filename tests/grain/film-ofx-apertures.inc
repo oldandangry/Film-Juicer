@@ -34,7 +34,7 @@ struct DensityCapture {
     float samplePitch = 0.F;
 };
 
-DensityCapture capture_aperture(const ApertureCase& witness, const GrainGeometry& geometry) {
+DensityCapture capture_aperture(const CudaDriver& driver, const ApertureCase& witness, const GrainGeometry& geometry) {
     const auto& bounds = geometry.bounds;
     const Case test{
         .id = witness.id,
@@ -79,7 +79,7 @@ DensityCapture capture_aperture(const ApertureCase& witness, const GrainGeometry
         MotionDensity tap{.pass = pass, .density = plane, .seeds = seeds, .captureFilm = pass == MotionPass::Film};
         const MotionDensityScope scope(tap);
         std::vector<std::uint32_t> output;
-        (void)run_pass(lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, output, true);
+        (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, output, true);
         require(tap.visited && tap.filmCaptured == tap.captureFilm, "aperture density tap did not complete");
         return tap.samplePitch;
     };
@@ -135,11 +135,11 @@ void compare_aperture_grain(const ApertureCase& witness, const DensityCapture& p
     require(passed, "OFX proxy lost grain variation or disagrees with Full transmission reduction");
 }
 
-void check_aperture(const ApertureCase& witness) {
-    const auto proxy = capture_aperture(witness, witness.proxy);
+void check_aperture(const CudaDriver& driver, const ApertureCase& witness) {
+    const auto proxy = capture_aperture(driver, witness, witness.proxy);
     const auto id = std::string_view(witness.id);
     if (id.starts_with("clipped-quarter")) {
-        const auto square = capture_aperture(witness, witness.reference);
+        const auto square = capture_aperture(driver, witness, witness.reference);
         std::cout << id << " clipped_pitch=" << proxy.samplePitch << " square_pitch=" << square.samplePitch << '\n';
         const auto same_word = [](float left, float right) {
             return std::bit_cast<std::uint32_t>(left) == std::bit_cast<std::uint32_t>(right);
@@ -178,7 +178,7 @@ void check_aperture(const ApertureCase& witness) {
         });
         return;
     }
-    const auto full = capture_aperture(witness, witness.reference);
+    const auto full = capture_aperture(driver, witness, witness.reference);
     std::cout << id << " proxy_sample_pitch=" << proxy.samplePitch << " full_sample_pitch=" << full.samplePitch << '\n';
     const int width = witness.reference.bounds.x2;
     const auto pixels = full.clean.size() / 3;
@@ -196,10 +196,11 @@ void check_aperture(const ApertureCase& witness) {
 }
 
 int grain_preview_apertures() {
-    require_driver(cuInit(0), "initialize aperture CUDA driver");
+    const CudaDriver driver;
+    driver.check(driver.init(0), "initialize aperture CUDA driver");
     CUcontext original = nullptr;
-    require_driver(cuCtxGetCurrent(&original), "read aperture CUDA context");
-    ContextRestore restore(original);
+    driver.check(driver.get_current(&original), "read aperture CUDA context");
+    ContextRestore restore(driver, original);
     require_cuda(cudaSetDevice(0), "select aperture CUDA device");
     JuicerTests::CaseLog cases;
     std::vector<std::string> ids;
@@ -211,7 +212,7 @@ int grain_preview_apertures() {
     for (const auto& witness : kOfxApertures) {
         JuicerTests::CaseEvent event(kApertureCaller, witness.id);
         try {
-            check_aperture(witness);
+            check_aperture(driver, witness);
             event.passed();
         } catch (const std::exception& error) {
             std::cerr << witness.id << ": " << error.what() << '\n';

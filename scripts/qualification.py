@@ -1799,7 +1799,7 @@ def _payloads(result, payloads):
         if len(data) != spec["bytes"] or hashlib.sha256(data).hexdigest() != spec["sha256"]:
             raise ValueError("result payload identity mismatch: " + name)
     candidate = json.loads(payloads["candidate.json"])
-    if result["schema"] in {"native-build-v1", "native-paired-discovery-v1"}:
+    if result.get("schema") in {"native-build-v1", "native-paired-discovery-v1"}:
         check_build_or_pair_candidate(result, candidate)
     if candidate["head"] != result["candidate_head"] or candidate["preset"] != result["preset"]:
         raise ValueError("candidate metadata mismatch")
@@ -3052,9 +3052,13 @@ def check_build_or_pair_metadata(result, *, pair=False):
         "result.json",
     )
     detailed = pair or result.get("production_module") is True
+    # Standalone build receipts predating the producer marker can omit command names.
+    name_field = "name" if pair or "production_module" in result else "name?"
     for index, operation in enumerate(result["commands"]):
         field = f"result.json.commands[{index}]"
-        check_receipt_shape(operation, {"name": str, "returncode": int, "drained": bool, "process_status": str}, field)
+        check_receipt_shape(
+            operation, {name_field: str, "returncode": int, "drained": bool, "process_status": str}, field
+        )
         if detailed:
             # Keep the existing configure diagnostics while identifying the exact malformed field.
             name = operation["name"]

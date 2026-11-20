@@ -11,14 +11,15 @@ if(CMAKE_HOST_WIN32)
         set(CMAKE_CUDA_HOST_COMPILER "${JUICER_NVCC_MSVC}" CACHE FILEPATH "NVCC MSVC host")
     endif()
     set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+    # Keep the CUDA compiler ABI probe from starting a persistent PDB server.
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
     # MSVC's /RTC stack/uninitialised checks cannot be combined with /O2.
     set(CMAKE_MSVC_RUNTIME_CHECKS "")
 endif()
 
 project(FilmJuicer LANGUAGES CXX CUDA)
-if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
 endif()
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
    NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$" OR
@@ -113,7 +114,7 @@ foreach(probe JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe)
         "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
     target_link_libraries(${probe} PRIVATE
         juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
-        CUDA::cudart CUDA::cuda_driver)
+        CUDA::cudart)
     set_target_properties(${probe} PROPERTIES
         LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")

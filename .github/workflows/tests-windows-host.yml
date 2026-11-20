@@ -37,19 +37,37 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Enter VS 18 x64 developer environment
+      - &windows_dev_environment
+        name: Enter pinned VS 18 x64 developer environment
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          # Retain the qualified CUDA 13.2 host toolset across runner image updates.
+          $toolset = "14.51"
+          $installerDir = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $vswhere = Join-Path $installerDir "vswhere.exe"
           $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath
           if (!$vsPath) { throw "Visual Studio 18 with the x64 C++ tools was not found" }
+          $compiler = Join-Path $vsPath "VC\Tools\MSVC\$toolset.*\bin\Hostx64\x64\cl.exe"
+          if (!(Test-Path -Path $compiler -PathType Leaf)) {
+            $component = "Microsoft.VisualStudio.Component.VC.$toolset.x86.x64"
+            $setup = Join-Path $installerDir "setup.exe"
+            $install = Start-Process -FilePath $setup -ArgumentList @(
+              "modify", "--installPath", "`"$vsPath`"", "--add", $component, "--quiet", "--norestart"
+            ) -WindowStyle Hidden -Wait -PassThru
+            if ($install.ExitCode -notin @(0, 3010) -or !(Test-Path -Path $compiler -PathType Leaf)) {
+              throw "MSVC $toolset installation failed: $($install.ExitCode)"
+            }
+          }
           $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
           $developerEnvironment = & $env:ComSpec /d /s /c `
-            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
+            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=$toolset && set"
           if ($LASTEXITCODE -ne 0) { throw "VS 18 x64 developer environment setup failed" }
+          $selectedToolset = $developerEnvironment -like "VCToolsVersion=$toolset.*"
+          if (!$selectedToolset) { throw "Expected MSVC $toolset" }
+          Write-Host $selectedToolset
           foreach ($line in $developerEnvironment) {
             if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
           }
@@ -222,27 +240,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Enter VS 18 x64 developer environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-          if (!$vsPath) { throw "Visual Studio 18 with the x64 C++ tools was not found" }
-          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
-          $developerEnvironment = & $env:ComSpec /d /s /c `
-            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
-          if ($LASTEXITCODE -ne 0) { throw "VS 18 x64 developer environment setup failed" }
-          foreach ($line in $developerEnvironment) {
-            if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
-          }
-          $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
-          $llvmBin >> $env:GITHUB_PATH
-          $rustLinker = Join-Path $llvmBin "lld-link.exe"
-          if (!(Test-Path $rustLinker -PathType Leaf)) { throw "VS 18 lld-link was not found" }
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
+      - *windows_dev_environment
 
       - name: Install CUDA Toolkit 13.2
         shell: pwsh
@@ -378,27 +376,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Enter VS 18 x64 tooling environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-          if (!$vsPath) { throw "Visual Studio 18 with the x64 C++ tools was not found" }
-          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
-          $developerEnvironment = & $env:ComSpec /d /s /c `
-            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
-          if ($LASTEXITCODE -ne 0) { throw "VS 18 x64 developer environment setup failed" }
-          foreach ($line in $developerEnvironment) {
-            if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
-          }
-          $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
-          $llvmBin >> $env:GITHUB_PATH
-          $rustLinker = Join-Path $llvmBin "lld-link.exe"
-          if (!(Test-Path $rustLinker -PathType Leaf)) { throw "VS 18 lld-link was not found" }
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
+      - *windows_dev_environment
 
       - name: Install pinned Rust tools, CMake, and test requirements
         shell: pwsh

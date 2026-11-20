@@ -141,22 +141,15 @@ namespace {
         if (result != cudaSuccess)
             throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(result));
     }
-    void require_driver(CUresult result, std::string_view operation) {
-        if (result != CUDA_SUCCESS) {
-            const char* name = nullptr;
-            (void)cuGetErrorName(result, &name);
-            throw std::runtime_error(std::string(operation) + ": " + (name ? name : "CUDA driver failure"));
-        }
-    }
     class Module final {
     public:
-        explicit Module(const std::filesystem::path& path) {
+        explicit Module(const std::filesystem::path& path, std::string_view error = "unable to load production OFX module") {
 #ifdef _WIN32
             handle_ = LoadLibraryW(path.c_str());
 #else
             handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
-            require(handle_ != nullptr, "unable to load production OFX module");
+            require(handle_ != nullptr, error);
         }
         Module(const Module&) = delete;
         Module& operator=(const Module&) = delete;
@@ -171,7 +164,7 @@ namespace {
 #else
             auto* address = dlsym(handle_, name);
 #endif
-            require(address != nullptr, std::string("missing OFX module export: ") + name);
+            require(address != nullptr, std::string("missing module export: ") + name);
             return reinterpret_cast<T>(address);
         }
         bool loaded_from(const std::filesystem::path& path) const {
@@ -212,18 +205,45 @@ namespace {
         void* handle_ = nullptr;
 #endif
     };
+    // Discovery exercises the module on hosts without an installed CUDA driver.
+    // Only the GPU paths resolve driver entry points.
+    class CudaDriver final {
+#ifdef _WIN32
+        Module library_{"nvcuda.dll", "unable to load CUDA driver"};
+#else
+        Module library_{"libcuda.so.1", "unable to load CUDA driver"};
+#endif
+
+    public:
+        const decltype(&cuInit) init = library_.symbol<decltype(&cuInit)>("cuInit");
+        const decltype(&cuCtxGetCurrent) get_current = library_.symbol<decltype(&cuCtxGetCurrent)>("cuCtxGetCurrent");
+        const decltype(&cuCtxSetCurrent) set_current = library_.symbol<decltype(&cuCtxSetCurrent)>("cuCtxSetCurrent");
+
+        void check(CUresult result, std::string_view operation) const {
+            if (result != CUDA_SUCCESS) {
+                const char* name = nullptr;
+                (void)error_name_(result, &name);
+                throw std::runtime_error(std::string(operation) + ": " + (name ? name : "CUDA driver failure"));
+            }
+        }
+
+    private:
+        const decltype(&cuGetErrorName) error_name_ = library_.symbol<decltype(&cuGetErrorName)>("cuGetErrorName");
+    };
+
     struct ContextRestore final {
+        const CudaDriver& driver;
         CUcontext original = nullptr;
         bool restored = false;
-        explicit ContextRestore(CUcontext value) noexcept : original(value) {}
+        ContextRestore(const CudaDriver& cudaDriver, CUcontext value) noexcept : driver(cudaDriver), original(value) {}
         ~ContextRestore() {
             if (!restored)
-                (void)cuCtxSetCurrent(original);
+                (void)driver.set_current(original);
         }
         void restore() {
-            require_driver(cuCtxSetCurrent(original), "restore original CUDA context");
+            driver.check(driver.set_current(original), "restore original CUDA context");
             CUcontext current = nullptr;
-            require_driver(cuCtxGetCurrent(&current), "check restored CUDA context");
+            driver.check(driver.get_current(&current), "check restored CUDA context");
             restored = current == original;
             require(restored, "original CUDA context was not restored");
         }
@@ -421,7 +441,7 @@ namespace {
         const std::vector<float>* expected = nullptr;
         std::filesystem::path capture;
     };
-    Json run_pass(Lifecycle& lifecycle, InstanceHost& host, OfxImageEffectHandle effect, const Case& test, std::string_view pass, const PassImages& images, DeviceBuffers& device, std::vector<std::uint32_t>& coldWords, bool summary) {
+    Json run_pass(const CudaDriver& driver, Lifecycle& lifecycle, InstanceHost& host, OfxImageEffectHandle effect, const Case& test, std::string_view pass, const PassImages& images, DeviceBuffers& device, std::vector<std::uint32_t>& coldWords, bool summary) {
         const auto& [source, expected, capture] = images;
         const auto bytes = source.size() * sizeof(float);
         std::vector<float> initial(source.size(), kDestinationCanary);
@@ -433,9 +453,9 @@ namespace {
         const auto outputBefore = host.image_release_count(effect, "Output");
         host.clear_calls();
         CUcontext before = nullptr, after = nullptr;
-        require_driver(cuCtxGetCurrent(&before), "inspect context before render");
+        driver.check(driver.get_current(&before), "inspect context before render");
         const OfxStatus status = lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args());
-        require_driver(cuCtxGetCurrent(&after), "inspect context after render");
+        driver.check(driver.get_current(&after), "inspect context after render");
         Json messages = Json::array();
         for (const auto& call : host.calls())
             if (call.operation == "message") {
@@ -543,10 +563,11 @@ namespace {
                     std::filesystem::is_regular_file(resources / "grain/portra-400/records.f32") &&
                     std::filesystem::is_regular_file(resources / "grain/portra-400/sums.f32"),
                 "preview bundle grain bank missing");
-        require_driver(cuInit(0), "initialize CUDA driver");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA driver");
         CUcontext original = nullptr;
-        require_driver(cuCtxGetCurrent(&original), "read original CUDA context");
-        ContextRestore restore(original);
+        driver.check(driver.get_current(&original), "read original CUDA context");
+        ContextRestore restore(driver, original);
         require_cuda(cudaSetDevice(0), "select CUDA device");
         Module module(path);
         const auto count = module.symbol<int (*)()>("OfxGetNumberOfPlugins");
@@ -604,7 +625,7 @@ namespace {
                 host.set_property(host.action_args(), kOfxPropTime, {time});
                 std::vector<std::uint32_t> words;
                 try {
-                    (void)run_pass(lifecycle, host, effect, renderTest, "cold", {source, nullptr, {}}, device, words, true);
+                    (void)run_pass(driver, lifecycle, host, effect, renderTest, "cold", {source, nullptr, {}}, device, words, true);
                 } catch (const std::exception& error) {
                     throw std::runtime_error(lastEdit + " at frame " + std::to_string(time) + ": " + error.what());
                 }
@@ -1118,10 +1139,11 @@ namespace {
         const auto sourceName = capture.at("source_file").get<std::string>();
         require(std::filesystem::path(sourceName).filename() == std::filesystem::path(sourceName), "invalid replay source filename");
 
-        require_driver(cuInit(0), "initialize CUDA driver");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA driver");
         CUcontext original = nullptr;
-        require_driver(cuCtxGetCurrent(&original), "read original CUDA context");
-        ContextRestore restore(original);
+        driver.check(driver.get_current(&original), "read original CUDA context");
+        ContextRestore restore(driver, original);
         require_cuda(cudaSetDevice(0), "select CUDA device");
         Module module(paths.module);
         using Count = int (*)();
@@ -1227,9 +1249,9 @@ namespace {
             const auto sourceBefore = host.image_release_count(effect, "Source");
             const auto outputBefore = host.image_release_count(effect, "Output");
             CUcontext before = nullptr, after = nullptr;
-            require_driver(cuCtxGetCurrent(&before), "inspect context before replay");
+            driver.check(driver.get_current(&before), "inspect context before replay");
             const auto status = lifecycle.call(kOfxImageEffectActionRender, effect, args);
-            require_driver(cuCtxGetCurrent(&after), "inspect context after replay");
+            driver.check(driver.get_current(&after), "inspect context after replay");
             require(status == kOfxStatOK && !host.callback_error(), "replay render failed");
             require(before == after, "replay changed current CUDA context");
             const auto sourceReleases = host.image_release_count(effect, "Source") - sourceBefore;
@@ -1375,10 +1397,11 @@ int main(int argc, char** argv) {
             require(static_cast<bool>(updatesInput), "print expectation updates unavailable");
             expected = expected_pixels(fixture, Json::parse(updatesInput));
         }
-        require_driver(cuInit(0), "initialize CUDA driver");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA driver");
         CUcontext original = nullptr;
-        require_driver(cuCtxGetCurrent(&original), "read original CUDA context");
-        ContextRestore restore(original);
+        driver.check(driver.get_current(&original), "read original CUDA context");
+        ContextRestore restore(driver, original);
         require_cuda(cudaSetDevice(0), "select CUDA device");
         Module module(modulePath);
         using Count = int (*)();
@@ -1459,7 +1482,7 @@ int main(int argc, char** argv) {
             for (const auto* pass : {"cold", "warm"}) {
                 const std::string id = std::string(test.id) + "/" + pass;
                 cases.event(caller, id, "start");
-                rows.push_back(run_pass(lifecycle, host, effect, test, pass, {.source = source, .expected = capture ? nullptr : &expected[index], .capture = captureDirectory}, device, coldWords, summary));
+                rows.push_back(run_pass(driver, lifecycle, host, effect, test, pass, {.source = source, .expected = capture ? nullptr : &expected[index], .capture = captureDirectory}, device, coldWords, summary));
             }
             if (capture)
                 parameters[test.id] = parameter_values(host, effect, parameterNames);
