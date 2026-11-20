@@ -22,20 +22,33 @@ from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 from qualification import (
+    COMPILER_DEPENDENCY_TARGET,
+    FILM_GRAIN_STAGE_CONSUMERS,
+    FILM_GRAIN_STAGE_DATABASE,
+    FILM_GRAIN_STAGE_HEADER,
+    MOTION_REPLAY_DEFINE,
     MOTION_REPLAY_EXCLUSION,
-    MOTION_REPLAY_HEADER_CONSUMERS,
+    MOTION_REPLAY_FILE_CONSUMERS,
+    MOTION_REPLAY_SOURCE,
+    MOTION_REPLAY_STAGE_CONSUMERS,
     PRESET_TARGETS,
     PRODUCT_PREVIEW_KEYS,
+    QUALITY_CHECKS_SCHEMA,
     RUST_POLICY_FILES,
     RUST_QUALITY_PACKAGES,
     SOURCE_FILE_POLICY,
     clippy_forms,
+    compiler_dependency_command,
+    film_grain_stage_probes,
+    grain_preview_enabled,
     read_preview_and_replay_configuration,
     is_motion_replay_compile_entry,
     is_motion_replay_target_output,
+    motion_replay_quality_files,
     motion_replay_tidy_label,
     product_artifact_consumers,
     quality_native_source,
+    quality_replay_configuration,
     quality_scope,
 )
 
@@ -1074,35 +1087,28 @@ def prepare_cuda_analysis(
     return commands
 
 
-def replay_dependencies(root: Path, runner: Runner, entry: CompilationEntry, label: str) -> set[Path]:
-    """Use the configured preprocessor to resolve active replay includes."""
-    arguments = list(entry.arguments)
-    if (
-        arguments.count("-c") != 1
-        or arguments.count("-o") != 1
-        or any(arg.startswith(("@", "-M", "-Wp,")) or arg == "-Xpreprocessor" for arg in arguments[1:])
-    ):
-        raise QualityError(f"unsupported replay dependency probe arguments for {entry.path}")
-    output = arguments.index("-o")
-    if output + 1 == len(arguments) or entry.directory / arguments[output + 1] != entry.directory / entry.output:
-        raise QualityError(f"missing configured compile output for replay dependency probe: {entry.path}")
-    del arguments[output : output + 2]
-    arguments.remove("-c")
-    target = "juicer-replay"
+def compiler_dependencies(root: Path, runner: Runner, entry: CompilationEntry, label: str) -> set[Path]:
+    """Use the configured preprocessor to resolve active includes."""
+    try:
+        command = compiler_dependency_command(
+            entry.directory, root / entry.path, entry.directory / entry.output, entry.arguments
+        )
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
     try:
         depfile = runner.run(
-            [*arguments, "-M", "-MF", "-", "-MT", target],
+            command,
             cwd=entry.directory,
             label=label,
             display_output=False,
             stdout_only=True,
         )
     except QualityError as exc:
-        raise QualityError(f"replay dependency probe failed for {entry.path}: {exc}") from exc
+        raise QualityError(f"dependency probe failed for {entry.path}: {exc}") from exc
 
     rule, separator, prerequisites = depfile.replace("\r\n", "\n").replace("\\\n", " ").partition(":")
-    if rule != target or not separator or "\n" in prerequisites.strip():
-        raise QualityError(f"invalid replay dependency output for {entry.path}")
+    if rule != COMPILER_DEPENDENCY_TARGET or not separator or "\n" in prerequisites.strip():
+        raise QualityError(f"invalid dependency output for {entry.path}")
 
     def unescape(match):
         slashes, character = match.groups()
@@ -1116,42 +1122,64 @@ def replay_dependencies(root: Path, runner: Runner, entry: CompilationEntry, lab
         (entry.directory / re.sub(r"(\\+)([ \t#])", unescape, token).replace("$$", "$")).resolve() for token in tokens
     }
     if (root / entry.path).resolve() not in paths:
-        raise QualityError(f"replay dependency output omitted its source: {entry.path}")
+        raise QualityError(f"dependency output omitted its source: {entry.path}")
     return paths
 
 
-def prepare_motion_replay_analysis(root, runner, clang_tidy, headers, entries):
+def prepare_motion_replay_analysis(root, runner, clang_tidy, preset, files, entries):
     from execution import write_json
 
     try:
-        _, replay_configured = read_preview_and_replay_configuration(runner.product_configuration)
+        _, replay_configured = quality_replay_configuration(runner.product_configuration, preset)
     except ValueError as exc:
         raise QualityError(str(exc)) from exc
-    if not replay_configured:
-        runner.replay_compiler_analysis = {header: {"excluded": MOTION_REPLAY_EXCLUSION} for header in headers}
-        print("Motion replay is unavailable for compiler analysis in this configuration: " + ", ".join(headers))
-        return []
-
-    database = []
-    commands = []
-    consumers: dict[str, list[str]] = {header: [] for header in headers}
-    header_paths = {header: (root / header).resolve() for header in headers}
+    replay_entries = []
     seen = set()
     for entry in sorted(entries, key=lambda entry: entry.path):
         source = entry.path
         if not is_motion_replay_target_output(source, entry.output):
+            if source == MOTION_REPLAY_SOURCE or any(MOTION_REPLAY_DEFINE in arg for arg in entry.arguments):
+                raise QualityError(f"unexpected compile variant outside the motion replay target for {source}")
             continue
-        if source in seen or not is_motion_replay_compile_entry(source, entry.output, entry.arguments):
-            raise QualityError(f"expected one valid configured motion replay compile entry for {source}")
+        if (
+            not replay_configured
+            or source in FILM_GRAIN_STAGE_CONSUMERS
+            or source in seen
+            or not is_motion_replay_compile_entry(source, entry.output, entry.arguments)
+        ):
+            raise QualityError(f"unexpected configured motion replay compile variant for {source}")
         seen.add(source)
+        replay_entries.append(entry)
+
+    minimum = {file: MOTION_REPLAY_FILE_CONSUMERS[file] for file in files if file in MOTION_REPLAY_FILE_CONSUMERS}
+    if not replay_configured:
+        runner.replay_compiler_analysis = {file: {"excluded": MOTION_REPLAY_EXCLUSION} for file in minimum}
+        if minimum:
+            print("Motion replay is unavailable for compiler analysis in this configuration: " + ", ".join(minimum))
+        return []
+
+    if FILM_GRAIN_STAGE_HEADER in files:
+        minimum[FILM_GRAIN_STAGE_HEADER] = MOTION_REPLAY_STAGE_CONSUMERS
+    database = []
+    commands = []
+    consumers: dict[str, list[str]] = {file: [] for file in minimum}
+    input_paths = {file: (root / file).resolve() for file in minimum}
+    for entry in replay_entries:
+        source = entry.path
         label = motion_replay_tidy_label(source)
-        inputs = replay_dependencies(root, runner, entry, label.removeprefix("clang-tidy-") + "-dependencies")
+        inputs = compiler_dependencies(root, runner, entry, label.removeprefix("clang-tidy-") + "-dependencies")
         runner.consume(sorted(inputs))
-        selected_headers = tuple(sorted(header for header, path in header_paths.items() if path in inputs))
-        if not selected_headers:
+        selected_inputs = tuple(
+            sorted(
+                file
+                for file, path in input_paths.items()
+                if path in inputs and (file != MOTION_REPLAY_SOURCE or file == source)
+            )
+        )
+        if not selected_inputs:
             continue
-        for header in selected_headers:
-            consumers[header].append(label)
+        for file in selected_inputs:
+            consumers[file].append(label)
         database.append(
             {
                 "directory": str(entry.directory),
@@ -1166,23 +1194,50 @@ def prepare_motion_replay_analysis(root, runner, clang_tidy, headers, entries):
                 root,
                 label,
                 source,
-                selected_headers,
+                selected_inputs,
             )
         )
-    for header in headers:
-        minimum = {motion_replay_tidy_label(source) for source in MOTION_REPLAY_HEADER_CONSUMERS[header]}
-        if minimum - set(consumers[header]):
-            missing = [
-                source
-                for source in MOTION_REPLAY_HEADER_CONSUMERS[header]
-                if motion_replay_tidy_label(source) not in consumers[header]
-            ]
-            raise QualityError(f"missing configured motion replay consumers for {header}: {', '.join(missing)}")
+    for file, sources in minimum.items():
+        missing = [source for source in sources if motion_replay_tidy_label(source) not in consumers[file]]
+        if missing:
+            raise QualityError(f"missing configured motion replay consumers for {file}: {', '.join(missing)}")
     write_json(runner.log_dir / "compile_commands.json", database)
     runner.replay_compiler_analysis = {
-        header: {"commands": [runner.name_prefix + label for label in consumers[header]]} for header in headers
+        file: {"commands": [runner.name_prefix + label for label in labels]} for file, labels in consumers.items()
     }
     return commands
+
+
+def check_film_grain_stage_consumers(root, runner, build, entries):
+    """Retain the configured ordinary consumers after checking active includes."""
+    from execution import write_json
+
+    header = (root / FILM_GRAIN_STAGE_HEADER).resolve()
+    stage_entries = sorted(
+        (entry for entry in entries if entry.path in FILM_GRAIN_STAGE_CONSUMERS),
+        key=lambda entry: str(entry.directory / entry.output),
+    )
+    database = [
+        {
+            "directory": str(entry.directory),
+            "file": str(root / entry.path),
+            "arguments": list(entry.arguments),
+            "output": str(entry.directory / entry.output),
+        }
+        for entry in stage_entries
+    ]
+    try:
+        probes = film_grain_stage_probes(
+            database, root, build, testing=grain_preview_enabled(runner.product_configuration["BUILD_TESTING"])
+        )
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
+    for label, entry in zip(probes, stage_entries, strict=True):
+        inputs = compiler_dependencies(root, runner, entry, label)
+        if header not in inputs:
+            raise QualityError(f"{entry.path} does not actively include {FILM_GRAIN_STAGE_HEADER}: {entry.output}")
+        runner.consume(sorted(inputs))
+    write_json(runner.log_dir / FILM_GRAIN_STAGE_DATABASE, database)
 
 
 def prepare_native_analysis(
@@ -1195,7 +1250,7 @@ def prepare_native_analysis(
     build_dir = root / "out/build" / arguments.preset
     entries = compilation_entries(root, arguments.preset)
     runner.consume([build_dir / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"])
-    validate_translation_units(selected_native, entries, policy)
+    validate_translation_units([path for path in selected_native if path != MOTION_REPLAY_SOURCE], entries, policy)
     format_candidates = (
         arguments.clang_format,
         os.environ.get("JUICER_CLANG_FORMAT"),
@@ -1225,15 +1280,30 @@ def prepare_native_analysis(
     )
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
     consumers = getattr(arguments, "compiler_consumers", None) or []
-    validate_translation_units(consumers, entries, policy)
-    replay_headers = sorted(MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(selected_native))
+    if MOTION_REPLAY_SOURCE in consumers and MOTION_REPLAY_SOURCE not in selected_native:
+        raise QualityError(f"select {MOTION_REPLAY_SOURCE} with --files for motion replay analysis")
+    consumers = [source for source in consumers if source != MOTION_REPLAY_SOURCE]
+    replay_files = motion_replay_quality_files(selected_native)
     commands: list[AnalysisCommand] = []
-    if replay_headers:
-        commands = prepare_motion_replay_analysis(root, runner, clang_tidy, replay_headers, entries)
-        selected_native = [path for path in selected_native if path not in replay_headers]
+    stage_consumers: tuple[str, ...] = ()
+    if replay_files:
+        commands = prepare_motion_replay_analysis(
+            root, runner, clang_tidy, arguments.preset, sorted(replay_files), entries
+        )
+        selected_native = [path for path in selected_native if path not in MOTION_REPLAY_FILE_CONSUMERS]
         if not selected_native and not consumers:
             return commands
-    translation_units = sorted(set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers))
+        entries = [entry for entry in entries if not is_motion_replay_target_output(entry.path, entry.output)]
+        if FILM_GRAIN_STAGE_HEADER in replay_files:
+            check_film_grain_stage_consumers(root, runner, build_dir, entries)
+            # The witness's guarded stage include is not active in ordinary
+            # render probes; use the ordinary owners verified by the compiler.
+            selected_native = [path for path in selected_native if path != FILM_GRAIN_STAGE_HEADER]
+            stage_consumers = FILM_GRAIN_STAGE_CONSUMERS
+    validate_translation_units(consumers, entries, policy)
+    translation_units = sorted(
+        set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers) | set(stage_consumers)
+    )
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
     includes, edges = {}, {}
@@ -1505,9 +1575,9 @@ def quality_main(root, arguments):
     candidate_unchanged = None
     if failure is None:
         try:
-            if MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(selected):
+            if motion_replay_quality_files(selected):
                 shutil.copyfile(root / "scripts" / SOURCE_FILE_POLICY, log_dir / SOURCE_FILE_POLICY)
-                _, replay_configured = read_preview_and_replay_configuration(runner.product_configuration)
+                _, replay_configured = quality_replay_configuration(runner.product_configuration, arguments.preset)
                 build = root / "out/build" / arguments.preset
                 manifest = build / "tests/rust-artifacts.json"
                 artifact_data = manifest.read_bytes()
@@ -1567,7 +1637,7 @@ def quality_main(root, arguments):
         costs["expiry"] = expiry
         costs["report_read_bytes"] += expiry["read_bytes"]
     checks = {
-        "schema": "native-quality-checks-v4",
+        "schema": QUALITY_CHECKS_SCHEMA,
         "status": status,
         "preset": arguments.preset,
         "selected": selected,

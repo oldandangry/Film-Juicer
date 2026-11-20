@@ -1,15 +1,45 @@
 // Copyright 2026 MUAStudio Inc. SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <span>
+
 #include "Cuda/JuicerCudaFilmGrain.h"
 
 namespace JuicerTests::GrainMotion {
-    // Exclusively active in the offline witness on its CPU submission thread.
-    cudaError_t before_grain(
-        JuicerCuda::FilmGrain::FilmFrame& frame,
-        float samplePitch,
-        JuicerCuda::FilmGrain::FilmPlanes planes,
-        cudaStream_t stream,
-        bool& applyGrain);
-    cudaError_t after_grain(JuicerCuda::FilmGrain::FilmPlanes planes, cudaStream_t stream) noexcept;
+    enum class MotionPass : std::uint8_t {
+        Capture,
+        Film,
+        Replay,
+        GrainOff
+    };
+    using MotionSeedPair = std::array<std::uint32_t, 2>;
+
+    struct MotionDensity {
+        MotionPass pass = MotionPass::Capture;
+        std::span<float> density;
+        std::optional<MotionSeedPair> seeds;
+        bool captureFilm = false;
+        JuicerCuda::FilmGrain::FilmFrame admitted{};
+        float samplePitch = 0.F;
+        bool visited = false;
+        bool filmLaunched = false;
+        bool filmCaptured = false;
+    };
+
+    // The tap borrows one capture on the synchronous OFX submission thread.
+    class MotionDensityScope {
+    public:
+        explicit MotionDensityScope(MotionDensity& density) noexcept;
+        ~MotionDensityScope();
+        MotionDensityScope(const MotionDensityScope&) = delete;
+        MotionDensityScope& operator=(const MotionDensityScope&) = delete;
+
+    private:
+        MotionDensity* previous_;
+    };
+
+    void project_motion_density(std::span<const float> input, std::span<float> grained, double fraction);
 } // namespace JuicerTests::GrainMotion

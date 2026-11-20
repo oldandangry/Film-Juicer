@@ -89,8 +89,10 @@ namespace JuicerCuda {
 
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)
     namespace RenderTest {
+        bool omit_film_bank() noexcept;
+        bool omit_grain_plane() noexcept;
         void before_abort_query();
-    }
+    } // namespace RenderTest
 #endif
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)

@@ -45,12 +45,36 @@ MODULE_CONFIGURATION_KEYS = (
     "CMAKE_INSTALL_PREFIX",
 )
 MOTION_REPLAY_TARGET = "JuicerGrainMotionReplay"
+MOTION_REPLAY_DEFINE = "JUICER_GRAIN_MOTION_REPLAY"
 REPLAY_EXECUTION_SUFFIX = ".replay-execution.json"
 MOTION_REPLAY_RENDER = "tests/ffi/production-ofx-render.cpp"
-MOTION_REPLAY_HEADER_CONSUMERS = {
+MOTION_REPLAY_SOURCE = "tests/grain/motion-density.cpp"
+MOTION_REPLAY_STAGE_CONSUMERS = (MOTION_REPLAY_RENDER, MOTION_REPLAY_SOURCE)
+FILM_GRAIN_STAGE_HEADER = "src/Cuda/JuicerCudaFilmGrainStage.h"
+FILM_GRAIN_STAGE_CONSUMERS = ("src/Cuda/JuicerCudaExecutor.cpp", "src/Cuda/JuicerCudaFilmGrainStage.cpp")
+FILM_GRAIN_STAGE_DATABASE = "film-grain-stage-compile.json"
+FILM_GRAIN_STAGE_TEST_VARIANTS = {
+    "juicer_render_test_objects": "JUICER_CUDA_RENDER_TEST_HOOK",
+    "juicer_executor_failure_test_objects": "JUICER_EXECUTOR_FAILURE_TEST_HOOK",
+}
+COMPILER_DEPENDENCY_TARGET = "juicer-dependencies"
+QUALITY_CHECKS_SCHEMA = "native-quality-checks-v5"
+QUALITY_CHECKS_WITH_RUST_BINDING = {
+    "native-quality-checks-v2",
+    "native-quality-checks-v3",
+    "native-quality-checks-v4",
+    QUALITY_CHECKS_SCHEMA,
+}
+HISTORICAL_REPLAY_HEADER_CONSUMERS = {
     "tests/grain/film-ofx-apertures.inc": (MOTION_REPLAY_RENDER,),
     "tests/grain/motion-density.inc": (MOTION_REPLAY_RENDER,),
     "tests/grain/motion-replay.h": (MOTION_REPLAY_RENDER, "src/Cuda/JuicerCudaExecutor.cpp"),
+    "tests/grain/motion-replay.inc": (MOTION_REPLAY_RENDER,),
+}
+MOTION_REPLAY_FILE_CONSUMERS = {
+    "tests/grain/film-ofx-apertures.inc": (MOTION_REPLAY_RENDER,),
+    MOTION_REPLAY_SOURCE: (MOTION_REPLAY_SOURCE,),
+    "tests/grain/motion-replay.h": (MOTION_REPLAY_RENDER, MOTION_REPLAY_SOURCE),
     "tests/grain/motion-replay.inc": (MOTION_REPLAY_RENDER,),
 }
 MOTION_REPLAY_EXCLUSION = "CMake did not configure the JuicerGrainMotionReplay target"
@@ -125,9 +149,12 @@ def is_motion_replay_target_output(source, output):
 
 def is_motion_replay_compile_entry(source, output, arguments):
     """Identify the CMake target entry that actually enables the guarded includes."""
-    macro = "JUICER_GRAIN_MOTION_REPLAY"
-    options = [arg for arg in arguments if macro in arg]
-    return is_motion_replay_target_output(source, output) and options == ["-D" + macro + "=1"]
+    options = [arg for arg in arguments if MOTION_REPLAY_DEFINE in arg]
+    return is_motion_replay_target_output(source, output) and options == [f"-D{MOTION_REPLAY_DEFINE}=1"]
+
+
+def motion_replay_quality_files(selected):
+    return set(selected) & (MOTION_REPLAY_FILE_CONSUMERS.keys() | {FILM_GRAIN_STAGE_HEADER})
 
 
 def motion_replay_tidy_label(source, *, legacy=False):
@@ -153,6 +180,92 @@ def read_preview_and_replay_configuration(configuration):
     if replay_configured and (not preview_enabled or not grain_preview_enabled(testing)):
         raise ValueError("replay target requires a product preview with testing enabled")
     return preview_enabled, replay_configured
+
+
+def quality_replay_configuration(configuration, preset):
+    preview, replay = read_preview_and_replay_configuration(configuration)
+    expected = preset.startswith("linux-") and grain_preview_enabled(configuration["BUILD_TESTING"]) and preview
+    if replay != expected:
+        raise ValueError("configured replay availability disagrees with the native preset, testing and preview")
+    return preview, replay
+
+
+def compiler_dependency_command(directory, file, output, arguments):
+    """Turn the configured compile command into the same frontend's dependency probe."""
+    path = type(directory)
+    if not arguments or not all(isinstance(arg, str) for arg in arguments):
+        raise ValueError(f"missing configured compiler arguments for {file}")
+    args = list(arguments)
+    flags = ["-M", "-MF", "-", "-MT", COMPILER_DEPENDENCY_TARGET]
+    clang_cl = path(args[0]).name.lower() in {"clang-cl", "clang-cl.exe"}
+    unsupported = ("@", "-Wp,", "/clang:") if clang_cl else ("@", "-M", "-Wp,")
+    if args.count("-c") != 1 or any(arg.startswith(unsupported) or arg == "-Xpreprocessor" for arg in args[1:]):
+        raise ValueError(f"unsupported dependency probe arguments for {file}")
+    source = args[args.index("-c") + 1 :]
+    if clang_cl and source[:1] == ["--"]:
+        source = source[1:]
+    if len(source) != 1 or directory / source[0] != file:
+        raise ValueError(f"incorrect configured source for dependency probe: {file}")
+    if clang_cl:
+        outputs = [arg for arg in args[1:] if arg.startswith("/Fo")]
+        if len(outputs) != 1 or directory / outputs[0][3:] != output:
+            raise ValueError(f"missing configured compile output for dependency probe: {file}")
+        args.remove(outputs[0])
+        flags = [f"/clang:{flag}" for flag in flags]
+    else:
+        if args.count("-o") != 1:
+            raise ValueError(f"unsupported dependency probe arguments for {file}")
+        out = args.index("-o")
+        if out + 1 == len(args) or directory / args[out + 1] != output:
+            raise ValueError(f"missing configured compile output for dependency probe: {file}")
+        del args[out : out + 2]
+    args.remove("-c")
+    return [args[0], *flags, *args[1:]]
+
+
+def film_grain_stage_probes(database, root, build, *, testing):
+    """Validate the ordinary Film stage's configured owners and name their probes."""
+    suffix = ".obj" if isinstance(build, PureWindowsPath) else ".o"
+    expected = {
+        build / "CMakeFiles/juicer_native.dir" / (source + suffix): (source, None)
+        for source in FILM_GRAIN_STAGE_CONSUMERS
+    }
+    if testing:
+        executor = FILM_GRAIN_STAGE_CONSUMERS[0]
+        expected.update(
+            {
+                build / f"tests/CMakeFiles/{target}.dir/__/{executor}{suffix}": (executor, macro)
+                for target, macro in FILM_GRAIN_STAGE_TEST_VARIANTS.items()
+            }
+        )
+    path = type(root)
+    if not isinstance(database, list):
+        raise ValueError("invalid Film grain stage compilation database")
+    probes = {}
+    for index, entry in enumerate(sorted(database, key=lambda entry: entry["output"]), 1):
+        directory, file, output = (path(entry[key]) for key in ("directory", "file", "output"))
+        source, macro = expected.pop(output, (None, None))
+        arguments = entry["arguments"]
+        if (
+            source is None
+            or file != root / source
+            or directory != build
+            or not isinstance(arguments, list)
+            or not all(isinstance(arg, str) for arg in arguments)
+        ):
+            raise ValueError(f"incorrect configured Film grain stage compile variant: {output}")
+        hooks = [
+            arg
+            for arg in arguments
+            if any(define in arg for define in (*FILM_GRAIN_STAGE_TEST_VARIANTS.values(), MOTION_REPLAY_DEFINE))
+        ]
+        if hooks != ([f"-D{macro}=1"] if macro else []):
+            raise ValueError(f"incorrect configured Film grain stage hook define: {output}")
+        label = f"film-grain-stage-{index}-dependencies"
+        probes[label] = (source, compiler_dependency_command(directory, file, output, arguments))
+    if expected:
+        raise ValueError("missing configured Film grain stage consumers: " + ", ".join(str(p) for p in expected))
+    return probes
 
 
 def quality_scope(selected, *, qualification):
@@ -2192,6 +2305,8 @@ def validate_tests_result(result, payloads):
             checks = json.loads(payloads["quality.checks.json"])
             if checks["selected"] != result["quality_files"] or checks["preset"] != result["preset"]:
                 raise ValueError("selected-source quality scope differs from execution")
+            if checks["schema"] == QUALITY_CHECKS_SCHEMA and result["schema"] != "native-tests-v6":
+                raise ValueError("current quality checks require the execution-aware result schema")
             if result["schema"] in {"native-tests-v5", "native-tests-v6"}:
                 counts["replay_compiler_analysis"] = validate_replay_compiler_analysis(
                     checks,
@@ -2201,7 +2316,7 @@ def validate_tests_result(result, payloads):
                     prefix="quality-",
                     execution_evidence=result["schema"] == "native-tests-v6",
                 )
-            if checks["schema"] in {"native-quality-checks-v2", "native-quality-checks-v3", "native-quality-checks-v4"}:
+            if checks["schema"] in QUALITY_CHECKS_WITH_RUST_BINDING:
                 invocation = next(command["command"] for command in result["commands"] if command["name"] == "quality")
                 packages = selected_source_quality_packages(invocation, result["preset"], result["quality_files"])
                 if checks.get("mode") != "development":
@@ -2306,22 +2421,39 @@ def validate_clippy_forms(checks, *, rust_required, required_packages, preview=N
         raise ValueError("missing required Clippy forms: " + ", ".join(required))
 
 
-def require_ordinary_compiler_analysis(formatted, translation_extensions, commands, root, build):
-    """Check ordinary analysis remained in scope alongside selected replay headers."""
+def require_ordinary_compiler_analysis(
+    formatted, translation_extensions, operations, root, build, *, linked_stage, shared_stage, verifier
+):
+    """Check ordinary analysis remained in scope alongside replay analysis."""
     path = type(root)
     sources = set()
-    for command in commands:
+    for operation in operations:
+        command = operation["command"]
+        directory = path(operation.get("directory", ""))
+        if linked_stage and command[:1] != verifier[:1]:
+            continue
         if len(command) == 5 and command[1] == "-p" and command[3] == "--warnings-as-errors=*":
-            if path(command[2]) == build:
+            if path(command[2]) == build and (not linked_stage or directory == root):
                 sources.add(root / command[4])
         elif command[1:2] == ["--warnings-as-errors=*"] and command[4:5] == ["--"]:
-            sources.add(root / command[3])
+            source = root / command[3]
+            # Only CUDA uses the inline frontend; ordinary C/C++ uses CMake's database.
+            config = command[2].removeprefix("--config-file=")
+            if not linked_stage or (
+                directory == build
+                and source.suffix.lower() == ".cu"
+                and command[2].startswith("--config-file=")
+                and path(config) == root / ".clang-tidy"
+            ):
+                sources.add(source)
     required = {root / source for source in formatted if PurePosixPath(source).suffix.lower() in translation_extensions}
+    if shared_stage:
+        required.update(root / source for source in FILM_GRAIN_STAGE_CONSUMERS)
     if not sources or not required <= sources:
         raise ValueError("missing ordinary compiler analysis in mixed replay header selection")
 
 
-def replay_database_sources(database, root, build):
+def replay_database_sources(database, root, build, *, linked_stage):
     if not isinstance(database, list) or not database:
         raise ValueError("invalid motion replay compilation database")
     path = type(root)
@@ -2335,6 +2467,7 @@ def replay_database_sources(database, root, build):
         output = path(entry["output"])
         if (
             source in sources
+            or (linked_stage and source in FILM_GRAIN_STAGE_CONSUMERS)
             or path(entry["directory"]) != build
             or output != build / f"CMakeFiles/{MOTION_REPLAY_TARGET}.dir/{source}.o"
             or not isinstance(arguments, list)
@@ -2349,12 +2482,22 @@ def replay_database_sources(database, root, build):
 
 
 def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, prefix="", execution_evidence=False):
-    expected_schema = "native-quality-checks-v4" if execution_evidence else "native-quality-checks-v3"
-    if checks.get("schema") != expected_schema:
+    schemas = (
+        {"native-quality-checks-v4", QUALITY_CHECKS_SCHEMA} if execution_evidence else {"native-quality-checks-v3"}
+    )
+    if checks.get("schema") not in schemas:
         raise ValueError("current quality result requires compiler analysis evidence")
+    linked_stage = checks["schema"] == QUALITY_CHECKS_SCHEMA
+    selected = set(checks["selected"])
+    if selected & (
+        {"tests/grain/motion-density.inc"} if linked_stage else {MOTION_REPLAY_SOURCE, FILM_GRAIN_STAGE_HEADER}
+    ):
+        raise ValueError("motion replay selection differs from the recorded compiler analysis contract")
+    contract = MOTION_REPLAY_FILE_CONSUMERS if linked_stage else HISTORICAL_REPLAY_HEADER_CONSUMERS
+    files = contract.keys() & selected
+    shared_stage = linked_stage and FILM_GRAIN_STAGE_HEADER in selected
     analysis = checks.get("replay_compiler_analysis")
-    headers = MOTION_REPLAY_HEADER_CONSUMERS.keys() & set(checks["selected"])
-    if not isinstance(analysis, dict) or analysis.keys() != headers:
+    if not isinstance(analysis, dict):
         raise ValueError("missing or invented replay header compiler analysis")
     commands = {item["name"]: item for item in checks["commands"]}
     recorded = {name for name in commands if name.startswith(prefix + "clang-tidy-motion-replay-")}
@@ -2362,13 +2505,25 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
         name.removesuffix(REPLAY_EXECUTION_SUFFIX) for name in payloads if name.endswith(REPLAY_EXECUTION_SUFFIX)
     }
     database_name = "compile_commands.json"
-    if not headers:
+    if linked_stage and not shared_stage and FILM_GRAIN_STAGE_DATABASE in payloads:
+        raise ValueError("unexpected Film grain stage compilation database")
+    if not files and not shared_stage:
+        if analysis:
+            raise ValueError("missing or invented replay header compiler analysis")
         if recorded or executions or database_name in payloads or SOURCE_FILE_POLICY in payloads:
             raise ValueError("unexpected replay compiler invocation")
         return analysis
 
     configuration = candidate["configuration"]
-    _, replay_configured = read_preview_and_replay_configuration(configuration)
+    if linked_stage:
+        _, replay_configured = quality_replay_configuration(configuration, checks["preset"])
+    else:
+        _, replay_configured = read_preview_and_replay_configuration(configuration)
+    minimum = {file: contract[file] for file in files}
+    if shared_stage and replay_configured:
+        minimum[FILM_GRAIN_STAGE_HEADER] = MOTION_REPLAY_STAGE_CONSUMERS
+    if analysis.keys() != minimum.keys():
+        raise ValueError("missing or invented replay header compiler analysis")
     formatter = commands.get(prefix + "clang-format", {}).get("command", [])
     if SOURCE_FILE_POLICY not in payloads:
         raise ValueError("missing source file policy for the replay compiler receipt")
@@ -2385,11 +2540,13 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
     ):
         raise ValueError("invalid source file policy for the replay compiler receipt")
     selected_native = {source for source in checks["selected"] if quality_native_source(source, extensions)}
+    if shared_stage:
+        selected_native.add(FILM_GRAIN_STAGE_HEADER)
     formatted = set(formatter[4:])
     if (
         "native-quality" not in checks["expected_checks"]
         or formatter[1:4] != ["--dry-run", "--Werror", "--style=file"]
-        or not (headers | selected_native) <= formatted
+        or not (files | selected_native) <= formatted
     ):
         raise ValueError("missing formatting for a selected native file in the replay compiler receipt")
     path = rust_test_path(checks["preset"])
@@ -2401,13 +2558,39 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
         if "rust-artifacts.json" not in payloads:
             raise ValueError("missing CMake artifact description for replay quality")
         product_artifact_consumers(json.loads(payloads["rust-artifacts.json"]), build, replay_configured)
-    if ordinary := formatted - headers:
+    verifier = commands.get(prefix + "clang-tidy-config", {}).get("command", [])
+    if ordinary := formatted - files:
         ordinary_commands = [
-            operation["command"]
+            operation
             for name, operation in commands.items()
-            if name.startswith(prefix + "clang-tidy-") and name not in recorded
+            if name.startswith(prefix + "clang-tidy-") and name != prefix + "clang-tidy-config" and name not in recorded
         ]
-        require_ordinary_compiler_analysis(ordinary, translation_units, ordinary_commands, root, build)
+        require_ordinary_compiler_analysis(
+            ordinary,
+            translation_units,
+            ordinary_commands,
+            root,
+            build,
+            linked_stage=linked_stage,
+            shared_stage=shared_stage,
+            verifier=verifier,
+        )
+    if shared_stage:
+        if FILM_GRAIN_STAGE_DATABASE not in payloads:
+            raise ValueError("missing Film grain stage compilation database")
+        probes = film_grain_stage_probes(
+            json.loads(payloads[FILM_GRAIN_STAGE_DATABASE]),
+            root,
+            build,
+            testing=grain_preview_enabled(configuration["BUILD_TESTING"]),
+        )
+        expected_probes = {prefix + label: command for label, (_, command) in probes.items()}
+        recorded_probes = {name for name in commands if name.startswith(prefix + "film-grain-stage-")}
+        if recorded_probes != expected_probes.keys() or any(
+            commands[name]["command"] != command or path(commands[name]["directory"]) != build
+            for name, command in expected_probes.items()
+        ):
+            raise ValueError("Film grain stage probes differ from the configured compilation database")
     if not replay_configured:
         if (
             recorded
@@ -2418,12 +2601,11 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
             raise ValueError("incorrect compiler exclusion for unavailable motion replay")
         return analysis
 
-    minimum = {header: MOTION_REPLAY_HEADER_CONSUMERS[header] for header in headers}
     required_sources = {source for sources in minimum.values() for source in sources}
     if database_name not in payloads:
         raise ValueError("missing replay compilation database")
     database = payloads[database_name]
-    sources = replay_database_sources(json.loads(database), root, build)
+    sources = replay_database_sources(json.loads(database), root, build, linked_stage=linked_stage)
     if not required_sources <= sources or (not execution_evidence and sources != required_sources):
         raise ValueError("invalid motion replay compilation database")
     labels = {source: prefix + motion_replay_tidy_label(source, legacy=not execution_evidence) for source in sources}
@@ -2438,8 +2620,7 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
         "path": str(database_directory / database_name),
         "sha256": hashlib.sha256(database).hexdigest(),
     }
-    verifier = commands.get(prefix + "clang-tidy-config", {}).get("command", [])
-    consumers = {header: [] for header in headers}
+    consumers = {file: [] for file in minimum}
     for source, name in sorted(labels.items()):
         operation = commands[name]
         command = operation["command"]
@@ -2463,12 +2644,15 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
                 raise ValueError(
                     "motion replay compiler invocation differs from its recorded database execution: " + name
                 )
+            # The execution record calls its selected inputs "headers" even
+            # when the input is the replay translation unit itself.
             covered = execution.get("headers")
             if (
                 not isinstance(covered, list)
                 or not covered
-                or not set(covered) <= headers
+                or not set(covered) <= minimum.keys()
                 or len(set(covered)) != len(covered)
+                or (linked_stage and MOTION_REPLAY_SOURCE in covered and source != MOTION_REPLAY_SOURCE)
             ):
                 raise ValueError("invalid replay header compiler execution coverage: " + name)
             for header in covered:
@@ -2486,13 +2670,7 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
 
 def validate_quality_checks(checks, payloads=None):
     if (
-        checks.get("schema")
-        not in {
-            "native-quality-checks-v1",
-            "native-quality-checks-v2",
-            "native-quality-checks-v3",
-            "native-quality-checks-v4",
-        }
+        checks.get("schema") not in QUALITY_CHECKS_WITH_RUST_BINDING | {"native-quality-checks-v1"}
         or checks["status"] != "passed"
         or not checks["expected_checks"]
         or checks.get("python_cases") != ["quality-boundary"]
@@ -2549,6 +2727,8 @@ def validate_quality_result(result, payloads):
         raise ValueError("quality result differs from its executed checks")
     counts = {"quality_checks": 0}
     configuration = candidate.get("configuration", {})
+    if checks["schema"] == QUALITY_CHECKS_SCHEMA and result["schema"] != "native-quality-v3":
+        raise ValueError("current quality checks require the execution-aware result schema")
     if result["status"] == "passed" and result["schema"] in {"native-quality-v2", "native-quality-v3"}:
         counts["replay_compiler_analysis"] = validate_replay_compiler_analysis(
             checks,
@@ -2557,11 +2737,7 @@ def validate_quality_result(result, payloads):
             result.get("run_id"),
             execution_evidence=result["schema"] == "native-quality-v3",
         )
-    if result["status"] == "passed" and checks["schema"] in {
-        "native-quality-checks-v2",
-        "native-quality-checks-v3",
-        "native-quality-checks-v4",
-    }:
+    if result["status"] == "passed" and checks["schema"] in QUALITY_CHECKS_WITH_RUST_BINDING:
         mode = result.get("mode")
         if mode not in {"qualification", "development"} or checks.get("mode") != mode:
             raise ValueError("quality mode differs from the standalone result")

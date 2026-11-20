@@ -142,8 +142,8 @@
     "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
     "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
-    "Ffi.Gpu.CudaRender.negative-direct": 20,
-    "Ffi.Gpu.CudaRender.negative-print": 20,
+    "Ffi.Gpu.CudaRender.negative-direct": 21,
+    "Ffi.Gpu.CudaRender.negative-print": 21,
     "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
@@ -202,6 +202,28 @@
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
+    "Ffi.Gpu.CudaRender.negative-direct": {
+      "listed": 12,
+      "terminal": 127,
+      "required": [
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.negative-print": {
+      "listed": 12,
+      "terminal": 127,
+      "required": [
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
     "Grain.Gpu.FilmReference": {
       "listed": 14,
       "terminal": 14,

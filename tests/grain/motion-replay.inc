@@ -229,7 +229,8 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
             status = lifecycle.call(kOfxImageEffectActionRender, effect, args);
         }
         require(status == kOfxStatOK && !host.callback_error() &&
-                    tap.visited == (pass != MotionPass::GrainOff) && tap.filmCaptured == tap.captureFilm,
+                    tap.visited == (pass != MotionPass::GrainOff) && tap.filmLaunched == (pass == MotionPass::Film) &&
+                    tap.filmCaptured == tap.captureFilm,
                 "motion OFX render did not complete with the expected density tap: " + diagnostic);
         require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
                     host.image_release_count(effect, "Output") == outputBefore + 1,

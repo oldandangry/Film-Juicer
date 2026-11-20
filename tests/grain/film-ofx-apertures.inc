@@ -34,7 +34,7 @@ struct DensityCapture {
     float samplePitch = 0.F;
 };
 
-DensityCapture capture_aperture(const CudaDriver& driver, const ApertureCase& witness, const GrainGeometry& geometry) {
+DensityCapture capture_aperture(const CudaDriver& driver, const ApertureCase& witness, const GrainGeometry& geometry, bool checkTapCleanup = false) {
     const auto& bounds = geometry.bounds;
     const Case test{
         .id = witness.id,
@@ -75,16 +75,58 @@ DensityCapture capture_aperture(const CudaDriver& driver, const ApertureCase& wi
     const auto words = 3 * static_cast<std::size_t>(test.width) * test.height;
     DensityCapture capture{std::vector<float>(words), std::vector<float>(words)};
     const MotionSeedPair seeds = witness.time == 0.0 ? MotionSeedPair{kApertureSeeds[0], kApertureSeeds[0]} : kApertureSeeds;
-    auto render = [&](MotionPass pass, std::span<float> plane) {
-        MotionDensity tap{.pass = pass, .density = plane, .seeds = seeds, .captureFilm = pass == MotionPass::Film};
-        const MotionDensityScope scope(tap);
+    const auto render_output = [&] {
         std::vector<std::uint32_t> output;
         (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, output, true);
-        require(tap.visited && tap.filmCaptured == tap.captureFilm, "aperture density tap did not complete");
+        return output;
+    };
+    const auto render = [&](MotionPass pass, std::span<float> plane) {
+        MotionDensity tap{.pass = pass, .density = plane, .seeds = seeds, .captureFilm = pass == MotionPass::Film};
+        const MotionDensityScope scope(tap);
+        (void)render_output();
+        require(tap.visited && tap.filmLaunched == (pass == MotionPass::Film) && tap.filmCaptured == tap.captureFilm,
+                "aperture density tap did not complete");
         return tap.samplePitch;
     };
     capture.samplePitch = render(MotionPass::Capture, capture.clean);
     require(render(MotionPass::Film, capture.film) == capture.samplePitch, "sample pitch changed on a paused render");
+    if (checkTapCleanup) {
+        std::string diagnostic;
+        host.set_message_callback([&diagnostic](std::string_view, std::string_view, std::string_view text) {
+            diagnostic = text;
+            return kOfxStatOK;
+        });
+        MotionDensity invalid{.density = {}, .seeds = std::nullopt};
+        {
+            const MotionDensityScope scope(invalid);
+            require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                    "malformed aperture tap should fail through the OFX callback");
+        }
+        require(!invalid.visited && diagnostic.starts_with("grain motion density transfer failed: "),
+                "malformed aperture tap was not rejected at density transfer");
+        host.set_message_callback({});
+        const auto untapped = render_output();
+        MotionDensity passThrough{.pass = MotionPass::Film, .density = capture.film, .seeds = std::nullopt};
+        {
+            const MotionDensityScope scope(passThrough);
+            require(render_output() == untapped, "untapped Film must match one normal launch with the Rust seeds");
+        }
+        require(passThrough.visited && passThrough.filmLaunched && !passThrough.filmCaptured,
+                "pass-through Film launch did not complete without readback");
+
+        MotionDensity failedLaunch{.pass = MotionPass::Film, .density = capture.film, .seeds = std::nullopt, .captureFilm = true};
+        {
+            const MotionDensityScope scope(failedLaunch);
+            const auto planeSize = words / 3;
+            // Valid device planes would permit readback; the real sampler rejects the missing bank.
+            const auto result = JuicerCuda::FilmGrain::launch_developed(
+                nullptr, {}, passThrough.admitted, {device.destination, device.destination + planeSize, device.destination + 2 * planeSize}, device.stream);
+            require(result.status == cudaErrorInvalidValue && !result.failure &&
+                        failedLaunch.visited && !failedLaunch.filmLaunched && !failedLaunch.filmCaptured,
+                    "a failed Film launch must not be replaced by readback");
+        }
+        require(render_output() == untapped, "failed launch left the replay tap active");
+    }
     require(lifecycle.destroy(effect) == kOfxStatOK, "aperture OFX instance destroy");
     device.close();
     require(lifecycle.unload() == kOfxStatOK, "aperture OFX unload");
@@ -136,7 +178,7 @@ void compare_aperture_grain(const ApertureCase& witness, const DensityCapture& p
 }
 
 void check_aperture(const CudaDriver& driver, const ApertureCase& witness) {
-    const auto proxy = capture_aperture(driver, witness, witness.proxy);
+    const auto proxy = capture_aperture(driver, witness, witness.proxy, !witness.print);
     const auto id = std::string_view(witness.id);
     if (id.starts_with("clipped-quarter")) {
         const auto square = capture_aperture(driver, witness, witness.reference);

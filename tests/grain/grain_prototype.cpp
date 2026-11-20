@@ -183,7 +183,6 @@ namespace GrainPrototype {
             frame.stride = reference.stride;
             frame.seed = reference.seed;
             frame.nextSeed = reference.nextSeed;
-            frame.enabled = reference.enabled;
             frame.temporalFraction = reference.temporalFraction;
             frame.chromaFraction = reference.chromaFraction;
             frame.proxy = proxy;

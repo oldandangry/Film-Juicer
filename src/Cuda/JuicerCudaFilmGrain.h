@@ -82,7 +82,6 @@ namespace JuicerCuda::FilmGrain {
         int height = 0;
         int stride = 0;
         std::uint32_t seed = 0;
-        bool enabled = false;
         float amounts[kRecords]{1.F, 1.F, 1.F};
         std::uint32_t nextSeed = 0;
         float temporalFraction = 0.F;

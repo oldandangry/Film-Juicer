@@ -14,9 +14,11 @@ FjRenderOutcome fj_test_execute_prepared_c(const FjCudaCallAccess* access, const
 #ifdef __cplusplus
 }
 
-#include <string>
+#include <array>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "owner_fixture.h"
@@ -56,6 +58,9 @@ namespace JuicerCudaTest {
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext);
 
+    inline constexpr char kGrainDispatchCaller[] = "grain-dispatch";
+    inline constexpr std::array<std::string_view, 5> kGrainDispatchCases{"conflicting-models", "malformed-film-frame", "missing-film-bank", "film-launch", "current-launch"};
+    void check_grain_dispatch(FjCuda* cuda, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& current, const FjHostPreparation* hostPreparation);
 
     bool execute_boundary(
         FjRuntimeView runtime,
@@ -63,7 +68,8 @@ namespace JuicerCudaTest {
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         std::string& diagnostic,
-        const std::string& invocationPhase);
+        const std::string& invocationPhase,
+        bool grainDispatchContract);
 
 } // namespace JuicerCudaTest
 #endif

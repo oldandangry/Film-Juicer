@@ -4,6 +4,8 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
 #include <cstddef>
 #include <cstdint>
@@ -26,9 +28,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-#include "motion-replay.h"
-#endif
+#include "Cuda/JuicerCudaFilmGrainStage.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     const JuicerCuda::DirectPipelineRunParams* hParams,
@@ -845,7 +845,7 @@ namespace {
                 return;
             }
             pendingContextLossRecovery.pending = true;
-            pendingContextLossRecovery.failure = failure;
+            JuicerCuda::set_failure(pendingContextLossRecovery.failure, failure.status, failure.diagnostic);
             pendingContextLossRecovery.stage = stage;
         }
 
@@ -863,6 +863,22 @@ namespace {
             JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(errorCode), detail};
             mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), failure);
             fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
+        }
+
+        [[noreturn]] void fail_grain_stage(JuicerCuda::GrainFailureSite site, cudaError_t status) const {
+            const char* detail = detail_or_unknown(cudaGetErrorString(status));
+            std::array<char, 512> message{};
+            const auto length = std::snprintf(message.data(), message.size(), "%s: %s", site.prefix, detail);
+            JuicerCuda::Failure failure;
+            JuicerCuda::set_failure(failure, JuicerCuda::runtime_failure_status(status), length < 0 ? site.prefix : message.data());
+            mark_context_loss_recovery(site.stage, failure);
+            try {
+                trace_cuda_fatal_prefixed_if(traceInfo, {site.prefix, detail});
+            } catch (...) {
+                // Diagnostic storage or tracing must not replace the CUDA status.
+                JuicerLogging::discard_current_exception();
+            }
+            throw JuicerCuda::ExecutionFailure{std::move(failure)};
         }
 
         [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredDirError = false) const {
@@ -925,6 +941,23 @@ namespace {
         JuicerCuda::FilmGrain::FilmTables filmTables{};
         JuicerCuda::FilmGrain::FilmFrame filmFrame{};
     };
+
+    enum class GrainModel : std::uint8_t {
+        Disabled,
+        Current,
+        Film
+    };
+    enum class CaptureRoute : std::uint8_t {
+        Direct,
+        Print
+    };
+
+    GrainModel grain_model(const ScheduleInput& input) {
+        // The raw boundary has already rejected simultaneous descriptors.
+        if (input.preparation.filmGrain)
+            return GrainModel::Film;
+        return input.descriptors.grain ? GrainModel::Current : GrainModel::Disabled;
+    }
 
     enum class CaptureExecution : unsigned char {
         Monolithic,
@@ -1388,8 +1421,19 @@ namespace {
                          const FjFilmGrain& input,
                          int width,
                          int height,
+                         CaptureRoute route,
                          GrainBinding& grain,
                          const ExecutionErrors& errors) {
+        grain.filmBank = preparedFrame.film_grain_bank();
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        if (JuicerCuda::RenderTest::omit_film_bank())
+            grain.filmBank = nullptr;
+#endif
+        const bool direct = route == CaptureRoute::Direct;
+        const char* stage = direct ? "direct_film_grain_binding" : "print_film_grain_binding";
+        if (!grain.filmBank) {
+            errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: missing frame bank" : "print Film grain binding failed: missing frame bank"}, cudaErrorInvalidValue);
+        }
         const bool proxy = input.sample_step[0] != 0.0 || input.sample_step[1] != 0.0;
         enum class Axis : std::uint8_t {
             X,
@@ -1427,9 +1471,8 @@ namespace {
             (proxy && (!std::isfinite(input.sample_pitch) || input.sample_pitch < JuicerCuda::FilmGrain::kMinProxySampleFootprint ||
                        input.sample_pitch > JuicerCuda::FilmGrain::kMaxFootprint ||
                        !sample_axis_supported(Axis::X, input.origin_x, width) ||
-                       !sample_axis_supported(Axis::Y, input.origin_y, height))) ||
-            !(grain.filmBank = preparedFrame.film_grain_bank())) {
-            errors.fail_stage("film_grain_binding", "invalid Film grain frame", cudaErrorInvalidValue);
+                       !sample_axis_supported(Axis::Y, input.origin_y, height)))) {
+            errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: invalid frame" : "print Film grain binding failed: invalid frame"}, cudaErrorInvalidValue);
         }
         grain.filmTables.footprint = proxy ? input.sample_pitch : input.pitch;
         for (int record = 0; record < 3; ++record) {
@@ -1691,13 +1734,64 @@ namespace {
         scanStage.correctionOffset = scannerCorrection.xyzOffset;
     }
 
+    void apply_developed_grain(
+        CaptureRoute route,
+        GrainModel model,
+        const GrainBinding& grain,
+        const JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView& density,
+        int width,
+        int height,
+        void* stream,
+        const ExecutionErrors& errors) {
+        if (model == GrainModel::Disabled)
+            return;
+
+        JuicerCuda::FilmGrain::FilmPlanes planes{density.c, density.m, density.y};
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        if (JuicerCuda::RenderTest::omit_grain_plane())
+            planes.cyan = nullptr;
+#endif
+        const bool direct = route == CaptureRoute::Direct;
+        if (model == GrainModel::Film) {
+            const auto result = JuicerCuda::FilmGrain::launch_developed(
+                grain.filmBank, grain.filmTables, grain.filmFrame, planes, static_cast<cudaStream_t>(stream));
+            if (result.status != cudaSuccess) {
+                const JuicerCuda::GrainFailureSite launch{
+                    direct ? "direct_film_grain_launch" : "print_film_grain_launch",
+                    direct ? "direct Film grain launch failed" : "print Film grain launch failed"};
+                errors.fail_grain_stage(result.failure ? *result.failure : launch, result.status);
+            }
+            return;
+        }
+        const auto status = juicer_cuda_apply_visual_grain(
+            &grain.payload,
+            &grain.kernels,
+            width,
+            height,
+            planes.cyan,
+            planes.magenta,
+            planes.yellow,
+            grain.workspace.filterTemp,
+            grain.workspace.scaleWork,
+            grain.workspace.deltaAccum,
+            grain.workspace.layerWork,
+            grain.workspace.sharedDelta,
+            stream);
+        if (status != cudaSuccess) {
+            errors.fail_grain_stage(
+                {direct ? "direct_visual_grain_launch" : "print_visual_grain_launch",
+                 direct ? "direct visual grain launch failed" : "print visual grain launch failed"},
+                status);
+        }
+    }
+
     void develop_direct_capture(
         JuicerCuda::DirectPipelineRunParams& run,
         const JuicerCuda::CameraFilmLinearExposurePlanes& directCameraFilmLinear,
         bool cameraFilmLinearActive,
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const OpticalWorkspace& optical,
-        bool grainStageActive,
+        GrainModel grainModel,
         const GrainBinding& grain,
         bool filmEffectsActive,
         const EffectsPayloads& effects,
@@ -1734,48 +1828,7 @@ namespace {
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
-        auto filmFrame = grain.filmFrame;
-        bool applyGrain = grainStageActive;
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-        if (grain.filmBank) {
-            launchError = JuicerTests::GrainMotion::before_grain(
-                filmFrame, grain.filmTables.footprint, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
-            if (launchError != cudaSuccess)
-                errors.fail_stage("motion_density_transfer", "grain motion density transfer failed", launchError);
-        }
-#endif
-        if (applyGrain) {
-            launchError = grain.filmBank
-                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
-                              : juicer_cuda_apply_visual_grain(
-                                    &grain.payload,
-                                    &grain.kernels,
-                                    width,
-                                    height,
-                                    optical.density.c,
-                                    optical.density.m,
-                                    optical.density.y,
-                                    grain.workspace.filterTemp,
-                                    grain.workspace.scaleWork,
-                                    grain.workspace.deltaAccum,
-                                    grain.workspace.layerWork,
-                                    grain.workspace.sharedDelta,
-                                    stream);
-            if (launchError != cudaSuccess) {
-                errors.fail_stage(
-                    "direct_visual_grain_launch",
-                    "direct visual grain launch failed",
-                    launchError);
-            }
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-            if (grain.filmBank) {
-                launchError = JuicerTests::GrainMotion::after_grain(
-                    {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream));
-                if (launchError != cudaSuccess)
-                    errors.fail_stage("motion_film_density_readback", "grain motion Film density readback failed", launchError);
-            }
-#endif
-        }
+        apply_developed_grain(CaptureRoute::Direct, grainModel, grain, optical.density, width, height, stream, errors);
         if (filmEffectsActive && !grainDebugActive) {
             launchError = juicer_cuda_apply_film_defects(
                 &effects.film,
@@ -2305,7 +2358,7 @@ namespace {
         bool cameraFilmLinearActive,
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const OpticalWorkspace& optical,
-        bool grainStageActive,
+        GrainModel grainModel,
         const GrainBinding& grain,
         bool filmEffectsActive,
         const EffectsPayloads& effects,
@@ -2342,50 +2395,7 @@ namespace {
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
         }
-        auto filmFrame = grain.filmFrame;
-        bool applyGrain = grainStageActive;
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-        if (grain.filmBank) {
-            launchError = JuicerTests::GrainMotion::before_grain(
-                filmFrame, grain.filmTables.footprint, {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream), applyGrain);
-            if (launchError != cudaSuccess) {
-                errors.fail_stage("motion_density_transfer", "grain motion density transfer failed", launchError);
-            }
-        }
-#endif
-        if (applyGrain) {
-            launchError = grain.filmBank
-                              ? JuicerCuda::FilmGrain::apply(grain.filmBank, grain.filmTables, filmFrame, {optical.density.c, optical.density.m, optical.density.y}, stream)
-                              : juicer_cuda_apply_visual_grain(
-                                    &grain.payload,
-                                    &grain.kernels,
-                                    width,
-                                    height,
-                                    optical.density.c,
-                                    optical.density.m,
-                                    optical.density.y,
-                                    grain.workspace.filterTemp,
-                                    grain.workspace.scaleWork,
-                                    grain.workspace.deltaAccum,
-                                    grain.workspace.layerWork,
-                                    grain.workspace.sharedDelta,
-                                    stream);
-            if (launchError != cudaSuccess) {
-                errors.fail_stage(
-                    "print_visual_grain_launch",
-                    "print visual grain launch failed",
-                    launchError);
-            }
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-            if (grain.filmBank) {
-                launchError = JuicerTests::GrainMotion::after_grain(
-                    {optical.density.c, optical.density.m, optical.density.y}, static_cast<cudaStream_t>(stream));
-                if (launchError != cudaSuccess) {
-                    errors.fail_stage("motion_film_density_readback", "grain motion Film density readback failed", launchError);
-                }
-            }
-#endif
-        }
+        apply_developed_grain(CaptureRoute::Print, grainModel, grain, optical.density, width, height, stream, errors);
         if (filmEffectsActive && !grainDebugActive) {
             launchError = juicer_cuda_apply_film_defects(
                 &effects.film,
@@ -2703,8 +2713,7 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewWidth > 0 &&
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
-        const bool grainStageActive =
-            descriptors.grain.has_value() || input.preparation.filmGrain != nullptr;
+        const GrainModel grainModel = grain_model(input);
         const bool grainDebugActive =
             descriptors.grain.has_value() && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
@@ -2717,7 +2726,7 @@ namespace JuicerCuda {
             frame.diffusionFrameSet.has_value() &&
             frame.diffusionFrameSet->camera.has_value();
         const bool captureDensityConsumerActive =
-            grainStageActive || filmEffectsActive;
+            grainModel != GrainModel::Disabled || filmEffectsActive;
         const auto scannerCorrection = input.correction;
         JuicerCuda::Failure directPrepareError;
         check_abort(abortCallback);
@@ -2842,9 +2851,9 @@ namespace JuicerCuda {
             optical = bind_direct_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
-        if (input.preparation.filmGrain) {
-            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, grain, errors);
-        } else if (grainStageActive) {
+        if (grainModel == GrainModel::Film) {
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, CaptureRoute::Direct, grain, errors);
+        } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -2887,7 +2896,7 @@ namespace JuicerCuda {
                 cameraFilmLinearActive,
                 descriptors.dir,
                 optical,
-                grainStageActive,
+                grainModel,
                 grain,
                 filmEffectsActive,
                 effects,
@@ -2975,8 +2984,7 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewWidth > 0 &&
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
-        const bool grainStageActive =
-            descriptors.grain.has_value() || input.preparation.filmGrain != nullptr;
+        const GrainModel grainModel = grain_model(input);
         const bool grainDebugActive =
             descriptors.grain.has_value() && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
@@ -2994,7 +3002,7 @@ namespace JuicerCuda {
         const bool routeDiffusionActive =
             cameraDiffusionActive || enlargerDiffusionActive;
         const bool captureDensityConsumerActive =
-            grainStageActive || filmEffectsActive;
+            grainModel != GrainModel::Disabled || filmEffectsActive;
         JuicerCuda::Failure prepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
@@ -3134,9 +3142,9 @@ namespace JuicerCuda {
             optical = bind_print_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
-        if (input.preparation.filmGrain) {
-            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, grain, errors);
-        } else if (grainStageActive) {
+        if (grainModel == GrainModel::Film) {
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, CaptureRoute::Print, grain, errors);
+        } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -3186,7 +3194,7 @@ namespace JuicerCuda {
                 cameraFilmLinearActive,
                 descriptors.dir,
                 optical,
-                grainStageActive,
+                grainModel,
                 grain,
                 filmEffectsActive,
                 effects,

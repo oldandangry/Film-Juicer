@@ -193,12 +193,13 @@ add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
 
-# The motion witness adds a density tap to its local executor only. It uses the
-# production Rust preview and the same native archive as the OFX module.
+# The witness links its density tap as the Film stage owner, so the direct
+# implementation is not extracted from juicer_core. The executor, CUDA sampler
+# and Rust preview are the same production objects used by the OFX module.
 if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(JuicerGrainMotionReplay EXCLUDE_FROM_ALL
-        src/Cuda/JuicerCudaExecutor.cpp
-        tests/ffi/production-ofx-render.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
+        tests/ffi/production-ofx-render.cpp
+        tests/grain/motion-density.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
         tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
     target_include_directories(JuicerGrainMotionReplay PRIVATE
         "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi"

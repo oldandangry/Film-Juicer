@@ -52,6 +52,7 @@
 #endif
 
 #include "motion-replay.h"
+#include "Cuda/JuicerCudaFilmGrainStage.h"
 #include "juicer_ofx_api.h"
 #include "film_oracle.h"
 #endif
@@ -1301,29 +1302,17 @@ namespace {
         return 0;
     }
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
-#include "motion-density.inc"
+    using JuicerTests::GrainMotion::MotionDensity;
+    using JuicerTests::GrainMotion::MotionDensityScope;
+    using JuicerTests::GrainMotion::MotionPass;
+    using JuicerTests::GrainMotion::MotionSeedPair;
+    using JuicerTests::GrainMotion::project_motion_density;
 #include "film-ofx-apertures.inc"
 #ifndef _WIN32
 #include "motion-replay.inc"
 #endif
 #endif
 } // namespace
-
-#if defined(JUICER_GRAIN_MOTION_REPLAY)
-cudaError_t JuicerTests::GrainMotion::before_grain(
-    JuicerCuda::FilmGrain::FilmFrame& frame,
-    float samplePitch,
-    JuicerCuda::FilmGrain::FilmPlanes planes,
-    cudaStream_t stream,
-    bool& applyGrain) {
-    return motionDensity ? motionDensity->transfer(frame, samplePitch, planes, stream, applyGrain) : cudaSuccess;
-}
-
-cudaError_t JuicerTests::GrainMotion::after_grain(
-    JuicerCuda::FilmGrain::FilmPlanes planes, cudaStream_t stream) noexcept {
-    return motionDensity ? motionDensity->capture_film_density(planes, stream) : cudaSuccess;
-}
-#endif
 
 int main(int argc, char** argv) {
     try {

@@ -234,6 +234,7 @@ class PythonResultTests(unittest.TestCase):
             ),
             ("mixed-with-working-copy-policy", False, ""),
             ("mixed-with-patched-policy", False, ""),
+            ("mixed-with-inline-command", False, ""),
             ("analyzed", True, ""),
             ("missing-exclusion", False, "missing or invented replay header compiler analysis"),
             ("invented-exclusion", True, "missing or unexpected replay compiler command"),
@@ -263,10 +264,43 @@ class PythonResultTests(unittest.TestCase):
             ("current-foreign-artifacts", True, "product artifact description differs from the configured build"),
             ("current-missing-artifacts", False, "missing CMake artifact description for replay quality"),
             ("current-downgraded-evidence", True, "requires compiler analysis evidence"),
+            ("linked-analyzed", True, ""),
+            ("linked-excluded", False, ""),
+            ("linked-stage-only", False, ""),
+            ("linked-testing-off", False, ""),
+            ("linked-false-replay-off", False, "configured replay availability disagrees with the native preset"),
+            ("linked-missing-stage-proof", True, "missing Film grain stage compilation database"),
+            ("linked-missing-stage-variants", True, "missing configured Film grain stage consumers"),
+            ("linked-wrong-stage-hook", True, "incorrect configured Film grain stage hook define"),
+            ("linked-wrong-stage-probe", True, "Film grain stage probes differ"),
+            ("linked-missing-stage-command", True, "missing ordinary compiler analysis"),
+            ("linked-wrong-stage-database", True, "missing ordinary compiler analysis"),
+            ("linked-wrong-stage-cwd", True, "missing ordinary compiler analysis"),
+            ("linked-inline-stage-command", True, "missing ordinary compiler analysis"),
+            ("linked-mixed-with-inline-command", True, "missing ordinary compiler analysis"),
+            ("linked-mixed-with-cuda-command", True, ""),
+            ("linked-mixed-with-cuda-wrong-cwd", True, "missing ordinary compiler analysis"),
+            ("linked-excluded-shared-stage", False, "missing or invented replay header compiler analysis"),
+            ("linked-missing-density-exclusion", False, "missing or invented replay header compiler analysis"),
+            ("linked-missing-density", True, "invalid motion replay compilation database"),
+            ("linked-wrong-density-variant", True, "incorrect motion replay compile variant"),
+            ("linked-obsolete-executor", True, "incorrect motion replay compile variant"),
+            ("linked-wrong-density-coverage", True, "invalid replay header compiler execution coverage"),
+            ("linked-missing-shared-coverage", True, "missing required replay header compiler execution coverage"),
+            (
+                "linked-missing-render-shared-coverage",
+                True,
+                "missing required replay header compiler execution coverage",
+            ),
+            ("linked-downgraded-contract", True, "differs from the recorded compiler analysis contract"),
         )
         self.subtest_cases = tuple(case for case, *_ in cases)
         header = "tests/grain/motion-replay.h"
-        required_sources = ("tests/ffi/production-ofx-render.cpp", "src/Cuda/JuicerCudaExecutor.cpp")
+        render = "tests/ffi/production-ofx-render.cpp"
+        executor = "src/Cuda/JuicerCudaExecutor.cpp"
+        density = "tests/grain/motion-density.cpp"
+        stage = "src/Cuda/JuicerCudaFilmGrainStage.h"
+        stage_source = "src/Cuda/JuicerCudaFilmGrainStage.cpp"
         extra_source = "tests/grain/film_oracle.cpp"
         root = "/configured"
         preset = "linux-debug"
@@ -289,17 +323,28 @@ class PythonResultTests(unittest.TestCase):
         }
         for case_id, replay, error in cases:
             with self.subTest(case=case_id):
-                current = case_id.startswith("current-")
-                case = case_id.removeprefix("current-")
+                linked = case_id.startswith("linked-")
+                current = linked or case_id.startswith("current-")
+                case = case_id.removeprefix("current-").removeprefix("linked-")
+                required_sources = (render, density if linked else executor)
                 sources = (
                     sorted((*required_sources, extra_source) if case.startswith("extra-") else required_sources)
                     if current
                     else required_sources
                 )
-                for embedded in (False, True):
+                if linked and case == "missing-density":
+                    sources.remove(density)
+                if linked and case == "obsolete-executor":
+                    sources = sorted((*sources, executor))
+                for embedded in (False,) if linked and case == "testing-off" else (False, True):
                     prefix = "quality-" if embedded else ""
-                    ordinary = "native/ofx_exports.cpp"
+                    cuda = case in {"mixed-with-cuda-command", "mixed-with-cuda-wrong-cwd"}
+                    ordinary = "src/Cuda/Scan/JuicerCudaScanPipeline.cu" if cuda else "native/ofx_exports.cpp"
                     selected = [ordinary, header] if case.startswith("mixed") else [header]
+                    if linked:
+                        selected = [stage] if case == "stage-only" else sorted((header, density, stage))
+                        if case.startswith("mixed"):
+                            selected = sorted((*selected, ordinary))
                     formatted = (
                         [header]
                         if case in {"mixed-without-ordinary-format-and-command", "mixed-with-substituted-policy"}
@@ -307,6 +352,8 @@ class PythonResultTests(unittest.TestCase):
                     )
                     checks = self.quality_checks(preset, selected, "development", None, [])
                     checks["schema"] = "native-quality-checks-v4" if current else "native-quality-checks-v3"
+                    if linked and case != "downgraded-contract":
+                        checks["schema"] = "native-quality-checks-v5"
                     checks["expected_checks"].append("native-quality")
                     checks["completed_checks"].append("native-quality")
                     commands = [
@@ -322,8 +369,98 @@ class PythonResultTests(unittest.TestCase):
                                 ["tidy", "-p", build, "--warnings-as-errors=*", ordinary],
                             )
                         )
-                    analysis = {header: {"excluded": qualification.MOTION_REPLAY_EXCLUSION}}
+                    if cuda or case == "mixed-with-inline-command":
+                        commands.append(
+                            {
+                                **self.operation(
+                                    prefix + "clang-tidy-cuda-1-inline",
+                                    [
+                                        "tidy",
+                                        "--warnings-as-errors=*",
+                                        f"--config-file={root}/.clang-tidy",
+                                        root + "/" + ordinary,
+                                        "--",
+                                        "-std=c++20",
+                                    ],
+                                ),
+                                "directory": build
+                                if case in {"mixed-with-cuda-command", "mixed-with-inline-command"}
+                                else root,
+                            }
+                        )
+                    stage_database = []
+                    if linked:
+                        for index, source in enumerate((executor, stage_source), 1):
+                            if source == stage_source and case == "missing-stage-command":
+                                continue
+                            database_dir = (
+                                database_path if source == stage_source and case == "wrong-stage-database" else build
+                            )
+                            command = ["tidy", "-p", database_dir, "--warnings-as-errors=*", source]
+                            if source == stage_source and case == "inline-stage-command":
+                                command = [
+                                    "tidy",
+                                    "--warnings-as-errors=*",
+                                    f"--config-file={root}/.clang-tidy",
+                                    source,
+                                    "--",
+                                ]
+                            commands.append(
+                                {
+                                    **self.operation(prefix + f"clang-tidy-{index}-stage", command),
+                                    "directory": build
+                                    if source == stage_source and case == "wrong-stage-cwd"
+                                    else root,
+                                }
+                            )
+                        owners = {
+                            f"CMakeFiles/juicer_native.dir/{executor}.o": (executor, []),
+                            f"CMakeFiles/juicer_native.dir/{stage_source}.o": (stage_source, []),
+                        }
+                        if case not in {"testing-off", "missing-stage-variants"}:
+                            flag = 0 if case == "wrong-stage-hook" else 1
+                            owners.update(
+                                {
+                                    f"tests/CMakeFiles/juicer_render_test_objects.dir/__/{executor}.o": (
+                                        executor,
+                                        [f"-DJUICER_CUDA_RENDER_TEST_HOOK={flag}"],
+                                    ),
+                                    f"tests/CMakeFiles/juicer_executor_failure_test_objects.dir/__/{executor}.o": (
+                                        executor,
+                                        ["-DJUICER_EXECUTOR_FAILURE_TEST_HOOK=1"],
+                                    ),
+                                }
+                            )
+                        for index, (output, (source, defines)) in enumerate(sorted(owners.items()), 1):
+                            file = root + "/" + source
+                            stage_database.append(
+                                {
+                                    "file": file,
+                                    "directory": build,
+                                    "output": build + "/" + output,
+                                    "arguments": ["c++", *defines, "-o", output, "-c", file],
+                                }
+                            )
+                            probe = ["c++", "-M", "-MF", "-", "-MT", "juicer-dependencies", *defines, file]
+                            if case == "wrong-stage-probe" and index == len(owners):
+                                probe.insert(-1, "-DOTHER=1")
+                            commands.append(
+                                {
+                                    **self.operation(prefix + f"film-grain-stage-{index}-dependencies", probe),
+                                    "directory": build,
+                                }
+                            )
+                    analysis = {
+                        source: {"excluded": qualification.MOTION_REPLAY_EXCLUSION}
+                        for source in selected
+                        if source in {header, density}
+                    }
+                    if linked and case == "excluded-shared-stage":
+                        analysis[stage] = {"excluded": qualification.MOTION_REPLAY_EXCLUSION}
+                    if linked and case == "missing-density-exclusion":
+                        del analysis[density]
                     database = []
+                    coverage = {}
                     if replay:
                         labels = [
                             prefix + qualification.motion_replay_tidy_label(source, legacy=not current)
@@ -333,8 +470,10 @@ class PythonResultTests(unittest.TestCase):
                         for label, source in zip(labels, sources):
                             file = root + "/" + source
                             target = "JuicerGrainMotionReplay"
-                            if (case == "wrong-compiler-variant" and source == sources[0]) or (
-                                case == "extra-wrong-variant" and source == extra_source
+                            if (
+                                (case == "wrong-compiler-variant" and source == sources[0])
+                                or (case == "extra-wrong-variant" and source == extra_source)
+                                or (case == "wrong-density-variant" and source == density)
                             ):
                                 target = "JuicerProductionOfxProbe"
                             output = f"CMakeFiles/{target}.dir/{source}.o"
@@ -368,6 +507,25 @@ class PythonResultTests(unittest.TestCase):
                                 file,
                             ]
                             commands.append({**self.operation(label, command), "directory": root})
+                            coverage[source] = [header]
+                            if linked and source == density:
+                                coverage[source].append(density)
+                                if case != "missing-shared-coverage":
+                                    coverage[source].append(stage)
+                            if linked and source == render and case != "missing-render-shared-coverage":
+                                coverage[source].append(stage)
+                            if linked and case == "wrong-density-coverage" and source == render:
+                                coverage[source].append(density)
+                        if linked:
+                            analysis = {
+                                file: {
+                                    "commands": [
+                                        label for label, source in zip(labels, sources) if file in coverage[source]
+                                    ]
+                                }
+                                for file in selected
+                                if file != ordinary
+                            }
                     if case == "invented-exclusion":
                         analysis[header] = {"excluded": qualification.MOTION_REPLAY_EXCLUSION}
                     if case == "wrong-exclusion":
@@ -380,7 +538,6 @@ class PythonResultTests(unittest.TestCase):
                         checks["replay_compiler_analysis"] = analysis
                     checks["commands"] = commands
                     checks["expected_commands"] = [command["name"] for command in commands]
-                    configuration["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"] = "ON" if replay else "OFF"
                     if embedded:
                         result, payloads = self.embedded_quality(checks, "TRUE", [])
                         result["schema"] = "native-tests-v6" if current else "native-tests-v5"
@@ -391,7 +548,17 @@ class PythonResultTests(unittest.TestCase):
                     if case != "missing-run-identity":
                         result["run_id"] = "wrong-sibling" if case == "coordinated-sibling" else "fixture"
                     candidate = json.loads(payloads["candidate.json"])
-                    candidate["configuration"] = configuration
+                    candidate["configuration"] = {
+                        **configuration,
+                        "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "ON" if replay else "OFF",
+                    }
+                    if linked and not replay and case not in {"false-replay-off", "testing-off"}:
+                        candidate["configuration"]["JUICER_GRAIN_PREVIEW"] = "OFF"
+                        candidate["configuration"]["JUICER_GRAIN_PREVIEW_CONFIGURED"] = "OFF"
+                    if linked and case == "testing-off":
+                        candidate["configuration"]["BUILD_TESTING"] = "OFF"
+                    if stage_database and case != "missing-stage-proof":
+                        payloads["film-grain-stage-compile.json"] = json.dumps(stage_database).encode()
                     if current and case != "missing-artifacts":
                         artifacts = {
                             "schema": "rust-artifacts-v2",
@@ -407,7 +574,9 @@ class PythonResultTests(unittest.TestCase):
                                 "production": {
                                     "archive": "/production/lib.a",
                                     "target_dir": "/production",
-                                    "features": ["grain-preview"],
+                                    "features": ["grain-preview"]
+                                    if candidate["configuration"]["JUICER_GRAIN_PREVIEW_CONFIGURED"] == "ON"
+                                    else [],
                                 },
                                 "test-support": {
                                     "archive": "/test/lib.a",
@@ -458,7 +627,7 @@ class PythonResultTests(unittest.TestCase):
                                             root + "/" + source,
                                         ],
                                         "directory": root,
-                                        "headers": [header],
+                                        "headers": coverage.get(source, [header]),
                                         "database": database_identity,
                                     }
                                 ).encode()
