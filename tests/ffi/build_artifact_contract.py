@@ -583,6 +583,18 @@ class BuildArtifactContractTests(unittest.TestCase):
                 else:
                     self.assertEqual((production_count, test_count), (0, 0), command)
 
+                if target in {"JuicerOfxModuleTests", "JuicerOfxInstanceTests", "JuicerOfxRenderTests"}:
+                    graph = subprocess.run(
+                        [ninja, "-C", str(build), "-t", "query", binary.relative_to(build).as_posix()],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    ).stdout
+                    link_inputs = {
+                        build / line[2:] for line in map(str.strip, graph.splitlines()) if line.startswith("| ")
+                    }
+                    self.assertIn(artifact_paths["production"]["feature_input"], link_inputs, graph)
+
         for target, expected_variant in EXPECTED_RUST_CONSUMER_VARIANTS.items():
             with self.subTest(case=f"rust-consumer-role:{target}"):
                 self.assertEqual(consumers[target]["variant"], expected_variant)

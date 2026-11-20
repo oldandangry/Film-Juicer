@@ -23,10 +23,13 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
 
     raise SystemExit(collection_main(sys.argv[2:]))
 
-from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
+from execution import OutputLease, UnresolvedScope, closeout_run, digest, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
 from qualification import (
+    MODULE_CONFIGURATION_KEYS,
     PRODUCT_PREVIEW_KEYS,
+    PREVIEW_DISCOVERY,
+    RECEIPT_ERRORS,
     RUST_TEST_BUILD_TARGET,
     RUST_TEST_PATH_FLAGS,
     RUST_TEST_REGISTRATIONS,
@@ -330,6 +333,17 @@ def gtest_environment(environment):
     return {k: v for k, v in environment.items() if not k.startswith("GTEST_") and k != "TESTBRIDGE_TEST_ONLY"}
 
 
+def production_module_record(built, staged):
+    record = {"build": str(built), "stage": str(staged)}
+    for role, path in (("build", built), ("stage", staged)):
+        if not Path(path).is_file():
+            raise ValueError(f"missing production {role} module: {path}")
+        record[role + "_sha256"] = digest(Path(path))
+    if record["build_sha256"] != record["stage_sha256"]:
+        raise ValueError("production stage SHA-256 differs from its build module: " + str(staged))
+    return record
+
+
 def native_case(args):
     """CTest launcher; a contained child never builds or admits old evidence."""
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -384,6 +398,7 @@ def native_case(args):
     records = []
     bookkeeping_reads = 0
     outcomes_valid = False
+    module_record = None
     contract_name = args.runtime + "-contracts.json"
     contract_path = bundle / contract_name
     contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests" / contract_name).read_bytes()
@@ -400,6 +415,19 @@ def native_case(args):
         return completed
 
     try:
+        name = os.environ.get("FJ_HOST_TEST")
+        if args.runtime == "host" and "replaces" in contract.get("grain_preview", {}):
+            scope = contract["grain_preview"]["required"]
+            if name in scope:
+                from qualification import validate_module_record
+
+                configuration = cache_values(ROOT / "out/build" / args.preset)
+                contract = configured_product_contract(contract, args.runtime, configuration)
+                if name == PREVIEW_DISCOVERY:
+                    if len(command) != 4 or command[1] != "--grain-preview-discovery":
+                        raise ValueError("invalid preview discovery command")
+                    module_record = production_module_record(command[3], command[2])
+                    validate_module_record(module_record, args.preset, configuration)
         # Discover inside this already-contained CTest family, just as nextest
         # does for Rust. No extra supervisor is needed for each fixture listing.
         if args.protocol == "gtest":
@@ -444,7 +472,6 @@ def native_case(args):
             framework_terminals(read(".xml"), selected, filtered=discovered & excluded)
             cohorts = {s + "." + n: contract["gtest_cohorts"].get(s + "." + n, 0) for s, n in selected}
         else:
-            name = os.environ.get("FJ_HOST_TEST")
             if not name:
                 raise ValueError("custom host registration identity missing")
             cohorts = native_cohort_count(contract, name, args.preset)
@@ -467,6 +494,7 @@ def native_case(args):
                 "commands": records,
                 "outcomes_valid": outcomes_valid,
                 "bookkeeping_read_bytes": bookkeeping_reads,
+                **({"production_module": module_record} if module_record is not None else {}),
             },
         )
 
@@ -765,7 +793,7 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
         started = time.perf_counter()
         try:
             validate(result, payloads)
-        except (ValueError, KeyError, TypeError, OSError) as error:
+        except RECEIPT_ERRORS as error:
             result.update(status="failed", error=str(error))
         costs["publication_validation_seconds"] = time.perf_counter() - started
     if result["status"] == "passed" and scratch is not None:
@@ -934,16 +962,7 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
-            candidate["configuration"] = {
-                k: cache.get(k)
-                for k in (
-                    *PRODUCT_PREVIEW_KEYS,
-                    "CMAKE_BUILD_TYPE",
-                    "CMAKE_CXX_COMPILER",
-                    "CMAKE_CUDA_COMPILER",
-                    "CMAKE_HOME_DIRECTORY",
-                )
-            }
+            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
             preview = False
             artifact_consumers = None
             if not standalone and not cuda_free:
@@ -990,6 +1009,9 @@ def native_tests(args):
                         runtime=runtime,
                         cuda_free=cuda_free,
                         artifact_consumers=artifact_consumers,
+                        preset=args.preset,
+                        configuration=candidate["configuration"],
+                        launcher_python=cache.get("Python3_EXECUTABLE"),
                     )
                     for runtime in ("host", "gpu")
                 }
@@ -1186,7 +1208,14 @@ def development(args):
 def fresh_prepare(args):
     """Configure/build explicit targets without creating preparation admission."""
     from execution import NativeRun, name_component
-    from qualification import validate_build_result, validate_production_contract
+    from qualification import (
+        PRODUCTION_CONTRACT_RENDER_TARGET,
+        PRODUCTION_CONTRACT_TARGETS,
+        prepared_render_probe_path,
+        production_module_paths,
+        validate_build_result,
+        validate_production_contract,
+    )
 
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("build preparation requires its native platform")
@@ -1195,13 +1224,14 @@ def fresh_prepare(args):
         args.testing != "OFF"
         or not args.preset.endswith("release")
         or args.cuda_free
-        or not {"juicer", "JuicerProductionPreparedRenderProbe"} <= set(args.targets or ())
+        or not PRODUCTION_CONTRACT_TARGETS.issubset(args.targets or ())
     ):
         raise ValueError(
             "production contract requires native Release OFF juicer and JuicerProductionPreparedRenderProbe targets"
         )
     started = time.perf_counter()
     cuda_free = getattr(args, "cuda_free", False)
+    production_module = "bundle-archive" in (args.targets or ())
     preset_build = ROOT / "out/build" / args.preset
     build = preset_build / "host-tests" if cuda_free else preset_build
     directory = (
@@ -1211,7 +1241,8 @@ def fresh_prepare(args):
         expiry = expire_diagnostics(ROOT, args.preset) if "FJ_HOST_BUNDLE" not in os.environ else None
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
-        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=production_contract)
+        capture_domain = production_contract or production_module
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
         if expiry is not None:
             costs["expiry"] = expiry
         costs["report_read_bytes"] = expiry["read_bytes"] if expiry is not None else 0
@@ -1227,6 +1258,7 @@ def fresh_prepare(args):
             "members": {},
             "costs": costs,
             "production_contract": production_contract,
+            "production_module": production_module,
         }
         (directory / "candidate.patch").write_bytes(patch)
         try:
@@ -1262,10 +1294,15 @@ def fresh_prepare(args):
                 vctip_executable=windows_vctip(os.environ),
             )
             cache = cache_values(build)
-            candidate["configuration"] = {
-                key: cache.get(key)
-                for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")
-            }
+            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            if production_module:
+                _, built, staged = production_module_paths(args.preset, candidate["configuration"])
+                write_json(directory / "production-module.json", production_module_record(built, staged))
+                shutil.copyfile(build / "tests/rust-artifacts.json", directory / "rust-artifacts.json")
+                preview, _ = read_preview_and_replay_configuration(candidate["configuration"])
+                if preview and PRODUCTION_CONTRACT_RENDER_TARGET in targets:
+                    probe = Path(prepared_render_probe_path(args.preset, built))
+                    write_json(directory / "paired-probe.json", {"path": str(probe), "sha256": digest(probe)})
             version_data = run.command(
                 "versions",
                 [sys.executable, "-B", str(Path(__file__).absolute()), "tool-versions", "--tool", "cmake", cmake],
@@ -1302,9 +1339,7 @@ def fresh_prepare(args):
             result.update(status="passed", targets=targets)
         except BaseException as error:
             result["error"] = str(error)
-        final, final_patch, measured = capture_native_source(
-            ROOT, "scripts/verify.py", domain_tests=production_contract
-        )
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
         for key, value in measured.items():
             costs[key] += value
         result["candidate_unchanged"] = source == final and patch == final_patch
@@ -1320,6 +1355,92 @@ def fresh_prepare(args):
             validate_build_result,
             scratch=directory / "production" if production_contract else None,
         )
+
+
+def paired_discovery(args):
+    """Run an explicit host witness on two recorded CMake production artifacts."""
+    from execution import NativeRun, name_component
+    from qualification import (
+        PAIRED_DISCOVERY,
+        paired_discovery_command,
+        read_native_result,
+        validate_paired_discovery,
+        validate_paired_modules,
+    )
+
+    if args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("paired discovery requires the preset's native platform")
+    build = ROOT / "out/build" / args.preset
+    directory = (
+        ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or "pair-" + uuid.uuid4().hex)
+    )
+    with OutputLease(ROOT, build):
+        directory.mkdir(parents=True, exist_ok=False)
+        run = NativeRun(ROOT, directory)
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=True)
+        costs["report_read_bytes"] = 0
+        candidate = {**source, "preset": args.preset}
+        result = {
+            "schema": "native-paired-discovery-v1",
+            "status": "failed",
+            "preset": args.preset,
+            "scope": "focused",
+            "test": PAIRED_DISCOVERY,
+            "candidate_head": source["head"],
+            "shipping_isolation": False,
+            "commands": run.commands,
+            "members": {},
+            "costs": costs,
+        }
+        (directory / "candidate.patch").write_bytes(patch)
+        try:
+            cache = cache_values(build)
+            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS}
+            modules = {}
+            for role, bundle in (("ordinary", args.ordinary), ("preview", args.preview)):
+                try:
+                    producer = read_native_result(bundle)
+                    if producer["status"] != "passed" or "production_module" not in producer:
+                        raise ValueError("expected a passing bundle-archive build receipt")
+                    modules[role] = {
+                        key: producer[key]
+                        for key in ("preset", "candidate_source", "configuration", "production_module")
+                    }
+                    if role == "preview":
+                        for key in ("targets", "paired_probe"):
+                            if key in producer:
+                                modules[role][key] = producer[key]
+                    modules[role]["receipt"] = str(bundle.absolute())
+                    modules[role]["result_sha256"] = digest(bundle / "result.json")
+                    costs["report_read_bytes"] += producer["bookkeeping_read_bytes"]
+                except RECEIPT_ERRORS as error:
+                    raise ValueError(f"paired discovery {role} producer receipt: {error}") from error
+            probe = validate_paired_modules(args.preset, candidate, patch, modules)
+            write_json(directory / "production-modules.json", modules)
+            for role, row in modules.items():
+                record = row["production_module"]
+                try:
+                    if production_module_record(record["build"], record["stage"]) != record:
+                        raise ValueError("module SHA-256 differs from the producing build receipt")
+                except (ValueError, OSError) as error:
+                    raise ValueError(f"paired discovery {role} prerequisite: {error}") from error
+            probe_path = Path(probe["path"])
+            if not probe_path.is_file() or digest(probe_path) != probe["sha256"]:
+                raise ValueError(f"paired discovery preview probe is missing or SHA-256 differs: {probe_path}")
+            write_json(directory / "paired-probe.json", probe)
+            command = paired_discovery_command(probe, modules)
+            listing = run.command("paired-list", [*command, "--list-cases"], stdout_only=True).read_bytes()
+            (directory / "paired-list.jsonl").write_bytes(listing)
+            run.command("paired-run", command, env=dict(os.environ, FJ_HOST_CASES=str(directory / "paired-run.jsonl")))
+            result["status"] = "passed"
+        except (*RECEIPT_ERRORS, subprocess.CalledProcessError) as error:
+            print(error, file=sys.stderr)
+            result["error"] = str(error)
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=True)
+        for key, value in measured.items():
+            costs[key] += value
+        result["candidate_unchanged"] = source == final and patch == final_patch
+        return finish_native_run(run, result, candidate, costs, validate_paired_discovery)
 
 
 def python_tests(args):
@@ -1621,6 +1742,11 @@ def main():
         help="run the Release OFF production closure under the build owner",
     )
     prepare.add_argument("--cuda-free", action="store_true", help="prepare selected CUDA-independent test targets")
+    pair = modes.add_parser("paired-discovery", help="run Ffi.Host.GrainPreviewPairedDiscovery on two build receipts")
+    pair.add_argument("--preset", required=True, choices=PRESETS)
+    pair.add_argument("--ordinary", required=True, type=Path, help="ordinary bundle-archive build receipt directory")
+    pair.add_argument("--preview", required=True, type=Path, help="preview bundle-archive build receipt directory")
+    pair.add_argument("--run-id")
     owner = modes.add_parser("check-owner", help=argparse.SUPPRESS)
     owner.add_argument("--preset", required=True, choices=PRESETS)
     close = modes.add_parser("closeout", help="record review/acceptance or holds and expire optional diagnostics")
@@ -1666,6 +1792,7 @@ def main():
             parser.error("--cuda-free requires BUILD_TESTING=ON")
     dispatch = {
         "prepare": fresh_prepare,
+        "paired-discovery": paired_discovery,
         "development": development,
         "qualification": native_tests,
         "collect-qualification": collect_bundles,

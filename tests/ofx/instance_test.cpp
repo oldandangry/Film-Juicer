@@ -15,6 +15,8 @@
 namespace {
     constexpr std::string_view kCaller = "ofx.instance";
     constexpr const char* kCases[]{"reference", "create", "handles", "actions", "parameters", "edits", "reentry", "destroy"};
+    constexpr std::string_view kPreviewCaller = "ofx.grain_preview.instance";
+    constexpr const char* kPreviewCases[]{"create", "types", "destroy"};
     using ofx_test::InstanceCall;
     using ofx_test::InstanceHost;
     void require(bool condition, const char* message) {
@@ -1080,22 +1082,113 @@ namespace {
         create_test.passed();
         require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "candidate unload");
     }
+
+    void preview_constructor(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
+        constexpr std::array parameters{
+            std::pair{"GrainModel", kOfxParamTypeStrChoice},
+            std::pair{"FilmGrainAmountEv", kOfxParamTypeDouble},
+            std::pair{"FilmGrainTexelPitchUm", kOfxParamTypeDouble},
+            std::pair{"FilmGrainChromaFraction", kOfxParamTypeDouble},
+        };
+        auto expected = reference.create;
+        require(!expected.empty() && expected.back().operation == "effect_properties", "preview initialization boundary");
+        const auto scope = expected.back().target;
+        const auto next = std::find_if(expected.begin(), expected.end(), [](const auto& entry) {
+            return entry.operation == "param_handle" && entry.property == "GrainSublayersActive";
+        });
+        require(next != expected.end(), "preview constructor insertion boundary");
+        const auto param_set = next->target;
+        std::vector<InstanceCall> preview_calls;
+        for (const auto& parameter : parameters) {
+            const auto* name = parameter.first;
+            preview_calls.push_back({"param_handle", param_set, name, 0, {}, {}});
+            preview_calls.push_back({"get_string", name, kOfxParamPropType, 0, {}, scope});
+            preview_calls.push_back({"param_properties", name, {}, 0, {}, scope});
+        }
+        expected.insert(next, preview_calls.begin(), preview_calls.end());
+        // Initialize the Current model before the final instance check.
+        std::vector<InstanceCall> visibility{{"param_get", "GrainModel", {}, 0, {std::string("current")}, scope}};
+        for (const char* name : {"FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"})
+            visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {1}, scope});
+        for (const char* name : {"GrainSublayersActive", "GrainPreset", "GrainAmplitude", "GrainBlur", "GrainSharpness", "GrainChroma", "GrainTexture", "GrainResetAdvanced", "GrainParticleAreaUm2", "GrainParticleScaleMaster", "GrainParticleScaleLayersMaster", "GrainDensityMinMaster", "GrainUniformityMaster", "GrainBlurDyeCloudsUm", "GrainSizeMixWeight", "GrainSizeMixWeightMid", "GrainSizeMixScale", "GrainMicroStructure", "GrainDebugView", "GrainClumpTemporalMix", "GrainClumpMorphPeriodSec"})
+            visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {0}, scope});
+        expected.insert(std::prev(expected.end()), visibility.begin(), visibility.end());
+
+        plugin->setHost(host.binding());
+        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "preview load");
+        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "preview context");
+        auto* effect = host.create_effect();
+        {
+            JuicerTests::CaseEvent test(kPreviewCaller, "create");
+            for (const auto& [name, type] : parameters)
+                host.set_parameter_type(effect, name, type);
+            host.set_parameter_presentation(effect, "GrainChroma", kOfxParamPropHint, {std::string("returned hint")});
+            host.return_string_on_failure_next("get_string/OfxParamPropHint", kOfxStatFailed);
+            host.clear_calls();
+            require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK && host.instance_data(effect), "preview create and publish");
+            require(create_equivalent(host.calls(), expected), "preview constructor continuation");
+            auto altered = host.calls();
+            const auto first = std::find(altered.begin(), altered.end(), preview_calls.front());
+            require(first != altered.end() && first != altered.begin(), "preview constructor call boundary");
+            const auto index = first - altered.begin();
+            altered.erase(first);
+            require(!create_equivalent(altered, expected), "constructor accepted a missing preview call");
+            altered = host.calls();
+            std::iter_swap(altered.begin() + index, altered.begin() + index - 1);
+            require(!create_equivalent(altered, expected), "constructor accepted a misplaced preview call");
+            altered = host.calls();
+            altered.front().operation = "altered";
+            require(!create_equivalent(altered, expected), "constructor accepted a changed ordinary call");
+            test.passed();
+        }
+        {
+            JuicerTests::CaseEvent test(kPreviewCaller, "destroy");
+            host.clear_calls();
+            require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK && !host.instance_data(effect), "preview destroy and detach");
+            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "preview destroy continuation");
+            test.passed();
+        }
+        {
+            JuicerTests::CaseEvent test(kPreviewCaller, "types");
+            for (const auto& parameter : parameters) {
+                host.set_parameter_type(effect, parameter.first, kOfxParamTypeInteger);
+                host.clear_calls();
+                require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatFailed && !host.instance_data(effect), "preview parameter type failure and rollback");
+                require(!host.calls().empty() && host.calls().back() == InstanceCall{"get_string", parameter.first, kOfxParamPropType, 0, {}, scope}, "preview parameter type terminal");
+                host.set_parameter_type(effect, parameter.first, parameter.second);
+            }
+            test.passed();
+        }
+        require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "preview unload");
+    }
 } // namespace
 
 int main(int argc, char** argv) try {
+    const bool preview = argc > 1 && std::string_view(argv[1]) == "--grain-preview";
     if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
+        if (preview) {
+            for (const auto* id : kPreviewCases)
+                JuicerTests::list_case(kPreviewCaller, id);
+        } else {
+            for (const auto* id : kCases)
+                JuicerTests::list_case(kCaller, id);
+        }
         return 0;
     }
-    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: instance fixture --reference file");
+    require(argc == (preview ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: instance fixture [--grain-preview] --reference file");
     JuicerTests::CaseLog log;
     auto* candidate = OfxGetPlugin(0);
-    require(candidate, "candidate descriptor");
-    const auto expected = decode(ofx_test::reference::read(argv[2], "instance"));
-    reference_record_case(expected);
+    require(candidate && candidate->pluginIdentifier &&
+                std::string_view(candidate->pluginIdentifier) == (preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
+            "instance descriptor variant");
+    const auto expected = decode(ofx_test::reference::read(argv[argc - 1], "instance"));
     InstanceHost candidate_host;
-    candidate_cohort(candidate, candidate_host, expected);
+    if (preview) {
+        preview_constructor(candidate, candidate_host, expected);
+    } else {
+        reference_record_case(expected);
+        candidate_cohort(candidate, candidate_host, expected);
+    }
     log.finish();
     return 0;
 } catch (const std::exception& error) {

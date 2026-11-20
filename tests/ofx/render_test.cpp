@@ -43,6 +43,22 @@ namespace {
             throw std::runtime_error("render reference encoding");
         return result;
     }
+    void expect_preview_capture() {
+        std::size_t captures = 0;
+        for (auto& row : reference_rows) {
+            auto expected = decode(row[1]);
+            const auto next = std::find_if(expected.calls.begin(), expected.calls.end(), [](const auto& call) {
+                return call.operation == "param_get" && call.target == "FilmDustAmount";
+            });
+            if (next == expected.calls.end())
+                continue;
+            expected.calls.insert(next, {"param_get", "GrainModel", {}, 0, {std::string("current")}, next->scope});
+            row[1] = encode(expected);
+            ++captures;
+        }
+        if (captures != 12)
+            throw std::runtime_error("preview render capture membership");
+    }
     struct Fault {
         std::string_view operation;
         OfxStatus status = kOfxStatOK;
@@ -174,9 +190,27 @@ namespace {
         std::erase_if(legacy_calls, [](const auto& call) {
             return call.operation == "param_get" && ofx_test::reference::advanced_halation_parameter(call.target);
         });
-        require(ofx_test::reference::calls(reference.calls) == ofx_test::reference::calls(legacy_calls), std::string(id) + ": callback trace differs from C++ mainEntry");
+        const auto expected_calls = ofx_test::reference::calls(reference.calls);
+        require(expected_calls == ofx_test::reference::calls(legacy_calls), std::string(id) + ": callback trace differs from reference");
         require(reference.source_releases == candidate.source_releases, std::string(id) + ": Source release count differs");
         require(reference.output_releases == candidate.output_releases, std::string(id) + ": Output release count differs");
+        if (id == "source_reply_yes") {
+            const auto preview_call = std::find_if(reference.calls.begin(), reference.calls.end(), [](const auto& call) {
+                return call.operation == "param_get" && call.target == "GrainModel";
+            });
+            if (preview_call != reference.calls.end()) {
+                const auto index = preview_call - reference.calls.begin();
+                auto altered = legacy_calls;
+                altered.erase(altered.begin() + index);
+                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a missing preview call");
+                altered = legacy_calls;
+                std::iter_swap(altered.begin() + index, altered.begin() + index - 1);
+                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a misplaced preview call");
+                altered = legacy_calls;
+                altered.front().operation = "altered";
+                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a changed ordinary call");
+            }
+        }
         if (id == "keys") {
             auto altered = reference;
             altered.status = -100;
@@ -521,19 +555,24 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
-    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: render fixture --reference file");
+    const bool preview = argc > 1 && std::string_view(argv[1]) == "--grain-preview";
+    require(argc == (preview ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: render fixture [--grain-preview] --reference file");
     JuicerTests::CaseLog log;
     auto* candidate_plugin = OfxGetPlugin(0);
     OfxPlugin* reference_plugin = nullptr;
-    require(candidate_plugin, "candidate descriptor");
+    require(candidate_plugin && candidate_plugin->pluginIdentifier &&
+                std::string_view(candidate_plugin->pluginIdentifier) == (preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
+            "render descriptor variant");
     {
-        reference_rows = ofx_test::reference::read(argv[2], "render");
+        reference_rows = ofx_test::reference::read(argv[argc - 1], "render");
         require(reference_rows.is_array() && reference_rows.size() == 85, "render reference membership");
         auto altered = reference_rows[0][1];
         altered[0] = -100;
         require(encode(decode(altered)) != reference_rows[0][1], "render recorded value negative control");
         require(reference_rows[0][0] != reference_rows[1][0], "render recorded order negative control");
     }
+    if (preview)
+        expect_preview_capture();
     {
         JuicerTests::CaseEvent event(kCaller, "non_cuda");
         reference_group = "non_cuda";

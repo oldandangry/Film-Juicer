@@ -435,6 +435,11 @@
   ],
   "grain_preview": {
     "rust_core_publication": "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities",
+    "replaces": {
+      "Ofx.Host.Module": "Ofx.Host.GrainPreviewModule",
+      "Ofx.Host.Instance": "Ofx.Host.GrainPreviewInstance",
+      "Ofx.Host.Render": "Ofx.Host.GrainPreviewRender"
+    },
     "targets": {
       "JuicerProductionPreparedRenderProbe": {
         "protocol": "custom",
@@ -442,10 +447,16 @@
       }
     },
     "required": [
-      "Ffi.Host.GrainPreviewDiscovery"
+      "Ffi.Host.GrainPreviewDiscovery",
+      "Ofx.Host.GrainPreviewModule",
+      "Ofx.Host.GrainPreviewInstance",
+      "Ofx.Host.GrainPreviewRender"
     ],
     "native_cohorts": {
-      "Ffi.Host.GrainPreviewDiscovery": 1
+      "Ffi.Host.GrainPreviewDiscovery": 1,
+      "Ofx.Host.GrainPreviewModule": 3,
+      "Ofx.Host.GrainPreviewInstance": 0,
+      "Ofx.Host.GrainPreviewRender": 4
     },
     "native_membership": {
       "Ffi.Host.GrainPreviewDiscovery": {
@@ -454,8 +465,41 @@
         "required": [
           [
             "grain-preview-discovery",
-            "both-modules"
+            "preview-module"
           ]
+        ]
+      },
+      "Ofx.Host.GrainPreviewModule": {
+        "listed": 8,
+        "terminal": 347,
+        "required": [
+          ["ofx.module", "discovery"],
+          ["ofx.module", "binding"],
+          ["ofx.module", "load"],
+          ["ofx.module", "describe"],
+          ["ofx.module", "defaults"],
+          ["ofx.module", "reentry"],
+          ["ofx.module", "reload"],
+          ["ofx.module", "unload"]
+        ]
+      },
+      "Ofx.Host.GrainPreviewInstance": {
+        "listed": 3,
+        "terminal": 3,
+        "required": [
+          ["ofx.grain_preview.instance", "create"],
+          ["ofx.grain_preview.instance", "types"],
+          ["ofx.grain_preview.instance", "destroy"]
+        ]
+      },
+      "Ofx.Host.GrainPreviewRender": {
+        "listed": 4,
+        "terminal": 94,
+        "required": [
+          ["ofx.render", "non_cuda"],
+          ["ofx.render", "images"],
+          ["ofx.render", "formats"],
+          ["ofx.render", "time"]
         ]
       }
     }

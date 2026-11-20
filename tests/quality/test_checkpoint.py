@@ -1429,6 +1429,22 @@ class RustReceiptBundleTests(unittest.TestCase):
                                 catalog.pop(section, None)
                                 continue
                             scope = catalog[section] = source[section]
+                            if runtime == "host":
+                                # Historical preview receipts declared a single paired discovery case.
+                                discovery = "Ffi.Host.GrainPreviewDiscovery"
+                                scope = catalog[section] = {
+                                    "rust_core_publication": scope["rust_core_publication"],
+                                    "targets": scope["targets"],
+                                    "required": [discovery],
+                                    "native_cohorts": {discovery: 1},
+                                    "native_membership": {
+                                        discovery: {
+                                            "listed": 1,
+                                            "terminal": 1,
+                                            "required": [["grain-preview-discovery", "both-modules"]],
+                                        }
+                                    },
+                                }
                             if section == "grain_preview_motion_replay" and case == "invent-replay":
                                 catalog["required"].extend(scope["required"])
                                 for field in ("targets", "native_cohorts", "native_membership"):
@@ -1521,6 +1537,124 @@ class RustReceiptBundleTests(unittest.TestCase):
                         self.assertEqual("Grain.Gpu.FilmOfxApertures" in summary["unselected_registrations"], replay)
 
     test_current_product_registration_uses_configured_preview_and_replay.required_subtests = True
+
+    def test_preview_host_witness_requires_own_command_and_cases(self):
+        from copy import deepcopy
+
+        root = Path(verify.__file__).parent.parent
+        host = json.loads((root / "tests/host-contracts.json").read_bytes())
+        preset = "linux-debug"
+        build = "/configured/out/build/linux-debug"
+        configuration = {
+            "BUILD_TESTING": "ON",
+            "JUICER_GRAIN_PREVIEW": "ON",
+            "JUICER_GRAIN_PREVIEW_CONFIGURED": "ON",
+            "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "ON",
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_HOME_DIRECTORY": "/configured",
+            "CMAKE_INSTALL_PREFIX": "/configured/out/stage/linux-debug",
+        }
+        module = "juicer-grain-preview.ofx"
+        built = f"{build}/{module}"
+        staged = (
+            f"/configured/out/stage/linux-debug/portra-grain-preview/{module}.bundle/Contents/Linux-x86-64/{module}"
+        )
+        discovery = "Ffi.Host.GrainPreviewDiscovery"
+        python = "/configured/venv/bin/python"
+        commands = {
+            discovery: ("JuicerProductionPreparedRenderProbe", ["--grain-preview-discovery", staged, built]),
+            "Ofx.Host.GrainPreviewModule": (
+                "JuicerOfxModuleTests",
+                ["--grain-preview", "/configured/tests/ofx/descriptor_manifest_grain_preview.json"],
+            ),
+            "Ofx.Host.GrainPreviewInstance": (
+                "JuicerOfxInstanceTests",
+                ["--grain-preview", "--reference", "/configured/tests/ofx/fixtures/s6-d/instance.json"],
+            ),
+            "Ofx.Host.GrainPreviewRender": (
+                "JuicerOfxRenderTests",
+                ["--grain-preview", "--reference", "/configured/tests/ofx/fixtures/s6-d/render.json"],
+            ),
+        }
+        targets = {target: f"{build}/tests/bin/{target}" for target, _ in commands.values()}
+        host["required"] = []
+        host["targets"] = {
+            target: host["targets"][target] for target in targets if target != "JuicerProductionPreparedRenderProbe"
+        }
+        contract = qualification.configured_product_contract(host, "host", configuration)
+        consumers = {
+            **{target: {"binary": binary, "variant": "production"} for target, binary in targets.items()},
+            "juicer": {"binary": built, "variant": "production"},
+        }
+        tests = {
+            name: {
+                "name": name,
+                "command": [
+                    python,
+                    "-B",
+                    "/configured/scripts/verify.py",
+                    "native-case",
+                    "--preset",
+                    preset,
+                    "--protocol",
+                    "custom",
+                    "--",
+                    targets[owner],
+                    *arguments,
+                ],
+                "properties": [{"name": "LABELS", "value": ["host"]}],
+            }
+            for name, (owner, arguments) in commands.items()
+        }
+
+        def register(cases):
+            return qualification.native_registration(
+                contract,
+                targets,
+                {"tests": list(cases.values())},
+                artifact_consumers=consumers,
+                preset=preset,
+                configuration=configuration,
+                launcher_python=python,
+            )
+
+        self.assertEqual(register(tests).keys(), tests.keys())
+        for name in tests:
+            wrong_launcher = deepcopy(tests)
+            wrong_launcher[name]["command"][2] = "/configured/scripts/check-quality.py"
+            with self.assertRaisesRegex(ValueError, "OFX witness launcher differs"):
+                register(wrong_launcher)
+        for index, argument in (
+            (0, "/foreign/bin/python"),
+            (1, "-u"),
+            (3, "python-tests"),
+            (5, "linux-release"),
+            (6, "--runtime"),
+            (7, "gtest"),
+            (8, "--other"),
+        ):
+            wrong_launcher = deepcopy(tests)
+            wrong_launcher[discovery]["command"][index] = argument
+            with self.assertRaisesRegex(ValueError, "OFX witness launcher differs"):
+                register(wrong_launcher)
+        module_test = "Ofx.Host.GrainPreviewModule"
+        swapped = deepcopy(tests)
+        swapped[module_test]["command"] = tests["Ofx.Host.GrainPreviewRender"]["command"]
+        with self.assertRaisesRegex(ValueError, "callback registration differs"):
+            register(swapped)
+        wrong_module = deepcopy(tests)
+        wrong_module[discovery]["command"][-2:] = [built, staged]
+        with self.assertRaisesRegex(ValueError, "discovery arguments differ"):
+            register(wrong_module)
+        wrong_manifest = deepcopy(tests)
+        wrong_manifest[module_test]["command"][-1] = "/configured/tests/ofx/descriptor_manifest.json"
+        with self.assertRaisesRegex(ValueError, "callback registration differs"):
+            register(wrong_manifest)
+        with self.assertRaisesRegex(ValueError, "callback registration differs"):
+            register({name: row for name, row in tests.items() if name != module_test})
+        qualification.native_membership(contract, discovery, {("grain-preview-discovery", "preview-module")}, 1)
+        with self.assertRaisesRegex(ValueError, "missing or unexpected native membership"):
+            qualification.native_membership(contract, discovery, {("grain-preview-discovery", "both-modules")}, 1)
 
     def test_offline_rust_preview_receipts(self):
         cases = (

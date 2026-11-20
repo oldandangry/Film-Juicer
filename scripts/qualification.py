@@ -15,12 +15,16 @@ import tomllib
 import xml.etree.ElementTree as ET
 
 
+RECEIPT_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError, OSError, ET.ParseError)
+
 PRESET_TARGETS = {
     "linux-debug": "x86_64-unknown-linux-gnu",
     "linux-release": "x86_64-unknown-linux-gnu",
     "windows-clang-debug": "x86_64-pc-windows-msvc",
     "windows-clang-release": "x86_64-pc-windows-msvc",
 }
+PRODUCTION_CONTRACT_RENDER_TARGET = "JuicerProductionPreparedRenderProbe"
+PRODUCTION_CONTRACT_TARGETS = frozenset({"juicer", PRODUCTION_CONTRACT_RENDER_TARGET})
 RUST_QUALITY_PACKAGES = ("film-juicer-core", "film-juicer-plugin")
 RUST_POLICY_FILES = {"Cargo.lock", "Cargo.toml", "clippy.toml", "rust-toolchain.toml", "rustfmt.toml"}
 RUST_BUILD_FILES = {"CMakeLists.txt", "cmake/JuicerRust.cmake"}
@@ -31,6 +35,14 @@ PRODUCT_PREVIEW_KEYS = (
     "JUICER_GRAIN_PREVIEW",
     "JUICER_GRAIN_PREVIEW_CONFIGURED",
     "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED",
+)
+MODULE_CONFIGURATION_KEYS = (
+    *PRODUCT_PREVIEW_KEYS,
+    "CMAKE_BUILD_TYPE",
+    "CMAKE_CXX_COMPILER",
+    "CMAKE_CUDA_COMPILER",
+    "CMAKE_HOME_DIRECTORY",
+    "CMAKE_INSTALL_PREFIX",
 )
 MOTION_REPLAY_TARGET = "JuicerGrainMotionReplay"
 REPLAY_EXECUTION_SUFFIX = ".replay-execution.json"
@@ -62,6 +74,47 @@ OPTIONAL_PRODUCT_REGISTRATIONS = {
         "--grain-preview-apertures",
     ),
 }
+PREVIEW_DISCOVERY = "Ffi.Host.GrainPreviewDiscovery"
+PAIRED_DISCOVERY = "Ffi.Host.GrainPreviewPairedDiscovery"
+OFX_CALLBACK_WITNESSES = {
+    "Module": "descriptor_manifest",
+    "Instance": "fixtures/s6-d/instance.json",
+    "Render": "fixtures/s6-d/render.json",
+}
+OFX_PREVIEW_REPLACEMENTS = {f"Ofx.Host.{name}": f"Ofx.Host.GrainPreview{name}" for name in OFX_CALLBACK_WITNESSES}
+
+
+def production_module_paths(preset, configuration):
+    """Resolve the module and stage paths owned by the configured product preset."""
+    path = rust_test_path(preset)
+    preview, _ = read_preview_and_replay_configuration(configuration)
+    source, build = native_test_build({"preset": preset, "build_kind": "product"}, configuration)
+    if configuration.get("CMAKE_BUILD_TYPE") != preset.rsplit("-", 1)[-1].capitalize():
+        raise ValueError("configured module profile differs from native preset")
+    stage = path(configuration.get("CMAKE_INSTALL_PREFIX") or "")
+    if not stage.is_absolute() or ".." in stage.parts:
+        raise ValueError("invalid configured production stage")
+    if preview:
+        stage /= "portra-grain-preview"
+    name = "juicer-grain-preview.ofx" if preview else "juicer.ofx"
+    arch = "Win64" if preset.startswith("windows-") else "Linux-x86-64"
+    return source, build / name, stage / (name + ".bundle") / "Contents" / arch / name
+
+
+def prepared_render_probe_path(preset, built):
+    suffix = ".exe" if preset.startswith("windows-") else ""
+    return built.parent / "tests" / "bin" / (PRODUCTION_CONTRACT_RENDER_TARGET + suffix)
+
+
+def validate_module_record(record, preset, configuration):
+    _, built, staged = production_module_paths(preset, configuration)
+    path = type(built)
+    if set(record) != {"build", "stage", "build_sha256", "stage_sha256"} or (
+        path(record["build"]) != built or path(record["stage"]) != staged
+    ):
+        raise ValueError("production module record differs from configured build/stage paths")
+    if not re.fullmatch(r"[0-9a-f]{64}", record["build_sha256"]) or record["build_sha256"] != record["stage_sha256"]:
+        raise ValueError("production module build/stage SHA-256 mismatch")
 
 
 def is_motion_replay_target_output(source, output):
@@ -439,13 +492,28 @@ def configured_product_contract(contract, runtime, configuration):
         "required": list(contract["required"]),
         **{field: dict(contract.get(field, {})) for field in ("targets", "native_cohorts", "native_membership")},
     }
+    callbacks = runtime == "host" and "replaces" in contract.get("grain_preview", {})
+    if callbacks:
+        if contract["grain_preview"]["replaces"] != OFX_PREVIEW_REPLACEMENTS:
+            raise ValueError("invalid OFX preview callback registration replacements")
+        if preview_enabled:
+            for ordinary in OFX_PREVIEW_REPLACEMENTS:
+                if ordinary in merged["required"]:
+                    merged["required"].remove(ordinary)
+                for field in ("native_cohorts", "native_membership"):
+                    merged[field].pop(ordinary, None)
+        else:
+            merged["required"].extend(OFX_PREVIEW_REPLACEMENTS)
     for name, (section, expected_runtime, owner, _) in OPTIONAL_PRODUCT_REGISTRATIONS.items():
         if runtime != expected_runtime:
             continue
+        names = {name}
+        if callbacks and name == PREVIEW_DISCOVERY:
+            names.update(OFX_PREVIEW_REPLACEMENTS.values())
         if (
-            name in merged["required"]
-            or name in merged["native_cohorts"]
-            or name in merged["native_membership"]
+            names.intersection(merged["required"])
+            or names.intersection(merged["native_cohorts"])
+            or names.intersection(merged["native_membership"])
             or (section == "grain_preview_motion_replay" and owner in merged["targets"])
         ):
             raise ValueError("optional product registration in the base catalog: " + name)
@@ -453,19 +521,31 @@ def configured_product_contract(contract, runtime, configuration):
             continue
         scope = contract.get(section, {})
         if (
-            scope.get("required") != [name]
+            set(scope.get("required", ())) != names
+            or len(scope["required"]) != len(names)
             or set(scope.get("targets", {})) != {owner}
-            or set(scope.get("native_cohorts", {})) != {name}
-            or set(scope.get("native_membership", {})) != {name}
+            or set(scope.get("native_cohorts", {})) != names
+            or set(scope.get("native_membership", {})) != names
         ):
             raise ValueError("missing configured product registration contract: " + name)
-        merged["required"].append(name)
+        merged["required"].extend(scope["required"])
         for field in ("targets", "native_cohorts", "native_membership"):
             merged[field].update(scope[field])
     return merged
 
 
-def native_registration(contract, paths, registration, *, runtime="host", cuda_free=False, artifact_consumers=None):
+def native_registration(
+    contract,
+    paths,
+    registration,
+    *,
+    runtime="host",
+    cuda_free=False,
+    artifact_consumers=None,
+    preset=None,
+    configuration=None,
+    launcher_python=None,
+):
     """Check independent owning target counts before selecting execution."""
     if cuda_free:
         targets = {
@@ -477,6 +557,14 @@ def native_registration(contract, paths, registration, *, runtime="host", cuda_f
         contract = {**contract, "targets": targets, "required": required}
     if contract.get("schema") != f"native-{runtime}-contracts-v1" or set(paths) != set(contract["targets"]):
         raise ValueError("invalid host target contract")
+    current_ofx = runtime == "host" and not cuda_free and "replaces" in contract.get("grain_preview", {})
+    if current_ofx:
+        source, built, staged = production_module_paths(preset, configuration)
+        path = type(source)
+        python = path(launcher_python or "")
+        if not python.is_absolute():
+            raise ValueError("missing configured Python for OFX witness launcher")
+        witnesses = {PREVIEW_DISCOVERY, *OFX_PREVIEW_REPLACEMENTS, *OFX_PREVIEW_REPLACEMENTS.values()}
     found = {}
     counts = dict.fromkeys(paths, 0)
     for test in registration["tests"]:
@@ -484,6 +572,18 @@ def native_registration(contract, paths, registration, *, runtime="host", cuda_f
         if runtime not in properties.get("LABELS", []):
             continue
         command = test.get("command", [])
+        if (
+            current_ofx
+            and test["name"] in witnesses
+            and (
+                len(command) <= 9
+                or path(command[0]) != python
+                or path(command[2]) != source / "scripts" / "verify.py"
+                or command[1] != "-B"
+                or command[3:9] != ["native-case", "--preset", preset, "--protocol", "custom", "--"]
+            )
+        ):
+            raise ValueError("OFX witness launcher differs from the configured CTest command: " + test["name"])
         if "native-case" not in command:
             continue
         split = command.index("--")
@@ -538,6 +638,48 @@ def native_registration(contract, paths, registration, *, runtime="host", cuda_f
             binary = artifact_consumers.get(owner, {}).get("binary")
             if paths[owner] != binary or entry["command"][0] != binary:
                 raise ValueError("optional product executable differs from configured target output: " + name)
+    if current_ofx:
+        preview, _ = read_preview_and_replay_configuration(configuration)
+        consumers = artifact_consumers or {}
+        if preview:
+            entry = found[PREVIEW_DISCOVERY]
+            if (
+                len(entry["command"]) != 4
+                or path(entry["command"][0]) != prepared_render_probe_path(preset, built)
+                or [path(value) for value in entry["command"][2:]] != [staged, built]
+                or path(consumers.get("juicer", {}).get("binary", "")) != built
+                or consumers["juicer"]["variant"] != "production"
+            ):
+                raise ValueError("preview discovery arguments differ from the configured module and stage")
+            entry.update(module_record=True, variant_witness=True)
+        elif PREVIEW_DISCOVERY in found:
+            raise ValueError("preview discovery registered in the ordinary build")
+        for witness, fixture in OFX_CALLBACK_WITNESSES.items():
+            ordinary = f"Ofx.Host.{witness}"
+            preview_name = OFX_PREVIEW_REPLACEMENTS[ordinary]
+            name, opposite = (preview_name, ordinary) if preview else (ordinary, preview_name)
+            owner = f"JuicerOfx{witness}Tests"
+            row = found.get(name)
+            consumer = consumers.get(owner, {})
+            binary = owner + (".exe" if preset.startswith("windows-") else "")
+            if witness == "Module":
+                fixture += "_grain_preview.json" if preview else ".json"
+            selectors = ["--grain-preview"] if preview else []
+            if witness != "Module":
+                selectors.append("--reference")
+            if (
+                row is None
+                or opposite in found
+                or row["target"] != owner
+                or len(row["command"]) != len(selectors) + 2
+                or row["command"][1:-1] != selectors
+                or path(row["command"][-1]) != source / "tests" / "ofx" / fixture
+                or row["command"][0] != consumer.get("binary")
+                or path(row["command"][0]) != built.parent / "tests" / "bin" / binary
+                or consumer.get("variant") != "production"
+            ):
+                raise ValueError("OFX callback registration differs from its production variant or fixture: " + name)
+            row["variant_witness"] = True
     if counts != {t: s["registrations"] for t, s in contract["targets"].items()}:
         raise ValueError("missing native host registration")
     names = [t["name"] for t in registration["tests"]]
@@ -895,21 +1037,32 @@ def validate_rust_test_versions(versions):
             raise ValueError("qualified Rust/Cargo 1.98.1 and nextest 0.9.143 required")
 
 
-def rust_test_tool_paths(candidate, version_probe, source, path):
-    records = candidate["version_commands"]
-    versions = {record["name"]: record["output"] for record in records}
-    invocation = version_probe["command"]
+def native_tool_probe_python(records, version_probe, source):
+    """Bind retained tool versions to their supervised verifier invocation."""
+    path = type(source)
+    invocation = version_probe.get("command", [])
     if (
-        len(versions) != len(records)
-        or versions != candidate["versions"]
+        not records
+        or len({record["name"] for record in records}) != len(records)
         or any(record["returncode"] != 0 for record in records)
         or len(invocation) < 4
+        or not path(invocation[0]).is_absolute()
         or invocation[1] != "-B"
         or path(invocation[2]) != source / "scripts" / "verify.py"
         or invocation[3] != "tool-versions"
-        or path(version_probe["directory"]) != source
-        or invocation[4:] != [arg for row in records for arg in ("--tool", row["name"], row["command"][0])]
+        or path(version_probe.get("directory", "")) != source
+        or any(not record.get("command") for record in records)
+        or invocation[4:] != [arg for record in records for arg in ("--tool", record["name"], record["command"][0])]
     ):
+        raise ValueError("native tool probes differ from the recorded verifier invocation")
+    return path(invocation[0])
+
+
+def rust_test_tool_paths(candidate, version_probe, source, path):
+    records = candidate["version_commands"]
+    python = native_tool_probe_python(records, version_probe, source)
+    versions = {record["name"]: record["output"] for record in records}
+    if versions != candidate["versions"]:
         raise ValueError("native tool probes differ from the recorded Rust test tool versions")
     validate_rust_test_versions(versions)
     tools = {}
@@ -924,7 +1077,7 @@ def rust_test_tool_paths(candidate, version_probe, source, path):
             if not executable.is_absolute() or (name != "rustc" and arguments != ["--version"]):
                 raise ValueError("invalid native tool probe for Rust test execution")
             tools[name] = executable
-    if tools.keys() != required or not path(invocation[0]).is_absolute():
+    if tools.keys() != required:
         raise ValueError("missing qualified tool path for Rust test execution")
     preset = candidate["preset"]
     rustc = "rustc.exe" if preset.startswith("windows-") else "rustc"
@@ -934,7 +1087,7 @@ def rust_test_tool_paths(candidate, version_probe, source, path):
     hosts = [line for line in versions["rustc"].splitlines() if line.startswith("host:")]
     if hosts != [f"host: {target}"]:
         raise ValueError("rustc host differs from configured native target: " + target)
-    tools["python"] = path(invocation[0])
+    tools["python"] = python
     return tools
 
 
@@ -966,10 +1119,8 @@ def product_artifact_consumers(artifacts, build, replay_configured):
     return consumers
 
 
-def validate_rust_artifact_paths(artifacts, result, configuration):
-    preset = result["preset"]
-    path = rust_test_path(preset)
-    _, build = native_test_build(result, configuration)
+def validate_rust_artifact_paths(artifacts, preset, build):
+    path = type(build)
     windows = preset.startswith("windows-")
     native_archive = "juicer_core.lib" if windows else "libjuicer_core.a"
     if path(artifacts["build"]) != build or path(artifacts["native_archive"]) != build / native_archive:
@@ -990,6 +1141,27 @@ def validate_rust_artifact_paths(artifacts, result, configuration):
         binary = path(consumer["binary"])
         if not binary.is_relative_to(build) or binary == build or ".." in binary.parts:
             raise ValueError("Rust artifact consumer is outside the configured build: " + name)
+
+
+def cmake_build_targets(operation, cmake, source, build):
+    """Read the target operands of a build in the configured checkout."""
+    path = type(source)
+    command = operation.get("command", [])
+    if (
+        len(command) < 7
+        or path(command[0]) != cmake
+        or command[1] != "--build"
+        or path(command[2]) != build
+        or path(operation.get("directory", "")) != source
+        or command[-2:] != ["--", "-k0"]
+    ):
+        return None
+    operands = command[3:-2]
+    if operands[:1] == ["--clean-first"]:
+        operands = operands[1:]
+    if operands[:1] != ["--target"] or any(target.startswith("-") for target in operands[1:]):
+        return None
+    return operands[1:]
 
 
 def rust_test_invocation(result, candidate, registrations):
@@ -1031,21 +1203,8 @@ def rust_test_invocation(result, candidate, registrations):
     if junit.name != "ctest-host.xml" or junit.parent.parent != results or ".." in junit.parts:
         raise ValueError("outer CTest JUnit path differs from the configured Rust result directory")
 
-    command = preparation["command"]
-    targets = command[3:-2]
-    if targets[:1] == ["--clean-first"]:
-        targets = targets[1:]
-    if (
-        command[1:2] != ["--build"]
-        or len(command) < 7
-        or path(command[0]) != tools["cmake"]
-        or path(command[2]) != build
-        or path(preparation["directory"]) != source
-        or targets[:1] != ["--target"]
-        or RUST_TEST_BUILD_TARGET not in targets[1:]
-        or any(target.startswith("-") for target in targets[1:])
-        or command[-2:] != ["--", "-k0"]
-    ):
+    targets = cmake_build_targets(preparation, tools["cmake"], source, build)
+    if not targets or RUST_TEST_BUILD_TARGET not in targets:
         raise ValueError("outer build did not prepare Rust test binaries for the configured CTest invocation")
     return source, junit.parent, tools
 
@@ -1440,6 +1599,7 @@ def read_native_result(bundle, *, result_bytes=None):
         raise ValueError("linked result metadata")
     raw = result_path.read_bytes() if result_bytes is None else result_bytes
     result = json.loads(raw)
+    check_receipt_shape(result, {"schema": str}, "result.json")
     validators = {
         "native-tests-v1": (tests_result_members, validate_tests_result),
         "native-tests-v2": (tests_result_members, validate_tests_result),
@@ -1451,6 +1611,7 @@ def read_native_result(bundle, *, result_bytes=None):
         "native-quality-v2": (quality_result_members, validate_quality_result),
         "native-quality-v3": (quality_result_members, validate_quality_result),
         "native-build-v1": (build_result_members, validate_build_result),
+        "native-paired-discovery-v1": (paired_discovery_members, validate_paired_discovery),
     }
     host = result.get("schema", "").startswith("native-host-") or result.get("schema") == "native-gpu-v1"
     metadata, validate = validators.get(
@@ -1468,14 +1629,18 @@ def read_native_result(bundle, *, result_bytes=None):
     payloads = {name: (bundle / name).read_bytes() for name in result["members"]}
     summary = validate(result, payloads)
     candidate = json.loads(payloads["candidate.json"])
-    source = {key: candidate.get(key) for key in ("head", "inputs", "new_files_base64")}
-    summary["candidate_source"] = hashlib.sha256(
-        json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\0" + payloads["candidate.patch"]
-    ).hexdigest()
+    summary["candidate_source"] = candidate_source_digest(candidate, payloads["candidate.patch"])
     summary.update(
         bookkeeping_read_bytes=len(raw) + sum(map(len, payloads.values())), report_seconds=time.perf_counter() - started
     )
     return summary
+
+
+def candidate_source_digest(candidate, patch):
+    source = {key: candidate.get(key) for key in ("head", "inputs", "new_files_base64")}
+    return hashlib.sha256(
+        json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\0" + patch
+    ).hexdigest()
 
 
 def validate_python_result(discovery, functions_payload, rows_payload):
@@ -1634,6 +1799,8 @@ def _payloads(result, payloads):
         if len(data) != spec["bytes"] or hashlib.sha256(data).hexdigest() != spec["sha256"]:
             raise ValueError("result payload identity mismatch: " + name)
     candidate = json.loads(payloads["candidate.json"])
+    if result["schema"] in {"native-build-v1", "native-paired-discovery-v1"}:
+        check_build_or_pair_candidate(result, candidate)
     if candidate["head"] != result["candidate_head"] or candidate["preset"] != result["preset"]:
         raise ValueError("candidate metadata mismatch")
     if result["status"] == "passed":
@@ -1766,6 +1933,18 @@ def _native_cases(result, payloads, entries, contract, selected, rust_receipts):
             or execution.get("outcomes_valid") is not True
         ):
             raise ValueError("failed or mismatched native command")
+        if entry.get("variant_witness") and [
+            (item["command"], item["returncode"]) for item in execution["commands"]
+        ] != [([*entry["command"], "--list-cases"], 0), (entry["command"], 0)]:
+            raise ValueError("OFX witness did not list and run the registered command")
+        if entry.get("module_record"):
+            record = execution.get("production_module", {})
+            if (
+                [record.get("stage"), record.get("build")] != entry["command"][2:]
+                or not re.fullmatch(r"[0-9a-f]{64}", record.get("build_sha256", ""))
+                or record["build_sha256"] != record.get("stage_sha256")
+            ):
+                raise ValueError("missing or mismatched preview discovery module digest")
         if entry["protocol"] == "gtest":
             discovered = gtest_discovery(payloads[key + ".discovery.json"], excluded=excluded)
             filtered = discovered & excluded
@@ -1855,10 +2034,11 @@ def validate_tests_result(result, payloads):
         if result["schema"] in RUST_EXECUTION_SCHEMAS and artifact_schema != "rust-artifacts-v2":
             raise ValueError("current product receipt requires the v2 Rust artifact description")
         if artifact_schema == "rust-artifacts-v2":
-            validate_rust_artifact_paths(artifacts, result, candidate["configuration"])
-    artifact_consumers = None
+            _, build = native_test_build(result, candidate["configuration"])
+            validate_rust_artifact_paths(artifacts, result["preset"], build)
+    artifact_consumers = launcher_python = None
     if current_product:
-        _, build = native_test_build(result, candidate["configuration"])
+        source, build = native_test_build(result, candidate["configuration"])
         artifact_consumers = product_artifact_consumers(artifacts, build, replay_configured)
     inventory = json.loads(payloads["registration.json"])
     if current_product:
@@ -1868,6 +2048,11 @@ def validate_tests_result(result, payloads):
     if current_product:
         for runtime in ("host", "gpu"):
             contracts[runtime] = configured_product_contract(contracts[runtime], runtime, candidate["configuration"])
+        if "replaces" in contracts["host"].get("grain_preview", {}):
+            versions = [item for item in result["commands"] if item["name"] == "versions"]
+            if len(versions) != 1:
+                raise ValueError("missing or duplicate tool-version invocation for OFX witness launchers")
+            launcher_python = native_tool_probe_python(candidate.get("version_commands", ()), versions[0], source)
     standalone = result["build_kind"] == "tooling"
     cuda_free = result["build_kind"] == "cuda-free"
     native = (
@@ -1881,6 +2066,9 @@ def validate_tests_result(result, payloads):
                 runtime=runtime,
                 cuda_free=cuda_free,
                 artifact_consumers=artifact_consumers,
+                preset=result["preset"],
+                configuration=candidate.get("configuration"),
+                launcher_python=launcher_python,
             )
             for runtime in ("host", "gpu")
         }
@@ -2411,9 +2599,91 @@ def validate_quality_result(result, payloads):
     }
 
 
+CONTRACT_REPORT_SHAPE = {
+    "schema": str,
+    "preset": str,
+    "build_testing": str,
+    "test_support": str,
+    "exports": [str],
+    "hidden_device_load": bool,
+    "commands": {"file?": str, "sha256": str},
+}
+CONTRACT_PROBE_SHAPE = dict.fromkeys(("name", "linked_sha256", "before_run_sha256", "after_run_sha256"), str)
+CONTRACT_RENDER_OBSERVATIONS = (
+    "accepted_fixture_match",
+    "finite_output",
+    "alpha_preserved",
+    "padding_preserved",
+    "stream_completed",
+    "readback_complete",
+    "context_preserved",
+    "context_restored",
+)
+CONTRACT_V2_REPORT_SHAPE = {
+    **CONTRACT_REPORT_SHAPE,
+    "variant?": str,
+    "scanned": [
+        {
+            "name": str,
+            "file": str,
+            "sha256": str,
+            "symbols_and_fault_strings_absent": bool,
+            "legacy_symbols_absent": bool,
+        }
+    ],
+    "build_inputs": ({"sha256_before": str, "sha256_after": str},),
+    "consumed_inputs": ({"sha256_before": str, "sha256_after": str},),
+    "loaded_module": {"file": str, "build_file": str, "sha256": str},
+    "probes": [{**CONTRACT_PROBE_SHAPE, "executable": str}],
+    "prepared_render": {
+        **dict.fromkeys(
+            (
+                "module",
+                "module_sha256",
+                "executable",
+                "executable_sha256_before",
+                "executable_sha256_after",
+                "fixture",
+                "fixture_sha256",
+                "stdout_sha256",
+                "stderr_sha256",
+            ),
+            str,
+        ),
+        "command": [str],
+        "rows": [
+            {
+                "case_id": str,
+                "route": str,
+                "pass": str,
+                "input_shape": [int],
+                "output_shape": [int],
+                "ofx_status": int,
+                "messages": list,
+                "samples_compared": int,
+                "input_sha256": str,
+                "output_f32_words_sha256": str,
+                **dict.fromkeys(CONTRACT_RENDER_OBSERVATIONS, bool),
+                "source_image_releases": int,
+                "output_image_releases": int,
+            }
+        ],
+        "lifecycle": {
+            "module_load_status": int,
+            "effects_created": int,
+            "effects_destroyed": int,
+            "module_unload_status": int,
+            "destroy_statuses": [int],
+            "context_restored": bool,
+        },
+    },
+}
+
+
 def validate_production_contract(preset, payloads):
-    """Read the completed OFF gate's assertions, never its original file paths."""
+    """Validate the retained OFF report without accessing its original files."""
     report = json.loads(payloads["production-contract.json"])
+    check_receipt_shape(report, {"schema": str}, "production-contract.json")
     if report.get("schema") == "production-contract-v2":
         return _validate_production_contract_v2(preset, payloads, report)
     return _validate_production_contract_v1(preset, payloads, report)
@@ -2422,6 +2692,30 @@ def validate_production_contract(preset, payloads):
 def _validate_production_contract_v1(preset, payloads, report):
     commands_data = payloads["production-commands.json"]
     commands = json.loads(commands_data)
+    check_receipt_shape(commands, [{"name": str, "returncode": int}], "production-commands.json")
+    check_receipt_shape(
+        report,
+        {
+            **CONTRACT_REPORT_SHAPE,
+            "scanned": [{"symbols_and_fault_strings_absent": bool}],
+            "probes": [CONTRACT_PROBE_SHAPE],
+            "prepared_render": {
+                "executable_sha256_before": str,
+                "executable_sha256_after": str,
+                "rows": [
+                    {
+                        "case_id": str,
+                        "accepted_fixture_match": bool,
+                        "diagnostic": str,
+                        "status": int,
+                        "api": int,
+                        "native_code": int,
+                    }
+                ],
+            },
+        },
+        "production-contract.json",
+    )
     if (
         preset not in {"linux-release", "windows-clang-release"}
         or report.get("schema") != "production-contract-v1"
@@ -2487,6 +2781,7 @@ def _validate_production_contract_v2(preset, payloads, report):
     def unchanged(row):
         return digest(row["sha256_before"]) and row["sha256_before"] == row["sha256_after"]
 
+    check_receipt_shape(report, CONTRACT_V2_REPORT_SHAPE, "production-contract.json")
     if (
         preset not in {"linux-release", "windows-clang-release"}
         or report.get("preset") != preset
@@ -2498,6 +2793,21 @@ def _validate_production_contract_v2(preset, payloads, report):
         raise ValueError("incomplete production OFF assertions")
     commands_data = payloads["production-commands.json"]
     commands = json.loads(commands_data)
+    check_receipt_shape(
+        commands,
+        [
+            {
+                "name": str,
+                "returncode": int,
+                "process_status": str,
+                "drained": bool,
+                "command": [str],
+                "stdout_sha256": str,
+                "stderr_sha256": str,
+            }
+        ],
+        "production-commands.json",
+    )
     expected = {
         "native-symbols",
         "rust-symbols",
@@ -2624,16 +2934,6 @@ def _validate_production_contract_v2(preset, payloads, report):
         "api",
         "native_code",
     }
-    observations = (
-        "accepted_fixture_match",
-        "finite_output",
-        "alpha_preserved",
-        "padding_preserved",
-        "stream_completed",
-        "readback_complete",
-        "context_preserved",
-        "context_restored",
-    )
     if not isinstance(rows, list) or [row["case_id"] for row in rows] != ids:
         raise ValueError("incomplete production render rows")
     for row, case_id in zip(rows, ids, strict=True):
@@ -2658,7 +2958,7 @@ def _validate_production_contract_v2(preset, payloads, report):
             or row["samples_compared"] != 5 * 7 * channels
             or not digest(row["input_sha256"])
             or not digest(row["output_f32_words_sha256"])
-            or any(row[key] is not True for key in observations)
+            or any(row[key] is not True for key in CONTRACT_RENDER_OBSERVATIONS)
             or any(
                 type(row[key]) is not int or row[key] != 1 for key in ("source_image_releases", "output_image_releases")
             )
@@ -2686,27 +2986,400 @@ def _validate_production_contract_v2(preset, payloads, report):
     return {"production_off": True, "prepared_render_cases": len(rows)}
 
 
+MODULE_RECORD_SHAPE = dict.fromkeys(("build", "stage", "build_sha256", "stage_sha256"), str)
+PROBE_RECORD_SHAPE = {"path": str, "sha256": str}
+MODULE_CONFIGURATION_SHAPE = dict.fromkeys(MODULE_CONFIGURATION_KEYS, str)
+RUST_ARTIFACT_SHAPE = {
+    "schema": str,
+    "build": str,
+    "native_archive": str,
+    "variants": ({"target_dir": str, "archive": str, "feature_input": str, "stamp": str, "features": [str]},),
+    "consumers": ({"binary": str, "variant?": str},),
+}
+PAIRED_PRODUCER_SHAPE = {
+    "preset": str,
+    "candidate_source": str,
+    "configuration": MODULE_CONFIGURATION_SHAPE,
+    "production_module": MODULE_RECORD_SHAPE,
+    "receipt": str,
+    "result_sha256": str,
+    "targets?": [str],
+    "paired_probe?": PROBE_RECORD_SHAPE,
+}
+
+
+def check_receipt_shape(value, shape, field):
+    """Validate consumed JSON fields. Tuples describe maps and '?' marks optional fields."""
+    expected = shape if isinstance(shape, type) else list if isinstance(shape, list) else dict
+    if type(value) is not expected:
+        raise ValueError(f"{field}: expected {expected.__name__}, got {type(value).__name__}")
+    if isinstance(shape, list):
+        for index, item in enumerate(value):
+            check_receipt_shape(item, shape[0], f"{field}[{index}]")
+    elif isinstance(shape, tuple):
+        for key, item in value.items():
+            check_receipt_shape(item, shape[0], f"{field}.{key}")
+    elif isinstance(shape, dict):
+        for key, item_shape in shape.items():
+            optional = key.endswith("?")
+            name = key.removesuffix("?")
+            if name in value:
+                check_receipt_shape(value[name], item_shape, f"{field}.{name}")
+            elif not optional:
+                raise ValueError(f"{field}.{name}: missing required field")
+
+
+def check_build_or_pair_metadata(result, *, pair=False):
+    """Check types before opening members or interpreting recorded operations."""
+    check_receipt_shape(
+        result,
+        {
+            "schema": str,
+            "status": str,
+            "preset": str,
+            "shipping_isolation": bool,
+            "candidate_head": str,
+            "candidate_unchanged?": bool,
+            "error?": str,
+            "members": ({"bytes": int, "sha256": str},),
+            "commands": [dict],
+            **(
+                {"scope": str, "test": str}
+                if pair
+                else {"production_module?": bool, "production_contract?": bool, "targets?": [str]}
+            ),
+        },
+        "result.json",
+    )
+    detailed = pair or result.get("production_module") is True
+    for index, operation in enumerate(result["commands"]):
+        field = f"result.json.commands[{index}]"
+        check_receipt_shape(operation, {"name": str, "returncode": int, "drained": bool, "process_status": str}, field)
+        if detailed:
+            # Keep the existing configure diagnostics while identifying the exact malformed field.
+            name = operation["name"]
+            command_field = f"{field}.command"
+            directory_field = f"{field}.directory"
+            if name == "configure":
+                command_field += " (invalid CMake producer configure command arguments)"
+                directory_field += " (invalid CMake producer configure working directory)"
+            check_receipt_shape(operation.get("command"), [str], command_field)
+            check_receipt_shape(operation.get("directory"), str, directory_field)
+        else:
+            check_receipt_shape(operation, {"command?": [str], "directory?": str}, field)
+    if result["status"] == "passed" and result.get("production_module") is True:
+        check_receipt_shape(result, {"targets": [str]}, "result.json")
+    if pair and result["status"] == "failed":
+        check_receipt_shape(result, {"error": str}, "result.json")
+
+
+def check_build_or_pair_candidate(result, candidate):
+    check_receipt_shape(
+        candidate, {"head": str, "preset": str, "inputs": dict, "new_files_base64?": (str,)}, "candidate.json"
+    )
+    if result["status"] == "passed":
+        if result.get("production_module") is True:
+            check_receipt_shape(
+                candidate,
+                {
+                    "configuration": MODULE_CONFIGURATION_SHAPE,
+                    "version_commands": [{"name": str, "command": [str], "returncode": int, "output?": str}],
+                },
+                "candidate.json",
+            )
+        elif result["schema"] == "native-paired-discovery-v1":
+            check_receipt_shape(candidate, {"configuration": MODULE_CONFIGURATION_SHAPE}, "candidate.json")
+        elif result.get("production_contract") is True:
+            check_receipt_shape(candidate, {"configuration": {"BUILD_TESTING": str}}, "candidate.json")
+
+
 def build_result_members(result):
+    check_build_or_pair_metadata(result)
     required = {"candidate.json", "candidate.patch"}
     if result.get("production_contract") is True and result["status"] == "passed":
         required.update({"production-contract.json", "production-commands.json"})
+    if result.get("production_module") is True and result["status"] == "passed":
+        required.update({"production-module.json", "rust-artifacts.json"})
     return _flat_members(result, required)
+
+
+def producer_preview_configuration(configuration):
+    preview, replay = read_preview_and_replay_configuration(configuration)
+    if grain_preview_enabled(configuration["JUICER_GRAIN_PREVIEW"]) != preview:
+        raise ValueError("producer cached preview value disagrees with the effective CMake decision")
+    return preview, replay
+
+
+def validate_producer_contract_command(operation, python, source, preset):
+    path = type(source)
+    command = operation["command"]
+    if (
+        len(command) != 7
+        or path(operation["directory"]) != source
+        or path(command[0]) != python
+        or command[1] != "-B"
+        or path(command[2]) != source / "tests" / "ffi" / "production_contract.py"
+        or command[3:6] != ["--preset", preset, "--artifacts"]
+    ):
+        raise ValueError("production contract command differs from the configured producer")
+    # Use the original run layout even when the flat receipt has been relocated.
+    artifacts = path(command[6])
+    if (
+        artifacts.name != "production"
+        or artifacts.parent.parent != source / "out" / "validation" / preset / "results"
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", artifacts.parent.name)
+    ):
+        raise ValueError("production contract artifacts path differs from the configured producer")
+    return artifacts
+
+
+def validate_producer_contract(preset, payloads, scratch, module, rust_artifacts, preview):
+    """Bind the contract's evidence to the producer's artifacts and probes."""
+    report = json.loads(payloads["production-contract.json"])
+    check_receipt_shape(report, {"schema": str, "commands": {"file": str}}, "production-contract.json")
+    if report["schema"] != "production-contract-v2":
+        raise ValueError("production module producer requires a v2 production contract report")
+    assertions = _validate_production_contract_v2(preset, payloads, report)
+    path = type(scratch)
+    if path(report["commands"]["file"]) != scratch / "commands.json":
+        raise ValueError("production contract commands file differs from the recorded artifacts path")
+    loaded = report["loaded_module"]
+    if loaded["sha256"] != module["stage_sha256"]:
+        raise ValueError("production contract loaded module differs from the producing build and stage record")
+    for report_key, module_key in (("build_file", "build"), ("file", "stage")):
+        if path(loaded[report_key]) != path(module[module_key]):
+            raise ValueError("production contract loaded module differs from the producing build and stage record")
+    expected_variant = "grain-preview" if preview else "production"
+    if report.get("variant", "production") != expected_variant:
+        raise ValueError("production contract variant differs from the configured producer")
+    built, staged = path(module["build"]), path(module["stage"])
+    windows = preset.startswith("windows-")
+    scan_files = {row["name"]: path(row["file"]) for row in report["scanned"]}
+    if scan_files != {
+        "native-symbols": path(rust_artifacts["native_archive"]),
+        "rust-symbols": path(rust_artifacts["variants"]["production"]["archive"]),
+        "module-exports": staged,
+        "module-symbols": built.with_suffix(".pdb") if windows else staged,
+    }:
+        raise ValueError("production contract scan files differ from the producing build and stage record")
+    probes = {row["name"]: path(row["executable"]) for row in report["probes"]}
+    suffix = ".exe" if windows else ""
+    binaries = built.parent / "tests" / "bin"
+    if probes != {
+        "ofx": binaries / ("JuicerProductionOfxProbe" + suffix),
+        "cuda-abi": binaries / ("JuicerProductionCudaAbiProbe" + suffix),
+    } or path(report["prepared_render"]["executable"]) != prepared_render_probe_path(preset, built):
+        raise ValueError("production contract probe executables differ from the producing build")
+    return assertions
 
 
 def validate_build_result(result, payloads):
     build_result_members(result)
     candidate = _payloads(result, payloads)
     assertions = {}
-    if result.get("production_contract") is True and result["status"] == "passed":
-        if candidate["configuration"]["BUILD_TESTING"] != "OFF":
-            raise ValueError("production contract requires a testing-OFF candidate")
-        assertions = validate_production_contract(result["preset"], payloads)
+    production_contract = result.get("production_contract") is True and result["status"] == "passed"
+    if production_contract and candidate["configuration"]["BUILD_TESTING"] != "OFF":
+        raise ValueError("production contract requires a testing-OFF candidate")
+    if result.get("production_module") is True and result["status"] == "passed":
+        configuration = candidate["configuration"]
+        preview, replay = producer_preview_configuration(configuration)
+        source, built, _ = production_module_paths(result["preset"], configuration)
+        path = type(source)
+        phases = ["configure", "build", "versions"]
+        if production_contract:
+            phases.append("production-contract")
+        commands = result["commands"]
+        if [item["name"] for item in commands] != phases:
+            raise ValueError("unexpected CMake producer command sequence")
+        configure, build, versions = commands[:3]
+        records = candidate.get("version_commands", ())
+        python = native_tool_probe_python(records, versions, source)
+        cmake_probe = next((record["command"] for record in records if record["name"] == "cmake"), [])
+        command = configure["command"]
+        directory = configure["directory"]
+        if not directory:
+            raise ValueError("invalid CMake producer configure working directory")
+        testing = configuration["BUILD_TESTING"]
+        python_option = "-DPython3_EXECUTABLE="
+        preview_setting = configuration["JUICER_GRAIN_PREVIEW_CONFIGURED"]
+        preview_options = command[5:]
+        # This producer uses the preset's source and binary directories. The
+        # optional preview definition is the only argument after Python.
+        if (
+            len(cmake_probe) != 2
+            or cmake_probe[1] != "--version"
+            or not path(cmake_probe[0]).is_absolute()
+            or len(command) < 5
+            or path(command[0]) != path(cmake_probe[0])
+            or command[1:3] != ["--preset", result["preset"]]
+            or path(directory) != source
+            or testing not in {"ON", "OFF"}
+            or command[3] != f"-DBUILD_TESTING={testing}"
+            or not command[4].startswith(python_option)
+            or path(command[4][len(python_option) :]) != python
+            or (
+                preview_options
+                and (
+                    preview_options != [f"-DJUICER_GRAIN_PREVIEW:BOOL={preview_setting}"]
+                    or configuration["JUICER_GRAIN_PREVIEW"] != preview_setting
+                )
+            )
+        ):
+            raise ValueError(
+                "CMake producer configure command differs from the configured executable, checkout, preset or settings"
+            )
+        targets = cmake_build_targets(build, path(cmake_probe[0]), source, built.parent)
+        if not targets or "bundle-archive" not in targets or targets != result.get("targets"):
+            raise ValueError(
+                "CMake producer build command differs from the configured executable, directory or targets"
+            )
+        if production_contract and not PRODUCTION_CONTRACT_TARGETS.issubset(targets):
+            raise ValueError("CMake producer build is missing required production contract targets")
+        module = json.loads(payloads["production-module.json"])
+        check_receipt_shape(module, MODULE_RECORD_SHAPE, "production-module.json")
+        validate_module_record(module, result["preset"], configuration)
+        artifacts = json.loads(payloads["rust-artifacts.json"])
+        check_receipt_shape(artifacts, RUST_ARTIFACT_SHAPE, "rust-artifacts.json")
+        consumer = product_artifact_consumers(artifacts, built.parent, replay)["juicer"]
+        variants = {"production", "test-support"} if testing == "ON" else {"production"}
+        if set(artifacts["variants"]) != variants:
+            raise ValueError("Rust artifact variants differ from the configured producer testing setting")
+        validate_rust_artifact_paths(artifacts, result["preset"], built.parent)
+        if (
+            type(built)(consumer["binary"]) != built
+            or consumer["variant"] != "production"
+            or artifacts["variants"]["production"]["features"] != (["grain-preview"] if preview else [])
+        ):
+            raise ValueError("staged module producer differs from the configured production artifact")
+        assertions.update(production_module=module, configuration=configuration, targets=targets)
+        if "paired-probe.json" in payloads:
+            probe = json.loads(payloads["paired-probe.json"])
+            validate_paired_probe(probe, result["preset"], built, "paired-probe.json")
+            if not preview or PRODUCTION_CONTRACT_RENDER_TARGET not in targets:
+                raise ValueError("paired probe record requires the preview producer's explicit probe target")
+            assertions["paired_probe"] = probe
+        if production_contract:
+            contract_artifacts = validate_producer_contract_command(commands[3], python, source, result["preset"])
+            assertions.update(
+                validate_producer_contract(result["preset"], payloads, contract_artifacts, module, artifacts, preview)
+            )
+    elif production_contract:
+        assertions.update(validate_production_contract(result["preset"], payloads))
     return {
         "status": result["status"],
         "preset": result["preset"],
         "scope": "build",
         "shipping_isolation": False,
         **assertions,
+    }
+
+
+def validate_paired_probe(probe, preset, built, field):
+    check_receipt_shape(probe, PROBE_RECORD_SHAPE, field)
+    if type(built)(probe["path"]) != prepared_render_probe_path(preset, built) or not re.fullmatch(
+        r"[0-9a-f]{64}", probe["sha256"]
+    ):
+        raise ValueError(f"{field}: probe path or SHA-256 differs from the configured build")
+
+
+def paired_discovery_command(probe, modules):
+    return [
+        probe["path"],
+        "--grain-preview-paired-discovery",
+        modules["preview"]["production_module"]["stage"],
+        modules["ordinary"]["production_module"]["stage"],
+    ]
+
+
+def validate_paired_modules(preset, candidate, patch, modules):
+    check_receipt_shape(
+        modules, {"ordinary": PAIRED_PRODUCER_SHAPE, "preview": PAIRED_PRODUCER_SHAPE}, "production-modules.json"
+    )
+    if set(modules) != {"ordinary", "preview"}:
+        raise ValueError("paired discovery requires ordinary and preview producer records")
+    source = candidate_source_digest(candidate, patch)
+    current = candidate["configuration"]
+    if not read_preview_and_replay_configuration(current)[0]:
+        raise ValueError("paired discovery requires the configured preview probe")
+    for role, row in modules.items():
+        configuration = row["configuration"]
+        if producer_preview_configuration(configuration)[0] != (role == "preview"):
+            raise ValueError(f"paired discovery {role} producer has the wrong preview setting")
+        if row["preset"] != preset or any(
+            configuration[key] != current[key]
+            for key in MODULE_CONFIGURATION_KEYS
+            if key not in PRODUCT_PREVIEW_KEYS[1:]
+        ):
+            raise ValueError(f"paired discovery {role} producer has different native build settings")
+        if not rust_test_path(preset)(row["receipt"]).is_absolute() or not re.fullmatch(
+            r"[0-9a-f]{64}", row["result_sha256"]
+        ):
+            raise ValueError(f"paired discovery {role} producer receipt identity is missing")
+        validate_module_record(row["production_module"], preset, configuration)
+    if (
+        modules["ordinary"]["production_module"]["build_sha256"]
+        == modules["preview"]["production_module"]["build_sha256"]
+    ):
+        raise ValueError("paired discovery requires distinct production modules")
+    preview = modules["preview"]
+    if PRODUCTION_CONTRACT_RENDER_TARGET not in preview.get("targets", ()) or "paired_probe" not in preview:
+        raise ValueError("paired discovery preview producer is missing probe identity or explicit probe build target")
+    _, built, _ = production_module_paths(preset, current)
+    probe = preview["paired_probe"]
+    validate_paired_probe(probe, preset, built, "production-modules.json.preview.paired_probe")
+    for role, row in modules.items():
+        if row["candidate_source"] != source:
+            raise ValueError(f"paired discovery {role} producer differs from the working candidate")
+    return probe
+
+
+def paired_discovery_members(result):
+    check_build_or_pair_metadata(result, pair=True)
+    if result.get("test") != PAIRED_DISCOVERY or result.get("scope") != "focused":
+        raise ValueError("invalid paired discovery result")
+    required = {"candidate.json", "candidate.patch"}
+    if result["status"] == "passed":
+        required.update({"production-modules.json", "paired-list.jsonl", "paired-run.jsonl"})
+    return _flat_members(result, required)
+
+
+def validate_paired_discovery(result, payloads):
+    paired_discovery_members(result)
+    candidate = _payloads(result, payloads)
+    summary = {"status": result["status"], "preset": result["preset"], "scope": "focused", "test": PAIRED_DISCOVERY}
+    if result["status"] != "passed":
+        return {**summary, "error": result["error"]}
+    modules = json.loads(payloads["production-modules.json"])
+    producer_probe = validate_paired_modules(result["preset"], candidate, payloads["candidate.patch"], modules)
+    if "paired-probe.json" not in payloads:
+        raise ValueError("paired discovery receipt is missing probe identity")
+    probe = json.loads(payloads["paired-probe.json"])
+    check_receipt_shape(probe, PROBE_RECORD_SHAPE, "paired-probe.json")
+    if probe != producer_probe:
+        raise ValueError("paired discovery probe identity differs from the preview producer")
+    expected_command = paired_discovery_command(probe, modules)
+    if [item["command"] for item in result["commands"]] != [[*expected_command, "--list-cases"], expected_command]:
+        raise ValueError("paired discovery did not execute the declared probe and both declared stage paths")
+    listing = [json.loads(line) for line in payloads["paired-list.jsonl"].splitlines()]
+    check_receipt_shape(listing, [{"caller": str, "id": str}], "paired-list.jsonl")
+    cases = optics_keys(listing)
+    if cases != {("grain-preview-paired-discovery", "ordinary-and-preview")}:
+        raise ValueError("unexpected paired discovery cases")
+    rows = [json.loads(line) for line in payloads["paired-run.jsonl"].splitlines()]
+    for index, row in enumerate(rows):
+        field = f"paired-run.jsonl[{index}]"
+        check_receipt_shape(row, {"event": str, "caller": str, "id?": str, "ids?": [str], "outcome?": str}, field)
+        if "binary" in row:
+            raise ValueError(f"{field}.binary: paired discovery requires native events")
+        event = row["event"]
+        members = {"ids": [str]} if event == "membership" else {"id": str} if event != "cohort-terminal" else {}
+        if event in {"terminal", "cohort-terminal"}:
+            members["outcome"] = str
+        check_receipt_shape(row, members, field)
+    return {
+        **summary,
+        "paired_probe": probe,
+        "custom_cases": case_events(payloads["paired-run.jsonl"], cases, cohorts=1),
     }
 
 
@@ -2758,7 +3431,7 @@ def collection_main(arguments):
     parser.add_argument("--presets", nargs="+", choices=PRESETS)
     try:
         return collect_bundles(parser.parse_args(arguments))
-    except (ValueError, KeyError, TypeError, OSError, ET.ParseError) as error:
+    except RECEIPT_ERRORS as error:
         parser.exit(1, f"Invalid/incomplete offline report: {error}\n")
 
 
@@ -2772,5 +3445,5 @@ if __name__ == "__main__":
         summary = read_native_result(options.bundle)
         print(json.dumps(summary, indent=2))
         raise SystemExit(0 if summary["status"] == "passed" else 1)
-    except (ValueError, KeyError, TypeError, OSError, ET.ParseError) as error:
+    except RECEIPT_ERRORS as error:
         parser.exit(1, f"Invalid/incomplete native result: {error}\n")

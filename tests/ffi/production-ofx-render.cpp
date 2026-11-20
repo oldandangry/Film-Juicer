@@ -174,6 +174,17 @@ namespace {
             require(address != nullptr, std::string("missing OFX module export: ") + name);
             return reinterpret_cast<T>(address);
         }
+        bool loaded_from(const std::filesystem::path& path) const {
+#ifdef _WIN32
+            std::array<wchar_t, 32768> filename{};
+            const auto length = GetModuleFileNameW(handle_, filename.data(), static_cast<DWORD>(filename.size()));
+            return length > 0 && length < filename.size() && std::filesystem::equivalent(path, filename.data());
+#else
+            Dl_info info{};
+            return dladdr(symbol<void*>("OfxGetPlugin"), &info) != 0 && info.dli_fname &&
+                   std::filesystem::equivalent(path, info.dli_fname);
+#endif
+        }
         void close() {
             require(handle_ != nullptr, "production module already closed");
 #ifdef _WIN32
@@ -479,27 +490,39 @@ namespace {
         return row;
     }
 
-    int grain_preview_discovery(const std::filesystem::path& previewPath, const std::filesystem::path& regularPath) {
+    const OfxPlugin* check_discovery(const Module& module, const std::filesystem::path& path, const char* expected) {
+        require(module.loaded_from(path), "discovery loaded path differs from declared module");
+        const auto count = module.symbol<int (*)()>("OfxGetNumberOfPlugins");
+        const auto get = module.symbol<OfxPlugin* (*)(int)>("OfxGetPlugin");
+        require(count() == 1 && !get(-1) && !get(1) && !get(std::numeric_limits<int>::min()) &&
+                    !get(std::numeric_limits<int>::max()),
+                "discovery plugin count or index bounds");
+        const auto* plugin = get(0);
+        require(plugin && plugin == get(0) && plugin->pluginIdentifier &&
+                    std::string_view(plugin->pluginIdentifier) == expected && plugin->setHost && plugin->mainEntry,
+                std::string("discovery identity or entry points: ") + expected);
+        return plugin;
+    }
+
+    int grain_preview_discovery(const std::filesystem::path& previewPath, const std::filesystem::path& ordinaryPath) {
+        const bool paired = !ordinaryPath.empty();
+        const char* caller = paired ? "grain-preview-paired-discovery" : "grain-preview-discovery";
+        const char* id = paired ? "ordinary-and-preview" : "preview-module";
         JuicerTests::CaseLog cases;
-        cases.membership("grain-preview-discovery", {"both-modules"});
+        cases.membership(caller, {id});
         {
-            JuicerTests::CaseEvent event("grain-preview-discovery", "both-modules");
-            require(previewPath.filename() == "juicer-grain-preview.ofx" && regularPath.filename() == "juicer.ofx",
-                    "discovery module paths");
+            JuicerTests::CaseEvent event(caller, id);
+            require(previewPath.is_absolute() && previewPath.filename() == "juicer-grain-preview.ofx", "preview discovery module path");
             Module preview(previewPath);
-            Module regular(regularPath);
-            for (const auto& [module, expected] : std::array{
-                     std::pair{&preview, "com.juicer.Juicer.GrainPreview"},
-                     std::pair{&regular, "com.juicer.Juicer"},
-                 }) {
-                const auto count = module->symbol<int (*)()>("OfxGetNumberOfPlugins");
-                const auto get = module->symbol<OfxPlugin* (*)(int)>("OfxGetPlugin");
-                require(count() == 1 && get(-1) == nullptr && get(1) == nullptr && get(0) &&
-                            get(0)->pluginIdentifier && std::string_view(get(0)->pluginIdentifier) == expected &&
-                            get(0)->setHost && get(0)->mainEntry,
-                        "side-by-side discovery identity");
+            if (paired) {
+                require(ordinaryPath.is_absolute() && ordinaryPath.filename() == "juicer.ofx", "ordinary discovery module path");
+                Module ordinary(ordinaryPath);
+                const auto* preview_plugin = check_discovery(preview, previewPath, "com.juicer.Juicer.GrainPreview");
+                require(preview_plugin != check_discovery(ordinary, ordinaryPath, "com.juicer.Juicer"), "paired discovery descriptors alias");
+                ordinary.close();
+            } else {
+                check_discovery(preview, previewPath, "com.juicer.Juicer.GrainPreview");
             }
-            regular.close();
             preview.close();
             event.passed();
         }
@@ -1306,13 +1329,16 @@ int main(int argc, char** argv) {
             require(argc == 3, "preview witness arguments");
             return grain_preview_witness(argv[2]);
         }
-        if (argc >= 4 && std::string_view(argv[1]) == "--grain-preview-discovery") {
+        if (argc >= 2 && (std::string_view(argv[1]) == "--grain-preview-discovery" ||
+                          std::string_view(argv[1]) == "--grain-preview-paired-discovery")) {
+            const bool paired = std::string_view(argv[1]) == "--grain-preview-paired-discovery";
             if (JuicerTests::list_requested(argc, argv)) {
-                JuicerTests::list_case("grain-preview-discovery", "both-modules");
+                JuicerTests::list_case(paired ? "grain-preview-paired-discovery" : "grain-preview-discovery",
+                                       paired ? "ordinary-and-preview" : "preview-module");
                 return std::fflush(stdout) == 0 ? 0 : 1;
             }
             require(argc == 4, "preview discovery arguments");
-            return grain_preview_discovery(argv[2], argv[3]);
+            return grain_preview_discovery(argv[2], paired ? std::filesystem::path(argv[3]) : std::filesystem::path{});
         }
         if ((argc == 5 || argc == 7) && std::string_view(argv[1]) == "--frame-replay") {
             require(argc == 5 || std::string_view(argv[5]) == "--parameters", "invalid frame replay option");

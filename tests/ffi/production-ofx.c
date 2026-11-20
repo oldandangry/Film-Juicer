@@ -19,7 +19,7 @@ _Static_assert(offsetof(OfxPlugin, setHost) == 32 && offsetof(OfxPlugin, mainEnt
 
 #if defined(_WIN32)
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2 && !((argc == 3 || argc == 4) && wcscmp(argv[2], L"preview") == 0))
+    if (argc != 2 && !(argc == 3 && wcscmp(argv[2], L"preview") == 0))
         return 1;
     const char* expected_id = argc >= 3 ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
     HMODULE module = LoadLibraryW(argv[1]);
@@ -31,7 +31,7 @@ int wmain(int argc, wchar_t** argv) {
     FARPROC plugin_symbol = GetProcAddress(module, "OfxGetPlugin");
 #else
 int main(int argc, char** argv) {
-    if (argc != 2 && !((argc == 3 || argc == 4) && strcmp(argv[2], "preview") == 0))
+    if (argc != 2 && !(argc == 3 && strcmp(argv[2], "preview") == 0))
         return 1;
     const char* expected_id = argc >= 3 ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
     void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -56,41 +56,6 @@ int main(int argc, char** argv) {
             strcmp(plugin->pluginIdentifier, expected_id) != 0 ||
             plugin->pluginVersionMajor != 1 || plugin->pluginVersionMinor != 0)
             result = 4;
-    }
-    if (argc == 4 && result == 0) {
-#if defined(_WIN32)
-        HMODULE regular = LoadLibraryW(argv[3]);
-        if (!regular)
-            result = 6;
-        else {
-            FARPROC regular_count_symbol = GetProcAddress(regular, "OfxGetNumberOfPlugins");
-            FARPROC regular_plugin_symbol = GetProcAddress(regular, "OfxGetPlugin");
-#else
-        void* regular = dlopen(argv[3], RTLD_NOW | RTLD_LOCAL);
-        if (!regular)
-            result = 6;
-        else {
-            void* regular_count_symbol = dlsym(regular, "OfxGetNumberOfPlugins");
-            void* regular_plugin_symbol = dlsym(regular, "OfxGetPlugin");
-#endif
-            PluginCount regular_count;
-            PluginAt regular_at;
-            memcpy(&regular_count, &regular_count_symbol, sizeof(regular_count));
-            memcpy(&regular_at, &regular_plugin_symbol, sizeof(regular_at));
-            const OfxPlugin* regular_plugin = regular_at ? regular_at(0) : NULL;
-            if (!regular_count || regular_count() != 1 || !regular_plugin ||
-                !regular_plugin->pluginIdentifier ||
-                strcmp(regular_plugin->pluginIdentifier, "com.juicer.Juicer") != 0 ||
-                strcmp(plugin_at(0)->pluginIdentifier, "com.juicer.Juicer.GrainPreview") != 0)
-                result = 7;
-#if defined(_WIN32)
-            if (!FreeLibrary(regular))
-                result = 8;
-#else
-            if (dlclose(regular) != 0)
-                result = 8;
-#endif
-        }
     }
 #if defined(_WIN32)
     if (!FreeLibrary(module))
