@@ -27,6 +27,7 @@ from execution import OutputLease, UnresolvedScope, closeout_run, digest, expire
 from build_dependencies import header_consumers
 from qualification import (
     MODULE_CONFIGURATION_KEYS,
+    OPTIONAL_PRODUCT_REGISTRATIONS,
     PRODUCT_PREVIEW_KEYS,
     PREVIEW_DISCOVERY,
     RECEIPT_ERRORS,
@@ -416,18 +417,24 @@ def native_case(args):
 
     try:
         name = os.environ.get("FJ_HOST_TEST")
-        if args.runtime == "host" and "replaces" in contract.get("grain_preview", {}):
-            scope = contract["grain_preview"]["required"]
-            if name in scope:
+        optional = OPTIONAL_PRODUCT_REGISTRATIONS.get(name)
+        section = None
+        if optional is not None and optional[1] == args.runtime:
+            section = optional[0]
+        elif args.runtime == "host" and name in contract.get("grain_preview", {}).get("replaces", {}).values():
+            section = "grain_preview"
+        if section is not None:
+            configuration = cache_values(ROOT / "out/build" / args.preset)
+            contract = configured_product_contract(contract, args.runtime, configuration)
+            if name not in contract["required"]:
+                raise ValueError(f"optional product registration {name} is not configured for section {section}")
+            if name == PREVIEW_DISCOVERY:
                 from qualification import validate_module_record
 
-                configuration = cache_values(ROOT / "out/build" / args.preset)
-                contract = configured_product_contract(contract, args.runtime, configuration)
-                if name == PREVIEW_DISCOVERY:
-                    if len(command) != 4 or command[1] != "--grain-preview-discovery":
-                        raise ValueError("invalid preview discovery command")
-                    module_record = production_module_record(command[3], command[2])
-                    validate_module_record(module_record, args.preset, configuration)
+                if len(command) != 4 or command[1] != "--grain-preview-discovery":
+                    raise ValueError("invalid preview discovery command")
+                module_record = production_module_record(command[3], command[2])
+                validate_module_record(module_record, args.preset, configuration)
         # Discover inside this already-contained CTest family, just as nextest
         # does for Rust. No extra supervisor is needed for each fixture listing.
         if args.protocol == "gtest":
