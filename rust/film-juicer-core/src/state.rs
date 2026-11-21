@@ -1082,6 +1082,156 @@ mod tests {
 
     #[cfg(feature = "grain-preview")]
     #[test]
+    fn film_thumbnail_validates_authored_selection_without_publishing() {
+        use film::grain::preview::{Controls, Raster};
+        use recipe::{ControlError, PreviewFrame};
+
+        let assets = assets();
+        let controls = Controls {
+            amount_ev: 0.0,
+            texel_pitch_um: 1.0,
+            chroma_fraction: 1.0,
+        };
+        let raster = Raster {
+            long_edge_px: 4832,
+            full_grid: None,
+        };
+        let timeline = PreviewFrame::Raster(raster);
+        let thumbnail = PreviewFrame::Thumbnail;
+        for (route, positive_route) in [
+            (ScanRoute::NegativeDirect, ScanRoute::PositiveDirect),
+            (ScanRoute::NegativePrint, ScanRoute::PositivePrint),
+        ] {
+            let publication = Publication::new();
+            let authored = || {
+                let mut captured = params(route, 1);
+                captured.grain.active = true;
+                captured.film_grain = Some(controls);
+                captured
+            };
+            let admit = |frame| {
+                publication.admit_preview_frame(
+                    publication.frame_input().unwrap(),
+                    frame,
+                    |params| recipe::prepare_for_frame(&assets, params, frame),
+                )
+            };
+            publication.stage(valid(1, authored())).unwrap();
+            let held = admit(timeline).unwrap();
+            assert!(held.film_grain().unwrap().raster() == raster);
+            assert!(!held.grain().active());
+            let words = backing_words(&held);
+            let assert_timeline_published = || {
+                let state = publication.state.lock().unwrap();
+                let published = state.published.as_ref().unwrap();
+                assert_eq!((published.identity, published.build), (1, 1));
+                assert!(Arc::ptr_eq(&published.state, &held));
+                assert!(held.film_grain().unwrap().raster() == raster);
+                assert_eq!(backing_words(&held), words);
+            };
+
+            let clean = admit(thumbnail).unwrap();
+            let off = recipe::prepare(&assets, &params(route, 1)).unwrap();
+            assert_eq!(clean.development().route(), route);
+            assert!(clean.film_grain().is_none() && !clean.grain().active());
+            assert_eq!(clean.film_bounds().hash(), off.film_bounds().hash());
+            assert_ne!(clean.film_bounds().hash(), held.film_bounds().hash());
+            assert_timeline_published();
+            assert!(Arc::ptr_eq(&held, &admit(timeline).unwrap()));
+
+            let invalid = [
+                (
+                    "stock",
+                    Params {
+                        film_profile_key: "kodak_gold_200".into(),
+                        ..authored()
+                    },
+                ),
+                (
+                    "amount",
+                    Params {
+                        film_grain: Some(Controls {
+                            amount_ev: 4.0,
+                            ..controls
+                        }),
+                        ..authored()
+                    },
+                ),
+                (
+                    "pitch",
+                    Params {
+                        film_grain: Some(Controls {
+                            texel_pitch_um: 0.25,
+                            ..controls
+                        }),
+                        ..authored()
+                    },
+                ),
+                (
+                    "chroma",
+                    Params {
+                        film_grain: Some(Controls {
+                            chroma_fraction: -0.1,
+                            ..controls
+                        }),
+                        ..authored()
+                    },
+                ),
+                (
+                    "format",
+                    Params {
+                        camera_film_format_long_edge_mm: 7.0,
+                        ..authored()
+                    },
+                ),
+                (
+                    "route",
+                    Params {
+                        scan_route: positive_route,
+                        ..authored()
+                    },
+                ),
+            ];
+            for (index, (field, captured)) in invalid.into_iter().enumerate() {
+                let identity = index as u64 + 2;
+                publication.stage(valid(identity, captured)).unwrap();
+                assert_eq!(publication.frame_input().unwrap().identity, identity);
+                for (name, frame) in [("thumbnail", thumbnail), ("timeline", timeline)] {
+                    assert!(
+                        matches!(
+                            admit(frame),
+                            Err(Error::Preparation(PrepareError::Control(
+                                ControlError::FilmGrain
+                            )))
+                        ),
+                        "{route:?} {name}: expected Film control rejection for {field}"
+                    );
+                    assert_timeline_published();
+                }
+            }
+            publication.stage(valid(1, authored())).unwrap();
+            assert!(Arc::ptr_eq(&held, &admit(timeline).unwrap()));
+            assert_timeline_published();
+
+            publication
+                .stage(valid(
+                    8,
+                    Params {
+                        film_profile_key: "kodak_gold_200".into(),
+                        ..params(route, 1)
+                    },
+                ))
+                .unwrap();
+            for frame in [timeline, thumbnail] {
+                let gold = admit(frame).unwrap();
+                assert_eq!(gold.development().route(), route);
+                assert!(gold.film_grain().is_none() && !gold.grain().active());
+            }
+        }
+    }
+
+    #[cfg(feature = "grain-preview")]
+    #[test]
     fn film_proxy_publication_uses_full_grid_and_encloses_its_densities() {
         use crate::film::grain::preview::{ProxyGrid, Raster};
         let assets = assets();

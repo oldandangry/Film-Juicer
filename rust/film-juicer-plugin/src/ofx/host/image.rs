@@ -54,28 +54,38 @@ impl Drop for Image<'_> {
 impl Callback<'_> {
     #[cfg(feature = "grain-preview")]
     pub(crate) fn thumbnail(&self, handles: &InstanceHandles) -> bool {
-        let mut flagged = false;
-        for properties in handles.clip_properties {
-            let mut value = 0;
+        enum Flag {
+            Absent,
+            Yes,
+            Veto,
+        }
+        let name = c"kOfxImageClipPropThumbnail";
+        let flags = handles.clip_properties.map(|properties| {
+            let mut count = 0;
             // SAFETY: Source and Output property sets are retained with their
             // clip instances. The synchronous read holds no publication lock.
-            let status = unsafe {
-                (self.loaded.suites.get_int)(
-                    properties,
-                    c"kOfxImageClipPropThumbnail".as_ptr(),
-                    0,
-                    &mut value,
-                )
-            };
+            let status =
+                unsafe { (self.loaded.suites.dimension)(properties, name.as_ptr(), &mut count) };
             match status {
-                sys::kOfxStatOK if value == 1 => flagged = true,
-                sys::kOfxStatErrUnknown | sys::kOfxStatErrUnsupported => (),
-                // An explicit zero, a malformed flag or a failed read leaves
-                // the authored Film selection in effect for this render.
-                _ => return false,
+                sys::kOfxStatErrUnknown => return Flag::Absent,
+                sys::kOfxStatOK if count == 1 => (),
+                _ => return Flag::Veto,
             }
-        }
-        flagged
+            let mut value = 0;
+            // SAFETY: Same callback-live property set; the local output is disjoint
+            // and discovery confirmed a scalar slot.
+            let status =
+                unsafe { (self.loaded.suites.get_int)(properties, name.as_ptr(), 0, &mut value) };
+            if status == sys::kOfxStatOK && value == 1 {
+                Flag::Yes
+            } else {
+                Flag::Veto
+            }
+        });
+        matches!(
+            flags,
+            [Flag::Yes, Flag::Yes | Flag::Absent] | [Flag::Absent, Flag::Yes]
+        )
     }
 
     fn image_string(

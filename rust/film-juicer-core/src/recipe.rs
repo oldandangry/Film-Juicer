@@ -1675,19 +1675,22 @@ fn prepare_state(
     trace_stage!(SelectedFilm);
     let film = assets.film(&params.film_profile_key)?;
     #[cfg(feature = "grain-preview")]
+    if let Some(controls) = params.film_grain
+        && !controls.valid(
+            &params.film_profile_key,
+            params.camera_film_format_long_edge_mm,
+            params.scan_route,
+        )
+    {
+        return Err(ControlError::FilmGrain.into());
+    }
+    #[cfg(feature = "grain-preview")]
     let film_grain = params
         .film_grain
         // Keep the authored selection for current_grain(), which disables
         // Current while Film is selected, including on a grain-free thumbnail.
         .filter(|_| !matches!(frame, Some(PreviewFrame::Thumbnail)))
         .map(|controls| {
-            if !controls.valid(
-                &params.film_profile_key,
-                params.camera_film_format_long_edge_mm,
-                params.scan_route,
-            ) {
-                return Err(ControlError::FilmGrain.into());
-            }
             let Some(PreviewFrame::Raster(raster)) = frame else {
                 return Err(PrepareError::FilmGrainGeometry);
             };

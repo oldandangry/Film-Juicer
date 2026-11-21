@@ -368,6 +368,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             None => callback.canonical_region(&owner.handles, args.time)?,
         };
         let scale = source.scale;
+        // Pre-resized preview images can report unit image scales. Dust and
+        // scratches use the action scale when it describes the complete raster.
         #[cfg(feature = "grain-preview")]
         let scale = if film_canonical.is_some()
             || complete_frame_mapping(&args, source, destination, window, canonical)

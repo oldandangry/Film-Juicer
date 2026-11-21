@@ -750,11 +750,36 @@ namespace {
                 if (thumbnails) {
                     constexpr double time = 158.0;
                     Json rows = Json::array();
+                    Json flags = Json::array();
+                    Json mismatches = Json::array();
                     auto source_flag = [&](std::vector<InstanceValue> values) {
                         host.set_clip_property(effect, "Source", kOfxImageClipPropThumbnail, std::move(values));
                     };
                     auto output_flag = [&](std::vector<InstanceValue> values) {
                         host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, std::move(values));
+                    };
+                    const auto reject = [&](OfxStatus expected, std::string_view id, std::string_view text) {
+                        host.set_property(host.action_args(), kOfxPropTime, {time});
+                        const auto sourceBefore = host.image_release_count(effect, "Source");
+                        const auto outputBefore = host.image_release_count(effect, "Output");
+                        host.clear_calls();
+                        const auto status = lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args());
+                        require(status == expected && !host.callback_error(),
+                                std::string(id) + ": unexpected render status " + std::to_string(status));
+                        require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
+                                    host.image_release_count(effect, "Output") == outputBefore + 1,
+                                "rejected thumbnail witness render did not release both images exactly once");
+                        int messages = 0;
+                        for (const auto& call : host.calls()) {
+                            if (call.operation != "message")
+                                continue;
+                            ++messages;
+                            require(call.property == kOfxMessageError && call.values.size() == 2 &&
+                                        std::get<std::string>(call.values[0]) == id &&
+                                        std::get<std::string>(call.values[1]).starts_with(text),
+                                    "unexpected thumbnail witness rejection diagnostic");
+                        }
+                        require(messages == 1, "expected one thumbnail witness rejection diagnostic");
                     };
                     for (const auto& [width, height] : std::array{std::pair{92, 46}, std::pair{151, 63}, std::pair{100, 50}}) {
                         const std::vector<InstanceValue> scale{width / 4832.0, height / 2016.0};
@@ -785,40 +810,132 @@ namespace {
                         change("GrainActive", {1});
                         const auto grained = render(time);
                         require(grained != artifacts, "absent thumbnail flag suppressed Film");
-                        output_flag({0});
-                        require(render(time) == grained, "false thumbnail flag changed Film");
+                        if (width == 92) {
+                            struct FlagCase {
+                                const char* id;
+                                std::vector<InstanceValue> source;
+                                std::vector<InstanceValue> output;
+                                bool thumbnail = false;
+                            };
+                            // Empty storage erases the property. Only one or two
+                            // scalar ones without any explicit veto suppress Film.
+                            const std::array flagCases{
+                                FlagCase{"absent-absent", {}, {}},
+                                FlagCase{"source-one", {1}, {}, true},
+                                FlagCase{"output-one", {}, {1}, true},
+                                FlagCase{"both-one", {1}, {1}, true},
+                                FlagCase{"source-zero", {0}, {}},
+                                FlagCase{"output-zero", {}, {0}},
+                                FlagCase{"both-zero", {0}, {0}},
+                                FlagCase{"source-one-output-zero", {1}, {0}},
+                                FlagCase{"source-zero-output-one", {0}, {1}},
+                                FlagCase{"source-two", {2}, {}},
+                                FlagCase{"output-two", {}, {2}},
+                                FlagCase{"source-two-output-one", {2}, {1}},
+                                FlagCase{"source-one-output-two", {1}, {2}},
+                                FlagCase{"source-vector", {1, 0}, {}},
+                                FlagCase{"output-vector", {}, {1, 0}},
+                                FlagCase{"source-vector-output-one", {1, 0}, {1}},
+                                FlagCase{"source-one-output-vector", {1}, {1, 0}},
+                                FlagCase{"source-string", {std::string("1")}, {}},
+                                FlagCase{"output-string", {}, {std::string("1")}},
+                                FlagCase{"source-string-output-one", {std::string("1")}, {1}},
+                                FlagCase{"source-one-output-string", {1}, {std::string("1")}},
+                            };
+                            for (const auto& entry : flagCases) {
+                                source_flag(entry.source);
+                                output_flag(entry.output);
+                                require(render(time) == (entry.thumbnail ? artifacts : grained),
+                                        std::string("wrong thumbnail flag pixels: ") + entry.id);
+                                flags.push_back(Json::array({entry.id, entry.thumbnail ? "artifact-reference" : "timeline-film"}));
+                            }
+
+                            source_flag({1});
+                            output_flag({1});
+                            struct FlagFault {
+                                const char* operation;
+                                OfxStatus status;
+                            };
+                            for (const auto& [operation, status] : std::array{
+                                     FlagFault{"dimension", kOfxStatFailed},
+                                     FlagFault{"dimension", kOfxStatErrUnsupported},
+                                     FlagFault{"get_int", kOfxStatErrUnknown},
+                                     FlagFault{"get_int", kOfxStatErrUnsupported},
+                                 }) {
+                                const auto property = std::string(operation) + "/" + kOfxImageClipPropThumbnail;
+                                auto check_fault = [&](std::string_view clip) {
+                                    const auto words = render(time);
+                                    const auto hits = std::count_if(host.calls().begin(), host.calls().end(), [&](const auto& call) {
+                                        return call.target == clip && call.property == kOfxImageClipPropThumbnail &&
+                                               call.operation == operation && call.status == status;
+                                    });
+                                    require(hits == 1, "thumbnail property fault did not reach its intended clip and operation");
+                                    require(words == grained, "thumbnail property fault suppressed Film");
+                                    flags.push_back(Json::array({clip, operation, status, "timeline-film"}));
+                                };
+                                host.fail_next(property, status);
+                                check_fault("Source");
+                                host.fail_on_nth(2, property, status);
+                                check_fault("Output");
+                            }
+                            require(render(time) == artifacts, "valid flags did not recover after the property faults");
+
+                            // Invalid but still captured as enabled Film; geometry
+                            // and stock are unchanged so they cannot mask rejection.
+                            change("FilmGrainAmountEv", {4.0});
+                            const auto reject_film_controls = [&] {
+                                reject(kOfxStatErrFatal, "FilmJuicerRenderAdmission", "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls");
+                            };
+                            reject_film_controls();
+                            source_flag({});
+                            output_flag({});
+                            reject_film_controls();
+                            change("FilmGrainAmountEv", amountDefault);
+                            require(render(time) == grained, "restored Film controls did not recover timeline words");
+                            source_flag({1});
+                            require(render(time) == artifacts, "restored Film controls did not recover thumbnail words");
+                            source_flag({});
+                            change("FilmGrainAmountEv", {1.0});
+                            require(render(time) != grained, "valid Film amount edit did not change delivered pixels");
+                            change("FilmGrainAmountEv", amountDefault);
+                            require(render(time) == grained, "timeline did not return to the original Film amount words");
+                        }
                         source_flag({1});
-                        require(render(time) == grained, "conflicting clip flags suppressed Film");
                         output_flag({});
                         require(render(time) == artifacts, "Source thumbnail did not match grain-off effects");
                         source_flag({});
-                        output_flag({2});
-                        require(render(time) == grained, "malformed thumbnail flag suppressed Film");
-                        output_flag({0});
                         geometry(8);
                         const auto timeline = render(time);
                         resized();
                         output_flag({1});
                         require(render(time) == artifacts, "Output thumbnail did not match grain-off effects");
                         geometry(8);
-                        output_flag({0});
+                        output_flag({});
                         require(render(time) == timeline, "timeline Film changed after a flagged thumbnail");
-                        rows.push_back({{"width", width}, {"height", height}, {"processed_thumbnail_matches", true}, {"timeline_returned", true}});
+                        rows.push_back({{"width", width}, {"height", height}, {"artifacts_change_pixels", true}, {"film_differs_from_artifacts", true}, {"processed_thumbnail_matches", true}, {"timeline_returned", true}});
                     }
                     for (const auto& [rasterWidth, mappedWidth] : std::array{std::pair{100, 101}, std::pair{101, 100}}) {
                         resize(rasterWidth, 50);
                         for (const auto* clip : {"Source", "Output"})
                             host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
                         host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {mappedWidth / 4832.0, 50.0 / 2016.0});
-                        require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed,
-                                "one-pixel canonical mismatch was admitted");
+                        reject(kOfxStatFailed, "FilmJuicerFilmGrainGeometry", "Film v1 requires complete square-pixel source and output images");
+                        mismatches.push_back(Json::array({rasterWidth, mappedWidth, kOfxStatFailed}));
                     }
                     geometry(8);
+                    change("GrainActive", {0});
+                    const auto off = render(time);
                     change("GrainModel", {std::string("current")});
+                    change("GrainActive", {1});
                     const auto current = render(time);
+                    require(current != off, "Current grain did not change grain-off effects pixels");
+                    for (const auto* clip : {"Source", "Output"})
+                        host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                    require(render(time) == current, "unit image scales changed Current grain or effects");
+                    source_flag({1});
                     output_flag({1});
-                    require(render(time) == current, "thumbnail flag changed Current grain");
-                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}});
+                    require(render(time) == current, "thumbnail flags changed pre-resized Current grain or effects");
+                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"flag_raster", {92, 46}}, {"flag_checks", std::move(flags)}, {"property_faults_recovered", true}, {"film_controls_rejected", {{"thumbnail", kOfxStatErrFatal}, {"timeline", kOfxStatErrFatal}, {"diagnostic", "FilmJuicerRenderAdmission"}, {"recovered", true}}}, {"film_amount_edit_changed_words_and_returned", true}, {"one_pixel_mismatches", std::move(mismatches)}, {"current_pre_resized_preserved", true}, {"images_released_once", true}});
                     require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                     device.release_images();
                     event.passed();
@@ -1047,6 +1164,8 @@ namespace {
         module.close();
         restore.restore();
         cases.finish();
+        // Keep the verified subcases of both routes in the staged CTest receipt.
+        std::cout << "CTEST_FULL_OUTPUT\n";
         std::cout << Json{{"schema", "grain-preview-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
         return std::cout ? 0 : 1;
     }
