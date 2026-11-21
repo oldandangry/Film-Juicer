@@ -2,7 +2,6 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include <vector>
-#include <cmath>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -1419,8 +1418,7 @@ namespace {
 
     void bind_film_grain(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
                          const FjFilmGrain& input,
-                         int width,
-                         int height,
+                         const JuicerCuda::FrameRect& window,
                          CaptureRoute route,
                          GrainBinding& grain,
                          const ExecutionErrors& errors) {
@@ -1435,45 +1433,6 @@ namespace {
             errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: missing frame bank" : "print Film grain binding failed: missing frame bank"}, cudaErrorInvalidValue);
         }
         const bool proxy = input.sample_step[0] != 0.0 || input.sample_step[1] != 0.0;
-        enum class Axis : std::uint8_t {
-            X,
-            Y
-        };
-        const auto sample_axis_supported = [&input](Axis axis, int origin, int size) {
-            const auto index = static_cast<std::size_t>(axis);
-            const double extent = input.sample_extent[index];
-            const double step = input.sample_step[index];
-            const double start = input.sample_origin[index];
-            const double firstEnd = std::fma(origin + 1.0, step, start);
-            const double lastStart = std::fma(static_cast<double>(origin) + size - 1.0, step, start);
-            return std::isfinite(extent) && extent > 0.0 &&
-                   std::isfinite(step) && step > 0.0 && std::isfinite(start) &&
-                   (std::ceil(extent) - 0.5) * input.sample_pitch < 262144.0 - JuicerCuda::FilmGrain::kPlacementBlock &&
-                   firstEnd > 0.0 && lastStart < extent;
-        };
-        const auto axis_supported = [pitch = static_cast<double>(input.pitch)](int origin, int size) {
-            if (size <= 0)
-                return false;
-            const auto last = static_cast<std::int64_t>(origin) + size - 1;
-            // Leave one placement block for the laying shift, seam and
-            // calibrated box edges. Wide and sub-texel edges are formed locally. Below
-            // 2^18 the global Float32 edge rounds by at most 1/128 texel.
-            constexpr double centerLimit = 262144.0 - JuicerCuda::FilmGrain::kPlacementBlock;
-            return last <= std::numeric_limits<int>::max() &&
-                   std::max(std::abs((origin + 0.5) * pitch), std::abs((static_cast<double>(last) + 0.5) * pitch)) < centerLimit;
-        };
-        if (!std::isfinite(input.pitch) || input.pitch < JuicerCuda::FilmGrain::kMinFootprint ||
-            input.pitch > JuicerCuda::FilmGrain::kMaxFootprint ||
-            !std::isfinite(input.temporal_fraction) || input.temporal_fraction < 0.f || input.temporal_fraction >= 1.f ||
-            !std::isfinite(input.gain) || input.gain < 0.f ||
-            !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.f || input.chroma_fraction > 1.f ||
-            !axis_supported(input.origin_x, width) || !axis_supported(input.origin_y, height) ||
-            (proxy && (!std::isfinite(input.sample_pitch) || input.sample_pitch < JuicerCuda::FilmGrain::kMinProxySampleFootprint ||
-                       input.sample_pitch > JuicerCuda::FilmGrain::kMaxFootprint ||
-                       !sample_axis_supported(Axis::X, input.origin_x, width) ||
-                       !sample_axis_supported(Axis::Y, input.origin_y, height)))) {
-            errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: invalid frame" : "print Film grain binding failed: invalid frame"}, cudaErrorInvalidValue);
-        }
         grain.filmTables.footprint = proxy ? input.sample_pitch : input.pitch;
         for (int record = 0; record < 3; ++record) {
             const auto& src = input.records[record];
@@ -1487,13 +1446,14 @@ namespace {
         grain.filmFrame.pitch = input.pitch;
         grain.filmFrame.originX = input.origin_x;
         grain.filmFrame.originY = input.origin_y;
-        grain.filmFrame.width = width;
-        grain.filmFrame.height = height;
-        grain.filmFrame.stride = width;
+        grain.filmFrame.width = window.x2 - window.x1;
+        grain.filmFrame.height = window.y2 - window.y1;
+        grain.filmFrame.stride = grain.filmFrame.width;
         grain.filmFrame.seed = input.seed;
         grain.filmFrame.nextSeed = input.next_seed;
         grain.filmFrame.temporalFraction = input.temporal_fraction;
         grain.filmFrame.chromaFraction = input.chroma_fraction;
+        std::copy_n(input.calibrated_border, 4, grain.filmFrame.calibratedBorder);
         if (proxy) {
             grain.filmFrame.proxyWorkspace = preparedFrame.film_proxy_workspace();
             std::copy_n(input.sample_extent, 2, grain.filmFrame.proxy.extent);
@@ -2852,7 +2812,7 @@ namespace JuicerCuda {
         }
         GrainBinding grain;
         if (grainModel == GrainModel::Film) {
-            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, CaptureRoute::Direct, grain, errors);
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, win, CaptureRoute::Direct, grain, errors);
         } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
@@ -3143,7 +3103,7 @@ namespace JuicerCuda {
         }
         GrainBinding grain;
         if (grainModel == GrainModel::Film) {
-            bind_film_grain(preparedFrame, *input.preparation.filmGrain, width, height, CaptureRoute::Print, grain, errors);
+            bind_film_grain(preparedFrame, *input.preparation.filmGrain, win, CaptureRoute::Print, grain, errors);
         } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }

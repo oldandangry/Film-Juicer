@@ -93,6 +93,10 @@ namespace JuicerCuda::RenderTest {
     thread_local int lastCompletion = 0;
     thread_local bool missingFilmBank = false;
     thread_local bool nullGrainPlane = false;
+    thread_local unsigned filmProxyReservations = 0;
+    void observe_film_proxy_reservation() noexcept {
+        ++filmProxyReservations;
+    }
     bool omit_film_bank() noexcept {
         return std::exchange(missingFilmBank, false);
     }
@@ -620,6 +624,75 @@ namespace JuicerCudaTest {
             film.pitch = std::numeric_limits<float>::quiet_NaN();
             check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: invalid frame");
             film.pitch = 1.F;
+            struct GridAxis {
+                double extent = 4.0;
+                double step = 1.0;
+                double origin = 0.0;
+            };
+            const auto& window = frame.render_window;
+            const double width = static_cast<double>(window.x2) - window.x1;
+            const double height = static_cast<double>(window.y2) - window.y1;
+            const auto reject_grid = [&](GridAxis axis) {
+                auto malformed = film;
+                malformed.sample_pitch = 1.F;
+                malformed.sample_extent[0] = axis.extent;
+                malformed.sample_extent[1] = height;
+                malformed.sample_step[0] = axis.step;
+                malformed.sample_step[1] = 1.0;
+                malformed.sample_origin[0] = axis.origin;
+                auto candidate = selectedFilm;
+                candidate.film_grain = &malformed;
+                check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            };
+            reject_grid({.extent = std::numeric_limits<double>::infinity()});
+            reject_grid({.step = std::numeric_limits<double>::quiet_NaN()});
+            reject_grid({.origin = std::numeric_limits<double>::infinity()});
+            reject_grid({.step = 0.0});
+            reject_grid({.step = -1.0});
+            reject_grid({.origin = 4.0});
+            reject_grid({.extent = 262144.0});
+            reject_grid({.step = std::numeric_limits<double>::max()});
+            require(width > 2.0, "raw border controls need positive coverage beside two empty cells");
+            reject_grid({.extent = width, .origin = -2.25});
+            std::cout << route << " raw_film_grid=second-leading-empty rejected\n";
+            reject_grid({.extent = width - 2.25});
+            std::cout << route << " raw_film_grid=second-trailing-empty rejected\n";
+            auto batched = film;
+            batched.sample_pitch = 1.F;
+            batched.sample_extent[0] = 273.0;
+            batched.sample_extent[1] = 96.0;
+            batched.sample_step[0] = batched.sample_step[1] = 91.0;
+            batched.sample_origin[0] = 273.0;
+            require(JuicerCuda::FilmGrain::proxy_sample_bound(batched.sample_extent, batched.sample_step) == 8649,
+                    "malformed grid must be large enough to request batched workspace");
+            auto candidate = selectedFilm;
+            candidate.film_grain = &batched;
+            const auto before = JuicerCuda::RenderTest::filmProxyReservations;
+            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            const auto attempts = JuicerCuda::RenderTest::filmProxyReservations - before;
+            std::cout << route << " malformed-batched-film-grid workspace_reservation_attempts=" << attempts << '\n';
+            require(attempts == 0, "invalid batched grid attempted to reserve Film proxy workspace");
+            auto malformedBorder = film;
+            malformedBorder.calibrated_border[0] = 2;
+            candidate.film_grain = &malformedBorder;
+            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            auto mixed = batched;
+            mixed.sample_origin[0] = 0.0;
+            mixed.sample_extent[0] = width * mixed.sample_step[0];
+            mixed.sample_extent[1] = height * mixed.sample_step[1];
+            mixed.calibrated_border[0] = 1;
+            candidate.film_grain = &mixed;
+            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            require(JuicerCuda::RenderTest::filmProxyReservations == before,
+                    "invalid calibrated border attempted to reserve Film proxy workspace");
+            std::cout << route << " raw_film_grid=invalid-calibrated-border rejected mixed-grid-and-border rejected\n";
+            auto full = film;
+            full.gain = 0.F;
+            candidate.film_grain = &full;
+            require_status(render(candidate, filmSubmission), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "zero-step Film frame must recover after rejecting the batched grid");
+            require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame.stream)) == cudaSuccess,
+                    "complete Film recovery on the caller stream");
+            std::cout << route << " raw_film_grid=zero-step-recovery passed\n";
             row.passed();
         }
         {

@@ -93,6 +93,15 @@ namespace JuicerCuda::FilmGrain {
             return {status, status == cudaSuccess ? nullptr : &kDensityTransfer};
         }
 
+        if (tap.poisonProxyWorkspace) {
+            if (!frame.proxyWorkspace)
+                return {cudaErrorInvalidValue, &kDensityTransfer};
+            // Every double starts as NaN: even the empty pixel must publish
+            // fresh zero partials before the batched combine consumes them.
+            const auto status = cudaMemsetAsync(frame.proxyWorkspace, 0xff, sizeof(ProxyWorkspace), stream);
+            if (status != cudaSuccess)
+                return {status, &kDensityTransfer};
+        }
         const auto launched = apply(bank, tables, tap.admitted, planes, stream);
         if (launched != cudaSuccess)
             return {launched};

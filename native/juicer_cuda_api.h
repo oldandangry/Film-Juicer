@@ -776,6 +776,9 @@ typedef struct FjFilmGrain {
     /* Full sample lattice for a wide proxy, measured from the Full origin.
        A zero step on both axes selects the ordinary rendered-pixel sampler. */
     float sample_pitch;
+    /* Empty left, top, right, bottom borders of a calibrated render (0 or 1
+       per edge). The Full integrator instead derives empty cells from its grid. */
+    uint8_t calibrated_border[4];
     double sample_extent[2];
     double sample_step[2];
     double sample_origin[2];

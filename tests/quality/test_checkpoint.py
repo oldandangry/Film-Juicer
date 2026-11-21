@@ -1598,6 +1598,12 @@ class RustReceiptBundleTests(unittest.TestCase):
                                 catalog.pop(section, None)
                                 continue
                             scope = catalog[section] = source[section]
+                            if section == "grain_preview_motion_replay":
+                                # Exercise the original Linux-only catalog and
+                                # six-row historical receipt shape unchanged.
+                                scope["targets"].pop(qualification.WINDOWS_APERTURE_TARGET)
+                                membership = scope["native_membership"][aperture]
+                                membership.update(listed=6, terminal=6, required=membership["required"][:6])
                             if runtime == "host":
                                 # Historical preview receipts declared a single paired discovery case.
                                 discovery = "Ffi.Host.GrainPreviewDiscovery"
@@ -1706,6 +1712,59 @@ class RustReceiptBundleTests(unittest.TestCase):
                         self.assertEqual("Grain.Gpu.FilmOfxApertures" in summary["unselected_registrations"], replay)
 
     test_current_product_registration_uses_configured_preview_and_replay.required_subtests = True
+
+    def test_windows_aperture_catalog_requires_the_real_owner_and_all_rows(self):
+        from copy import deepcopy
+        from pathlib import PureWindowsPath
+
+        root = Path(verify.__file__).parent.parent
+        full = json.loads((root / "tests/gpu-contracts.json").read_bytes())
+        scope = full["grain_preview_motion_replay"]
+        catalog = {
+            "schema": full["schema"],
+            "native_membership": {},
+            "native_cohorts": {},
+            "targets": {},
+            "required": [],
+            "grain_preview_motion_replay": scope,
+        }
+        name = qualification.APERTURE_REGISTRATION
+        target = qualification.WINDOWS_APERTURE_TARGET
+        preset = "windows-clang-release"
+        config = {
+            "BUILD_TESTING": "ON",
+            "JUICER_GRAIN_PREVIEW": "ON",
+            "JUICER_GRAIN_PREVIEW_CONFIGURED": "ON",
+            "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "OFF",
+            qualification.APERTURE_CONFIGURATION_KEY: target,
+        }
+        # This unit isolates the aperture section; staged preview has its own
+        # consumer and cohort controls in the complete receipt test above.
+        catalog["grain_preview"] = full["grain_preview"]
+        merged = qualification.configured_product_contract(catalog, "gpu", config, preset)
+        self.assertIn(target, merged["targets"])
+        membership = merged["native_membership"][name]
+        self.assertEqual((membership["listed"], membership["terminal"]), (11, 11))
+        listed = membership["required"]
+        qualification.native_membership(merged, name, set(map(tuple, listed)), 11)
+        with self.assertRaisesRegex(ValueError, "missing or unexpected native membership"):
+            qualification.native_membership(merged, name, set(map(tuple, listed[:-1])), 10)
+        with self.assertRaisesRegex(ValueError, "configured aperture target"):
+            qualification.configured_product_contract(
+                catalog, "gpu", {**config, qualification.APERTURE_CONFIGURATION_KEY: "OFF"}, preset
+            )
+        build = PureWindowsPath("C:/configured/out/build") / preset
+        exe = str(build / "grain-apertures/bin" / (target + ".exe"))
+        artifacts = {
+            "schema": "rust-artifacts-v2",
+            "build": str(build),
+            "consumers": {target: {"binary": exe, "variant": "production"}},
+        }
+        qualification.product_artifact_consumers(artifacts, build, False, aperture_target=target)
+        wrong = deepcopy(artifacts)
+        wrong["consumers"][target]["binary"] = str(build / "wrong.exe")
+        with self.assertRaisesRegex(ValueError, "incorrect Windows aperture executable"):
+            qualification.product_artifact_consumers(wrong, build, False, aperture_target=target)
 
     def test_preview_host_witness_requires_own_command_and_cases(self):
         from copy import deepcopy

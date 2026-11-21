@@ -22,6 +22,7 @@ namespace JuicerTests::GrainMotion {
         std::span<float> density;
         std::optional<MotionSeedPair> seeds;
         bool captureFilm = false;
+        bool poisonProxyWorkspace = false;
         JuicerCuda::FilmGrain::FilmFrame admitted{};
         float samplePitch = 0.F;
         bool visited = false;

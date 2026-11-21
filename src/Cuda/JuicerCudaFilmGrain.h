@@ -86,6 +86,7 @@ namespace JuicerCuda::FilmGrain {
         std::uint32_t nextSeed = 0;
         float temporalFraction = 0.F;
         float chromaFraction = 1.F;
+        std::uint8_t calibratedBorder[4]{};
         ProxyGrid proxy{};
         ProxyWorkspace* proxyWorkspace = nullptr;
     };

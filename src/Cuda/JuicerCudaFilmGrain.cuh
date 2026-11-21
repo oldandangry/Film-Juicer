@@ -341,7 +341,7 @@ namespace JuicerCuda::FilmGrain {
             }
 
             __device__ int end_cell() const {
-                return static_cast<int>(ceil(end));
+                return end > start ? static_cast<int>(ceil(end)) : first_cell();
             }
 
             __device__ double overlap(int cell) const {
@@ -349,11 +349,17 @@ namespace JuicerCuda::FilmGrain {
             }
         };
 
-        __device__ Aperture aperture(const ProxyGrid& grid, int axis, int pixel) {
-            return {
-                fmax(0.0, fma(static_cast<double>(pixel), grid.step[axis], grid.origin[axis])),
-                fmin(grid.extent[axis], fma(pixel + 1.0, grid.step[axis], grid.origin[axis])),
+        enum class ApertureAxis : std::uint8_t {
+            X,
+            Y
+        };
+
+        __device__ Aperture aperture(const ProxyGrid& grid, ApertureAxis axis, int pixel) {
+            const auto index = static_cast<std::size_t>(axis);
+            const auto edge = [&](double i) {
+                return fmin(grid.extent[index], fmax(0.0, fma(i, grid.step[index], grid.origin[index])));
             };
+            return {edge(pixel), edge(pixel + 1.0)};
         }
 
         // The Rust film bounds enclose the clean and grained density within
@@ -374,6 +380,8 @@ namespace JuicerCuda::FilmGrain {
         }
 
         __device__ void write_proxy_density(FilmPlanes planes, std::size_t index, const ApertureSum& total) {
+            if (total.area == 0.0)
+                return;
             float* records[kRecords]{planes.cyan, planes.magenta, planes.yellow};
             for (int record = 0; record < kRecords; ++record) {
                 // With zero grain the same overlap sums preserve the input word.
@@ -389,8 +397,8 @@ namespace JuicerCuda::FilmGrain {
                 return;
             const auto index = static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.stride) + static_cast<std::size_t>(x);
             const float input[kRecords]{planes.cyan[index], planes.magenta[index], planes.yellow[index]};
-            const auto horizontal = aperture(frame.proxy, 0, x + frame.originX);
-            const auto vertical = aperture(frame.proxy, 1, y + frame.originY);
+            const auto horizontal = aperture(frame.proxy, ApertureAxis::X, x + frame.originX);
+            const auto vertical = aperture(frame.proxy, ApertureAxis::Y, y + frame.originY);
             ApertureSum total{};
             for (int row = vertical.first_cell(); row < vertical.end_cell(); ++row) {
                 const double height = vertical.overlap(row);
@@ -416,8 +424,8 @@ namespace JuicerCuda::FilmGrain {
             const auto y = pixel / width;
             const auto index = y * static_cast<std::size_t>(frame.stride) + x;
             const float input[kRecords]{planes.cyan[index], planes.magenta[index], planes.yellow[index]};
-            const auto horizontal = aperture(frame.proxy, 0, static_cast<int>(x) + frame.originX);
-            const auto vertical = aperture(frame.proxy, 1, static_cast<int>(y) + frame.originY);
+            const auto horizontal = aperture(frame.proxy, ApertureAxis::X, static_cast<int>(x) + frame.originX);
+            const auto vertical = aperture(frame.proxy, ApertureAxis::Y, static_cast<int>(y) + frame.originY);
             const auto columns = static_cast<std::uint64_t>(horizontal.end_cell() - horizontal.first_cell());
             const auto rows = static_cast<std::uint64_t>(vertical.end_cell() - vertical.first_cell());
             const auto first = batch.firstSample + static_cast<std::uint64_t>(blockIdx.x) * kProxySamplesPerBlock;

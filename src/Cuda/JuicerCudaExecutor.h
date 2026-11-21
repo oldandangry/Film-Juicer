@@ -92,6 +92,7 @@ namespace JuicerCuda {
         bool omit_film_bank() noexcept;
         bool omit_grain_plane() noexcept;
         void before_abort_query();
+        void observe_film_proxy_reservation() noexcept;
     } // namespace RenderTest
 #endif
 

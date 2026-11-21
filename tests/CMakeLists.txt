@@ -998,8 +998,8 @@ add_test(NAME Ofx.Gpu.CutoverContract COMMAND JuicerProcessorReferenceProbe --cu
 set_tests_properties(Ofx.Gpu.CutoverContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_library(juicer_render_test_objects OBJECT
-    ../native/juicer_cuda_api.cpp ../native/juicer_cuda_call_scope.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
-target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings)
+    ../native/juicer_cuda_api.cpp ../native/juicer_cuda_call_scope.cpp ../src/Cuda/JuicerCudaExecutor.cpp ../src/ProcessRoot.cpp)
+target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_render_test_objects PRIVATE JUICER_CUDA_RENDER_TEST_HOOK=1)
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp ofx/render_assertions.cpp
@@ -1035,8 +1035,8 @@ if(JUICER_GRAIN_PREVIEW)
     set_tests_properties(Ffi.Gpu.GrainPreviewStaged PROPERTIES
         LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 endif()
-if(TARGET JuicerGrainMotionReplay)
-    add_test(NAME Grain.Gpu.FilmOfxApertures COMMAND JuicerGrainMotionReplay --grain-preview-apertures)
+if(juicer_grain_aperture_consumer)
+    add_test(NAME Grain.Gpu.FilmOfxApertures COMMAND ${juicer_grain_aperture_consumer} --grain-preview-apertures)
     set_tests_properties(Grain.Gpu.FilmOfxApertures PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 endif()
 if(MSVC)
@@ -1746,9 +1746,9 @@ juicer_write_host_targets()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json" juicer_gpu_contract)
-if(TARGET JuicerGrainMotionReplay)
-    string(JSON aperture_contract GET "${juicer_gpu_contract}" grain_preview_motion_replay targets JuicerGrainMotionReplay)
-    string(JSON juicer_gpu_contract SET "${juicer_gpu_contract}" targets JuicerGrainMotionReplay "${aperture_contract}")
+if(juicer_grain_aperture_consumer)
+    string(JSON aperture_contract GET "${juicer_gpu_contract}" grain_preview_motion_replay targets ${juicer_grain_aperture_consumer})
+    string(JSON juicer_gpu_contract SET "${juicer_gpu_contract}" targets ${juicer_grain_aperture_consumer} "${aperture_contract}")
 endif()
 string(JSON juicer_gpu_target_count LENGTH "${juicer_gpu_contract}" targets)
 math(EXPR juicer_gpu_last "${juicer_gpu_target_count} - 1")
@@ -1787,6 +1787,6 @@ foreach(target IN LISTS juicer_rust_candidates)
 endforeach()
 list(APPEND juicer_rust_consumers JuicerOfxMeasurementModule)
 set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts
-    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources;${juicer_motion_replay_target}")
+    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources;${juicer_grain_aperture_consumer}")
 juicer_write_python_targets()
 set(JUICER_RUST_TEST_CONSUMERS "${juicer_rust_consumers}" PARENT_SCOPE)

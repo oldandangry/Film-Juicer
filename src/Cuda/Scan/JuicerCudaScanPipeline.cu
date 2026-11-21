@@ -3815,8 +3815,19 @@ namespace JuicerCuda::FilmGrain {
             return cudaErrorInvalidValue;
         auto* const cudaStream = reinterpret_cast<cudaStream_t>(stream);
         const dim3 threads{32, 8};
-        const dim3 blocks{(static_cast<unsigned>(frame.width) + 31U) / 32U, (static_cast<unsigned>(frame.height) + 7U) / 8U};
         if (frame.proxy.step[0] == 0.0 && frame.proxy.step[1] == 0.0) {
+            const auto& [left, top, right, bottom] = frame.calibratedBorder;
+            frame.width -= left + right;
+            frame.height -= top + bottom;
+            if (frame.width <= 0 || frame.height <= 0)
+                return cudaErrorInvalidValue;
+            // Only Film sees the cropped view. Kernel-local coordinates start
+            // at the first supported pixel; the density planes keep their stride.
+            const auto offset = static_cast<std::size_t>(top) * frame.stride + left;
+            planes.cyan += offset;
+            planes.magenta += offset;
+            planes.yellow += offset;
+            const dim3 blocks{(static_cast<unsigned>(frame.width) + 31U) / 32U, (static_cast<unsigned>(frame.height) + 7U) / 8U};
             apply_quad<<<blocks, threads, 0, cudaStream>>>(sums, tables, frame, planes);
             return cudaGetLastError();
         }
@@ -3824,6 +3835,7 @@ namespace JuicerCuda::FilmGrain {
         if (samples == 0)
             return cudaErrorInvalidValue;
         if (samples <= kProxySerialSamples) {
+            const dim3 blocks{(static_cast<unsigned>(frame.width) + 31U) / 32U, (static_cast<unsigned>(frame.height) + 7U) / 8U};
             apply_proxy<<<blocks, threads, 0, cudaStream>>>(sums, tables, frame, planes);
             return cudaGetLastError();
         }

@@ -31,6 +31,10 @@ from qualification import (
     MOTION_REPLAY_FILE_CONSUMERS,
     MOTION_REPLAY_SOURCE,
     MOTION_REPLAY_STAGE_CONSUMERS,
+    MOTION_REPLAY_TARGET,
+    WINDOWS_APERTURE_TARGET,
+    APERTURE_CONFIGURATION_KEY,
+    configured_aperture_target,
     PRESET_TARGETS,
     PRODUCT_PREVIEW_KEYS,
     QUALITY_CHECKS_SCHEMA,
@@ -1130,29 +1134,33 @@ def prepare_motion_replay_analysis(root, runner, clang_tidy, preset, files, entr
     from execution import write_json
 
     try:
-        _, replay_configured = quality_replay_configuration(runner.product_configuration, preset)
+        quality_replay_configuration(runner.product_configuration, preset)
+        target = configured_aperture_target(runner.product_configuration, preset)
     except ValueError as exc:
         raise QualityError(str(exc)) from exc
     replay_entries = []
     seen = set()
     for entry in sorted(entries, key=lambda entry: entry.path):
         source = entry.path
-        if not is_motion_replay_target_output(source, entry.output):
+        if not any(
+            is_motion_replay_target_output(source, entry.output, owner)
+            for owner in (MOTION_REPLAY_TARGET, WINDOWS_APERTURE_TARGET)
+        ):
             if source == MOTION_REPLAY_SOURCE or any(MOTION_REPLAY_DEFINE in arg for arg in entry.arguments):
                 raise QualityError(f"unexpected compile variant outside the motion replay target for {source}")
             continue
         if (
-            not replay_configured
+            not target
             or source in FILM_GRAIN_STAGE_CONSUMERS
             or source in seen
-            or not is_motion_replay_compile_entry(source, entry.output, entry.arguments)
+            or not is_motion_replay_compile_entry(source, entry.output, entry.arguments, target)
         ):
             raise QualityError(f"unexpected configured motion replay compile variant for {source}")
         seen.add(source)
         replay_entries.append(entry)
 
     minimum = {file: MOTION_REPLAY_FILE_CONSUMERS[file] for file in files if file in MOTION_REPLAY_FILE_CONSUMERS}
-    if not replay_configured:
+    if not target:
         runner.replay_compiler_analysis = {file: {"excluded": MOTION_REPLAY_EXCLUSION} for file in minimum}
         if minimum:
             print("Motion replay is unavailable for compiler analysis in this configuration: " + ", ".join(minimum))
@@ -1160,6 +1168,12 @@ def prepare_motion_replay_analysis(root, runner, clang_tidy, preset, files, entr
 
     if FILM_GRAIN_STAGE_HEADER in files:
         minimum[FILM_GRAIN_STAGE_HEADER] = MOTION_REPLAY_STAGE_CONSUMERS
+    excluded = {}
+    if target == WINDOWS_APERTURE_TARGET and minimum.pop("tests/grain/motion-replay.inc", None) is not None:
+        excluded["tests/grain/motion-replay.inc"] = {"excluded": MOTION_REPLAY_EXCLUSION}
+    if not minimum:
+        runner.replay_compiler_analysis = excluded
+        return []
     database = []
     commands = []
     consumers: dict[str, list[str]] = {file: [] for file in minimum}
@@ -1202,7 +1216,7 @@ def prepare_motion_replay_analysis(root, runner, clang_tidy, preset, files, entr
         if missing:
             raise QualityError(f"missing configured motion replay consumers for {file}: {', '.join(missing)}")
     write_json(runner.log_dir / "compile_commands.json", database)
-    runner.replay_compiler_analysis = {
+    runner.replay_compiler_analysis = excluded | {
         file: {"commands": [runner.name_prefix + label for label in labels]} for file, labels in consumers.items()
     }
     return commands
@@ -1293,7 +1307,14 @@ def prepare_native_analysis(
         selected_native = [path for path in selected_native if path not in MOTION_REPLAY_FILE_CONSUMERS]
         if not selected_native and not consumers:
             return commands
-        entries = [entry for entry in entries if not is_motion_replay_target_output(entry.path, entry.output)]
+        entries = [
+            entry
+            for entry in entries
+            if not any(
+                is_motion_replay_target_output(entry.path, entry.output, owner)
+                for owner in (MOTION_REPLAY_TARGET, WINDOWS_APERTURE_TARGET)
+            )
+        ]
         if FILM_GRAIN_STAGE_HEADER in replay_files:
             check_film_grain_stage_consumers(root, runner, build_dir, entries)
             # The witness's guarded stage include is not active in ordinary
@@ -1554,6 +1575,8 @@ def quality_main(root, arguments):
     cache = cache_values(root / "out/build" / arguments.preset)
     if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
         runner.product_configuration = {key: cache.get(key) for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_HOME_DIRECTORY")}
+        if APERTURE_CONFIGURATION_KEY in cache:
+            runner.product_configuration[APERTURE_CONFIGURATION_KEY] = cache[APERTURE_CONFIGURATION_KEY]
     runner.consume(
         [root / "out/build" / arguments.preset / "CMakeCache.txt", root / ".cargo/config", root / ".cargo/config.toml"]
     )
@@ -1581,7 +1604,12 @@ def quality_main(root, arguments):
                 build = root / "out/build" / arguments.preset
                 manifest = build / "tests/rust-artifacts.json"
                 artifact_data = manifest.read_bytes()
-                product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
+                product_artifact_consumers(
+                    json.loads(artifact_data),
+                    build,
+                    replay_configured,
+                    aperture_target=configured_aperture_target(runner.product_configuration, arguments.preset),
+                )
                 retained_artifacts = log_dir / manifest.name
                 if not in_bundle:
                     retained_artifacts.write_bytes(artifact_data)

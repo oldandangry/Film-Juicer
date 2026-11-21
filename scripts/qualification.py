@@ -36,8 +36,10 @@ PRODUCT_PREVIEW_KEYS = (
     "JUICER_GRAIN_PREVIEW_CONFIGURED",
     "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED",
 )
+APERTURE_CONFIGURATION_KEY = "JUICER_GRAIN_APERTURE_TARGET"
 MODULE_CONFIGURATION_KEYS = (
     *PRODUCT_PREVIEW_KEYS,
+    APERTURE_CONFIGURATION_KEY,
     "CMAKE_BUILD_TYPE",
     "CMAKE_CXX_COMPILER",
     "CMAKE_CUDA_COMPILER",
@@ -45,6 +47,8 @@ MODULE_CONFIGURATION_KEYS = (
     "CMAKE_INSTALL_PREFIX",
 )
 MOTION_REPLAY_TARGET = "JuicerGrainMotionReplay"
+WINDOWS_APERTURE_TARGET = "JuicerGrainOfxApertureTests"
+APERTURE_REGISTRATION = "Grain.Gpu.FilmOfxApertures"
 MOTION_REPLAY_DEFINE = "JUICER_GRAIN_MOTION_REPLAY"
 REPLAY_EXECUTION_SUFFIX = ".replay-execution.json"
 MOTION_REPLAY_RENDER = "tests/ffi/production-ofx-render.cpp"
@@ -91,7 +95,7 @@ OPTIONAL_PRODUCT_REGISTRATIONS = {
         "JuicerProductionPreparedRenderProbe",
         "--grain-preview-witness",
     ),
-    "Grain.Gpu.FilmOfxApertures": (
+    APERTURE_REGISTRATION: (
         "grain_preview_motion_replay",
         "gpu",
         MOTION_REPLAY_TARGET,
@@ -141,16 +145,17 @@ def validate_module_record(record, preset, configuration):
         raise ValueError("production module build/stage SHA-256 mismatch")
 
 
-def is_motion_replay_target_output(source, output):
-    expected = PurePosixPath(f"CMakeFiles/{MOTION_REPLAY_TARGET}.dir/{source}.o").parts
+def is_motion_replay_target_output(source, output, target=MOTION_REPLAY_TARGET):
+    suffix = ".obj" if target == WINDOWS_APERTURE_TARGET else ".o"
+    expected = PurePosixPath(f"CMakeFiles/{target}.dir/{source}{suffix}").parts
     actual = PurePosixPath(output.replace("\\", "/")).parts
     return actual[-len(expected) :] == expected
 
 
-def is_motion_replay_compile_entry(source, output, arguments):
+def is_motion_replay_compile_entry(source, output, arguments, target=MOTION_REPLAY_TARGET):
     """Identify the CMake target entry that actually enables the guarded includes."""
     options = [arg for arg in arguments if MOTION_REPLAY_DEFINE in arg]
-    return is_motion_replay_target_output(source, output) and options == [f"-D{MOTION_REPLAY_DEFINE}=1"]
+    return is_motion_replay_target_output(source, output, target) and options == [f"-D{MOTION_REPLAY_DEFINE}=1"]
 
 
 def motion_replay_quality_files(selected):
@@ -188,6 +193,20 @@ def quality_replay_configuration(configuration, preset):
     if replay != expected:
         raise ValueError("configured replay availability disagrees with the native preset, testing and preview")
     return preview, replay
+
+
+def configured_aperture_target(configuration, preset=None):
+    preview, replay = read_preview_and_replay_configuration(configuration)
+    recorded = configuration.get(APERTURE_CONFIGURATION_KEY)
+    if recorded is None:
+        return MOTION_REPLAY_TARGET if replay else None  # Historical receipts.
+    enabled = preview and grain_preview_enabled(configuration["BUILD_TESTING"])
+    if preset is not None and replay != (enabled and preset.startswith("linux-")):
+        raise ValueError("configured replay availability disagrees with the aperture preset")
+    expected = (MOTION_REPLAY_TARGET if replay else WINDOWS_APERTURE_TARGET) if enabled else "OFF"
+    if recorded != expected:
+        raise ValueError("configured aperture target disagrees with preview, testing or platform")
+    return expected if enabled else None
 
 
 def compiler_dependency_command(directory, file, output, arguments):
@@ -596,10 +615,11 @@ def validate_native_result(result, payloads):
     return summary
 
 
-def configured_product_contract(contract, runtime, configuration):
+def configured_product_contract(contract, runtime, configuration, preset=None):
     """Apply optional catalog sections selected by CMake to the base inventory."""
-    preview_enabled, replay_configured = read_preview_and_replay_configuration(configuration)
-    enabled = {"grain_preview": preview_enabled, "grain_preview_motion_replay": replay_configured}
+    preview_enabled, _ = read_preview_and_replay_configuration(configuration)
+    aperture = configured_aperture_target(configuration, preset)
+    enabled = {"grain_preview": preview_enabled, "grain_preview_motion_replay": aperture is not None}
     merged = {
         **contract,
         "required": list(contract["required"]),
@@ -623,26 +643,39 @@ def configured_product_contract(contract, runtime, configuration):
         names = {name}
         if callbacks and name == PREVIEW_DISCOVERY:
             names.update(OFX_PREVIEW_REPLACEMENTS.values())
+        scope = contract.get(section, {})
+        scope_targets = scope.get("targets", {})
+        if name == APERTURE_REGISTRATION:
+            current = WINDOWS_APERTURE_TARGET in scope_targets
+            if current != (configuration.get(APERTURE_CONFIGURATION_KEY) is not None):
+                raise ValueError("aperture catalog and configured target versions disagree")
+            if current and set(scope_targets) != {MOTION_REPLAY_TARGET, WINDOWS_APERTURE_TARGET}:
+                raise ValueError("missing platform owner in the aperture catalog")
+            owner = aperture or owner
         if (
             names.intersection(merged["required"])
             or names.intersection(merged["native_cohorts"])
             or names.intersection(merged["native_membership"])
-            or (section == "grain_preview_motion_replay" and owner in merged["targets"])
+            or (
+                name == APERTURE_REGISTRATION
+                and {MOTION_REPLAY_TARGET, WINDOWS_APERTURE_TARGET} & merged["targets"].keys()
+            )
         ):
             raise ValueError("optional product registration in the base catalog: " + name)
         if not enabled[section]:
             continue
-        scope = contract.get(section, {})
         if (
             set(scope.get("required", ())) != names
             or len(scope["required"]) != len(names)
-            or set(scope.get("targets", {})) != {owner}
+            or (name == APERTURE_REGISTRATION and current and owner not in scope_targets)
+            or (not (name == APERTURE_REGISTRATION and current) and set(scope_targets) != {owner})
             or set(scope.get("native_cohorts", {})) != names
             or set(scope.get("native_membership", {})) != names
         ):
             raise ValueError("missing configured product registration contract: " + name)
         merged["required"].extend(scope["required"])
-        for field in ("targets", "native_cohorts", "native_membership"):
+        merged["targets"][owner] = scope_targets[owner]
+        for field in ("native_cohorts", "native_membership"):
             merged[field].update(scope[field])
     return merged
 
@@ -739,12 +772,14 @@ def native_registration(
         if name not in contract["required"]:
             continue
         entry = found.get(name)
+        if name == APERTURE_REGISTRATION and configuration is not None:
+            owner = configured_aperture_target(configuration, preset)
         if (
             runtime != expected_runtime
             or entry is None
             or entry["target"] != owner
             or entry["command"][1:2] != [selector]
-            or (owner == MOTION_REPLAY_TARGET and len(entry["command"]) != 2)
+            or (name == APERTURE_REGISTRATION and len(entry["command"]) != 2)
         ):
             raise ValueError("optional product registration differs from its owning command: " + name)
         if artifact_consumers is not None:
@@ -1217,7 +1252,7 @@ def native_test_build(result, configuration):
     return source, build
 
 
-def product_artifact_consumers(artifacts, build, replay_configured):
+def product_artifact_consumers(artifacts, build, replay_configured, *, aperture_target=None):
     """Read CMake target outputs from the configured build's artifact description."""
     path = type(build)
     if artifacts.get("schema") != "rust-artifacts-v2" or path(artifacts["build"]) != build:
@@ -1229,6 +1264,15 @@ def product_artifact_consumers(artifacts, build, replay_configured):
         binary = path(consumers[MOTION_REPLAY_TARGET]["binary"])
         if not binary.is_relative_to(build) or binary == build or ".." in binary.parts:
             raise ValueError("replay artifact consumer is outside the configured build")
+    if (WINDOWS_APERTURE_TARGET in consumers) != (aperture_target == WINDOWS_APERTURE_TARGET):
+        raise ValueError("configured Windows aperture target disagrees with CMake artifact consumers")
+    if aperture_target == WINDOWS_APERTURE_TARGET:
+        entry = consumers[WINDOWS_APERTURE_TARGET]
+        if (
+            path(entry["binary"]) != build / "grain-apertures/bin" / (WINDOWS_APERTURE_TARGET + ".exe")
+            or entry.get("variant") != "production"
+        ):
+            raise ValueError("incorrect Windows aperture executable or Rust archive variant")
     return consumers
 
 
@@ -2152,7 +2196,12 @@ def validate_tests_result(result, payloads):
     artifact_consumers = launcher_python = None
     if current_product:
         source, build = native_test_build(result, candidate["configuration"])
-        artifact_consumers = product_artifact_consumers(artifacts, build, replay_configured)
+        artifact_consumers = product_artifact_consumers(
+            artifacts,
+            build,
+            replay_configured,
+            aperture_target=configured_aperture_target(candidate["configuration"], result["preset"]),
+        )
     inventory = json.loads(payloads["registration.json"])
     if current_product:
         for runtime in ("host", "gpu", "python"):
@@ -2160,7 +2209,9 @@ def validate_tests_result(result, payloads):
     contracts = {runtime: json.loads(payloads[runtime + "-contracts.json"]) for runtime in ("host", "gpu", "python")}
     if current_product:
         for runtime in ("host", "gpu"):
-            contracts[runtime] = configured_product_contract(contracts[runtime], runtime, candidate["configuration"])
+            contracts[runtime] = configured_product_contract(
+                contracts[runtime], runtime, candidate["configuration"], result["preset"]
+            )
         if "replaces" in contracts["host"].get("grain_preview", {}):
             versions = [item for item in result["commands"] if item["name"] == "versions"]
             if len(versions) != 1:
@@ -2453,7 +2504,7 @@ def require_ordinary_compiler_analysis(
         raise ValueError("missing ordinary compiler analysis in mixed replay header selection")
 
 
-def replay_database_sources(database, root, build, *, linked_stage):
+def replay_database_sources(database, root, build, *, linked_stage, target=MOTION_REPLAY_TARGET):
     if not isinstance(database, list) or not database:
         raise ValueError("invalid motion replay compilation database")
     path = type(root)
@@ -2465,17 +2516,22 @@ def replay_database_sources(database, root, build, *, linked_stage):
         source = file.relative_to(root).as_posix()
         arguments = entry["arguments"]
         output = path(entry["output"])
+        suffix = ".obj" if target == WINDOWS_APERTURE_TARGET else ".o"
         if (
             source in sources
             or (linked_stage and source in FILM_GRAIN_STAGE_CONSUMERS)
             or path(entry["directory"]) != build
-            or output != build / f"CMakeFiles/{MOTION_REPLAY_TARGET}.dir/{source}.o"
+            or output != build / f"CMakeFiles/{target}.dir/{source}{suffix}"
             or not isinstance(arguments, list)
             or not all(isinstance(arg, str) for arg in arguments)
-            or not is_motion_replay_compile_entry(source, str(output), arguments)
-            or not any(arg == "-o" and build / operand == output for arg, operand in zip(arguments, arguments[1:]))
-            or not any(arg == "-c" and path(operand) == file for arg, operand in zip(arguments, arguments[1:]))
+            or not is_motion_replay_compile_entry(source, str(output), arguments, target)
         ):
+            raise ValueError("incorrect motion replay compile variant")
+        if target == WINDOWS_APERTURE_TARGET:
+            compiler_dependency_command(build, file, output, arguments)
+        elif not any(
+            arg == "-o" and build / operand == output for arg, operand in zip(arguments, arguments[1:])
+        ) or not any(arg == "-c" and path(operand) == file for arg, operand in zip(arguments, arguments[1:])):
             raise ValueError("incorrect motion replay compile variant")
         sources.add(source)
     return sources
@@ -2519,11 +2575,15 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
         _, replay_configured = quality_replay_configuration(configuration, checks["preset"])
     else:
         _, replay_configured = read_preview_and_replay_configuration(configuration)
+    target = configured_aperture_target(configuration, checks["preset"])
     minimum = {file: contract[file] for file in files}
-    if shared_stage and replay_configured:
+    if shared_stage and target:
         minimum[FILM_GRAIN_STAGE_HEADER] = MOTION_REPLAY_STAGE_CONSUMERS
     if analysis.keys() != minimum.keys():
         raise ValueError("missing or invented replay header compiler analysis")
+    excluded = {}
+    if target == WINDOWS_APERTURE_TARGET and minimum.pop("tests/grain/motion-replay.inc", None) is not None:
+        excluded["tests/grain/motion-replay.inc"] = {"excluded": MOTION_REPLAY_EXCLUSION}
     formatter = commands.get(prefix + "clang-format", {}).get("command", [])
     if SOURCE_FILE_POLICY not in payloads:
         raise ValueError("missing source file policy for the replay compiler receipt")
@@ -2557,7 +2617,9 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
     if execution_evidence:
         if "rust-artifacts.json" not in payloads:
             raise ValueError("missing CMake artifact description for replay quality")
-        product_artifact_consumers(json.loads(payloads["rust-artifacts.json"]), build, replay_configured)
+        product_artifact_consumers(
+            json.loads(payloads["rust-artifacts.json"]), build, replay_configured, aperture_target=target
+        )
     verifier = commands.get(prefix + "clang-tidy-config", {}).get("command", [])
     if ordinary := formatted - files:
         ordinary_commands = [
@@ -2591,12 +2653,12 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
             for name, command in expected_probes.items()
         ):
             raise ValueError("Film grain stage probes differ from the configured compilation database")
-    if not replay_configured:
+    if not target or not minimum:
         if (
             recorded
             or executions
             or database_name in payloads
-            or any(evidence != {"excluded": MOTION_REPLAY_EXCLUSION} for evidence in analysis.values())
+            or analysis != excluded | {file: {"excluded": MOTION_REPLAY_EXCLUSION} for file in minimum}
         ):
             raise ValueError("incorrect compiler exclusion for unavailable motion replay")
         return analysis
@@ -2605,7 +2667,7 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
     if database_name not in payloads:
         raise ValueError("missing replay compilation database")
     database = payloads[database_name]
-    sources = replay_database_sources(json.loads(database), root, build, linked_stage=linked_stage)
+    sources = replay_database_sources(json.loads(database), root, build, linked_stage=linked_stage, target=target)
     if not required_sources <= sources or (not execution_evidence and sources != required_sources):
         raise ValueError("invalid motion replay compilation database")
     labels = {source: prefix + motion_replay_tidy_label(source, legacy=not execution_evidence) for source in sources}
@@ -2663,7 +2725,7 @@ def validate_replay_compiler_analysis(checks, payloads, candidate, run_id, *, pr
             consumers[header] = required
         elif not set(required) <= set(consumers[header]):
             raise ValueError("missing required replay header compiler execution coverage: " + header)
-    if analysis != {header: {"commands": names} for header, names in consumers.items()}:
+    if analysis != excluded | {header: {"commands": names} for header, names in consumers.items()}:
         raise ValueError("missing or unexpected replay compiler command")
     return analysis
 
@@ -3164,7 +3226,9 @@ def _validate_production_contract_v2(preset, payloads, report):
 
 MODULE_RECORD_SHAPE = dict.fromkeys(("build", "stage", "build_sha256", "stage_sha256"), str)
 PROBE_RECORD_SHAPE = {"path": str, "sha256": str}
-MODULE_CONFIGURATION_SHAPE = dict.fromkeys(MODULE_CONFIGURATION_KEYS, str)
+MODULE_CONFIGURATION_SHAPE = {
+    (key + "?" if key == APERTURE_CONFIGURATION_KEY else key): str for key in MODULE_CONFIGURATION_KEYS
+}
 RUST_ARTIFACT_SHAPE = {
     "schema": str,
     "build": str,
@@ -3420,7 +3484,9 @@ def validate_build_result(result, payloads):
         validate_module_record(module, result["preset"], configuration)
         artifacts = json.loads(payloads["rust-artifacts.json"])
         check_receipt_shape(artifacts, RUST_ARTIFACT_SHAPE, "rust-artifacts.json")
-        consumer = product_artifact_consumers(artifacts, built.parent, replay)["juicer"]
+        consumer = product_artifact_consumers(
+            artifacts, built.parent, replay, aperture_target=configured_aperture_target(configuration, result["preset"])
+        )["juicer"]
         variants = {"production", "test-support"} if testing == "ON" else {"production"}
         if set(artifacts["variants"]) != variants:
             raise ValueError("Rust artifact variants differ from the configured producer testing setting")
@@ -3488,7 +3554,7 @@ def validate_paired_modules(preset, candidate, patch, modules):
         if row["preset"] != preset or any(
             configuration[key] != current[key]
             for key in MODULE_CONFIGURATION_KEYS
-            if key not in PRODUCT_PREVIEW_KEYS[1:]
+            if key not in (*PRODUCT_PREVIEW_KEYS[1:], APERTURE_CONFIGURATION_KEY)
         ):
             raise ValueError(f"paired discovery {role} producer has different native build settings")
         if not rust_test_path(preset)(row["receipt"]).is_absolute() or not re.fullmatch(

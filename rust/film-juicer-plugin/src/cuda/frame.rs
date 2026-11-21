@@ -14,6 +14,8 @@ use film_juicer_core::{
 };
 
 use super::{edge, sys};
+#[cfg(feature = "grain-preview")]
+use film_juicer_core::film::grain::preview::Sampling;
 
 #[cfg(feature = "grain-preview")]
 pub(super) fn film_grain(
@@ -45,7 +47,10 @@ pub(super) fn film_grain(
         }
     });
     let sums = recipe.bank().sums();
-    let sampling = recipe.sampling();
+    let (sampling, calibrated_border) = match recipe.sampling() {
+        Sampling::Calibrated(border) => (None, border),
+        Sampling::Integrated(grid) => (Some(grid), [0; 4]),
+    };
     Ok(Some(sys::FjFilmGrain {
         bank_hash: recipe.bank().identity(),
         sums: sys::FjFloatSpan {
@@ -62,6 +67,7 @@ pub(super) fn film_grain(
         gain: recipe.gain(),
         chroma_fraction: recipe.chroma_fraction(),
         sample_pitch: table.footprint,
+        calibrated_border,
         sample_extent: sampling.map_or([0.0; 2], |grid| grid.extent),
         sample_step: sampling.map_or([0.0; 2], |grid| grid.step),
         sample_origin: sampling.map_or([0.0; 2], |grid| grid.origin),

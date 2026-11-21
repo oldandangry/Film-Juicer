@@ -1695,8 +1695,7 @@ fn prepare_state(
                 return Err(PrepareError::FilmGrainGeometry);
             };
             let long_edge_mm = params.camera_film_format_long_edge_mm;
-            let footprint = controls.footprint(long_edge_mm, raster.long_edge_px);
-            let (sample_pitch, sampling) = raster.sampling(controls, long_edge_mm, footprint);
+            let (footprint, sample_pitch, sampling) = raster.sampling(controls, long_edge_mm);
             for (width_texels, minimum) in [
                 (footprint, density::portra::MIN_FOOTPRINT),
                 (sample_pitch, density::portra::MIN_PROXY_SAMPLE_FOOTPRINT),

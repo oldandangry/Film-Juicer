@@ -97,13 +97,17 @@ namespace {
         Case{"negative-print-time-endpoint", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
     };
     struct GrainGeometry {
-        OfxRectD canonical;
-        OfxRectI bounds;
-        std::array<double, 2> scale;
+        OfxRectD canonical{};
+        OfxRectI bounds{};
+        std::array<double, 2> scale{1.0, 1.0};
+        std::array<double, 2> imageScale{1.0, 1.0};
     };
     constexpr GrainGeometry kEightMmProxy{{0, 0, 8192, 4096}, {0, 0, 32, 16}, {1.0 / 256, 1.0 / 256}};
     constexpr GrainGeometry kClippedQuarter{{0, 4, 4832, 12}, {0, 0, 1208, 2}, {0.25, 0.125}};
     constexpr GrainGeometry kOffsetQuarter{{0, 4, 4832, 12}, {0, 1, 1208, 3}, {0.25, 0.25}};
+    constexpr OfxRectD kShiftedRegion{1, 4, 3840, 8};
+    constexpr GrainGeometry kShiftedQuarter{kShiftedRegion, {0, 1, 960, 2}, {0.25, 0.25}};
+    constexpr GrainGeometry kShiftedClipped{kShiftedRegion, {0, 0, 960, 1}, {0.25, 0.125}};
 
     void set_grain_geometry(InstanceHost& host, OfxImageEffectHandle effect, const GrainGeometry& geometry) {
         const auto& [x1, y1, x2, y2] = geometry.bounds;
@@ -113,17 +117,18 @@ namespace {
         for (const auto* clip : {"Source", "Output"}) {
             host.set_image_property(effect, clip, kOfxImagePropBounds, bounds);
             host.set_image_property(effect, clip, kOfxImagePropRegionOfDefinition, bounds);
+            host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {geometry.imageScale[0], geometry.imageScale[1]});
             host.set_clip_region(effect, clip, geometry.canonical);
         }
     }
 
-    std::vector<float> flat_grain_source(const Case& test) {
+    std::vector<float> flat_grain_source(const Case& test, float gray = 0.18F) {
         auto source = initial_source(test);
         const int pitch = test.width * test.components + kPitchPadding;
         for (int row = 0; row < test.height; ++row) {
             for (int column = 0; column < test.width; ++column) {
                 const auto pixel = static_cast<std::size_t>(row) * pitch + static_cast<std::size_t>(column) * test.components;
-                std::fill_n(source.data() + pixel, 3, 0.18F);
+                std::fill_n(source.data() + pixel, 3, gray);
             }
         }
         return source;
@@ -719,6 +724,31 @@ namespace {
                     require(render(0.0) == clean, "clipped and square Quarter clean RGB words differ");
                     change("GrainActive", {1});
                     require(render(0.0) == paused, "clipped and square Quarter grained RGB words differ");
+
+                    device.release_images();
+                    renderTest.width = 960;
+                    renderTest.height = 1;
+                    source = flat_grain_source(renderTest);
+                    const auto shiftedBytes = source.size() * sizeof(float);
+                    require_cuda(cudaMalloc(&device.source, shiftedBytes), "allocate shifted source");
+                    require_cuda(cudaMalloc(&device.destination, shiftedBytes), "allocate shifted destination");
+                    configure(host, effect, renderTest, device);
+                    set_grain_geometry(host, effect, kShiftedQuarter);
+                    change("GrainActive", {0});
+                    const auto shiftedClean = render(0.0);
+                    change("GrainActive", {1});
+                    const auto shiftedFilm = render(0.0);
+                    // This pixel straddles the first 128-texel placement seam.
+                    require(!std::equal(shiftedFilm.begin() + 12, shiftedFilm.begin() + 15, shiftedClean.begin() + 12),
+                            "shifted seam interior did not receive Film grain");
+                    set_grain_geometry(host, effect, kShiftedClipped);
+                    require(render(0.0) == shiftedFilm, "equivalent shifted Film delivered words differ");
+                    change("GrainActive", {0});
+                    require(render(0.0) == shiftedClean, "equivalent shifted clean delivered words differ");
+                    set_grain_geometry(host, effect, kShiftedQuarter);
+                    change("GrainActive", {1});
+                    require(render(0.0) == shiftedFilm, "Film did not return to the first shifted encoding");
+                    std::cout << test.id << " equivalent shifted delivered words; active seam interior\n";
                 }
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"paused_repeat", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
@@ -989,7 +1019,16 @@ namespace {
                             select_format(preset, mm);
                             (void)film_frame(mm, 1.0);
                         }
-                        (void)film_frame(120.0, 0.5);
+                        change("CouplersActive", {0});
+                        change("GlareActive", {0});
+                        const auto native = film_frame(120.0, 0.5);
+                        set_grain_geometry(host, effect, {{0, 0, 9664, 4032}, {0, 0, 4832, 2016}, {0.5, 0.5}});
+                        require(render(frameTime) != native, "equal rendered pitch reused native Full grain on the proxy");
+                        set_grain_geometry(host, effect, {{0, 0, 4832, 2016}, {0, 0, 4832, 2016}, {1.0, 1.0}});
+                        require(render(frameTime) == native, "120 mm native Full did not return bit-exactly after the proxy");
+                        std::cout << test.id << " 120 mm equal-pitch Full/proxy/Full passed\n";
+                        change("CouplersActive", {1});
+                        change("GlareActive", {1});
                         (void)film_frame(120.0, 4.0);
                         geometry(2);
                         (void)film_frame(120.0, 0.5);
@@ -1513,6 +1552,9 @@ int main(int argc, char** argv) {
 #if defined(JUICER_GRAIN_MOTION_REPLAY) && !defined(_WIN32)
         if (argc == 3 && !std::string_view(argv[1]).starts_with("--"))
             return grain_motion_replay(argv[1], argv[2]);
+#endif
+#if defined(JUICER_GRAIN_MOTION_REPLAY) && defined(_WIN32)
+        require(false, "expected --grain-preview-apertures");
 #endif
         if (argc >= 3 && std::string_view(argv[1]) == "--grain-preview-witness") {
             if (JuicerTests::list_requested(argc, argv)) {

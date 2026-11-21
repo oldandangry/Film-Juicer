@@ -1670,6 +1670,7 @@ pub struct FjFilmGrain {
     pub gain: f32,
     pub chroma_fraction: f32,
     pub sample_pitch: f32,
+    pub calibrated_border: [u8; 4usize],
     pub sample_extent: [f64; 2usize],
     pub sample_step: [f64; 2usize],
     pub sample_origin: [f64; 2usize],
@@ -1698,6 +1699,8 @@ const _: () = {
         [::core::mem::offset_of!(FjFilmGrain, chroma_fraction) - 700usize];
     ["Offset of field: FjFilmGrain::sample_pitch"]
         [::core::mem::offset_of!(FjFilmGrain, sample_pitch) - 704usize];
+    ["Offset of field: FjFilmGrain::calibrated_border"]
+        [::core::mem::offset_of!(FjFilmGrain, calibrated_border) - 708usize];
     ["Offset of field: FjFilmGrain::sample_extent"]
         [::core::mem::offset_of!(FjFilmGrain, sample_extent) - 712usize];
     ["Offset of field: FjFilmGrain::sample_step"]

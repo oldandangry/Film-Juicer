@@ -130,7 +130,8 @@ class GpuLauncherTests(unittest.TestCase):
     apertures = "Grain.Gpu.FilmOfxApertures"
     catalog = (Path(__file__).resolve().parents[1] / "gpu-contracts.json").read_bytes()
 
-    def launch(self, name, listed, cohorts, *, preview=None, replay="OFF", error=None):
+    def launch(self, name, listed, cohorts, *, preview=None, testing="ON", error=None):
+        replay = "ON" if preview == "ON" and testing == "ON" else "OFF"
         events = []
         for caller, ids in cohorts.items():
             events.append({"caller": caller, "event": "membership", "ids": ids})
@@ -147,10 +148,11 @@ class GpuLauncherTests(unittest.TestCase):
                 build = root / "out/build" / self.preset
                 build.mkdir(parents=True)
                 (build / "CMakeCache.txt").write_text(
-                    "BUILD_TESTING:BOOL=ON\n"
+                    f"BUILD_TESTING:BOOL={testing}\n"
                     f"JUICER_GRAIN_PREVIEW:BOOL={preview}\n"
                     f"JUICER_GRAIN_PREVIEW_CONFIGURED:INTERNAL={preview}\n"
-                    f"JUICER_GRAIN_MOTION_REPLAY_CONFIGURED:INTERNAL={replay}\n",
+                    f"JUICER_GRAIN_MOTION_REPLAY_CONFIGURED:INTERNAL={replay}\n"
+                    f"JUICER_GRAIN_APERTURE_TARGET:INTERNAL={'JuicerGrainMotionReplay' if replay == 'ON' else 'OFF'}\n",
                     encoding="utf-8",
                 )
             listing = "".join(json.dumps({"caller": caller, "id": case_id}) + "\n" for caller, case_id in listed)
@@ -225,9 +227,14 @@ class GpuLauncherTests(unittest.TestCase):
         self.assertEqual(execution["commands"], [])
 
     def test_replay_launch_accepts_declared_apertures(self):
-        listed = self.optional_cases("grain_preview_motion_replay", self.apertures, 6)
+        listed = self.optional_cases("grain_preview_motion_replay", self.apertures, 11)
+        self.launch(self.apertures, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON")
         self.launch(
-            self.apertures, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON", replay="ON"
+            self.apertures,
+            listed[:-1],
+            {listed[0][0]: [case_id for _, case_id in listed[:-1]]},
+            preview="ON",
+            error="missing or unexpected native membership",
         )
 
     def test_replay_off_rejects_apertures_before_invocation(self):
@@ -236,6 +243,7 @@ class GpuLauncherTests(unittest.TestCase):
             [],
             {},
             preview="ON",
+            testing="OFF",
             error=(
                 f"optional product registration {self.apertures} is not configured for section grain_preview_motion_replay"
             ),

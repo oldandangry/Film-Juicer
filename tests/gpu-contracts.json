@@ -362,6 +362,10 @@
       "JuicerGrainMotionReplay": {
         "protocol": "custom",
         "registrations": 1
+      },
+      "JuicerGrainOfxApertureTests": {
+        "protocol": "custom",
+        "registrations": 1
       }
     },
     "required": [
@@ -372,15 +376,20 @@
     },
     "native_membership": {
       "Grain.Gpu.FilmOfxApertures": {
-        "listed": 6,
-        "terminal": 6,
+        "listed": 11,
+        "terminal": 11,
         "required": [
           ["film-ofx-apertures", "clipped-quarter-direct"],
           ["film-ofx-apertures", "clipped-quarter-print"],
           ["film-ofx-apertures", "whole-period"],
           ["film-ofx-apertures", "unequal-4-by-8"],
           ["film-ofx-apertures", "unequal-8-by-4"],
-          ["film-ofx-apertures", "8mm-proxy"]
+          ["film-ofx-apertures", "8mm-proxy"],
+          ["film-ofx-apertures", "calibrated-2-by-4"],
+          ["film-ofx-apertures", "calibrated-4-by-2"],
+          ["film-ofx-apertures", "shifted-37-5-equivalent"],
+          ["film-ofx-apertures", "standard-27-over-139-border"],
+          ["film-ofx-apertures", "offset-wide-clipped"]
         ]
       }
     }

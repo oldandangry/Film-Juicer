@@ -1233,7 +1233,7 @@ mod tests {
     #[cfg(feature = "grain-preview")]
     #[test]
     fn film_proxy_publication_uses_full_grid_and_encloses_its_densities() {
-        use crate::film::grain::preview::{ProxyGrid, Raster};
+        use crate::film::grain::preview::{ProxyGrid, Raster, Sampling};
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let publication = Publication::new();
@@ -1261,6 +1261,7 @@ mod tests {
                 extent: [4832.0, 2016.0],
                 step: [8.0; 2],
                 origin: [0.0; 2],
+                size: [604, 252],
             };
             let eighth = admit(604, Some(grid));
             assert!(std::ptr::eq(
@@ -1285,6 +1286,45 @@ mod tests {
             );
             assert_eq!(eighth.film_grain().unwrap().footprint(), 72000.0 / 604.0);
             assert_eq!(admit(4832, None).hash(), full.hash());
+
+            publication
+                .stage(valid(
+                    2,
+                    Params {
+                        camera_film_format_long_edge_mm: 120.0,
+                        film_grain: Some(film::grain::preview::Controls {
+                            amount_ev: 0.0,
+                            texel_pitch_um: 0.5,
+                            chroma_fraction: 0.24,
+                        }),
+                        ..params(route, 1)
+                    },
+                ))
+                .unwrap();
+            let native = admit(4832, None);
+            let same_pitch = admit(
+                4832,
+                Some(ProxyGrid {
+                    extent: [9664.0, 4032.0],
+                    step: [2.0; 2],
+                    origin: [0.0; 2],
+                    size: [4832, 2016],
+                }),
+            );
+            let native_grain = native.film_grain().unwrap();
+            let proxy_grain = same_pitch.film_grain().unwrap();
+            assert_eq!(native_grain.footprint(), proxy_grain.footprint());
+            assert!(matches!(
+                native_grain.sampling(),
+                Sampling::Calibrated([0, 0, 0, 0])
+            ));
+            assert!(matches!(proxy_grain.sampling(), Sampling::Integrated(_)));
+            assert_eq!(
+                native_grain.table().footprint,
+                proxy_grain.table().footprint * 2.0
+            );
+            assert_ne!(native.film_bounds().hash(), same_pitch.film_bounds().hash());
+            assert_eq!(admit(4832, None).hash(), native.hash());
         }
     }
 

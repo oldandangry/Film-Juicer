@@ -38,6 +38,7 @@ from qualification import (
     collect_bundles,
     configured_product_contract,
     read_preview_and_replay_configuration,
+    configured_aperture_target,
     product_artifact_consumers,
 )
 
@@ -425,7 +426,7 @@ def native_case(args):
             section = "grain_preview"
         if section is not None:
             configuration = cache_values(ROOT / "out/build" / args.preset)
-            contract = configured_product_contract(contract, args.runtime, configuration)
+            contract = configured_product_contract(contract, args.runtime, configuration, args.preset)
             if name not in contract["required"]:
                 raise ValueError(f"optional product registration {name} is not configured for section {section}")
             if name == PREVIEW_DISCOVERY:
@@ -976,9 +977,16 @@ def native_tests(args):
                 configuration = candidate["configuration"]
                 preview, replay_configured = read_preview_and_replay_configuration(configuration)
                 for runtime in ("host", "gpu"):
-                    contracts[runtime] = configured_product_contract(contracts[runtime], runtime, configuration)
+                    contracts[runtime] = configured_product_contract(
+                        contracts[runtime], runtime, configuration, args.preset
+                    )
                 artifact_data = (build / "tests/rust-artifacts.json").read_bytes()
-                artifact_consumers = product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
+                artifact_consumers = product_artifact_consumers(
+                    json.loads(artifact_data),
+                    build,
+                    replay_configured,
+                    aperture_target=configured_aperture_target(configuration, args.preset),
+                )
                 costs["report_read_bytes"] += len(artifact_data)
                 (directory / "rust-artifacts.json").write_bytes(artifact_data)
                 candidate["features"]["rust_artifacts"] = "rust-artifacts.json"
@@ -1402,7 +1410,7 @@ def paired_discovery(args):
         (directory / "candidate.patch").write_bytes(patch)
         try:
             cache = cache_values(build)
-            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS}
+            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS if key in cache}
             modules = {}
             for role, bundle in (("ordinary", args.ordinary), ("preview", args.preview)):
                 try:

@@ -10,6 +10,8 @@ use film_juicer_core::{
 };
 use super::host::{Callback, Status};
 use crate::cuda;
+#[cfg(feature = "grain-preview")]
+use film_juicer_core::film::grain::preview::{ProxyGrid, Raster};
 
 // Admission delivery is best-effort. Formatting must not introduce an
 // infallible allocation before the fallible host-message copy.
@@ -34,50 +36,138 @@ fn domain(bounds: [i32; 4]) -> Result<Domain, Status> {
 }
 
 #[cfg(feature = "grain-preview")]
+struct CompleteFrameMapping {
+    canonical: [f64; 4],
+    full_grid: Option<ProxyGrid>,
+}
+
+#[cfg(feature = "grain-preview")]
+struct AxisSupport {
+    span: [f64; 2],
+    empty: [bool; 2],
+}
+
+#[cfg(feature = "grain-preview")]
+fn proxy_axis_support(
+    bounds: [f64; 2],
+    minimum: f64,
+    extent: f64,
+    scale: f64,
+) -> Option<AxisSupport> {
+    let [lower, upper] = bounds;
+    let count = upper - lower;
+    let origin = lower / scale - minimum;
+    let step = scale.recip();
+    let end = count.mul_add(step, origin);
+    if count < 1.0
+        || !origin.is_finite()
+        || !end.is_finite()
+        || !extent.is_finite()
+        || extent <= 0.0
+    {
+        return None;
+    }
+    let edge = |i: f64| i.mul_add(step, origin).clamp(0.0, extent);
+    let span = [edge(0.0), edge(count)];
+    let empty = [edge(1.0) == span[0], edge(count - 1.0) == span[1]];
+    // Match the kernel's clamped edges, including a positive neighbor for
+    // each empty end. Native repeats this support check for raw callers.
+    (span[0] < span[1]
+        && (!empty[0] || (count > 1.0 && edge(2.0) > span[0]))
+        && (!empty[1] || (count > 1.0 && edge(count - 2.0) < span[1])))
+        .then_some(AxisSupport { span, empty })
+}
+
+#[cfg(feature = "grain-preview")]
 fn complete_frame_mapping(
     args: &super::host::RenderArgs,
     source: &super::host::Image<'_>,
     destination: &super::host::Image<'_>,
     window: [i32; 4],
     canonical: [f64; 4],
-) -> bool {
+) -> Option<CompleteFrameMapping> {
     let [x1, y1, x2, y2] = canonical;
     let [scale_x, scale_y] = args.scale;
     let standard_scale =
         scale_x == scale_y && source.scale == args.scale && destination.scale == args.scale;
-    let resized =
-        scale_x < 1.0 && scale_y < 1.0 && source.scale == [1.0; 2] && destination.scale == [1.0; 2];
-    // A dimension-derived action scale can multiply back one ulp past an
-    // integer edge. Recognize that exact quotient on pre-resized images;
-    // genuinely fractional edges still need outward rounding.
-    let edge = |canonical: f64, scale: f64, outward: fn(f64) -> f64| {
-        let scaled = canonical * scale;
-        let nearest = scaled.round();
-        if resized && canonical != 0.0 && nearest / canonical == scale {
-            nearest
-        } else {
-            outward(scaled)
+    let reduced = scale_x < 1.0 && scale_y < 1.0;
+    let resized = reduced && source.scale == [1.0; 2] && destination.scale == [1.0; 2];
+    if !canonical.into_iter().all(f64::is_finite)
+        || x1 >= x2
+        || y1 >= y2
+        || !args
+            .scale
+            .into_iter()
+            .all(|scale| scale.is_finite() && scale > 0.0)
+        || !(standard_scale || resized)
+        || source.pixel_aspect_ratio != 1.0
+        || destination.pixel_aspect_ratio != 1.0
+        || destination.definition != source.definition
+        || source.bounds != source.definition
+        || destination.bounds != source.definition
+        || window != source.definition
+    {
+        return None;
+    }
+    let minimum = [x1.floor(), y1.floor()];
+    let extent = [x2.ceil() - minimum[0], y2.ceil() - minimum[1]];
+    for axis in 0..2 {
+        let scale = args.scale[axis];
+        let endpoints = [canonical[axis], canonical[axis + 2]];
+        let scaled = endpoints.map(|endpoint| endpoint * scale);
+        let outward = [scaled[0].floor(), scaled[1].ceil()];
+        let observed = [
+            f64::from(source.definition[axis]),
+            f64::from(source.definition[axis + 2]),
+        ];
+        if !reduced {
+            if observed != outward {
+                return None;
+            }
+            continue;
         }
-    };
-    let [left, top, right, bottom] = source.definition;
-    canonical.into_iter().all(f64::is_finite)
-        && x1 < x2
-        && y1 < y2
-        && scale_x.is_finite()
-        && scale_y.is_finite()
-        && scale_x > 0.0
-        && scale_y > 0.0
-        && (standard_scale || resized)
-        && source.pixel_aspect_ratio == 1.0
-        && destination.pixel_aspect_ratio == 1.0
-        && edge(x1, scale_x, f64::floor) == f64::from(left)
-        && edge(x2, scale_x, f64::ceil) == f64::from(right)
-        && edge(y1, scale_y, f64::floor) == f64::from(top)
-        && edge(y2, scale_y, f64::ceil) == f64::from(bottom)
-        && destination.definition == source.definition
-        && source.bounds == source.definition
-        && destination.bounds == source.definition
-        && window == source.definition
+        let tight = std::array::from_fn(|edge| {
+            let nearest = scaled[edge].round();
+            if endpoints[edge] != 0.0 && nearest / endpoints[edge] == scale {
+                nearest
+            } else {
+                outward[edge]
+            }
+        });
+        let actual = proxy_axis_support(observed, minimum[axis], extent[axis], scale)?;
+        let nominal = proxy_axis_support(outward, minimum[axis], extent[axis], scale);
+        // Dropping a leading cell re-anchors the grid. Compare support at
+        // BOTH ends after that change, even if the trailing bound did not move.
+        let removable: [bool; 2] = std::array::from_fn(|edge| {
+            (outward[edge] - tight[edge]).abs() == 1.0
+                && nominal.as_ref().is_some_and(|nominal| {
+                    nominal.empty[edge]
+                        && actual.span[0] <= nominal.span[0]
+                        && actual.span[1] >= nominal.span[1]
+                })
+        });
+        if standard_scale {
+            if !(0..2).all(|edge| {
+                observed[edge] == outward[edge]
+                    || (removable[edge] && observed[edge] == tight[edge])
+            }) {
+                return None;
+            }
+        } else if observed != tight {
+            return None;
+        }
+    }
+    Some(CompleteFrameMapping {
+        canonical,
+        full_grid: reduced.then(|| ProxyGrid {
+            extent,
+            step: args.scale.map(f64::recip),
+            origin: std::array::from_fn(|axis| {
+                f64::from(source.definition[axis]) / args.scale[axis] - minimum[axis]
+            }),
+            size: std::array::from_fn(|axis| source.definition[axis + 2] - source.definition[axis]),
+        }),
+    })
 }
 
 #[cfg(feature = "grain-preview")]
@@ -236,12 +326,13 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     #[cfg(feature = "grain-preview")]
     let film_thumbnail = film_selected && callback.thumbnail(&owner.handles);
     #[cfg(feature = "grain-preview")]
-    let film_canonical = if film_selected && !film_thumbnail {
+    let film_mapping = if film_selected && !film_thumbnail {
         if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
             return Err(film_time_error(callback, args.time));
         }
         let canonical = callback.canonical_region(&owner.handles, args.time)?;
-        if !complete_frame_mapping(&args, source, destination, window, canonical) {
+        let Some(mapping) = complete_frame_mapping(&args, source, destination, window, canonical)
+        else {
             return Err(film_geometry_error(
                 callback,
                 &args,
@@ -250,8 +341,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
                 window,
                 canonical,
             ));
-        }
-        Some(canonical)
+        };
+        Some(mapping)
     } else {
         None
     };
@@ -259,27 +350,13 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     let preview_frame = if film_thumbnail {
         film_juicer_core::recipe::PreviewFrame::Thumbnail
     } else {
-        use film_juicer_core::film::grain::preview::{ProxyGrid, Raster};
-        let full_grid = film_canonical
-            .filter(|_| args.scale.into_iter().all(|scale| scale < 1.0))
-            .map(|canonical| {
-                let minimum = [canonical[0].floor(), canonical[1].floor()];
-                let extent = std::array::from_fn(|axis| canonical[axis + 2].ceil() - minimum[axis]);
-                let step = args.scale.map(f64::recip);
-                let origin = std::array::from_fn(|axis| {
-                    f64::from(source.definition[axis]) / args.scale[axis] - minimum[axis]
-                });
-                ProxyGrid {
-                    extent,
-                    step,
-                    origin,
-                }
-            });
         film_juicer_core::recipe::PreviewFrame::Raster(Raster {
             long_edge_px: full.width.max(full.height),
-            full_grid,
+            full_grid: film_mapping.as_ref().and_then(|mapping| mapping.full_grid),
         })
     };
+    #[cfg(feature = "grain-preview")]
+    let film_canonical = film_mapping.map(|mapping| mapping.canonical);
     #[cfg(not(feature = "grain-preview"))]
     let film_canonical = None;
     #[cfg(feature = "test-support")]
@@ -372,7 +449,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         // scratches use the action scale when it describes the complete raster.
         #[cfg(feature = "grain-preview")]
         let scale = if film_canonical.is_some()
-            || complete_frame_mapping(&args, source, destination, window, canonical)
+            || complete_frame_mapping(&args, source, destination, window, canonical).is_some()
         {
             args.scale
         } else {
