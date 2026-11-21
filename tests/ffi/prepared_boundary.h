@@ -59,7 +59,7 @@ namespace JuicerCudaTest {
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext);
 
     inline constexpr char kGrainDispatchCaller[] = "grain-dispatch";
-    inline constexpr std::array<std::string_view, 5> kGrainDispatchCases{"conflicting-models", "malformed-film-frame", "missing-film-bank", "film-launch", "current-launch"};
+    inline constexpr std::array<std::string_view, 6> kGrainDispatchCases{"conflicting-models", "malformed-film-frame", "invalid-film-fraction", "missing-film-bank", "film-launch", "current-launch"};
     void check_grain_dispatch(FjCuda* cuda, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& current, const FjHostPreparation* hostPreparation);
 
     bool execute_boundary(

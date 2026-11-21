@@ -93,6 +93,8 @@ namespace {
         Case{"negative-print-8mm-proxy", "negative-print", "NegativePrintScan", 0, 4, 32, 16},
         Case{"negative-direct-clipped-quarter", "negative-direct", "NegativeDirectScan", 0, 4, 1208, 2},
         Case{"negative-print-clipped-quarter", "negative-print", "NegativePrintScan", 0, 4, 1208, 2},
+        Case{"negative-direct-time-endpoint", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
+        Case{"negative-print-time-endpoint", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
     };
     struct GrainGeometry {
         OfxRectD canonical;
@@ -602,7 +604,8 @@ namespace {
             const bool thumbnails = std::string_view(test.id).ends_with("-thumbnails");
             const bool eightMmProxy = std::string_view(test.id).ends_with("-8mm-proxy");
             const bool clippedQuarter = std::string_view(test.id).ends_with("-clipped-quarter");
-            if (proxy || smallerFormats || thumbnails || eightMmProxy || clippedQuarter)
+            const bool timeEndpoint = std::string_view(test.id).ends_with("-time-endpoint");
+            if (proxy || smallerFormats || thumbnails || eightMmProxy || clippedQuarter || timeEndpoint)
                 host.set_value(effect, "GlareActive", {0});
             host.set_value(effect, "CameraFilmFormatPreset", {2});
             host.set_value(effect, "CameraFilmFormatMm", {36.0});
@@ -632,6 +635,67 @@ namespace {
                 }
                 return words;
             };
+            if (timeEndpoint) {
+                constexpr double below29 = 0.29 * 100.0;
+                static_assert(below29 < 29.0);
+                const auto clean = render(29.0);
+                change("GrainModel", {std::string("film_v1")});
+                change("GrainActive", {1});
+                const auto frame29 = render(below29);
+                require(render(29.0) == frame29, "Film words differ just below and at frame 29");
+                require(frame29 != clean, "Film at frame 29 did not change grain-off pixels");
+                const auto frame38 = render(37.99999999);
+                require(render(38.0) == frame38, "Film words differ just below and at frame 38");
+                const auto frame0 = render(-1e-8);
+                require(render(0.0) == frame0, "Film words differ across the negative-to-zero endpoint");
+                require(frame29 != frame38 && frame29 != frame0 && frame38 != frame0, "distinct Film frame seeds did not change pixels");
+                require(render(below29) == frame29, "Film did not return bit-exactly to the earlier paused frame");
+
+                struct Diagnostic {
+                    std::string_view id;
+                    std::string_view text;
+                };
+                const auto reject = [&](double time, const Diagnostic& expected) {
+                    host.set_property(host.action_args(), kOfxPropTime, {time});
+                    const auto sourceBefore = host.image_release_count(effect, "Source");
+                    const auto outputBefore = host.image_release_count(effect, "Output");
+                    host.clear_calls();
+                    require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed && !host.callback_error(),
+                            "Film admission did not return kOfxStatFailed");
+                    require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
+                                host.image_release_count(effect, "Output") == outputBefore + 1,
+                            "Film admission failure did not release both images exactly once");
+                    int messages = 0;
+                    for (const auto& call : host.calls()) {
+                        if (call.operation != "message")
+                            continue;
+                        ++messages;
+                        require(call.property == kOfxMessageError && call.values.size() == 2 &&
+                                    std::get<std::string>(call.values[0]) == expected.id &&
+                                    std::get<std::string>(call.values[1]).starts_with(expected.text),
+                                "Film admission reported the wrong diagnostic");
+                    }
+                    require(messages == 1, "expected exactly one Film admission diagnostic");
+                };
+                for (const double limit : {-1'000'000.0, 1'000'000.0}) {
+                    (void)render(limit);
+                    reject(std::nextafter(limit, limit * 2.0),
+                           {"FilmJuicerFilmGrainTime", "Film v1 frame time must be finite and within -1000000 to 1000000 frames, inclusive."});
+                    require(render(29.0) == frame29, "Film did not recover after time rejection");
+                }
+                const OfxRectD canonical{0.0, 0.0, static_cast<double>(test.width), static_cast<double>(test.height)};
+                auto mismatch = canonical;
+                ++mismatch.x2;
+                host.set_clip_region(effect, "Source", mismatch);
+                reject(29.0, {"FilmJuicerFilmGrainGeometry", "Film v1 requires complete square-pixel source and output images"});
+                host.set_clip_region(effect, "Source", canonical);
+                require(render(29.0) == frame29, "Film did not recover after geometry rejection");
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"equal_endpoint_words_at", {29, 38, 0}}, {"film_changes_output", true}, {"distinct_seeds_change_output", true}, {"paused_repeat", true}, {"accepted_time_limits", {-1'000'000, 1'000'000}}, {"time_and_geometry_recovered", true}});
+                require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                device.release_images();
+                event.passed();
+                continue;
+            }
             if (eightMmProxy || clippedQuarter) {
                 source = flat_grain_source(test);
                 change("CouplersActive", {0});

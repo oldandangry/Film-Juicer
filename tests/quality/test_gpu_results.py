@@ -190,11 +190,12 @@ class GpuLauncherTests(unittest.TestCase):
         return listed
 
     def test_preview_launch_accepts_declared_cases(self):
-        listed = self.optional_cases("grain_preview", self.preview, 19)
+        listed = self.optional_cases("grain_preview", self.preview, 21)
         self.launch(self.preview, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON")
 
     def test_preview_launch_rejects_missing_case(self):
-        listed = self.optional_cases("grain_preview", self.preview, 19)[:-1]
+        listed = self.optional_cases("grain_preview", self.preview, 21)
+        listed.remove(["grain-preview-render", "negative-print-time-endpoint"])
         self.launch(
             self.preview,
             listed,
@@ -204,7 +205,7 @@ class GpuLauncherTests(unittest.TestCase):
         )
 
     def test_preview_launch_rejects_second_cohort(self):
-        listed = self.optional_cases("grain_preview", self.preview, 19)
+        listed = self.optional_cases("grain_preview", self.preview, 21)
         self.launch(
             self.preview,
             listed,

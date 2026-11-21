@@ -111,6 +111,23 @@ fn film_geometry_error(
     Status::FAILED
 }
 
+#[cfg(feature = "grain-preview")]
+fn film_time_error(callback: &Callback<'_>, time: f64) -> Status {
+    let range = cuda::FILM_GRAIN_TIME_RANGE;
+    let mut text = AdmissionText(String::new());
+    if write!(
+        text,
+        "Film v1 frame time must be finite and within {} to {} frames, inclusive. time={time}",
+        range.start(),
+        range.end(),
+    )
+    .is_ok()
+    {
+        callback.message(c"FilmJuicerFilmGrainTime", &text.0);
+    }
+    Status::FAILED
+}
+
 fn frame_position(time: f64) -> Result<(f64, u64), Status> {
     let time = if time.is_finite() { time } else { 0.0 };
     // Binary64 INT64_MAX rounds to the excluded upper endpoint. These exact
@@ -220,10 +237,11 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     let film_thumbnail = film_selected && callback.thumbnail(&owner.handles);
     #[cfg(feature = "grain-preview")]
     let film_canonical = if film_selected && !film_thumbnail {
+        if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
+            return Err(film_time_error(callback, args.time));
+        }
         let canonical = callback.canonical_region(&owner.handles, args.time)?;
-        if !complete_frame_mapping(&args, source, destination, window, canonical)
-            || !(-1_000_000.0..=1_000_000.0).contains(&args.time)
-        {
+        if !complete_frame_mapping(&args, source, destination, window, canonical) {
             return Err(film_geometry_error(
                 callback,
                 &args,

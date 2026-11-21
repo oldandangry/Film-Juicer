@@ -241,7 +241,7 @@ Dust and scratches remain under refinement. You can already add enough dirt to s
 
 #### Portra 400 Film v1 preview
 
-In the opt-in **Film-Juicer Grain Preview** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes.
+In the opt-in **Film-Juicer Grain Preview** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
 
 Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Film grain suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions. The Windows preview was accepted after testing in DaVinci Resolve on 19 November 2026. [Preview build instructions](docs/building.md#portra-400-grain-preview)
 

@@ -203,22 +203,24 @@
   },
   "native_membership": {
     "Ffi.Gpu.CudaRender.negative-direct": {
-      "listed": 12,
-      "terminal": 127,
+      "listed": 13,
+      "terminal": 128,
       "required": [
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
         ["grain-dispatch", "missing-film-bank"],
         ["grain-dispatch", "film-launch"],
         ["grain-dispatch", "current-launch"]
       ]
     },
     "Ffi.Gpu.CudaRender.negative-print": {
-      "listed": 12,
-      "terminal": 127,
+      "listed": 13,
+      "terminal": 128,
       "required": [
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
         ["grain-dispatch", "missing-film-bank"],
         ["grain-dispatch", "film-launch"],
         ["grain-dispatch", "current-launch"]
@@ -282,8 +284,8 @@
     },
     "native_membership": {
       "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 19,
-        "terminal": 19,
+        "listed": 21,
+        "terminal": 21,
         "required": [
           [
             "grain-preview-render",
@@ -348,7 +350,9 @@
           ["grain-preview-render", "negative-direct-8mm-proxy"],
           ["grain-preview-render", "negative-print-8mm-proxy"],
           ["grain-preview-render", "negative-direct-clipped-quarter"],
-          ["grain-preview-render", "negative-print-clipped-quarter"]
+          ["grain-preview-render", "negative-print-clipped-quarter"],
+          ["grain-preview-render", "negative-direct-time-endpoint"],
+          ["grain-preview-render", "negative-print-time-endpoint"]
         ]
       }
     }

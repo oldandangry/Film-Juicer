@@ -623,6 +623,15 @@ namespace JuicerCudaTest {
             row.passed();
         }
         {
+            auto row = cases.case_event("invalid-film-fraction");
+            auto malformed = film;
+            malformed.temporal_fraction = 1.F;
+            auto candidate = selectedFilm;
+            candidate.film_grain = &malformed;
+            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            row.passed();
+        }
+        {
             auto row = cases.case_event("missing-film-bank");
             JuicerCuda::RenderTest::missingFilmBank = true;
             check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: missing frame bank");
