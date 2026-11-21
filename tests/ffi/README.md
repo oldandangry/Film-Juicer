@@ -435,7 +435,12 @@ Production callbacks use the same admitted native C-boundary render body.
 raw argument and prepared/submission binding failures, current-context and stream
 ownership, zero/one/truncated error buffers, typed API/code preservation, and
 exception containment. Isolated API/executor objects inject native exceptions;
-no hook enters product objects. Abort queries run synchronously at three bounded
+no hook enters product objects. For each route, the grain controls distinguish
+the raw conflicting-model rejection from malformed Film geometry and a missing
+frame-owned Film bank. A null developed C plane exercises the real Film and
+Current launch guards; the native result must preserve the CUDA runtime code
+and name the correct route and launch. The same Current frame then renders
+successfully without the fault. Abort queries run synchronously at three bounded
 checkpoints and expire at return. Tests cover null queries, undefined return tags,
 same-thread invocation, rejected reentry, cancellation followed by success, and
 native epoch advancement after idle resource retirement without resetting the

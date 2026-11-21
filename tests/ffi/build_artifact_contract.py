@@ -18,6 +18,7 @@ from production_contract import (
     PRODUCTION_MODULE_EXPORTS,
     production_module_export_names,
 )
+from qualification import grain_preview_enabled
 
 
 EXPECTED_RUST_CONSUMER_VARIANTS = {
@@ -465,7 +466,7 @@ class BuildArtifactContractTests(unittest.TestCase):
         with self.subTest(case="rust-artifact-manifest"):
             self.assertIsInstance(rust_manifest, dict)
             self.assertEqual(set(rust_manifest), {"schema", "build", "variants", "native_archive", "consumers"})
-            self.assertEqual(rust_manifest.get("schema"), "rust-artifacts-v1")
+            self.assertEqual(rust_manifest.get("schema"), "rust-artifacts-v2")
             self.assertEqual(set(rust_manifest.get("variants", {})), set(RUST_VARIANTS))
             self.assertIsInstance(consumers, dict)
             for target, variant in EXPECTED_RUST_CONSUMER_VARIANTS.items():
@@ -484,6 +485,7 @@ class BuildArtifactContractTests(unittest.TestCase):
         self.assertIsNotNone(build, f"Rust artifact manifest is outside a configured CMake tree: {rust_manifest_path}")
         self.assertEqual(Path(rust_manifest["build"]), build)
         cache = cmake_cache_values(build / "CMakeCache.txt")
+        preview = grain_preview_enabled(cache.get("JUICER_GRAIN_PREVIEW"))
         ninja = cache.get("CMAKE_MAKE_PROGRAM")
         if ninja and not Path(ninja).is_file():
             ninja = shutil.which(ninja)
@@ -499,6 +501,8 @@ class BuildArtifactContractTests(unittest.TestCase):
         variants = rust_manifest["variants"]
         artifact_paths: dict[str, dict[str, Path]] = {}
         for key, (directory_name, expected_features) in RUST_VARIANTS.items():
+            if key == "production" and preview:
+                expected_features = ("grain-preview",)
             with self.subTest(case=f"rust-variant:{key}"):
                 row = variants[key]
                 self.assertEqual(set(row), {"archive", "features", "feature_input", "stamp", "target_dir"})
@@ -517,7 +521,7 @@ class BuildArtifactContractTests(unittest.TestCase):
                 feature_lines = dict(
                     line.split("=", 1) for line in paths["feature_input"].read_text().splitlines() if "=" in line
                 )
-                self.assertEqual(feature_lines.get("features"), "none" if not expected_features else "test-support")
+                self.assertEqual(feature_lines.get("features"), ",".join(expected_features) or "none")
                 self.assertIn("target", feature_lines)
                 self.assertIn("profile", feature_lines)
                 self.assertIn("cargo", feature_lines)
@@ -579,11 +583,23 @@ class BuildArtifactContractTests(unittest.TestCase):
                 else:
                     self.assertEqual((production_count, test_count), (0, 0), command)
 
+                if target in {"JuicerOfxModuleTests", "JuicerOfxInstanceTests", "JuicerOfxRenderTests"}:
+                    graph = subprocess.run(
+                        [ninja, "-C", str(build), "-t", "query", binary.relative_to(build).as_posix()],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    ).stdout
+                    link_inputs = {
+                        build / line[2:] for line in map(str.strip, graph.splitlines()) if line.startswith("| ")
+                    }
+                    self.assertIn(artifact_paths["production"]["feature_input"], link_inputs, graph)
+
         for target, expected_variant in EXPECTED_RUST_CONSUMER_VARIANTS.items():
             with self.subTest(case=f"rust-consumer-role:{target}"):
                 self.assertEqual(consumers[target]["variant"], expected_variant)
 
-        module = build / "juicer.ofx"
+        module = build / ("juicer-grain-preview.ofx" if preview else "juicer.ofx")
         prepared_probe = consumers["JuicerProductionPreparedRenderProbe"]["binary"]
         with self.subTest(case="rust-consumer-binary:juicer"):
             self.assertEqual(Path(consumers["juicer"]["binary"]), module)

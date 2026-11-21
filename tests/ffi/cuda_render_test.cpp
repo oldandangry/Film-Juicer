@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <cuda.h>
@@ -27,6 +28,8 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "Cuda/JuicerCudaFilmGrain.h"
+#include "ScanRoute.h"
 
 namespace JuicerProcess::TestSupport {
     class RootLifetimeObserver final {
@@ -88,6 +91,14 @@ namespace JuicerCuda::RenderTest {
     thread_local int completionOverride = 0;
     thread_local unsigned completionCalls = 0;
     thread_local int lastCompletion = 0;
+    thread_local bool missingFilmBank = false;
+    thread_local bool nullGrainPlane = false;
+    bool omit_film_bank() noexcept {
+        return std::exchange(missingFilmBank, false);
+    }
+    bool omit_grain_plane() noexcept {
+        return std::exchange(nullGrainPlane, false);
+    }
     int completion_status(int actual) noexcept {
         ++completionCalls;
         lastCompletion = actual;
@@ -552,6 +563,97 @@ namespace JuicerCudaTest {
             }
         }
         std::cout << "frame bindings route=" << prepared.route << " grain=" << (prepared.grain.hash != 0) << " passed\n";
+    }
+
+    void check_grain_dispatch(FjCuda* cuda, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& current, const FjHostPreparation* hostPreparation) {
+        require((current.grain.flags & FJ_GRAIN_ACTIVE) != 0 && current.film_grain == nullptr, "dispatch controls require a resolved Current frame");
+        const std::string route = Spektrafilm::scan_route_is_print(static_cast<Spektrafilm::ScanRoute>(current.route)) ? "print" : "direct";
+        JuicerTests::Cohort cases(kGrainDispatchCaller, std::vector<std::string>(kGrainDispatchCases.begin(), kGrainDispatchCases.end()));
+        const std::vector<float> sums(JuicerCuda::FilmGrain::kBankEntries, 1.F);
+        FjFilmGrain film{};
+        film.bank_hash = 1;
+        film.sums = {sums.data(), sums.size()};
+        film.pitch = 1.F;
+        film.gain = 1.F;
+
+        std::array<char, 256> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto render = [&](const FjPreparedHostData& candidate, const FjSubmission& identity, FjAbortCallback abort = {}) {
+            return render_raw_prepared(cuda, frame, identity, candidate, abort, &error, hostPreparation);
+        };
+        const auto diagnostic = [&] {
+            return std::string_view(message.data(), error.length);
+        };
+        {
+            auto row = cases.case_event("conflicting-models");
+            auto conflict = current;
+            conflict.film_grain = &film;
+            AbortQuery abort;
+            abort.cancelAt = 1;
+            require_status(render(conflict, submission, {AbortQuery::query, &abort}), {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "conflicting models rejected by raw descriptor admission");
+            require(abort.calls == 0 && diagnostic() == "conflicting grain models", "grain conflict must precede executor preparation");
+            row.passed();
+        }
+
+        auto selectedFilm = current;
+        selectedFilm.grain = {};
+        selectedFilm.noise = {};
+        selectedFilm.film_development.density_layers_hash = 0;
+        for (auto& layer : selectedFilm.film_development.density_layers)
+            std::fill(std::begin(layer), std::end(layer), FjFloatSpan{});
+        selectedFilm.film_grain = &film;
+
+        // The two models are separate instances, not conflicting memberships
+        // for the same submission snapshot.
+        auto filmSubmission = submission;
+        filmSubmission.instance_token ^= std::uint64_t{1} << 63;
+        const auto check_runtime_failure = [&](const FjPreparedHostData& candidate, const FjSubmission& identity, const std::string& prefix) {
+            const auto outcome = render(candidate, identity);
+            const std::string detail = prefix + " (got '" + std::string(diagnostic()) + "')";
+            require_status(outcome, {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, cudaErrorInvalidValue}, detail.c_str());
+            const std::string expected = prefix + ": " + cudaGetErrorString(cudaErrorInvalidValue);
+            if (diagnostic() != expected)
+                throw std::runtime_error("grain failure attribution: expected '" + expected + "', got '" + std::string(diagnostic()) + "'");
+        };
+        {
+            auto row = cases.case_event("malformed-film-frame");
+            film.pitch = std::numeric_limits<float>::quiet_NaN();
+            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: invalid frame");
+            film.pitch = 1.F;
+            row.passed();
+        }
+        {
+            auto row = cases.case_event("invalid-film-fraction");
+            auto malformed = film;
+            malformed.temporal_fraction = 1.F;
+            auto candidate = selectedFilm;
+            candidate.film_grain = &malformed;
+            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            row.passed();
+        }
+        {
+            auto row = cases.case_event("missing-film-bank");
+            JuicerCuda::RenderTest::missingFilmBank = true;
+            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: missing frame bank");
+            require(!JuicerCuda::RenderTest::missingFilmBank, "missing Film bank fault reached binding");
+            row.passed();
+        }
+        {
+            auto row = cases.case_event("film-launch");
+            JuicerCuda::RenderTest::nullGrainPlane = true;
+            // The real launch rejects the null C plane before enqueueing Film work.
+            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain launch failed");
+            require(!JuicerCuda::RenderTest::nullGrainPlane, "Film launch fault reached developed density dispatch");
+            row.passed();
+        }
+        require_status(fj_cuda_retire_instance(cuda, filmSubmission.instance_token, &error), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "retire raw Film instance");
+        {
+            auto row = cases.case_event("current-launch");
+            JuicerCuda::RenderTest::nullGrainPlane = true;
+            check_runtime_failure(current, submission, route + " visual grain launch failed");
+            require(!JuicerCuda::RenderTest::nullGrainPlane, "Current launch fault reached developed density dispatch");
+            row.passed();
+        }
     }
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext) {

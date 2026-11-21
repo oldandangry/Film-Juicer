@@ -21,14 +21,38 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
+from qualification import (
+    COMPILER_DEPENDENCY_TARGET,
+    FILM_GRAIN_STAGE_CONSUMERS,
+    FILM_GRAIN_STAGE_DATABASE,
+    FILM_GRAIN_STAGE_HEADER,
+    MOTION_REPLAY_DEFINE,
+    MOTION_REPLAY_EXCLUSION,
+    MOTION_REPLAY_FILE_CONSUMERS,
+    MOTION_REPLAY_SOURCE,
+    MOTION_REPLAY_STAGE_CONSUMERS,
+    PRESET_TARGETS,
+    PRODUCT_PREVIEW_KEYS,
+    QUALITY_CHECKS_SCHEMA,
+    RUST_POLICY_FILES,
+    RUST_QUALITY_PACKAGES,
+    SOURCE_FILE_POLICY,
+    clippy_forms,
+    compiler_dependency_command,
+    film_grain_stage_probes,
+    grain_preview_enabled,
+    read_preview_and_replay_configuration,
+    is_motion_replay_compile_entry,
+    is_motion_replay_target_output,
+    motion_replay_quality_files,
+    motion_replay_tidy_label,
+    product_artifact_consumers,
+    quality_native_source,
+    quality_replay_configuration,
+    quality_scope,
+)
 
-RUST_POLICY_FILES = {
-    "Cargo.lock",
-    "Cargo.toml",
-    "clippy.toml",
-    "rust-toolchain.toml",
-    "rustfmt.toml",
-}
+
 ROOT_OWNED_FILES = {
     ".clang-format",
     ".clang-tidy",
@@ -36,23 +60,6 @@ ROOT_OWNED_FILES = {
     "CMakeLists.txt",
     "CMakePresets.json",
     "CONTRIBUTING.md",
-}
-RUST_BUILD_FILES = {
-    "CMakeLists.txt",
-    "cmake/JuicerRust.cmake",
-}
-NATIVE_POLICY_FILES = {
-    ".clang-format",
-    ".clang-tidy",
-    "scripts/check-quality.py",
-    "scripts/source_file_policy.json",
-}
-QUALITY_RUNNER_PREFIXES = ("tests/quality/",)
-PRESET_TARGETS = {
-    "linux-debug": "x86_64-unknown-linux-gnu",
-    "linux-release": "x86_64-unknown-linux-gnu",
-    "windows-clang-debug": "x86_64-pc-windows-msvc",
-    "windows-clang-release": "x86_64-pc-windows-msvc",
 }
 RUST_VERSION = "1.98.1"
 # Direct package dependencies, including inactive target-specific declarations.
@@ -91,6 +98,7 @@ class CompilationEntry:
     command: str
     directory: Path = Path(".")
     arguments: tuple[str, ...] = ()
+    output: str = ""
 
 
 @dataclass(frozen=True)
@@ -99,6 +107,7 @@ class AnalysisCommand:
     directory: Path
     label: str
     source: str = ""
+    replay_headers: tuple[str, ...] = ()
 
 
 class Runner:
@@ -119,6 +128,9 @@ class Runner:
         self.expected_checks: list[str] = []
         self.completed_checks: list[str] = []
         self.expected_commands: list[str] = []
+        self.rust_quality: dict | None = None
+        self.product_configuration: dict = {}
+        self.replay_compiler_analysis: dict = {}
         self.python_cases: list[str] = []
         self.consumed_inputs: set[str] = set()
         self.command_output_read_bytes = 0
@@ -154,6 +166,7 @@ class Runner:
         label: str,
         display_output: bool = True,
         stdout_only: bool = False,
+        replay_headers: tuple[str, ...] = (),
     ) -> str:
         with self.output_lock:
             safe_label = self._name(label)
@@ -167,6 +180,7 @@ class Runner:
             self.expected_commands.append(command_name)
             print("+", subprocess.list2cmdline(command))
         try:
+            replay = {"replay_headers": replay_headers} if replay_headers else {}
             output_path = self.native_run.command(
                 command_name,
                 command,
@@ -174,6 +188,7 @@ class Runner:
                 env=env,
                 timeout=None,
                 stdout_only=stdout_only,
+                **replay,
             )
         except subprocess.CalledProcessError as exc:
             raise QualityError(
@@ -212,7 +227,8 @@ class Runner:
                     item = next(remaining, None)
                     if item is None:
                         break
-                    future = executor.submit(self.run, item.command, cwd=item.directory, label=item.label)
+                    replay = {"replay_headers": item.replay_headers} if item.replay_headers else {}
+                    future = executor.submit(self.run, item.command, cwd=item.directory, label=item.label, **replay)
                     pending[future] = item
                 if not pending:
                     break
@@ -241,7 +257,7 @@ def parse_arguments() -> argparse.Namespace:
         nargs="+",
         help="actual compiler dependency consumers supplied by development verification",
     )
-    parser.add_argument("--rust-packages", nargs="+", choices=("film-juicer-core", "film-juicer-plugin"))
+    parser.add_argument("--rust-packages", nargs="+", choices=RUST_QUALITY_PACKAGES)
     parser.add_argument(
         "--development", action="store_true", help="development checks only; never publishes qualification probes"
     )
@@ -332,7 +348,7 @@ def run_git(root: Path, arguments: Sequence[str]) -> bytes:
 
 
 def load_policy(root: Path) -> SourcePolicy:
-    path = root / "scripts/source_file_policy.json"
+    path = root / "scripts" / SOURCE_FILE_POLICY
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -418,16 +434,7 @@ def exclusion_reason(path: str, policy: SourcePolicy) -> str | None:
 
 
 def is_native(path: str, policy: SourcePolicy) -> bool:
-    suffix = PurePosixPath(path).suffix.lower()
-    return (
-        suffix in policy.native_extensions
-        and path.startswith(("src/", "native/", "tests/"))
-        and "/fixtures/" not in path
-    )
-
-
-def is_rust(path: str) -> bool:
-    return path.endswith(".rs") or path in RUST_POLICY_FILES or path.endswith("/Cargo.toml")
+    return quality_native_source(path, policy.native_extensions)
 
 
 def check_source_hygiene(root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path) -> None:
@@ -679,27 +686,22 @@ def check_rust(
         "--target-dir",
         str(target_dir),
     ]
-    profile = "release" if arguments.preset.endswith("-release") else "dev"
-    profile_args = ["--release"] if profile == "release" else []
-    selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
+    selected_packages = list(dict.fromkeys(getattr(arguments, "rust_packages", None) or RUST_QUALITY_PACKAGES))
     development = getattr(arguments, "development", False)
     format_packages = (
         [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
     )
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
-    for package in selected_packages:
-        features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
-        runner.run(
-            [*common, "-p", package, "--all-targets", *profile_args, "--", "-D", "warnings"],
-            env=environment,
-            label=f"clippy-{package}-{profile}",
-        )
-        if features:
-            runner.run(
-                [*common, "-p", package, "--all-targets", *features, *profile_args, "--", "-D", "warnings"],
-                env=environment,
-                label=f"clippy-{package}-test-support-{profile}",
-            )
+    from verify import cache_values
+
+    cache = cache_values(root / "out/build" / arguments.preset)
+    raw_preview = cache.get("JUICER_GRAIN_PREVIEW")
+    runner.rust_quality = {"JUICER_GRAIN_PREVIEW": raw_preview, "packages": selected_packages}
+    preview_enabled = None
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
+        preview_enabled, _ = read_preview_and_replay_configuration(cache)
+    for label, form in clippy_forms(arguments.preset, selected_packages, raw_preview, preview=preview_enabled):
+        runner.run([*common, *form], env=environment, label=label)
 
 
 def split_compiler_command(command: str) -> tuple[str, ...]:
@@ -745,7 +747,9 @@ def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
         command = raw.get("command") or subprocess.list2cmdline(raw.get("arguments", []))
         if command:
             arguments = tuple(raw["arguments"]) if "arguments" in raw else split_compiler_command(command)
-            entries.append(CompilationEntry(relative, command, Path(raw["directory"]), arguments))
+            entries.append(
+                CompilationEntry(relative, command, Path(raw["directory"]), arguments, raw.get("output", ""))
+            )
     if not entries:
         raise QualityError(f"compilation database contains no owned entries: {path}")
     return entries
@@ -1083,6 +1087,159 @@ def prepare_cuda_analysis(
     return commands
 
 
+def compiler_dependencies(root: Path, runner: Runner, entry: CompilationEntry, label: str) -> set[Path]:
+    """Use the configured preprocessor to resolve active includes."""
+    try:
+        command = compiler_dependency_command(
+            entry.directory, root / entry.path, entry.directory / entry.output, entry.arguments
+        )
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
+    try:
+        depfile = runner.run(
+            command,
+            cwd=entry.directory,
+            label=label,
+            display_output=False,
+            stdout_only=True,
+        )
+    except QualityError as exc:
+        raise QualityError(f"dependency probe failed for {entry.path}: {exc}") from exc
+
+    rule, separator, prerequisites = depfile.replace("\r\n", "\n").replace("\\\n", " ").partition(":")
+    if rule != COMPILER_DEPENDENCY_TARGET or not separator or "\n" in prerequisites.strip():
+        raise QualityError(f"invalid dependency output for {entry.path}")
+
+    def unescape(match):
+        slashes, character = match.groups()
+        # GCC doubles literal backslashes before escaped whitespace and adds
+        # one escape before a hash. Other backslashes are literal path bytes.
+        count = len(slashes) - 1 if character == "#" else len(slashes) // 2
+        return "\\" * count + character
+
+    tokens = re.findall(r"(?:\\[ \t]|[^ \t\n])+", prerequisites.strip())
+    paths = {
+        (entry.directory / re.sub(r"(\\+)([ \t#])", unescape, token).replace("$$", "$")).resolve() for token in tokens
+    }
+    if (root / entry.path).resolve() not in paths:
+        raise QualityError(f"dependency output omitted its source: {entry.path}")
+    return paths
+
+
+def prepare_motion_replay_analysis(root, runner, clang_tidy, preset, files, entries):
+    from execution import write_json
+
+    try:
+        _, replay_configured = quality_replay_configuration(runner.product_configuration, preset)
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
+    replay_entries = []
+    seen = set()
+    for entry in sorted(entries, key=lambda entry: entry.path):
+        source = entry.path
+        if not is_motion_replay_target_output(source, entry.output):
+            if source == MOTION_REPLAY_SOURCE or any(MOTION_REPLAY_DEFINE in arg for arg in entry.arguments):
+                raise QualityError(f"unexpected compile variant outside the motion replay target for {source}")
+            continue
+        if (
+            not replay_configured
+            or source in FILM_GRAIN_STAGE_CONSUMERS
+            or source in seen
+            or not is_motion_replay_compile_entry(source, entry.output, entry.arguments)
+        ):
+            raise QualityError(f"unexpected configured motion replay compile variant for {source}")
+        seen.add(source)
+        replay_entries.append(entry)
+
+    minimum = {file: MOTION_REPLAY_FILE_CONSUMERS[file] for file in files if file in MOTION_REPLAY_FILE_CONSUMERS}
+    if not replay_configured:
+        runner.replay_compiler_analysis = {file: {"excluded": MOTION_REPLAY_EXCLUSION} for file in minimum}
+        if minimum:
+            print("Motion replay is unavailable for compiler analysis in this configuration: " + ", ".join(minimum))
+        return []
+
+    if FILM_GRAIN_STAGE_HEADER in files:
+        minimum[FILM_GRAIN_STAGE_HEADER] = MOTION_REPLAY_STAGE_CONSUMERS
+    database = []
+    commands = []
+    consumers: dict[str, list[str]] = {file: [] for file in minimum}
+    input_paths = {file: (root / file).resolve() for file in minimum}
+    for entry in replay_entries:
+        source = entry.path
+        label = motion_replay_tidy_label(source)
+        inputs = compiler_dependencies(root, runner, entry, label.removeprefix("clang-tidy-") + "-dependencies")
+        runner.consume(sorted(inputs))
+        selected_inputs = tuple(
+            sorted(
+                file
+                for file, path in input_paths.items()
+                if path in inputs and (file != MOTION_REPLAY_SOURCE or file == source)
+            )
+        )
+        if not selected_inputs:
+            continue
+        for file in selected_inputs:
+            consumers[file].append(label)
+        database.append(
+            {
+                "directory": str(entry.directory),
+                "file": str(root / source),
+                "arguments": list(entry.arguments),
+                "output": entry.output,
+            }
+        )
+        commands.append(
+            AnalysisCommand(
+                [clang_tidy, "-p", str(runner.log_dir), "--warnings-as-errors=*", str(root / source)],
+                root,
+                label,
+                source,
+                selected_inputs,
+            )
+        )
+    for file, sources in minimum.items():
+        missing = [source for source in sources if motion_replay_tidy_label(source) not in consumers[file]]
+        if missing:
+            raise QualityError(f"missing configured motion replay consumers for {file}: {', '.join(missing)}")
+    write_json(runner.log_dir / "compile_commands.json", database)
+    runner.replay_compiler_analysis = {
+        file: {"commands": [runner.name_prefix + label for label in labels]} for file, labels in consumers.items()
+    }
+    return commands
+
+
+def check_film_grain_stage_consumers(root, runner, build, entries):
+    """Retain the configured ordinary consumers after checking active includes."""
+    from execution import write_json
+
+    header = (root / FILM_GRAIN_STAGE_HEADER).resolve()
+    stage_entries = sorted(
+        (entry for entry in entries if entry.path in FILM_GRAIN_STAGE_CONSUMERS),
+        key=lambda entry: str(entry.directory / entry.output),
+    )
+    database = [
+        {
+            "directory": str(entry.directory),
+            "file": str(root / entry.path),
+            "arguments": list(entry.arguments),
+            "output": str(entry.directory / entry.output),
+        }
+        for entry in stage_entries
+    ]
+    try:
+        probes = film_grain_stage_probes(
+            database, root, build, testing=grain_preview_enabled(runner.product_configuration["BUILD_TESTING"])
+        )
+    except ValueError as exc:
+        raise QualityError(str(exc)) from exc
+    for label, entry in zip(probes, stage_entries, strict=True):
+        inputs = compiler_dependencies(root, runner, entry, label)
+        if header not in inputs:
+            raise QualityError(f"{entry.path} does not actively include {FILM_GRAIN_STAGE_HEADER}: {entry.output}")
+        runner.consume(sorted(inputs))
+    write_json(runner.log_dir / FILM_GRAIN_STAGE_DATABASE, database)
+
+
 def prepare_native_analysis(
     root: Path,
     runner: Runner,
@@ -1090,11 +1247,10 @@ def prepare_native_analysis(
     selected_native: Sequence[str],
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
+    build_dir = root / "out/build" / arguments.preset
     entries = compilation_entries(root, arguments.preset)
-    runner.consume(
-        [root / "out/build" / arguments.preset / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"]
-    )
-    validate_translation_units(selected_native, entries, policy)
+    runner.consume([build_dir / "compile_commands.json", root / ".clang-format", root / ".clang-tidy"])
+    validate_translation_units([path for path in selected_native if path != MOTION_REPLAY_SOURCE], entries, policy)
     format_candidates = (
         arguments.clang_format,
         os.environ.get("JUICER_CLANG_FORMAT"),
@@ -1124,8 +1280,30 @@ def prepare_native_analysis(
     )
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
     consumers = getattr(arguments, "compiler_consumers", None) or []
+    if MOTION_REPLAY_SOURCE in consumers and MOTION_REPLAY_SOURCE not in selected_native:
+        raise QualityError(f"select {MOTION_REPLAY_SOURCE} with --files for motion replay analysis")
+    consumers = [source for source in consumers if source != MOTION_REPLAY_SOURCE]
+    replay_files = motion_replay_quality_files(selected_native)
+    commands: list[AnalysisCommand] = []
+    stage_consumers: tuple[str, ...] = ()
+    if replay_files:
+        commands = prepare_motion_replay_analysis(
+            root, runner, clang_tidy, arguments.preset, sorted(replay_files), entries
+        )
+        selected_native = [path for path in selected_native if path not in MOTION_REPLAY_FILE_CONSUMERS]
+        if not selected_native and not consumers:
+            return commands
+        entries = [entry for entry in entries if not is_motion_replay_target_output(entry.path, entry.output)]
+        if FILM_GRAIN_STAGE_HEADER in replay_files:
+            check_film_grain_stage_consumers(root, runner, build_dir, entries)
+            # The witness's guarded stage include is not active in ordinary
+            # render probes; use the ordinary owners verified by the compiler.
+            selected_native = [path for path in selected_native if path != FILM_GRAIN_STAGE_HEADER]
+            stage_consumers = FILM_GRAIN_STAGE_CONSUMERS
     validate_translation_units(consumers, entries, policy)
-    translation_units = sorted(set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers))
+    translation_units = sorted(
+        set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers) | set(stage_consumers)
+    )
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
     includes, edges = {}, {}
@@ -1134,8 +1312,6 @@ def prepare_native_analysis(
         if entry.path in translation_units:
             consumed.update(included_paths(root.resolve(), entry, includes, edges))
     runner.consume([root / path for path in sorted(consumed)])
-    build_dir = root / "out/build" / arguments.preset
-    commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
         if PurePosixPath(translation_unit).suffix.lower() == ".cu":
             continue
@@ -1180,19 +1356,11 @@ def check_build_path(root: Path, preset: str) -> None:
 
 
 def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str], policy: SourcePolicy):
-    runner_changed = (
-        getattr(arguments, "qualification", False)
-        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
-        or any(path in NATIVE_POLICY_FILES for path in selected)
-        or any(path.startswith(".github/workflows/") for path in selected)
-    )
-    rust_required = (
-        runner_changed or any(path in RUST_BUILD_FILES for path in selected) or any(is_rust(path) for path in selected)
-    )
+    expanded, rust_required = quality_scope(selected, qualification=getattr(arguments, "qualification", False))
     native_required = (
         bool(getattr(arguments, "compiler_consumers", None))
-        or runner_changed
-        or any(path in {".clang-format", ".clang-tidy"} or is_native(path, policy) for path in selected)
+        or expanded
+        or any(is_native(path, policy) for path in selected)
     )
     expected = ["source-hygiene", "git-diff-check", "native-boundary-enforcement"]
     if rust_required:
@@ -1201,7 +1369,7 @@ def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str],
         expected.append("native-quality")
     if not selected:
         expected.append("empty-selection")
-    return expected, rust_required, native_required
+    return expected, rust_required, native_required, expanded
 
 
 def complete_check(runner: Runner, name: str) -> None:
@@ -1218,13 +1386,7 @@ def run_checks(
 ) -> int:
     target = PRESET_TARGETS[arguments.preset]
     log_dir = runner.log_dir
-    expected_checks, rust_required, native_required = quality_requirements(arguments, selected, policy)
-    runner_changed = (
-        getattr(arguments, "qualification", False)
-        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
-        or any(path in NATIVE_POLICY_FILES for path in selected)
-        or any(path.startswith(".github/workflows/") for path in selected)
-    )
+    expected_checks, rust_required, native_required, expanded = quality_requirements(arguments, selected, policy)
     runner.expected_checks = expected_checks
     runner.python_cases = ["quality-boundary"]
 
@@ -1306,7 +1468,7 @@ def run_checks(
     native_commands: list[AnalysisCommand] = []
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
-        if runner_changed or any(path in {".clang-format", ".clang-tidy"} for path in selected):
+        if expanded:
             native_files.extend(path for path in REPRESENTATIVE_NATIVE_FILES if (root / path).is_file())
         native_files = sorted(set(native_files))
         if not native_files:
@@ -1383,15 +1545,19 @@ def quality_main(root, arguments):
     log_dir.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(root / "scripts"))
     from execution import NativeRun, write_json
+    from verify import cache_values
 
     native_run = NativeRun(root, log_dir)
     runner = Runner(
         root, log_dir, jobs=arguments.jobs, native_run=native_run, name_prefix="quality-" if in_bundle else ""
     )
+    cache = cache_values(root / "out/build" / arguments.preset)
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
+        runner.product_configuration = {key: cache.get(key) for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_HOME_DIRECTORY")}
     runner.consume(
         [root / "out/build" / arguments.preset / "CMakeCache.txt", root / ".cargo/config", root / ".cargo/config.toml"]
     )
-    expected_checks, _, _ = quality_requirements(arguments, selected, policy)
+    expected_checks, _, _, _ = quality_requirements(arguments, selected, policy)
     runner.expected_checks = expected_checks
     runner.python_cases = ["quality-boundary"]
     candidate = None
@@ -1409,6 +1575,18 @@ def quality_main(root, arguments):
     candidate_unchanged = None
     if failure is None:
         try:
+            if motion_replay_quality_files(selected):
+                shutil.copyfile(root / "scripts" / SOURCE_FILE_POLICY, log_dir / SOURCE_FILE_POLICY)
+                _, replay_configured = quality_replay_configuration(runner.product_configuration, arguments.preset)
+                build = root / "out/build" / arguments.preset
+                manifest = build / "tests/rust-artifacts.json"
+                artifact_data = manifest.read_bytes()
+                product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
+                retained_artifacts = log_dir / manifest.name
+                if not in_bundle:
+                    retained_artifacts.write_bytes(artifact_data)
+                elif retained_artifacts.read_bytes() != artifact_data:
+                    raise QualityError("replay quality artifact description differs from its product receipt")
             result = run_checks(root, arguments, policy, selected, excluded, runner)
             if result != 0:
                 raise QualityError(f"quality checks returned {result}")
@@ -1459,7 +1637,7 @@ def quality_main(root, arguments):
         costs["expiry"] = expiry
         costs["report_read_bytes"] += expiry["read_bytes"]
     checks = {
-        "schema": "native-quality-checks-v1",
+        "schema": QUALITY_CHECKS_SCHEMA,
         "status": status,
         "preset": arguments.preset,
         "selected": selected,
@@ -1469,6 +1647,8 @@ def quality_main(root, arguments):
         "completed_checks": completed_checks,
         "expected_commands": expected_commands,
         "commands": commands,
+        "rust_quality": runner.rust_quality,
+        "replay_compiler_analysis": runner.replay_compiler_analysis,
         "python_cases": python_cases,
         "consumed_inputs": sorted(consumed_inputs),
         "costs": costs,
@@ -1484,9 +1664,10 @@ def quality_main(root, arguments):
     if candidate is None:
         raise failure or QualityError("could not capture the standalone quality source candidate")
     (log_dir / "candidate.patch").write_bytes(candidate_patch)
-    candidate_record = {**candidate, "preset": arguments.preset}
+    candidate_record = {**candidate, "preset": arguments.preset, "configuration": runner.product_configuration}
     result_payload = {
-        "schema": "native-quality-v1",
+        "schema": "native-quality-v3",
+        "run_id": log_dir.name,
         "status": status,
         "preset": arguments.preset,
         "candidate_head": candidate["head"],
@@ -1497,6 +1678,7 @@ def quality_main(root, arguments):
         "excluded": excluded,
         "scope": "quality",
         "mode": "development" if getattr(arguments, "development", False) else "qualification",
+        "qualification_requested": getattr(arguments, "qualification", False),
         "members": {},
         "costs": costs,
     }

@@ -215,6 +215,7 @@ namespace {
         Processor,
         Direct,
         Boundary,
+        GrainDispatch,
         State,
         StateContract,
         StateLifetime
@@ -831,7 +832,7 @@ namespace {
                                       1.0};
             const auto token = 0x641207ull + static_cast<std::uint64_t>(test.route) + (test.combined ? 4ull : 0ull);
             std::string diagnostic;
-            if (path == ExecutionPath::Boundary) {
+            if (path == ExecutionPath::Boundary || path == ExecutionPath::GrainDispatch) {
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
                 JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
                 snapshot.instanceToken.value = token;
@@ -846,7 +847,7 @@ namespace {
                     frameBounds, frameBounds, static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
                 snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                     stateView.upload_core_hash, stateView.dir_recipe.hash, stateView.scanner_hash, meter.hash);
-                if (!JuicerCudaTest::execute_boundary(runtime.borrow(), *held, frame, snapshot, diagnostic, std::string(test.name) + "/" + std::string(invocationPhase)))
+                if (!JuicerCudaTest::execute_boundary(runtime.borrow(), *held, frame, snapshot, diagnostic, std::string(test.name) + "/" + std::string(invocationPhase), path == ExecutionPath::GrainDispatch))
                     throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
 #else
                 throw std::runtime_error("boundary path requires the prepared fixture target");
@@ -4494,6 +4495,8 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case("state_contract", argv[2]);
             for (const char* path : {"boundary-cold", "boundary-warm", "direct-executor", "processor-render", "grain-boundary"})
                 JuicerTests::list_case("processor_render_path", std::string(argv[2]) + "/" + path);
+            for (const auto id : JuicerCudaTest::kGrainDispatchCases)
+                JuicerTests::list_case(JuicerCudaTest::kGrainDispatchCaller, id);
             return 0;
         }
         if (argc == 4 && std::string_view(argv[1]) == "--state-lifetime") {
@@ -5107,7 +5110,7 @@ int main(int argc, char** argv) try {
                     JuicerTestSupport::InstanceFixture grainState;
                     MembershipRetirement grainStateRetirement{runtime, grainState};
                     JuicerTests::CaseEvent grain_path("processor_render_path", std::string(test.name) + "/grain-boundary");
-                    (void)render_case(runtime, test, grainParameters, grainState, false, ExecutionPath::Boundary, DestinationLayout::Matching, 2);
+                    (void)render_case(runtime, test, grainParameters, grainState, false, ExecutionPath::GrainDispatch, DestinationLayout::Matching, 2);
                     grain_path.passed();
                 }
 #endif

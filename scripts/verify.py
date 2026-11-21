@@ -23,9 +23,23 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
 
     raise SystemExit(collection_main(sys.argv[2:]))
 
-from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
+from execution import OutputLease, UnresolvedScope, closeout_run, digest, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
-from qualification import collect_bundles
+from qualification import (
+    MODULE_CONFIGURATION_KEYS,
+    OPTIONAL_PRODUCT_REGISTRATIONS,
+    PRODUCT_PREVIEW_KEYS,
+    PREVIEW_DISCOVERY,
+    RECEIPT_ERRORS,
+    RUST_TEST_BUILD_TARGET,
+    RUST_TEST_PATH_FLAGS,
+    RUST_TEST_REGISTRATIONS,
+    SOURCE_FILE_POLICY,
+    collect_bundles,
+    configured_product_contract,
+    read_preview_and_replay_configuration,
+    product_artifact_consumers,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {
@@ -134,12 +148,25 @@ def quality_command(preset, selection):
 
 def rust_tests(args):
     """Run one Rust test package from CMake-prepared nextest binaries."""
-    from qualification import framework_terminals
+    import hashlib
 
-    package = getattr(args, "package", "core")
-    package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}.get(package)
-    if package_name is None:
-        raise ValueError("Rust test package must be core or bridge")
+    from qualification import (
+        RUST_TEST_PACKAGES,
+        framework_terminals,
+        require_rust_core_publication,
+        rust_case_events,
+        rust_core_publication,
+        rust_membership,
+        rust_nextest_commands,
+        rust_test_binaries,
+        rust_test_package,
+        validate_rust_test_build,
+        validate_rust_test_paths,
+        validate_rust_test_request,
+    )
+
+    package = args.package
+    package_name = RUST_TEST_PACKAGES[package]
     registration = "Rust.Core" if package == "core" else "Rust.Bridge"
     if os.environ.get("FJ_RUST_FILTER") or os.environ.get("FJ_OPTICS_BUNDLE"):
         raise ValueError(
@@ -173,6 +200,12 @@ def rust_tests(args):
     execution_path = bundle / f"{registration}.execution.json"
     config_path = bundle / f"{registration}.nextest.toml"
 
+    request = args.request
+    preview = request.get("grain_preview")
+    validate_rust_test_request(request, args.preset, request.get("build_kind"), preview)
+    paths = {flag: str(getattr(args, flag.replace("-", "_"))) for flag in RUST_TEST_PATH_FLAGS}
+    validate_rust_test_paths(paths, ROOT, args.preset)
+
     # Cargo metadata supplies the test-target contract independently of the
     # nextest discovery it will later validate. This catches a missing lib or
     # integration-test binary without maintaining a second list of test names.
@@ -181,27 +214,15 @@ def rust_tests(args):
     bookkeeping_reads = len(cargo_bytes) + len(binaries_bytes)
     cargo_metadata = json.loads(cargo_bytes)
     binaries_metadata = json.loads(binaries_bytes)
-    packages = {row["id"]: row for row in cargo_metadata["packages"]}
-    selected_package = next((row for row in packages.values() if row["name"] == package_name), None)
-    if selected_package is None:
-        raise ValueError("Cargo metadata omits Rust test package: " + package_name)
-    expected_binaries = {
-        (selected_package["id"], target["name"])
-        for target in selected_package["targets"]
-        if target.get("test") and any(kind in target["kind"] for kind in ("test", "lib", "staticlib"))
-    }
-    actual_binaries = {
-        (binary["package-id"], binary["binary-name"])
-        for binary in binaries_metadata["rust-binaries"].values()
-        if binary.get("package-id") == selected_package["id"]
-    }
-    missing_binaries = expected_binaries - actual_binaries
-    unexpected_binaries = actual_binaries - expected_binaries
-    if not expected_binaries or missing_binaries or unexpected_binaries:
-        raise ValueError(
-            "Rust test binary contract differs from Cargo targets: "
-            + repr({"missing": sorted(missing_binaries), "unexpected": sorted(unexpected_binaries)})
-        )
+    resolved_features = validate_rust_test_build(request, args.preset, ROOT, cargo_metadata, binaries_metadata)
+    selected_package = rust_test_package(cargo_metadata, package)
+    package_id = selected_package["id"]
+    expected_binaries = sorted([package_id, target] for target in rust_test_binaries(selected_package))
+    contract_path = bundle / "host-contracts.json"
+    contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json").read_bytes()
+    bookkeeping_reads += len(contract_bytes)
+    contract = json.loads(contract_bytes)
+    publication = rust_core_publication(contract) if preview and package == "core" else None
 
     source_root = Path(selected_package["manifest_path"]).parent
     doctest_sources = []
@@ -234,32 +255,16 @@ def rust_tests(args):
     config_bytes = args.config_file.read_bytes()
     bookkeeping_reads += len(config_bytes)
     config_path.write_text(config_bytes.decode("utf-8") + "\npath = " + json.dumps(str(junit_path)) + "\n")
-    common = [str(args.nextest), "nextest"]
-    metadata = [
-        "--config-file",
-        str(config_path),
-        "--user-config-file",
-        "none",
-        "--profile",
-        "default",
-        "--binaries-metadata",
-        str(args.binaries_metadata),
-        "--cargo-metadata",
-        str(args.cargo_metadata),
-    ]
-    filter_expr = "package(=" + package_name + ")"
-    metadata.extend(["-E", filter_expr])
     environment = dict(os.environ)
     environment.pop("FJ_HOST_BUNDLE", None)
     environment.pop("FJ_OPTICS_CASES", None)
     environment.pop("FJ_RUST_ROWS", None)
     environment["FJ_RUST_ROWS"] = str(bundle / (registration + ".rows.jsonl"))
-    commands = [
-        [*common, "list", *metadata, "--message-format", "json"],
-        [*common, "run", *metadata, "--test-threads", "1", "--retries", "0", "--no-fail-fast", "--no-tests", "fail"],
-    ]
+    commands = rust_nextest_commands(paths, package, str(config_path))
     records = []
     discovery_bytes = 0
+    discovered_binaries = []
+    junit_sha256 = None
     try:
         started = time.perf_counter()
         with discovery_path.open("xb") as output:
@@ -271,57 +276,40 @@ def rust_tests(args):
         discovery = discovery_path.read_bytes()
         discovery_bytes = len(discovery)
         discovery_document = json.loads(discovery)
-        discovered_binaries = set(discovery_document["rust-suites"])
-        binary_packages = {
-            binary["binary-id"]: binary["package-id"] for binary in binaries_metadata["rust-binaries"].values()
-        }
-        metadata_binary_ids = set(binary_packages)
-        if not metadata_binary_ids or discovered_binaries != metadata_binary_ids:
-            raise ValueError("nextest discovery does not match prepared workspace binaries")
-        expected_tests = set()
-        filtered_tests = set()
-        for binary_id, suite in discovery_document["rust-suites"].items():
-            for test_name, case in suite["testcases"].items():
-                key = (binary_id, test_name)
-                match = case["filter-match"]["status"]
-                if match == "matches":
-                    if binary_packages.get(binary_id) != selected_package["id"]:
-                        raise ValueError("nextest selected a test from the other Rust package: " + test_name)
-                    if case["ignored"]:
-                        raise ValueError("unexpected ignored Rust test: " + test_name)
-                    expected_tests.add(key)
-                else:
-                    filtered_tests.add(key)
-        if not expected_tests:
-            raise ValueError("Rust nextest selection is empty")
+        discovered_binaries = sorted(discovery_document["rust-suites"])
+        expected_tests, filtered_tests = rust_membership(
+            discovery_document, package, cargo_metadata, binaries_metadata, bound=True
+        )
+        if publication is not None:
+            require_rust_core_publication(publication, expected_tests, cargo_metadata, binaries_metadata)
         started = time.perf_counter()
         completed = subprocess.run(commands[1], env=environment)
         records.append(
             {"command": commands[1], "returncode": completed.returncode, "seconds": time.perf_counter() - started}
         )
         if completed.returncode == 0:
-            framework_terminals(junit_path.read_bytes(), expected_tests, nextest=True, filtered=filtered_tests)
-            from qualification import rust_case_events
-
-            contract_path = bundle / "host-contracts.json"
-            contract_bytes = (
-                contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json"
-            ).read_bytes()
+            junit = junit_path.read_bytes()
+            bookkeeping_reads += len(junit)
+            framework_terminals(junit, expected_tests, nextest=True, filtered=filtered_tests)
+            junit_sha256 = hashlib.sha256(junit).hexdigest()
             row_bytes = (bundle / (registration + ".rows.jsonl")).read_bytes()
-            bookkeeping_reads += len(contract_bytes) + len(row_bytes)
-            contract = json.loads(contract_bytes)
+            bookkeeping_reads += len(row_bytes)
             rust_case_events(row_bytes, contract, expected_tests)
         return completed.returncode
     finally:
         write_json(
             execution_path,
             {
+                "schema": "rust-test-execution-v4",
                 "registration": registration,
+                "request": request,
                 "package": package_name,
+                "package_id": package_id,
                 "cargo": str(args.cargo),
-                "features": "test-support",
-                "required_binaries": sorted(expected_binaries),
-                "discovered_binaries": sorted(discovered_binaries) if "discovered_binaries" in locals() else [],
+                "features": resolved_features,
+                "required_binaries": expected_binaries,
+                "discovered_binaries": discovered_binaries,
+                "junit_sha256": junit_sha256,
                 "doctests": {
                     "status": "none",
                     "source_files_scanned": scanned_source_count,
@@ -330,10 +318,7 @@ def rust_tests(args):
                 },
                 "commands": records,
                 "discovery_read_bytes": discovery_bytes,
-                "bookkeeping_read_bytes": bookkeeping_reads
-                + scanned_source_bytes
-                + discovery_bytes
-                + (junit_path.stat().st_size if junit_path.exists() else 0),
+                "bookkeeping_read_bytes": bookkeeping_reads + scanned_source_bytes + discovery_bytes,
             },
         )
 
@@ -347,6 +332,17 @@ def native_case_key(command):
 def gtest_environment(environment):
     """The registered command owns selection, repetition and sharding."""
     return {k: v for k, v in environment.items() if not k.startswith("GTEST_") and k != "TESTBRIDGE_TEST_ONLY"}
+
+
+def production_module_record(built, staged):
+    record = {"build": str(built), "stage": str(staged)}
+    for role, path in (("build", built), ("stage", staged)):
+        if not Path(path).is_file():
+            raise ValueError(f"missing production {role} module: {path}")
+        record[role + "_sha256"] = digest(Path(path))
+    if record["build_sha256"] != record["stage_sha256"]:
+        raise ValueError("production stage SHA-256 differs from its build module: " + str(staged))
+    return record
 
 
 def native_case(args):
@@ -403,6 +399,7 @@ def native_case(args):
     records = []
     bookkeeping_reads = 0
     outcomes_valid = False
+    module_record = None
     contract_name = args.runtime + "-contracts.json"
     contract_path = bundle / contract_name
     contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests" / contract_name).read_bytes()
@@ -419,6 +416,25 @@ def native_case(args):
         return completed
 
     try:
+        name = os.environ.get("FJ_HOST_TEST")
+        optional = OPTIONAL_PRODUCT_REGISTRATIONS.get(name)
+        section = None
+        if optional is not None and optional[1] == args.runtime:
+            section = optional[0]
+        elif args.runtime == "host" and name in contract.get("grain_preview", {}).get("replaces", {}).values():
+            section = "grain_preview"
+        if section is not None:
+            configuration = cache_values(ROOT / "out/build" / args.preset)
+            contract = configured_product_contract(contract, args.runtime, configuration)
+            if name not in contract["required"]:
+                raise ValueError(f"optional product registration {name} is not configured for section {section}")
+            if name == PREVIEW_DISCOVERY:
+                from qualification import validate_module_record
+
+                if len(command) != 4 or command[1] != "--grain-preview-discovery":
+                    raise ValueError("invalid preview discovery command")
+                module_record = production_module_record(command[3], command[2])
+                validate_module_record(module_record, args.preset, configuration)
         # Discover inside this already-contained CTest family, just as nextest
         # does for Rust. No extra supervisor is needed for each fixture listing.
         if args.protocol == "gtest":
@@ -463,7 +479,6 @@ def native_case(args):
             framework_terminals(read(".xml"), selected, filtered=discovered & excluded)
             cohorts = {s + "." + n: contract["gtest_cohorts"].get(s + "." + n, 0) for s, n in selected}
         else:
-            name = os.environ.get("FJ_HOST_TEST")
             if not name:
                 raise ValueError("custom host registration identity missing")
             cohorts = native_cohort_count(contract, name, args.preset)
@@ -486,6 +501,7 @@ def native_case(args):
                 "commands": records,
                 "outcomes_valid": outcomes_valid,
                 "bookkeeping_read_bytes": bookkeeping_reads,
+                **({"production_module": module_record} if module_record is not None else {}),
             },
         )
 
@@ -551,6 +567,10 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
         return data
 
     filemode = git("config", "--type=bool", "--default=true", "--get", "core.filemode").strip() == b"true"
+    source_policy = "scripts/" + SOURCE_FILE_POLICY
+    retained_sources = (
+        {f"tests/{runtime}-contracts.json" for runtime in ("host", "gpu", "python")} if domain_tests else set()
+    )
     explicit = {
         "CMakeLists.txt",
         "CMakePresets.json",
@@ -567,14 +587,14 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
         "tests/ffi/output-color-development.json",
         "tests/film/optics-fixtures/manifest.json",
         literal_name,
-        "scripts/source_file_policy.json",
+        source_policy,
     }
     roots = ("src", "native", "rust", "scripts", "cmake", "third_party", ".config", ".cargo", ".github/workflows")
     if gpu_witness or domain_tests:
         roots += ("Resources",)
     if domain_tests:
         roots += ("tests",)
-    policy = (root / "scripts/source_file_policy.json").read_bytes()
+    policy = (root / source_policy).read_bytes()
     costs["source_read_bytes"] += len(policy)
     code = set(json.loads(policy)["supportedExtensions"]) | {".rs", ".py", ".cmake", ".toml", ".lock", ".yml", ".yaml"}
     paths = [
@@ -669,6 +689,13 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
                 "mode": "100755" if filemode and info.st_mode & 0o111 else "100644",
             }
             new_files[name] = base64.b64encode(data).decode("ascii")
+        elif name == source_policy:
+            identity["worktree_sha256"] = hashlib.sha256(policy).hexdigest()
+        elif name in retained_sources:
+            reject_links(name)
+            data = (root / name).read_bytes()
+            costs["source_read_bytes"] += len(data)
+            identity["worktree_sha256"] = hashlib.sha256(data).hexdigest()
         inputs[name] = identity
     if not inputs:
         raise ValueError("empty spatial-optics source scope")
@@ -773,7 +800,7 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
         started = time.perf_counter()
         try:
             validate(result, payloads)
-        except (ValueError, KeyError, TypeError, OSError) as error:
+        except RECEIPT_ERRORS as error:
             result.update(status="failed", error=str(error))
         costs["publication_validation_seconds"] = time.perf_counter() - started
     if result["status"] == "passed" and scratch is not None:
@@ -801,11 +828,14 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
     return 0 if result["status"] == "passed" else 1
 
 
-def configure_command(cmake, preset, *, cuda_free=False, testing="ON"):
+def configure_command(cmake, preset, *, cuda_free=False, testing="ON", grain_preview=None):
     command = [cmake, "--preset", preset + ("-host-tests" if cuda_free else "")]
     if cuda_free:
         command += ["-S", str(ROOT / "tests/host")]
-    return [*command, "-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
+    command += ["-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
+    if grain_preview is not None:
+        command.append("-DJUICER_GRAIN_PREVIEW:BOOL=" + grain_preview)
+    return command
 
 
 def check_owner(args):
@@ -821,7 +851,18 @@ def native_tests(args):
     """Fresh CMake-selected native/Rust/Python execution under one build owner."""
     import xml.etree.ElementTree as ET
     from execution import NativeRun, name_component
-    from qualification import membership, native_registration, python_registration, validate_tests_result
+    from qualification import (
+        RUST_JUNIT_RUN_ID_PROPERTY,
+        membership,
+        native_ctest_command,
+        native_registration,
+        python_registration,
+        rust_junit_run_id,
+        rust_test_registration,
+        validate_rust_test_request,
+        validate_rust_test_versions,
+        validate_tests_result,
+    )
 
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("tests must execute on their native platform")
@@ -867,7 +908,8 @@ def native_tests(args):
         (directory / "registration.json").write_text('{"tests":[]}\n')
         (directory / "target-discovery.json").write_text("{}\n")
         result = {
-            "schema": "native-tests-v1",
+            "schema": "native-tests-v6",
+            "run_id": directory.name,
             "status": "failed",
             "preset": args.preset,
             "candidate_head": initial["head"],
@@ -912,9 +954,14 @@ def native_tests(args):
                     "JUICER_NEXTEST_EXECUTABLE": nextest,
                     "Python3_EXECUTABLE": sys.executable,
                 }
-                if any(
-                    os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v))
-                    for k, v in desired.items()
+                missing_product_configuration = not cuda_free and not all(k in cache for k in PRODUCT_PREVIEW_KEYS)
+                if (
+                    missing_product_configuration
+                    or "JUICER_RUST_TESTS_REQUEST" not in cache
+                    or any(
+                        os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v))
+                        for k, v in desired.items()
+                    )
                 ):
                     run.command("configure", configure, vctip_executable=windows_vctip(os.environ))
             build_command = [cmake, "--build", str(build)]
@@ -922,18 +969,16 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
-            candidate["configuration"] = {
-                k: cache.get(k)
-                for k in (
-                    "BUILD_TESTING",
-                    "CMAKE_BUILD_TYPE",
-                    "CMAKE_CXX_COMPILER",
-                    "CMAKE_CUDA_COMPILER",
-                    "CMAKE_HOME_DIRECTORY",
-                )
-            }
+            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            preview = False
+            artifact_consumers = None
             if not standalone and not cuda_free:
+                configuration = candidate["configuration"]
+                preview, replay_configured = read_preview_and_replay_configuration(configuration)
+                for runtime in ("host", "gpu"):
+                    contracts[runtime] = configured_product_contract(contracts[runtime], runtime, configuration)
                 artifact_data = (build / "tests/rust-artifacts.json").read_bytes()
+                artifact_consumers = product_artifact_consumers(json.loads(artifact_data), build, replay_configured)
                 costs["report_read_bytes"] += len(artifact_data)
                 (directory / "rust-artifacts.json").write_bytes(artifact_data)
                 candidate["features"]["rust_artifacts"] = "rust-artifacts.json"
@@ -965,7 +1010,15 @@ def native_tests(args):
                 if standalone
                 else {
                     runtime: native_registration(
-                        contracts[runtime], target_data[runtime], inventory, runtime=runtime, cuda_free=cuda_free
+                        contracts[runtime],
+                        target_data[runtime],
+                        inventory,
+                        runtime=runtime,
+                        cuda_free=cuda_free,
+                        artifact_consumers=artifact_consumers,
+                        preset=args.preset,
+                        configuration=candidate["configuration"],
+                        launcher_python=cache.get("Python3_EXECUTABLE"),
                     )
                     for runtime in ("host", "gpu")
                 }
@@ -1021,8 +1074,16 @@ def native_tests(args):
                     targets.add(entries[name]["target"])
                 if name in python:
                     targets.update(target_data["python"][name])
-            if selected & {"Rust.Core", "Rust.Bridge"}:
-                targets.add("juicer_rust_tests")
+            rust_selected = selected & RUST_TEST_REGISTRATIONS.keys()
+            if rust_selected:
+                request = json.loads(cache["JUICER_RUST_TESTS_REQUEST"])
+                validate_rust_test_request(request, args.preset, result["build_kind"], preview)
+                candidate["configuration"]["rust_tests"] = request
+                rust_tools = {"python": sys.executable, "cargo": cargo, "nextest": nextest}
+                for registration in inventory["tests"]:
+                    if registration["name"] in rust_selected:
+                        rust_test_registration(registration, args.preset, request, ROOT, rust_tools)
+                targets.add(RUST_TEST_BUILD_TARGET)
             if source_selection:
                 targets.update(source_selection["targets"])
             if targets:
@@ -1064,12 +1125,8 @@ def native_tests(args):
             costs["report_read_bytes"] += len(version_data)
             candidate["version_commands"] = json.loads(version_data)
             candidate["versions"] = {item["name"]: item["output"] for item in candidate["version_commands"]}
-            if not standalone and (
-                not candidate["versions"]["cargo"].startswith("cargo 1.98.1 ")
-                or not candidate["versions"]["rustc"].startswith("rustc 1.98.1 ")
-                or not candidate["versions"]["nextest"].startswith("cargo-nextest 0.9.143 ")
-            ):
-                raise ValueError("qualified Rust/Cargo 1.98.1 and nextest 0.9.143 required")
+            if not standalone:
+                validate_rust_test_versions(candidate["versions"])
             environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
             for name in ("FJ_RUST_FILTER", "FJ_OPTICS_BUNDLE", "FJ_HOST_ROWS"):
                 environment.pop(name, None)
@@ -1098,23 +1155,23 @@ def native_tests(args):
                     junit = directory / ("ctest-" + runtime + ".xml")
                     run.command(
                         "ctest-" + runtime,
-                        [
-                            ctest,
-                            "--test-dir",
-                            str(build),
-                            "--no-tests=error",
-                            "--output-on-failure",
-                            "--output-junit",
-                            str(junit),
-                            "-j",
-                            "1",
-                            "-R",
-                            "^(" + "|".join(map(re.escape, names)) + ")$",
-                        ],
+                        native_ctest_command(ctest, build, junit, names),
                         env=env,
                         timeout=None,
                     )
                     tree = ET.fromstring(junit.read_bytes())
+                    if runtime == "host":
+                        for case in tree.iter("testcase"):
+                            name = case.get("name")
+                            if name not in rust_selected:
+                                continue
+                            report = (directory / (name + ".xml")).read_bytes()
+                            costs["report_read_bytes"] += len(report)
+                            run_id = rust_junit_run_id(ET.fromstring(report))
+                            properties = case.find("properties")
+                            if properties is None:
+                                properties = ET.SubElement(case, "properties")
+                            ET.SubElement(properties, "property", name=RUST_JUNIT_RUN_ID_PROPERTY, value=run_id)
                     combined.extend(list(tree) if tree.tag == "testsuites" else [tree])
                     junit.unlink()
                     if runtime == "gpu":
@@ -1158,7 +1215,14 @@ def development(args):
 def fresh_prepare(args):
     """Configure/build explicit targets without creating preparation admission."""
     from execution import NativeRun, name_component
-    from qualification import validate_build_result, validate_production_contract
+    from qualification import (
+        PRODUCTION_CONTRACT_RENDER_TARGET,
+        PRODUCTION_CONTRACT_TARGETS,
+        prepared_render_probe_path,
+        production_module_paths,
+        validate_build_result,
+        validate_production_contract,
+    )
 
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("build preparation requires its native platform")
@@ -1167,13 +1231,14 @@ def fresh_prepare(args):
         args.testing != "OFF"
         or not args.preset.endswith("release")
         or args.cuda_free
-        or not {"juicer", "JuicerProductionPreparedRenderProbe"} <= set(args.targets or ())
+        or not PRODUCTION_CONTRACT_TARGETS.issubset(args.targets or ())
     ):
         raise ValueError(
             "production contract requires native Release OFF juicer and JuicerProductionPreparedRenderProbe targets"
         )
     started = time.perf_counter()
     cuda_free = getattr(args, "cuda_free", False)
+    production_module = "bundle-archive" in (args.targets or ())
     preset_build = ROOT / "out/build" / args.preset
     build = preset_build / "host-tests" if cuda_free else preset_build
     directory = (
@@ -1183,7 +1248,8 @@ def fresh_prepare(args):
         expiry = expire_diagnostics(ROOT, args.preset) if "FJ_HOST_BUNDLE" not in os.environ else None
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
-        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=production_contract)
+        capture_domain = production_contract or production_module
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
         if expiry is not None:
             costs["expiry"] = expiry
         costs["report_read_bytes"] = expiry["read_bytes"] if expiry is not None else 0
@@ -1199,6 +1265,7 @@ def fresh_prepare(args):
             "members": {},
             "costs": costs,
             "production_contract": production_contract,
+            "production_module": production_module,
         }
         (directory / "candidate.patch").write_bytes(patch)
         try:
@@ -1211,7 +1278,9 @@ def fresh_prepare(args):
                 raise ValueError("build cache belongs to another source tree")
             run.command(
                 "configure",
-                configure_command(cmake, args.preset, cuda_free=cuda_free, testing=args.testing),
+                configure_command(
+                    cmake, args.preset, cuda_free=cuda_free, testing=args.testing, grain_preview=args.grain_preview
+                ),
                 vctip_executable=windows_vctip(os.environ),
             )
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
@@ -1232,10 +1301,15 @@ def fresh_prepare(args):
                 vctip_executable=windows_vctip(os.environ),
             )
             cache = cache_values(build)
-            candidate["configuration"] = {
-                key: cache.get(key)
-                for key in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")
-            }
+            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            if production_module:
+                _, built, staged = production_module_paths(args.preset, candidate["configuration"])
+                write_json(directory / "production-module.json", production_module_record(built, staged))
+                shutil.copyfile(build / "tests/rust-artifacts.json", directory / "rust-artifacts.json")
+                preview, _ = read_preview_and_replay_configuration(candidate["configuration"])
+                if preview and PRODUCTION_CONTRACT_RENDER_TARGET in targets:
+                    probe = Path(prepared_render_probe_path(args.preset, built))
+                    write_json(directory / "paired-probe.json", {"path": str(probe), "sha256": digest(probe)})
             version_data = run.command(
                 "versions",
                 [sys.executable, "-B", str(Path(__file__).absolute()), "tool-versions", "--tool", "cmake", cmake],
@@ -1272,9 +1346,7 @@ def fresh_prepare(args):
             result.update(status="passed", targets=targets)
         except BaseException as error:
             result["error"] = str(error)
-        final, final_patch, measured = capture_native_source(
-            ROOT, "scripts/verify.py", domain_tests=production_contract
-        )
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
         for key, value in measured.items():
             costs[key] += value
         result["candidate_unchanged"] = source == final and patch == final_patch
@@ -1290,6 +1362,92 @@ def fresh_prepare(args):
             validate_build_result,
             scratch=directory / "production" if production_contract else None,
         )
+
+
+def paired_discovery(args):
+    """Run an explicit host witness on two recorded CMake production artifacts."""
+    from execution import NativeRun, name_component
+    from qualification import (
+        PAIRED_DISCOVERY,
+        paired_discovery_command,
+        read_native_result,
+        validate_paired_discovery,
+        validate_paired_modules,
+    )
+
+    if args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("paired discovery requires the preset's native platform")
+    build = ROOT / "out/build" / args.preset
+    directory = (
+        ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or "pair-" + uuid.uuid4().hex)
+    )
+    with OutputLease(ROOT, build):
+        directory.mkdir(parents=True, exist_ok=False)
+        run = NativeRun(ROOT, directory)
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=True)
+        costs["report_read_bytes"] = 0
+        candidate = {**source, "preset": args.preset}
+        result = {
+            "schema": "native-paired-discovery-v1",
+            "status": "failed",
+            "preset": args.preset,
+            "scope": "focused",
+            "test": PAIRED_DISCOVERY,
+            "candidate_head": source["head"],
+            "shipping_isolation": False,
+            "commands": run.commands,
+            "members": {},
+            "costs": costs,
+        }
+        (directory / "candidate.patch").write_bytes(patch)
+        try:
+            cache = cache_values(build)
+            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS}
+            modules = {}
+            for role, bundle in (("ordinary", args.ordinary), ("preview", args.preview)):
+                try:
+                    producer = read_native_result(bundle)
+                    if producer["status"] != "passed" or "production_module" not in producer:
+                        raise ValueError("expected a passing bundle-archive build receipt")
+                    modules[role] = {
+                        key: producer[key]
+                        for key in ("preset", "candidate_source", "configuration", "production_module")
+                    }
+                    if role == "preview":
+                        for key in ("targets", "paired_probe"):
+                            if key in producer:
+                                modules[role][key] = producer[key]
+                    modules[role]["receipt"] = str(bundle.absolute())
+                    modules[role]["result_sha256"] = digest(bundle / "result.json")
+                    costs["report_read_bytes"] += producer["bookkeeping_read_bytes"]
+                except RECEIPT_ERRORS as error:
+                    raise ValueError(f"paired discovery {role} producer receipt: {error}") from error
+            probe = validate_paired_modules(args.preset, candidate, patch, modules)
+            write_json(directory / "production-modules.json", modules)
+            for role, row in modules.items():
+                record = row["production_module"]
+                try:
+                    if production_module_record(record["build"], record["stage"]) != record:
+                        raise ValueError("module SHA-256 differs from the producing build receipt")
+                except (ValueError, OSError) as error:
+                    raise ValueError(f"paired discovery {role} prerequisite: {error}") from error
+            probe_path = Path(probe["path"])
+            if not probe_path.is_file() or digest(probe_path) != probe["sha256"]:
+                raise ValueError(f"paired discovery preview probe is missing or SHA-256 differs: {probe_path}")
+            write_json(directory / "paired-probe.json", probe)
+            command = paired_discovery_command(probe, modules)
+            listing = run.command("paired-list", [*command, "--list-cases"], stdout_only=True).read_bytes()
+            (directory / "paired-list.jsonl").write_bytes(listing)
+            run.command("paired-run", command, env=dict(os.environ, FJ_HOST_CASES=str(directory / "paired-run.jsonl")))
+            result["status"] = "passed"
+        except (*RECEIPT_ERRORS, subprocess.CalledProcessError) as error:
+            print(error, file=sys.stderr)
+            result["error"] = str(error)
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=True)
+        for key, value in measured.items():
+            costs[key] += value
+        result["candidate_unchanged"] = source == final and patch == final_patch
+        return finish_native_run(run, result, candidate, costs, validate_paired_discovery)
 
 
 def python_tests(args):
@@ -1582,6 +1740,7 @@ def main():
     selected.add_argument("--targets", nargs="+")
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
+    prepare.add_argument("--grain-preview", choices=("ON", "OFF"), help="set the product preview option in CMake")
     prepare.add_argument("--run-id")
     prepare.add_argument("--clean-first", action="store_true")
     prepare.add_argument(
@@ -1590,6 +1749,11 @@ def main():
         help="run the Release OFF production closure under the build owner",
     )
     prepare.add_argument("--cuda-free", action="store_true", help="prepare selected CUDA-independent test targets")
+    pair = modes.add_parser("paired-discovery", help="run Ffi.Host.GrainPreviewPairedDiscovery on two build receipts")
+    pair.add_argument("--preset", required=True, choices=PRESETS)
+    pair.add_argument("--ordinary", required=True, type=Path, help="ordinary bundle-archive build receipt directory")
+    pair.add_argument("--preview", required=True, type=Path, help="preview bundle-archive build receipt directory")
+    pair.add_argument("--run-id")
     owner = modes.add_parser("check-owner", help=argparse.SUPPRESS)
     owner.add_argument("--preset", required=True, choices=PRESETS)
     close = modes.add_parser("closeout", help="record review/acceptance or holds and expire optional diagnostics")
@@ -1618,7 +1782,8 @@ def main():
     rust = modes.add_parser("rust-tests", help=argparse.SUPPRESS)
     rust.add_argument("--package", choices=("core", "bridge"), required=True)
     rust.add_argument("--preset", required=True, choices=PRESETS)
-    for flag in ("cargo", "nextest", "binaries-metadata", "cargo-metadata", "config-file"):
+    rust.add_argument("--request", type=json.loads, required=True)
+    for flag in RUST_TEST_PATH_FLAGS:
         rust.add_argument("--" + flag, type=Path, required=True)
     versions = modes.add_parser("tool-versions", help=argparse.SUPPRESS)
     versions.add_argument("--tool", nargs=2, action="append", required=True)
@@ -1634,6 +1799,7 @@ def main():
             parser.error("--cuda-free requires BUILD_TESTING=ON")
     dispatch = {
         "prepare": fresh_prepare,
+        "paired-discovery": paired_discovery,
         "development": development,
         "qualification": native_tests,
         "collect-qualification": collect_bundles,

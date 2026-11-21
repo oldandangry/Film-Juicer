@@ -486,6 +486,31 @@ static FACTS: &[usize] = &[
     offset_of!(FjStaticNoise, wang_height),
     offset_of!(FjStaticNoise, wang_tile_count),
     offset_of!(FjStaticNoise, wang_colors),
+    size_of::<FjFilmGrainRecord>(),
+    align_of::<FjFilmGrainRecord>(),
+    offset_of!(FjFilmGrainRecord, minimum_gross),
+    offset_of!(FjFilmGrainRecord, maximum_gross),
+    offset_of!(FjFilmGrainRecord, offset),
+    offset_of!(FjFilmGrainRecord, mean_light),
+    offset_of!(FjFilmGrainRecord, mean_density),
+    offset_of!(FjFilmGrainRecord, correlation),
+    size_of::<FjFilmGrain>(),
+    align_of::<FjFilmGrain>(),
+    offset_of!(FjFilmGrain, bank_hash),
+    offset_of!(FjFilmGrain, sums),
+    offset_of!(FjFilmGrain, records),
+    offset_of!(FjFilmGrain, origin_x),
+    offset_of!(FjFilmGrain, origin_y),
+    offset_of!(FjFilmGrain, seed),
+    offset_of!(FjFilmGrain, next_seed),
+    offset_of!(FjFilmGrain, pitch),
+    offset_of!(FjFilmGrain, temporal_fraction),
+    offset_of!(FjFilmGrain, gain),
+    offset_of!(FjFilmGrain, chroma_fraction),
+    offset_of!(FjFilmGrain, sample_pitch),
+    offset_of!(FjFilmGrain, sample_extent),
+    offset_of!(FjFilmGrain, sample_step),
+    offset_of!(FjFilmGrain, sample_origin),
     size_of::<FjPreparedHostData>(),
     align_of::<FjPreparedHostData>(),
     offset_of!(FjPreparedHostData, route),
@@ -512,6 +537,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjPreparedHostData, grain),
     offset_of!(FjPreparedHostData, effects),
     offset_of!(FjPreparedHostData, noise),
+    offset_of!(FjPreparedHostData, film_grain),
     FJ_STATUS_SUCCESS as usize,
     FJ_STATUS_CANCELLED as usize,
     FJ_STATUS_UNSUPPORTED_INPUT as usize,
@@ -668,7 +694,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 615);
+        assert_eq!(FACTS.len(), 641);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "ofx_bindings.h"
 
@@ -18,8 +19,9 @@ _Static_assert(offsetof(OfxPlugin, setHost) == 32 && offsetof(OfxPlugin, mainEnt
 
 #if defined(_WIN32)
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2)
+    if (argc != 2 && !(argc == 3 && wcscmp(argv[2], L"preview") == 0))
         return 1;
+    const char* expected_id = argc >= 3 ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
     HMODULE module = LoadLibraryW(argv[1]);
     if (!module)
         return 2;
@@ -29,8 +31,9 @@ int wmain(int argc, wchar_t** argv) {
     FARPROC plugin_symbol = GetProcAddress(module, "OfxGetPlugin");
 #else
 int main(int argc, char** argv) {
-    if (argc != 2)
+    if (argc != 2 && !(argc == 3 && strcmp(argv[2], "preview") == 0))
         return 1;
+    const char* expected_id = argc >= 3 ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
     void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!module)
         return 2;
@@ -50,7 +53,7 @@ int main(int argc, char** argv) {
         if (!plugin || plugin != plugin_at(0) || !plugin->setHost || !plugin->mainEntry ||
             strcmp(plugin->pluginApi, kOfxImageEffectPluginApi) != 0 ||
             plugin->apiVersion != kOfxImageEffectPluginApiVersion ||
-            strcmp(plugin->pluginIdentifier, "com.juicer.Juicer") != 0 ||
+            strcmp(plugin->pluginIdentifier, expected_id) != 0 ||
             plugin->pluginVersionMajor != 1 || plugin->pluginVersionMinor != 0)
             result = 4;
     }

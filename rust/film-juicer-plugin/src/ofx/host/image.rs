@@ -11,6 +11,8 @@ use super::{Callback, InstanceHandles, Status, sys};
 pub(crate) struct RenderArgs {
     pub(crate) time: f64,
     pub(crate) window: [i32; 4],
+    #[cfg(feature = "grain-preview")]
+    pub(crate) scale: [f64; 2],
     pub(crate) cuda: bool,
     stream: usize,
     stream_present: bool,
@@ -50,6 +52,42 @@ impl Drop for Image<'_> {
 }
 
 impl Callback<'_> {
+    #[cfg(feature = "grain-preview")]
+    pub(crate) fn thumbnail(&self, handles: &InstanceHandles) -> bool {
+        enum Flag {
+            Absent,
+            Yes,
+            Veto,
+        }
+        let name = c"kOfxImageClipPropThumbnail";
+        let flags = handles.clip_properties.map(|properties| {
+            let mut count = 0;
+            // SAFETY: Source and Output property sets are retained with their
+            // clip instances. The synchronous read holds no publication lock.
+            let status =
+                unsafe { (self.loaded.suites.dimension)(properties, name.as_ptr(), &mut count) };
+            match status {
+                sys::kOfxStatErrUnknown => return Flag::Absent,
+                sys::kOfxStatOK if count == 1 => (),
+                _ => return Flag::Veto,
+            }
+            let mut value = 0;
+            // SAFETY: Same callback-live property set; the local output is disjoint
+            // and discovery confirmed a scalar slot.
+            let status =
+                unsafe { (self.loaded.suites.get_int)(properties, name.as_ptr(), 0, &mut value) };
+            if status == sys::kOfxStatOK && value == 1 {
+                Flag::Yes
+            } else {
+                Flag::Veto
+            }
+        });
+        matches!(
+            flags,
+            [Flag::Yes, Flag::Yes | Flag::Absent] | [Flag::Absent, Flag::Yes]
+        )
+    }
+
     fn image_string(
         &self,
         handle: sys::OfxPropertySetHandle,
@@ -100,8 +138,12 @@ impl Callback<'_> {
     }
     pub(crate) fn render_args(&self) -> Result<RenderArgs, Status> {
         let time = self.action_double(c"OfxPropTime", 0)?;
-        let _ = self.action_double(c"OfxImageEffectPropRenderScale", 0)?;
-        let _ = self.action_double(c"OfxImageEffectPropRenderScale", 1)?;
+        let scale = [
+            self.action_double(c"OfxImageEffectPropRenderScale", 0)?,
+            self.action_double(c"OfxImageEffectPropRenderScale", 1)?,
+        ];
+        #[cfg(not(feature = "grain-preview"))]
+        let _ = scale;
         let mut window = [0; 4];
         for (index, value) in window.iter_mut().enumerate() {
             *value = self.image_int(self.input, c"OfxImageEffectPropRenderWindow", index as i32)?;
@@ -134,6 +176,8 @@ impl Callback<'_> {
         Ok(RenderArgs {
             time,
             window,
+            #[cfg(feature = "grain-preview")]
+            scale,
             cuda,
             stream,
             stream_present,
@@ -409,6 +453,13 @@ impl Callback<'_> {
                     let fatal = completion.fatal() || access.failed.get();
                     if fatal {
                         completion.trace_failure();
+                        #[cfg(feature = "grain-preview")]
+                        if state.film_grain().is_some()
+                            && !completion.deferred_dir_error()
+                            && !completion.diagnostic().is_empty()
+                        {
+                            self.message(c"FilmJuicerFilmRenderFailure", completion.diagnostic());
+                        }
                     }
                     #[cfg(feature = "test-support")]
                     super::test_support::render_complete(completion.status(), fatal, &owner.state);

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "stock": "kodak_portra_400",
+  "records": "records.f32",
+  "sums": "sums.f32",
+  "records_sha256": "4b2f7cc90bec83f5a63510beca5c224d78bd35ca79c64a785f8eaa7335bd3cdb",
+  "sums_sha256": "b5dc55ffca1a7165dfe1316f269ffb9e270aad54575d3a675fa63825b628d1d5"
+}

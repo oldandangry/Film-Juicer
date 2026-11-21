@@ -16,7 +16,13 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+from preview_configuration import PREVIEW_CASES, configure_preview_option
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from verify import cache_values
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts/check-quality.py"
@@ -260,7 +266,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner"),
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -292,7 +302,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
-                patch.object(check_quality, "Runner"),
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ),
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
@@ -350,7 +364,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             with (
                 self.subTest(case=case_id, path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
-                patch.object(check_quality, "Runner") as runner,
+                patch.object(
+                    check_quality,
+                    "Runner",
+                    return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+                ) as runner,
                 patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
@@ -365,7 +383,11 @@ class CheckQualityTests(IsolatedOwnerTests):
     def test_native_boundary_failure_blocks_even_documentation_selection(self) -> None:
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             contextlib.redirect_stdout(io.StringIO()) as output,
@@ -394,7 +416,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[consumer, producer]),
@@ -430,7 +456,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                     "rust/film-juicer-core/src/exposure.rs",
                 ],
             ),
-            patch.object(check_quality, "Runner") as runner,
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ) as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "prepare_native_analysis", return_value=[*consumers, producer]),
@@ -448,7 +478,11 @@ class CheckQualityTests(IsolatedOwnerTests):
                 "argv",
                 [str(SCRIPT_PATH), "--preset", "linux-debug", "--qualification", "--files", "CONTRIBUTING.md"],
             ),
-            patch.object(check_quality, "Runner"),
+            patch.object(
+                check_quality,
+                "Runner",
+                return_value=MagicMock(rust_quality=None, product_configuration={}, replay_compiler_analysis={}),
+            ),
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             patch.object(check_quality, "check_rust") as rust,
@@ -1160,6 +1194,7 @@ class DependencyContractTests(unittest.TestCase):
         *,
         development: bool = False,
         rust_packages: list[str] | None = None,
+        configured_cache: dict[str, str] | None = None,
     ) -> Mock:
         runner = Mock(log_dir=self.root / "logs")
         for package in self.metadata["packages"]:
@@ -1188,6 +1223,7 @@ class DependencyContractTests(unittest.TestCase):
             patch.object(check_quality, "resolve_tool", return_value=sys.executable),
             patch.object(check_quality.shutil, "which", return_value=None),
             patch.object(check_quality, "check_workspace_contract"),
+            patch("verify.cache_values", return_value=configured_cache or {}),
         ):
             check_quality.check_rust(self.root, runner, arguments, target)
         return runner
@@ -1253,6 +1289,62 @@ class DependencyContractTests(unittest.TestCase):
                 for call in calls:
                     self.assertEqual(call.kwargs["env"]["CLIPPY_CONF_DIR"], str(self.root))
 
+    def test_preview_dispatches_release_clippy_for_each_feature_form(self) -> None:
+        preset, target = (
+            ("windows-clang-release", "x86_64-pc-windows-msvc")
+            if os.name == "nt"
+            else ("linux-release", "x86_64-unknown-linux-gnu")
+        )
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        build = root / "build"
+        self.subtest_cases = PREVIEW_CASES
+        for value in PREVIEW_CASES:
+            with self.subTest(case=value):
+                preview = configure_preview_option(root, build, value)
+                cache = cache_values(build)
+                self.assertEqual(cache["JUICER_GRAIN_PREVIEW"], value)
+                self.assertEqual(preview, value != "OFF")
+                runner = self.run_metadata(preset, target, configured_cache=cache)
+                self.assertEqual(
+                    runner.rust_quality,
+                    {"JUICER_GRAIN_PREVIEW": value, "packages": ["film-juicer-core", "film-juicer-plugin"]},
+                )
+                commands = [
+                    call.args[0]
+                    for call in runner.run.call_args_list
+                    if call.kwargs["label"].startswith("clippy-film-juicer-")
+                ]
+                ordinary = [
+                    ("film-juicer-core", ""),
+                    ("film-juicer-plugin", ""),
+                    ("film-juicer-plugin", "test-support"),
+                ]
+                expected = (
+                    [
+                        ordinary[0],
+                        ("film-juicer-core", "grain-preview"),
+                        *ordinary[1:],
+                        ("film-juicer-plugin", "grain-preview"),
+                        ("film-juicer-plugin", "grain-preview,test-support"),
+                    ]
+                    if preview
+                    else ordinary
+                )
+                self.assertEqual(
+                    [
+                        (cmd[cmd.index("-p") + 1], cmd[cmd.index("--features") + 1] if "--features" in cmd else "")
+                        for cmd in commands
+                    ],
+                    expected,
+                )
+                for cmd in commands:
+                    self.assertIn("--all-targets", cmd)
+                    self.assertIn("--release", cmd)
+                    self.assertEqual(cmd[cmd.index("--target") + 1], target)
+                    self.assertEqual(cmd[-3:], ["--", "-D", "warnings"])
+
     def test_development_preserves_packages_and_uses_only_quality_commands(self) -> None:
         preset_cases = (
             ("linux-debug", "dev", []),
@@ -1276,6 +1368,7 @@ class DependencyContractTests(unittest.TestCase):
                     development=True,
                     rust_packages=packages,
                 )
+                self.assertEqual(runner.rust_quality, {"JUICER_GRAIN_PREVIEW": None, "packages": packages})
                 target_flags = [
                     "--target",
                     "x86_64-unknown-linux-gnu",
@@ -1894,6 +1987,294 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(check_quality.QualityError, "no consuming translation unit"):
                 check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
 
+    def test_motion_replay_files_require_configured_consumers(self) -> None:
+        from execution import OutputLease
+
+        compiler_name = "clang++" if os.name == "nt" else "g++-13"
+        compiler = shutil.which(compiler_name)
+        self.assertIsNotNone(compiler, f"required replay fixture compiler {compiler_name}")
+        ordinary_compiler = shutil.which("clang-cl") if os.name == "nt" else compiler
+        self.assertIsNotNone(ordinary_compiler, "required ordinary fixture compiler")
+        aperture = "tests/grain/film-ofx-apertures.inc"
+        density = "tests/grain/motion-density.cpp"
+        replay_header = "tests/grain/motion-replay.h"
+        motion = "tests/grain/motion-replay.inc"
+        replay_files = [aperture, density, replay_header, motion]
+        render = "tests/ffi/production-ofx-render.cpp"
+        executor = "src/Cuda/JuicerCudaExecutor.cpp"
+        stage_header = "src/Cuda/JuicerCudaFilmGrainStage.h"
+        stage_source = "src/Cuda/JuicerCudaFilmGrainStage.cpp"
+        mixed_files = [*replay_files, executor, stage_header, stage_source]
+        extra = "tests/grain/film_oracle.cpp"
+        ordinary = "src/ordinary.cpp"
+        other = "src/ordinary.h"
+        replay_sources = (render, density)
+        cases = (
+            ("unavailable", "OFF", replay_files, (), (), None),
+            ("configured", "ON", replay_files, replay_sources, replay_sources, None),
+            ("replay-source-only", "ON", [density], replay_sources, (density,), None),
+            ("mixed-linux", "ON", mixed_files, replay_sources, (*replay_sources, executor, stage_source), None),
+            ("mixed-windows", "OFF", mixed_files, (), (executor, stage_source), None),
+            ("stage-only", "ON", [stage_header], replay_sources, (*replay_sources, executor, stage_source), None),
+            ("stage-only-no-replay", "OFF", [stage_header], (), (executor, stage_source), None),
+            ("testing-off", "OFF", [stage_header], (), (executor, stage_source), None),
+            ("inactive-ordinary-stage", "OFF", [stage_header], (), (), "does not actively include"),
+            ("missing-ordinary-stage", "OFF", [stage_header], (), (), "missing configured Film grain stage consumers"),
+            ("missing-test-variants", "OFF", [stage_header], (), (), "juicer_render_test_objects"),
+            (
+                "wrong-failure-variant-define",
+                "OFF",
+                [stage_header],
+                (),
+                (),
+                "incorrect configured Film grain stage hook define",
+            ),
+            (
+                "false-replay-off",
+                "OFF",
+                replay_files,
+                (),
+                (),
+                "configured replay availability disagrees with the native preset",
+            ),
+            ("wrong-ordinary-source", "OFF", [stage_header], (), (), "incorrect configured source"),
+            ("inactive-replay-stage", "ON", [stage_header], replay_sources, (), stage_header),
+            ("inactive-render-stage", "ON", [stage_header], replay_sources, (), render),
+            ("extra-replay-consumer", "ON", replay_files, (*replay_sources, extra), (render, extra, density), None),
+            ("extra-macro-include", "ON", replay_files, (*replay_sources, extra), (render, extra, density), None),
+            ("extra-inactive-include", "ON", replay_files, (*replay_sources, extra), replay_sources, None),
+            ("extra-failed-probe", "ON", replay_files, (*replay_sources, extra), (), extra),
+            ("extra-consumer-wrong-variant", "ON", replay_files, (*replay_sources, extra), (), extra),
+            ("ordinary-variant-only", "ON", replay_files, (render,), (), density),
+            ("density-wrong-target", "ON", replay_files, replay_sources, (), "outside the motion replay target"),
+            ("density-wrong-define", "ON", replay_files, replay_sources, (), density),
+            ("configured-without-render", "ON", replay_files, (density,), (), render),
+            ("old-executor-variant", "ON", replay_files, (*replay_sources, executor), (), executor),
+            (
+                "target-present-while-off",
+                "OFF",
+                replay_files,
+                replay_sources,
+                (),
+                "unexpected configured motion replay",
+            ),
+            (
+                "cache-without-availability",
+                "",
+                replay_files,
+                (),
+                (),
+                "missing configured product preview and replay state",
+            ),
+            ("unrelated-header", "OFF", [*replay_files, "tests/other.h"], (), (), "tests/other.h"),
+            ("unrelated-ordinary-header", "OFF", [*replay_files, other], (), (ordinary,), None),
+        )
+        self.subtest_cases = tuple(case[0] for case in cases)
+        policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+        with tempfile.TemporaryDirectory(prefix="replay includes #$ ") as directory:
+            root = Path(directory).resolve()
+
+            def include(header):
+                return f'#include "{(root / header).as_posix()}"\n'
+
+            def write(source, content):
+                path = root / source
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            for header in (aperture, replay_header, motion, stage_header, other):
+                write(header, "")
+            write(stage_source, include(stage_header))
+            write(ordinary, include(other))
+            for case, configured, selected, variants, expected, missing in cases:
+                preset = "windows-clang-debug" if case == "mixed-windows" else "linux-debug"
+                testing = case != "testing-off"
+                preview = (
+                    "ON"
+                    if configured == "ON" or case in {"testing-off", "mixed-windows", "false-replay-off"}
+                    else "OFF"
+                )
+                arguments = argparse.Namespace(preset=preset, clang_format=None, clang_tidy=None)
+                build = root / "out/build" / preset
+                build.mkdir(parents=True, exist_ok=True)
+                render_stage = "" if case == "inactive-render-stage" else include(stage_header)
+                write(
+                    render,
+                    f"#ifdef JUICER_GRAIN_MOTION_REPLAY\n"
+                    f"{include(aperture)}{include(replay_header)}{include(motion)}{render_stage}#endif\n",
+                )
+                extra_include = include(replay_header)
+                if case == "extra-macro-include":
+                    extra_include = "#include REPLAY_HEADER\n"
+                elif case == "extra-inactive-include":
+                    extra_include = f"#if 0\n{extra_include}#endif\n"
+                elif case == "extra-failed-probe":
+                    extra_include = '#include "missing-replay-dependency.h"\n'
+                write(extra, extra_include)
+                executor_include = include(stage_header)
+                write(
+                    executor,
+                    f"#if 0\n{executor_include}#endif\n" if case == "inactive-ordinary-stage" else executor_include,
+                )
+                write(
+                    density, include(replay_header) + ("" if case == "inactive-replay-stage" else include(stage_header))
+                )
+                compilation = [check_quality.CompilationEntry(source, "compiler") for source in (render, ordinary)]
+                stage_owners = [
+                    (executor, f"CMakeFiles/juicer_native.dir/{executor}", ()),
+                    (stage_source, f"CMakeFiles/juicer_native.dir/{stage_source}", ()),
+                ]
+                if testing and case != "missing-test-variants":
+                    flag = 0 if case == "wrong-failure-variant-define" else 1
+                    stage_owners += [
+                        (
+                            executor,
+                            f"tests/CMakeFiles/juicer_render_test_objects.dir/__/{executor}",
+                            ("-DJUICER_CUDA_RENDER_TEST_HOOK=1",),
+                        ),
+                        (
+                            executor,
+                            f"tests/CMakeFiles/juicer_executor_failure_test_objects.dir/__/{executor}",
+                            (f"-DJUICER_EXECUTOR_FAILURE_TEST_HOOK={flag}",),
+                        ),
+                    ]
+                for source, output, defines in stage_owners:
+                    if case == "missing-ordinary-stage" and source == stage_source:
+                        continue
+                    file = str(
+                        root / (stage_source if case == "wrong-ordinary-source" and source == executor else source)
+                    )
+                    if os.name == "nt":
+                        output += ".obj"
+                        command = (ordinary_compiler, "-TP", "-MD", *defines, f"/Fo{output}", "-c", "--", file)
+                    else:
+                        output += ".o"
+                        command = (ordinary_compiler, *defines, "-o", output, "-c", file)
+                    compilation.append(check_quality.CompilationEntry(source, "", build, command, output))
+                for source in variants:
+                    flag = (
+                        0
+                        if (case, source)
+                        in {("extra-consumer-wrong-variant", extra), ("density-wrong-define", density)}
+                        else 1
+                    )
+                    target = (
+                        "juicer_native"
+                        if case == "density-wrong-target" and source == density
+                        else "JuicerGrainMotionReplay"
+                    )
+                    output = f"CMakeFiles/{target}.dir/{source}.o"
+                    command = (
+                        compiler,
+                        f"-DJUICER_GRAIN_MOTION_REPLAY={flag}",
+                        '-DREPLAY_HEADER="motion-replay.h"',
+                        "-I../../../tests/grain",
+                        "-o",
+                        output,
+                        "-c",
+                        (root / source).as_posix(),
+                    )
+                    compilation.append(check_quality.CompilationEntry(source, "", build, command, output))
+                runner = check_quality.Runner(root, root / "logs" / case)
+                runner.product_configuration = {
+                    "BUILD_TESTING": "ON" if testing else "OFF",
+                    "JUICER_GRAIN_PREVIEW": preview,
+                    "JUICER_GRAIN_PREVIEW_CONFIGURED": preview,
+                    "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": configured,
+                }
+                run_probe = runner.run
+
+                def run(command, *, label, **options):
+                    if label.endswith("-dependencies"):
+                        return run_probe(command, label=label, **options)
+                    return {
+                        "clang-format-version": "clang-format version 22.1.8",
+                        "clang-tidy-version": "LLVM version 22.1.8",
+                    }.get(label, "")
+
+                with (
+                    self.subTest(case=case),
+                    patch.object(check_quality, "resolve_tool", return_value="tool"),
+                    patch.object(check_quality, "compilation_entries", return_value=compilation),
+                    patch.object(runner, "run", side_effect=run) as run_command,
+                    OutputLease(root, build),
+                ):
+                    if missing:
+                        with self.assertRaises(check_quality.QualityError) as error:
+                            check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
+                        self.assertIn(missing, str(error.exception))
+                        if case == "extra-failed-probe":
+                            self.assertIn("dependency probe failed", str(error.exception))
+                            self.assertFalse((runner.log_dir / "compile_commands.json").exists())
+                    else:
+                        commands = check_quality.prepare_native_analysis(root, runner, arguments, selected, policy)
+                        self.assertEqual([command.source for command in commands], list(expected))
+                        covered = set(selected) & set(replay_files)
+                        if configured == "ON" and stage_header in selected:
+                            covered.add(stage_header)
+                        self.assertEqual(set(runner.replay_compiler_analysis), covered)
+                        if configured == "OFF":
+                            self.assertEqual(
+                                runner.replay_compiler_analysis,
+                                {source: {"excluded": check_quality.MOTION_REPLAY_EXCLUSION} for source in covered},
+                            )
+                            self.assertFalse((runner.log_dir / "compile_commands.json").exists())
+                        else:
+                            replay_commands = [command for command in commands if command.replay_headers]
+                            database = json.loads((runner.log_dir / "compile_commands.json").read_bytes())
+                            self.assertEqual(
+                                [row["file"] for row in database],
+                                [str(root / command.source) for command in replay_commands],
+                            )
+                            self.assertTrue(
+                                all(command.command[1:3] == ["-p", str(runner.log_dir)] for command in replay_commands)
+                            )
+                            self.assertTrue(
+                                all(
+                                    command.label == check_quality.Runner._name(command.label)
+                                    for command in replay_commands
+                                )
+                            )
+                            for source in covered:
+                                owners = {
+                                    aperture: (render,),
+                                    density: (density,),
+                                    motion: (render,),
+                                    replay_header: (render, density),
+                                    stage_header: (render, density),
+                                }[source]
+                                if source == replay_header and case in {"extra-replay-consumer", "extra-macro-include"}:
+                                    owners = (*owners, extra)
+                                self.assertEqual(
+                                    runner.replay_compiler_analysis[source]["commands"],
+                                    [check_quality.motion_replay_tidy_label(owner) for owner in sorted(owners)],
+                                )
+                        ordinary_commands = [command for command in commands if not command.replay_headers]
+                        self.assertTrue(
+                            all(command.command[1:3] == ["-p", str(build)] for command in ordinary_commands)
+                        )
+                        expected_probes = len(variants)
+                        if stage_header in selected:
+                            stage_database = json.loads(
+                                (runner.log_dir / check_quality.FILM_GRAIN_STAGE_DATABASE).read_bytes()
+                            )
+                            self.assertEqual(len(stage_database), len(stage_owners))
+                            self.assertEqual(
+                                {row["output"] for row in stage_database},
+                                {
+                                    str(build / entry.output)
+                                    for entry in compilation
+                                    if entry.arguments and entry.path in {executor, stage_source}
+                                },
+                            )
+                            expected_probes += len(stage_owners)
+                        self.assertEqual(len(runner.native_run.commands), expected_probes)
+                        self.assertTrue(all(command["drained"] for command in runner.native_run.commands))
+                        self.assertEqual(extra in runner.consumed_inputs, extra in variants)
+                    run_command.assert_any_call(
+                        ["tool", "--dry-run", "--Werror", "--style=file", *selected], label="clang-format"
+                    )
+
     def test_include_search_contexts_preserve_order_and_quote_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -2243,10 +2624,12 @@ ParallelAnalysisTests.test_development_cannot_stage_probe_or_complete_qualificat
 DependencyContractTests.test_native_build_hooks_and_links_are_rejected.required_subtests = True
 DependencyContractTests.test_build_or_dev_dependency_requires_contract_change.required_subtests = True
 DependencyContractTests.test_clippy_matches_preset_and_preserves_quality_checks.required_subtests = True
+DependencyContractTests.test_preview_dispatches_release_clippy_for_each_feature_form.required_subtests = True
 DependencyContractTests.test_development_preserves_packages_and_uses_only_quality_commands.required_subtests = True
 DependencyContractTests.test_selected_clippy_failure_stops_dispatch.required_subtests = True
 CudaQualityTests.test_unknown_or_incomplete_options_fail_instead_of_weakening_analysis.required_subtests = True
 CudaQualityTests.test_missing_cuda_source_or_header_owner_fails.required_subtests = True
+SelectionAndEvidenceTests.test_motion_replay_files_require_configured_consumers.required_subtests = True
 SourceHygieneTests.test_each_violation_fails_with_location_and_log.required_subtests = True
 SourceHygieneTests.test_all_policy_header_extensions_reject_namespace_directives.required_subtests = True
 SourceHygieneTests.test_unreadable_or_invalid_utf8_source_fails.required_subtests = True

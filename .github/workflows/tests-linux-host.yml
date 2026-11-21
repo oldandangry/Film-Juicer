@@ -114,6 +114,28 @@ jobs:
             --runtime host \
             --run-id "ci-linux-debug-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
+      - name: Prepare Debug grain preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/verify.py prepare \
+            --preset linux-debug \
+            --grain-preview ON \
+            --targets juicer_analysis_inputs \
+            --run-id "ci-linux-debug-preview-inputs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Verify Debug grain preview host witnesses
+        shell: bash
+        run: |
+          set -euo pipefail
+          preview_run="ci-linux-debug-preview-host-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python -B scripts/verify.py development \
+            --preset linux-debug --runtime host --tests \
+            Rust.Core Rust.Bridge Ffi.Host.GrainPreviewDiscovery \
+            Ofx.Host.GrainPreviewModule Ofx.Host.GrainPreviewInstance Ofx.Host.GrainPreviewRender \
+            --run-id "$preview_run"
+          python -B scripts/qualification.py --bundle "out/validation/linux-debug/results/$preview_run"
+
       - name: Run cumulative Debug native, CUDA, and Rust quality
         shell: bash
         env:
@@ -163,6 +185,7 @@ jobs:
           path: |
             out/validation/linux-debug/results/ci-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/validation/linux-debug/results/ci-linux-debug-inputs-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/linux-debug/results/ci-linux-debug-preview-host-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/validation/linux-debug/results/quality-*/**
             out/build/linux-debug/Testing/Temporary/LastTest.log
             out/build/linux-debug/compile_commands.json

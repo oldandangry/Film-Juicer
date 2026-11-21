@@ -11,12 +11,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from qualification import framework_terminals, gtest_discovery, domain_result_members, validate_domain_result
+import verify
 
 
 def encoded(value):
@@ -120,6 +122,139 @@ def synthetic_bundle():
         "members": {},
     }
     return result, payloads
+
+
+class GpuLauncherTests(unittest.TestCase):
+    preset = "linux-release"
+    preview = "Ffi.Gpu.GrainPreviewStaged"
+    apertures = "Grain.Gpu.FilmOfxApertures"
+    catalog = (Path(__file__).resolve().parents[1] / "gpu-contracts.json").read_bytes()
+
+    def launch(self, name, listed, cohorts, *, preview=None, replay="OFF", error=None):
+        events = []
+        for caller, ids in cohorts.items():
+            events.append({"caller": caller, "event": "membership", "ids": ids})
+            for case_id in ids:
+                row = {"caller": caller, "id": case_id}
+                events.extend([dict(row, event="start"), dict(row, event="terminal", outcome="passed")])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            catalog = bundle / "gpu-contracts.json"
+            catalog.write_bytes(self.catalog)
+            if preview is not None:
+                build = root / "out/build" / self.preset
+                build.mkdir(parents=True)
+                (build / "CMakeCache.txt").write_text(
+                    "BUILD_TESTING:BOOL=ON\n"
+                    f"JUICER_GRAIN_PREVIEW:BOOL={preview}\n"
+                    f"JUICER_GRAIN_PREVIEW_CONFIGURED:INTERNAL={preview}\n"
+                    f"JUICER_GRAIN_MOTION_REPLAY_CONFIGURED:INTERNAL={replay}\n",
+                    encoding="utf-8",
+                )
+            listing = "".join(json.dumps({"caller": caller, "id": case_id}) + "\n" for caller, case_id in listed)
+            terminals = "".join(json.dumps(event) + "\n" for event in events)
+            listing_path, terminals_path = root / "list.jsonl", root / "terminals.jsonl"
+            listing_path.write_bytes(listing.encode())
+            terminals_path.write_bytes(terminals.encode())
+            command = [
+                sys.executable,
+                "-B",
+                "-c",
+                "import os, sys\nfrom pathlib import Path\n"
+                "if '--list-cases' in sys.argv:\n    sys.stdout.buffer.write(Path(sys.argv[1]).read_bytes())\n"
+                "else:\n    Path(os.environ['FJ_HOST_CASES']).write_bytes(Path(sys.argv[2]).read_bytes())\n",
+                str(listing_path),
+                str(terminals_path),
+            ]
+            args = SimpleNamespace(command=command, preset=self.preset, protocol="custom", runtime="gpu")
+            with (
+                patch.object(verify, "ROOT", root),
+                patch.dict(os.environ, FJ_HOST_BUNDLE=str(bundle), FJ_HOST_TEST=name),
+            ):
+                if error is None:
+                    self.assertEqual(verify.native_case(args), 0)
+                else:
+                    with self.assertRaises(ValueError) as failure:
+                        verify.native_case(args)
+                    self.assertEqual(str(failure.exception), error)
+            self.assertEqual(catalog.read_bytes(), self.catalog)
+            execution = json.loads((bundle / (verify.native_case_key(command) + ".execution.json")).read_bytes())
+            self.assertIs(execution["outcomes_valid"], error is None)
+            return execution
+
+    def optional_cases(self, section, name, count):
+        listed = json.loads(self.catalog)[section]["native_membership"][name]["required"]
+        self.assertEqual(len(listed), count)
+        return listed
+
+    def test_preview_launch_accepts_declared_cases(self):
+        listed = self.optional_cases("grain_preview", self.preview, 21)
+        self.launch(self.preview, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON")
+
+    def test_preview_launch_rejects_missing_case(self):
+        listed = self.optional_cases("grain_preview", self.preview, 21)
+        listed.remove(["grain-preview-render", "negative-print-time-endpoint"])
+        self.launch(
+            self.preview,
+            listed,
+            {listed[0][0]: [case_id for _, case_id in listed]},
+            preview="ON",
+            error="missing or unexpected native membership",
+        )
+
+    def test_preview_launch_rejects_second_cohort(self):
+        listed = self.optional_cases("grain_preview", self.preview, 21)
+        self.launch(
+            self.preview,
+            listed,
+            {listed[0][0]: [case_id for _, case_id in listed], "extra-caller": ["extra-case"]},
+            preview="ON",
+            error="missing or unexpected required cohort",
+        )
+
+    def test_preview_off_rejects_registration_before_invocation(self):
+        execution = self.launch(
+            self.preview,
+            [],
+            {},
+            preview="OFF",
+            error=f"optional product registration {self.preview} is not configured for section grain_preview",
+        )
+        self.assertEqual(execution["commands"], [])
+
+    def test_replay_launch_accepts_declared_apertures(self):
+        listed = self.optional_cases("grain_preview_motion_replay", self.apertures, 6)
+        self.launch(
+            self.apertures, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON", replay="ON"
+        )
+
+    def test_replay_off_rejects_apertures_before_invocation(self):
+        execution = self.launch(
+            self.apertures,
+            [],
+            {},
+            preview="ON",
+            error=(
+                f"optional product registration {self.apertures} is not configured for section grain_preview_motion_replay"
+            ),
+        )
+        self.assertEqual(execution["commands"], [])
+
+    def test_base_launch_uses_catalog_without_product_cache(self):
+        name = "Ffi.Gpu.PreparedStateLifetime"
+        catalog = json.loads(self.catalog)
+        membership = catalog["native_membership"][name]
+        required = membership["required"]
+        caller = required[0][0]
+        cohort_count = catalog["native_cohorts"][name]
+        ids = [case_id for _, case_id in required]
+        ids.extend(f"case-{i}" for i in range(membership["terminal"] - len(ids) - (cohort_count - 1)))
+        cohorts = {caller: ids, **{f"caller-{i}": ["case"] for i in range(cohort_count - 1)}}
+        listed = [(caller, case_id) for case_id in ids[: membership["listed"]]]
+        self.launch(name, listed, cohorts)
+        self.launch(name, listed[1:], cohorts, error="missing or unexpected native membership")
 
 
 class GpuResultTests(unittest.TestCase):
@@ -508,7 +643,7 @@ class GpuResultTests(unittest.TestCase):
             script = r"""
 import collections, json, pathlib, runpy, sys
 root = pathlib.Path(sys.argv[1]).resolve()
-import argparse, hashlib, stat, time, xml.etree.ElementTree, pkgutil, __future__
+import argparse, datetime, hashlib, stat, time, tomllib, xml.etree.ElementTree, pkgutil, __future__
 argparse.ArgumentParser()
 opened = collections.Counter()
 def audit(event, args):

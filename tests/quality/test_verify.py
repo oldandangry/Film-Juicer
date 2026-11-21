@@ -15,9 +15,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from preview_configuration import PREVIEW_CASES, configure_preview_option
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import verify
 import execution
+import qualification
+from verify import cache_values
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +89,8 @@ class PublicCliTests(unittest.TestCase):
                     "JuicerRouteBridgeTests",
                     "--testing",
                     "ON",
+                    "--grain-preview",
+                    "OFF",
                     "--run-id",
                     "prepare-one",
                 ],
@@ -96,6 +102,12 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.preset, "linux-debug")
         self.assertEqual(args.targets, ["JuicerRouteBridgeTests"])
         self.assertEqual(args.testing, "ON")
+        self.assertEqual(args.grain_preview, "OFF")
+        self.assertIn(
+            "-DJUICER_GRAIN_PREVIEW:BOOL=OFF",
+            verify.configure_command("cmake", args.preset, grain_preview=args.grain_preview),
+        )
+        self.assertFalse(any("JUICER_GRAIN_PREVIEW" in arg for arg in verify.configure_command("cmake", args.preset)))
         self.assertEqual(args.run_id, "prepare-one")
 
     def test_release_off_closure_uses_the_native_prepare_owner(self):
@@ -405,9 +417,10 @@ class CtestDispatchTests(unittest.TestCase):
             json.dumps({"schema": "python-contracts-v1", "registrations": {}})
         )
         (self.build / "tests/python-targets.json").write_text("{}")
-        (self.build / "tests/rust-artifacts.json").write_text("{}")
+        self.artifacts = {"schema": "rust-artifacts-v2", "build": str(self.build), "consumers": {}}
+        (self.build / "tests/rust-artifacts.json").write_text(json.dumps(self.artifacts))
         cargo, nextest = str(self.root / "cargo"), str(self.root / "cargo-nextest")
-        cache = {
+        self.cache = {
             "CMAKE_HOME_DIRECTORY": str(self.root),
             "BUILD_TESTING": "ON",
             "CMAKE_BUILD_TYPE": "Debug",
@@ -416,6 +429,9 @@ class CtestDispatchTests(unittest.TestCase):
             "Python3_EXECUTABLE": sys.executable,
             "CMAKE_CXX_COMPILER": "compiler",
             "CMAKE_CUDA_COMPILER": "nvcc",
+            "JUICER_GRAIN_PREVIEW": "OFF",
+            "JUICER_GRAIN_PREVIEW_CONFIGURED": "OFF",
+            "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "OFF",
         }
         self.args = SimpleNamespace(
             preset=self.preset,
@@ -436,7 +452,7 @@ class CtestDispatchTests(unittest.TestCase):
         self.native = Mock(commands=[])
         self.native.command.side_effect = self.command
         self.enterContext(patch.object(verify, "ROOT", self.root))
-        self.enterContext(patch.object(verify, "cache_values", return_value=cache))
+        self.enterContext(patch.object(verify, "cache_values", return_value=self.cache))
         self.enterContext(patch.object(verify, "capture_native_source", return_value=({"head": "fixture"}, b"", {})))
         self.enterContext(patch.object(verify, "expire_diagnostics", return_value={"read_bytes": 0}))
         self.enterContext(patch.object(verify.shutil, "which", return_value=str(self.root / "cmake")))
@@ -498,6 +514,85 @@ class CtestDispatchTests(unittest.TestCase):
         self.assertNotIn("ctest-gpu", names)
         self.assertNotIn("gpu-exclusion", names)
         self.assertNotIn("physical_gpu", result)
+
+    def test_cmake_preview_option_merges_host_and_gpu_registration_contracts(self):
+        self.args.runtime, self.args.tests = "host", ["Host.Fixture"]
+        cases = [(value, False) for value in PREVIEW_CASES] + [("ON", True)]
+        self.subtest_cases = tuple(f"{value}-replay-{replay}" for value, replay in cases)
+        build = self.root / "preview-build"
+        preview_contracts = {}
+        preview_names = {"host": "Ffi.Host.GrainPreviewDiscovery", "gpu": "Ffi.Gpu.GrainPreviewStaged"}
+        replay_name = "Grain.Gpu.FilmOfxApertures"
+        selectors = {
+            preview_names["host"]: "--grain-preview-discovery",
+            preview_names["gpu"]: "--grain-preview-witness",
+            replay_name: "--grain-preview-apertures",
+        }
+
+        def preview_scope(name, target, runtime):
+            return {
+                "targets": {target: {"protocol": "custom", "registrations": 1}},
+                "required": [name],
+                "native_cohorts": {name: 1},
+                "native_membership": {name: {"listed": 1, "terminal": 1, "required": [["preview", runtime]]}},
+            }
+
+        for runtime in ("host", "gpu"):
+            name = preview_names[runtime]
+            target = "JuicerProductionPreparedRenderProbe"
+            contract_path = self.root / "tests" / (runtime + "-contracts.json")
+            contract = json.loads(contract_path.read_text())
+            contract["native_cohorts"] = {}
+            contract["native_membership"] = {}
+            contract["grain_preview"] = preview_scope(name, target, runtime)
+            if runtime == "gpu":
+                contract["grain_preview_motion_replay"] = preview_scope(replay_name, "JuicerGrainMotionReplay", runtime)
+            contract_path.write_text(json.dumps(contract))
+            preview_contracts[runtime] = contract
+
+        for (value, replay), case in zip(cases, self.subtest_cases):
+            with self.subTest(case=case):
+                preview = configure_preview_option(self.root, build, value)
+                self.cache["JUICER_GRAIN_PREVIEW"] = cache_values(build)["JUICER_GRAIN_PREVIEW"]
+                self.cache["JUICER_GRAIN_PREVIEW_CONFIGURED"] = "ON" if preview else "OFF"
+                self.cache["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"] = "ON" if replay else "OFF"
+                self.assertEqual(self.cache["JUICER_GRAIN_PREVIEW"], value)
+                self.assertEqual(preview, value != "OFF")
+                self.args.run_id = "preview-" + case.lower()
+                self.artifacts["consumers"] = {}
+                for runtime, contract in preview_contracts.items():
+                    targets = {target: str(self.build / target) for target in contract["targets"]}
+                    self.tests.pop(preview_names[runtime], None)
+                    if runtime == "gpu":
+                        self.tests.pop(replay_name, None)
+                    additions = [contract["grain_preview"]] if preview else []
+                    if replay and runtime == "gpu":
+                        additions.append(contract["grain_preview_motion_replay"])
+                    for addition in additions:
+                        (name,) = addition["required"]
+                        (target,) = addition["targets"]
+                        targets[target] = str(self.build / target)
+                        self.artifacts["consumers"][target] = {"binary": targets[target]}
+                        ordinary = self.tests[runtime.title() + ".Fixture"]
+                        self.tests[name] = {
+                            **ordinary,
+                            "name": name,
+                            "command": [*ordinary["command"][:-1], targets[target], selectors[name]],
+                        }
+                    (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps(targets))
+                (self.build / "tests/rust-artifacts.json").write_text(json.dumps(self.artifacts))
+                verify.native_tests(self.args)
+                result = self.finish.call_args.args[1]
+                self.assertEqual(result["status"], "passed", result.get("error"))
+                self.assertNotIn("physical_gpu", result)
+                _, _, candidate, *_ = self.finish.call_args.args
+                self.assertEqual(
+                    candidate["configuration"]["JUICER_GRAIN_MOTION_REPLAY_CONFIGURED"], "ON" if replay else "OFF"
+                )
+                directory = self.root / "out/validation" / self.preset / "results" / self.args.run_id
+                for runtime, contract in preview_contracts.items():
+                    actual = json.loads((directory / (runtime + "-contracts.json")).read_text())
+                    self.assertEqual(actual, contract)
 
     def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):
         timeouts = {
@@ -689,7 +784,13 @@ class CloseoutCliTests(unittest.TestCase):
 
         native.command.side_effect = command
         args = SimpleNamespace(
-            preset=self.preset, run_id="prepare-order", targets=["fixture"], files=None, testing="ON", cuda_free=False
+            preset=self.preset,
+            run_id="prepare-order",
+            targets=["fixture"],
+            files=None,
+            testing="ON",
+            cuda_free=False,
+            grain_preview="ON",
         )
         environment = dict(os.environ)
         environment.pop("FJ_HOST_BUNDLE", None)
@@ -708,6 +809,7 @@ class CloseoutCliTests(unittest.TestCase):
         ):
             self.assertEqual(verify.fresh_prepare(args), 1)
         self.assertEqual(events, ["expiry", "configure"])
+        self.assertIn("-DJUICER_GRAIN_PREVIEW:BOOL=ON", native.command.call_args.args[1])
         self.assertEqual(finish.call_args.args[3]["report_read_bytes"], 17)
 
     def test_removed_receipt_and_recovery_options_are_rejected(self):
@@ -791,6 +893,204 @@ class CloseoutCliTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 verify.main()
+
+
+class RustDiscoveryTests(unittest.TestCase):
+    def test_rust_discovery_and_execution_follow_configured_request(self):
+        publication = qualification.PREVIEW_PUBLICATION_FUNCTION
+        cases = (
+            ("preview", "core", True, "product", None, ["list", "run"]),
+            ("off", "core", False, "product", None, ["list", "run"]),
+            ("cuda-free", "core", False, "cuda-free", None, ["list", "run"]),
+            ("bridge-only", "bridge", True, "product", None, ["list", "run"]),
+            ("features", "core", True, "product", "workspace features", []),
+            ("bridge-with-stale-core", "bridge", True, "product", "workspace features", []),
+            ("bridge-incomplete", "bridge", True, "product", "missing or unexpected prepared Rust test binaries", []),
+            ("foreign-paths", "core", True, "product", "Rust test input paths differ", []),
+            ("foreign-metadata", "core", True, "product", "Cargo metadata differs", []),
+            ("foreign-manifest", "core", True, "product", "manifest differs", []),
+            ("prepared-platforms", "core", True, "product", "configured target or profile", []),
+            ("discovery-build", "core", True, "product", "discovery build metadata differs", ["list"]),
+            ("aliased-binaries", "core", True, "product", "duplicate prepared Rust test executable path", []),
+            ("missing", "core", True, "product", "required Rust core publication", ["list"]),
+            ("combined-380", "core", True, "product", "workspace features", []),
+            ("discovery-only", "core", True, "product", "required Rust core publication", ["list"]),
+            ("wrong-package", "core", True, "product", "discovery package ID differs", ["list"]),
+            ("wrong-binary", "core", True, "product", "discovery differs", ["list"]),
+            ("filtered", "core", True, "product", "package function", ["list"]),
+            ("skipped", "core", True, "product", "required framework case skipped", ["list", "run"]),
+            ("failed", "core", True, "product", "duplicate/failed framework case", ["list", "run"]),
+        )
+        self.subtest_cases = tuple(case[0] for case in cases)
+        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        target = qualification.PRESET_TARGETS[preset]
+        features = ["grain-preview", "test-support"]
+        for case, package, preview, build_kind, error, commands in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary_names = qualification.RUST_TEST_PACKAGES
+                source = root / "foreign" if case == "foreign-paths" else root
+                build = source / "out" / "build" / preset / "cargo" / "test-support"
+                metadata = build / "metadata"
+                metadata.mkdir(parents=True)
+                bundle = root / "bundle"
+                bundle.mkdir()
+                request = {
+                    "build_kind": build_kind,
+                    "grain_preview": preview,
+                    "target": target,
+                    "profile": "debug",
+                    "cargo_features": "film-juicer-plugin/test-support"
+                    + (",film-juicer-plugin/grain-preview" if preview else ""),
+                }
+                args = SimpleNamespace(
+                    package=package,
+                    preset=preset,
+                    request=request,
+                    cargo=Path("cargo"),
+                    nextest=Path("cargo-nextest"),
+                    cargo_metadata=metadata / "cargo.json",
+                    binaries_metadata=metadata / "binaries.json",
+                    config_file=source / ".config" / "nextest.toml",
+                )
+                args.config_file.parent.mkdir(parents=True)
+                cargo = {
+                    "workspace_root": str(source),
+                    "target_directory": str(build),
+                    "packages": [],
+                    "workspace_members": list(binary_names),
+                    "resolve": {"nodes": []},
+                }
+                platform = {"triple": target}
+                reported_target = {"triple": "unsupported"} if case == "prepared-platforms" else platform
+                binaries = {
+                    "rust-build-meta": {
+                        "target-directory": str(build),
+                        "target-platform": target,
+                        "base-output-directories": [target + "/debug"],
+                        "target-platforms": [reported_target],
+                        "platforms": {"host": {"platform": platform}, "targets": [{"platform": reported_target}]},
+                    },
+                    "rust-binaries": {},
+                }
+                suites = {}
+                junit = ["<testsuites>"]
+                for owner, binary in binary_names.items():
+                    package_dir = source / "rust" / binary
+                    package_dir.mkdir(parents=True)
+                    (package_dir / "lib.rs").write_text("fn fixture() {}", encoding="utf-8")
+                    target_name = binary.replace("-", "_")
+                    cargo["packages"].append(
+                        {
+                            "id": owner,
+                            "name": binary,
+                            "manifest_path": str(package_dir / "Cargo.toml"),
+                            "targets": [{"name": target_name, "test": True, "kind": ["lib"]}],
+                        }
+                    )
+                    stale = case in {"features", "combined-380"} or case == "bridge-with-stale-core" and owner == "core"
+                    cargo["resolve"]["nodes"].append(
+                        {"id": owner, "features": features if preview and not stale else ["test-support"]}
+                    )
+                    prepared = {
+                        "binary-id": binary,
+                        "package-id": owner,
+                        "binary-name": target_name,
+                        "kind": "lib",
+                        "build-platform": "target",
+                        "binary-path": str(build / target / "debug" / "deps" / target_name),
+                    }
+                    binaries["rust-binaries"][binary] = prepared
+                    names = [f"test_{index}" for index in range(338 if owner == "core" else 41)]
+                    if owner == "core":
+                        names.append(qualification.OPTICS_FUNCTION)
+                        if preview and case not in {"missing", "combined-380"}:
+                            names.append(publication)
+                    matches = owner == package
+                    suites[binary] = {
+                        **prepared,
+                        "testcases": {
+                            name: {"ignored": False, "filter-match": {"status": "matches" if matches else "mismatch"}}
+                            for name in names
+                            if name != publication or case != "discovery-only"
+                        },
+                    }
+                    junit.append(f'<testsuite name="{binary}" tests="{len(names)}">')
+                    for name in names:
+                        terminal = "" if matches else "<skipped/>"
+                        if name == publication and matches:
+                            terminal = {"skipped": "<skipped/>", "failed": "<failure/>"}.get(case, "")
+                        junit.append(f'<testcase name="{name}">{terminal}</testcase>')
+                    junit.append("</testsuite>")
+                junit.append("</testsuites>")
+                discovery_build = binaries["rust-build-meta"]
+                if case == "discovery-build":
+                    discovery_build = {**discovery_build, "base-output-directories": [target + "/release"]}
+                if case == "foreign-metadata":
+                    cargo["workspace_root"] = str(root / "foreign")
+                if case == "foreign-manifest":
+                    cargo["packages"][1]["manifest_path"] = str(root / "foreign" / "Cargo.toml")
+                suite = suites[binary_names["core"]]
+                if case == "bridge-incomplete":
+                    del binaries["rust-binaries"][binary_names["core"]]
+                    del suites[binary_names["core"]]
+                if case == "aliased-binaries":
+                    binary_path = suite["binary-path"]
+                    binaries["rust-binaries"][binary_names["bridge"]]["binary-path"] = binary_path
+                    suites[binary_names["bridge"]]["binary-path"] = binary_path
+                if case == "wrong-package":
+                    suite["package-id"] = "bridge"
+                if case == "wrong-binary":
+                    suite["binary-path"] = str(root / "foreign-binary")
+                if case == "filtered":
+                    suite["testcases"][publication]["filter-match"]["status"] = "mismatch"
+                args.cargo_metadata.write_text(json.dumps(cargo), encoding="utf-8")
+                args.binaries_metadata.write_text(json.dumps(binaries), encoding="utf-8")
+                args.config_file.write_text("", encoding="utf-8")
+                (bundle / "host-contracts.json").write_text(
+                    json.dumps(
+                        {
+                            "rust_cohorts": {name: 0 for name in binary_names.values()},
+                            "grain_preview": {"rust_core_publication": publication},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                registration = "Rust.Core" if package == "core" else "Rust.Bridge"
+
+                def nextest(command, *, env, stdout=None):
+                    if command[2] == "list":
+                        stdout.write(json.dumps({"rust-suites": suites, "rust-build-meta": discovery_build}).encode())
+                    else:
+                        self.assertEqual(command[2], "run")
+                        (bundle / (registration + ".xml")).write_text("".join(junit), encoding="utf-8")
+                        Path(env["FJ_RUST_ROWS"]).write_bytes(b"")
+                    return subprocess.CompletedProcess(command, 0)
+
+                with (
+                    patch.object(verify, "ROOT", root),
+                    patch.dict(os.environ, {"FJ_HOST_BUNDLE": str(bundle)}, clear=True),
+                    patch.object(verify.subprocess, "run", side_effect=nextest) as run,
+                ):
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            verify.rust_tests(args)
+                    else:
+                        self.assertEqual(verify.rust_tests(args), 0)
+                    self.assertEqual([call.args[0][2] for call in run.call_args_list], commands)
+                if not error:
+                    execution = json.loads((bundle / (registration + ".execution.json")).read_bytes())
+                    self.assertEqual(execution["schema"], "rust-test-execution-v4")
+                    junit = (bundle / (registration + ".xml")).read_bytes()
+                    self.assertEqual(execution["junit_sha256"], hashlib.sha256(junit).hexdigest())
+                    self.assertEqual(execution["package_id"], package)
+                    self.assertEqual(execution["features"], features if preview else ["test-support"])
+                    self.assertEqual(execution["request"], request)
+
+    test_rust_discovery_and_execution_follow_configured_request.required_subtests = True
+
+
+CtestDispatchTests.test_cmake_preview_option_merges_host_and_gpu_registration_contracts.required_subtests = True
 
 
 if __name__ == "__main__":

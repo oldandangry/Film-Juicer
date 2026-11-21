@@ -1031,3 +1031,6 @@ mod tests {
         assert_eq!(finite_mean(&[f32::NAN, f32::INFINITY]), 0.0);
     }
 }
+
+#[cfg(test)]
+mod film_spectral_witness;

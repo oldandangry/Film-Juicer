@@ -803,7 +803,16 @@ namespace ofx_test {
             e->bag.properties[kOfxPropType] = {std::string(kOfxTypeImageEffectInstance)};
             e->bag.properties[kOfxImageEffectPropContext] = {std::string(kOfxImageEffectContextFilter)};
             e->bag.properties[kOfxPropInstanceData] = {static_cast<void*>(nullptr)};
-            for (auto entry : kInstanceParameters) {
+            std::vector<InstanceParamDefinition> parameters(kInstanceParameters.begin(), kInstanceParameters.end());
+            for (auto entry : std::array{
+                     InstanceParamDefinition{"GrainModel", InstanceParamKind::StringChoice},
+                     InstanceParamDefinition{"FilmGrainAmountEv", InstanceParamKind::Double},
+                     InstanceParamDefinition{"FilmGrainTexelPitchUm", InstanceParamKind::Double},
+                     InstanceParamDefinition{"FilmGrainChromaFraction", InstanceParamKind::Double},
+                 })
+                if (descriptor.params.contains(std::string(entry.name)))
+                    parameters.push_back(entry);
+            for (auto entry : parameters) {
                 auto p = std::make_unique<Param>(this, std::string(entry.name), entry.kind);
                 p->bag.scope = effect_name;
                 p->bag.properties[kOfxParamPropType] = {std::string(type(entry.kind))};
@@ -923,7 +932,7 @@ namespace ofx_test {
     }
     void InstanceHost::set_clip_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
         auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));
-        clip.bag.properties[std::string(key)] = std::move(values);
+        set_property(reinterpret_cast<OfxPropertySetHandle>(&clip.bag), key, std::move(values));
     }
     void InstanceHost::set_image_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
         auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));

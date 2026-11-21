@@ -40,14 +40,16 @@ namespace GrainPrototype {
         }
     } // namespace
 
-    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint) {
+    static FilmTables read_bank_tables(const std::filesystem::path& directory,
+                                       const std::filesystem::path& tableDirectory,
+                                       float footprint) {
         const auto tableFile = footprint_file(footprint);
         constexpr std::size_t recordWords = 3 + kLevels;
         constexpr std::size_t footprintWords = std::size_t{2} * kLevels;
         std::array<float, kRecords * recordWords> records{};
         std::array<float, kRecords * footprintWords> pitch{};
         read_words(directory / "records.f32", records.data(), records.size());
-        read_words(directory / tableFile, pitch.data(), pitch.size());
+        read_words(tableDirectory / tableFile, pitch.data(), pitch.size());
         FilmTables tables{};
         tables.footprint = footprint;
         for (std::size_t channel = 0; channel < kRecords; ++channel) {
@@ -72,9 +74,13 @@ namespace GrainPrototype {
         return tables;
     }
 
-    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint) {
+    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint) {
+        return read_bank_tables(directory, directory, footprint);
+    }
+
+    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory) {
         FilmBank bank{};
-        bank.tables = read_film_tables(directory, footprint);
+        bank.tables = read_bank_tables(directory, tableDirectory.empty() ? directory : tableDirectory, footprint);
         bank.sums.resize(kBankEntries);
         read_words(directory / "sums.f32", bank.sums.data(), bank.sums.size());
         return bank;

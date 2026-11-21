@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <limits>
 #include <map>
 #include <memory>
@@ -19,6 +20,7 @@
 #include <cuda_runtime_api.h>
 
 #include "Cuda/JuicerCudaFailure.h"
+#include "Cuda/JuicerCudaFilmGrain.h"
 
 #include "Cuda/JuicerCudaDeviceLedger.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
@@ -27,6 +29,7 @@
 #include "RenderValues.h"
 
 struct FjHostPreparation;
+struct FjFilmGrain;
 
 struct JuicerCudaAutoExposurePartial {
     static constexpr int kLaneCount = 4;
@@ -414,6 +417,13 @@ namespace JuicerCuda {
         // The active output space owns one 64x720 Cmax table for this exact
         // context/epoch. Prepared views borrow this pointer.
         float* outputGamutCmax = nullptr;
+        struct FilmGrainSlot {
+            FilmGrain::FilmQuad* bank = nullptr;
+            FjStatus failure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            bool loading = true;
+            std::condition_variable ready;
+        };
+        std::map<std::uint64_t, std::shared_ptr<FilmGrainSlot>> filmGrainBanks;
 
         // Submitted prepared-frame use events retained until reuse-gating waits can observe
         // completion. These events are never recorded again after insertion.
@@ -548,6 +558,8 @@ namespace JuicerCuda {
         Resources& resources) noexcept;
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
+
+    bool ensure_film_grain_uploaded(Resources& resources, const FjFilmGrain& input, const FilmGrain::FilmQuad*& out, Failure& error);
 
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,

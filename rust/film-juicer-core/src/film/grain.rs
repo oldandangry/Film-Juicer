@@ -1,6 +1,8 @@
 //! Film-Juicer visual grain from captured resolved controls, borrowing completed development.
 
 pub mod frame;
+#[cfg(feature = "grain-preview")]
+pub mod preview;
 
 use crate::hash;
 use crate::profile::Polarity;

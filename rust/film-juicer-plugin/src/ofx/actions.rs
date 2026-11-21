@@ -13,10 +13,14 @@ pub(super) fn describe_in_context(callback: &Callback<'_>) -> Result<(), Status>
 
 pub(super) fn describe(callback: &Callback<'_>) -> Result<(), Status> {
     let properties = callback.descriptor_properties()?;
-    properties.set_string(c"OfxPropLabel", 0, c"Juicer")?;
+    #[cfg(not(feature = "grain-preview"))]
+    let label = c"Juicer";
+    #[cfg(feature = "grain-preview")]
+    let label = c"Film-Juicer Grain Preview";
+    properties.set_string(c"OfxPropLabel", 0, label)?;
     // OFXS setLabels suppresses only these two optional property failures.
-    let _ = properties.set_string(c"OfxPropShortLabel", 0, c"Juicer");
-    let _ = properties.set_string(c"OfxPropLongLabel", 0, c"Juicer");
+    let _ = properties.set_string(c"OfxPropShortLabel", 0, label);
+    let _ = properties.set_string(c"OfxPropLongLabel", 0, label);
     properties.set_string(c"OfxImageEffectPluginPropGrouping", 0, c"Negative-juice")?;
     let index = properties.dimension(c"OfxImageEffectPropSupportedContexts")?;
     properties.set_string(

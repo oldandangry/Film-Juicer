@@ -255,7 +255,8 @@ namespace JuicerCudaTest {
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         std::string& diagnostic,
-        const std::string& invocationPhase) {
+        const std::string& invocationPhase,
+        bool grainDispatchContract) {
         diagnostic.clear();
         if (!runtime.assets || !runtime.cuda) {
             diagnostic = "held-state boundary requires a live Runtime view";
@@ -294,7 +295,8 @@ namespace JuicerCudaTest {
             const FjFrame& frame;
             JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
             const std::string& phase;
-        } invocation{owner, runtime, frame, snapshot, invocationPhase};
+            bool grainDispatchContract;
+        } invocation{owner, runtime, frame, snapshot, invocationPhase, grainDispatchContract};
         const auto baseline = fj_test_noise_acquisition_count();
         const bool success = PreparedFrameFixture::with_prepared_frame_inputs(
             runtime.assets, owner, facts, &invocation, [](void* user, const PreparedFrameFixture::Inputs& inputs, std::string& diagnostic) {
@@ -350,6 +352,8 @@ namespace JuicerCudaTest {
                                                "-frame-" + std::to_string(snapshot.frameToken.value) + "-snapshot-" + std::to_string(snapshot.snapshotId) +
                                                "-time-" + std::to_string(frame.time_frames) + "-phase-" + invocation.phase;
                 check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, inputs.hostPreparation, invocationContext);
+                if (invocation.grainDispatchContract)
+                    check_grain_dispatch(runtime.cuda, frame, submission, prepared, inputs.hostPreparation);
                 const auto result = render_raw_prepared(runtime.cuda, frame, submission, prepared, {}, &error, inputs.hostPreparation);
                 if (result.status.category != FJ_STATUS_SUCCESS) {
                     diagnostic.assign(message.data(), error.length);
