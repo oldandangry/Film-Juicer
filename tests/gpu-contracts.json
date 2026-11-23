@@ -142,8 +142,8 @@
     "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
     "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
-    "Ffi.Gpu.CudaRender.negative-direct": 20,
-    "Ffi.Gpu.CudaRender.negative-print": 20,
+    "Ffi.Gpu.CudaRender.negative-direct": 21,
+    "Ffi.Gpu.CudaRender.negative-print": 21,
     "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
@@ -172,6 +172,8 @@
     "ExposureCache.ReflectedBoundaryFailuresStagingAndIndependentEpoch": 1,
     "ExposureCache.ReflectedBoundarySameKeyRaceAndPrepublicationCancellation": 1,
     "ExposureCache.SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit": 1,
+    "GrainUpload.FilmBankReuseAndContextRetirement": 1,
+    "GrainUpload.FilmBankFailureDoesNotPublish": 1,
     "GrainScratch.PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes": 1,
     "GrainScratch.GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction": 1,
     "GrainScratch.ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations": 1,
@@ -200,10 +202,40 @@
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
-    "Grain.Gpu.FilmReference": {
-      "listed": 8,
-      "terminal": 8,
+    "Ffi.Gpu.CudaRender.negative-direct": {
+      "listed": 13,
+      "terminal": 128,
       "required": [
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.negative-print": {
+      "listed": 13,
+      "terminal": 128,
+      "required": [
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Grain.Gpu.FilmReference": {
+      "listed": 14,
+      "terminal": 14,
+      "required": [
+        ["film-reference", "production-quad-g3-parity"],
+        ["film-reference", "production-proxy-footprint"],
+        ["film-reference", "production-proxy-matches-full"],
+        ["film-reference", "production-proxy-apertures"],
+        ["film-reference", "production-proxy-grouped-whole-period"],
+        ["film-reference", "production-proxy-unequal-axis"],
         ["film-reference", "g2-geometry-and-temporal"],
         ["film-reference", "chroma-projection"],
         ["film-reference", "rectangles-wrap-and-seams"],
@@ -235,6 +267,131 @@
           "negative-print/warm"
         ]
       ]
+    }
+  },
+  "grain_preview": {
+    "targets": {
+      "JuicerProductionPreparedRenderProbe": {
+        "protocol": "custom",
+        "registrations": 2
+      }
+    },
+    "required": [
+      "Ffi.Gpu.GrainPreviewStaged"
+    ],
+    "native_cohorts": {
+      "Ffi.Gpu.GrainPreviewStaged": 1
+    },
+    "native_membership": {
+      "Ffi.Gpu.GrainPreviewStaged": {
+        "listed": 21,
+        "terminal": 21,
+        "required": [
+          [
+            "grain-preview-render",
+            "negative-direct-quarter-size-half"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-proxy-sequence"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-hd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-hd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-portrait"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-thumbnails"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-thumbnails"
+          ],
+          ["grain-preview-render", "negative-direct-8mm-proxy"],
+          ["grain-preview-render", "negative-print-8mm-proxy"],
+          ["grain-preview-render", "negative-direct-clipped-quarter"],
+          ["grain-preview-render", "negative-print-clipped-quarter"],
+          ["grain-preview-render", "negative-direct-time-endpoint"],
+          ["grain-preview-render", "negative-print-time-endpoint"]
+        ]
+      }
+    }
+  },
+  "grain_preview_motion_replay": {
+    "targets": {
+      "JuicerGrainMotionReplay": {
+        "protocol": "custom",
+        "registrations": 1
+      },
+      "JuicerGrainOfxApertureTests": {
+        "protocol": "custom",
+        "registrations": 1
+      }
+    },
+    "required": [
+      "Grain.Gpu.FilmOfxApertures"
+    ],
+    "native_cohorts": {
+      "Grain.Gpu.FilmOfxApertures": 1
+    },
+    "native_membership": {
+      "Grain.Gpu.FilmOfxApertures": {
+        "listed": 11,
+        "terminal": 11,
+        "required": [
+          ["film-ofx-apertures", "clipped-quarter-direct"],
+          ["film-ofx-apertures", "clipped-quarter-print"],
+          ["film-ofx-apertures", "whole-period"],
+          ["film-ofx-apertures", "unequal-4-by-8"],
+          ["film-ofx-apertures", "unequal-8-by-4"],
+          ["film-ofx-apertures", "8mm-proxy"],
+          ["film-ofx-apertures", "calibrated-2-by-4"],
+          ["film-ofx-apertures", "calibrated-4-by-2"],
+          ["film-ofx-apertures", "shifted-37-5-equivalent"],
+          ["film-ofx-apertures", "standard-27-over-139-border"],
+          ["film-ofx-apertures", "offset-wide-clipped"]
+        ]
+      }
     }
   }
 }

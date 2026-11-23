@@ -236,7 +236,18 @@ class NativeRun:
         self.directory = directory
         self.commands = []
 
-    def command(self, name, command, *, env=None, timeout=None, vctip_executable=None, stdout_only=False, cwd=None):
+    def command(
+        self,
+        name,
+        command,
+        *,
+        env=None,
+        timeout=None,
+        vctip_executable=None,
+        stdout_only=False,
+        cwd=None,
+        replay_headers=(),
+    ):
         OutputLease.check_held()
         cleanup = None
         if vctip_executable is not None:
@@ -257,6 +268,11 @@ class NativeRun:
             "directory": str(cwd or self.root),
             "returncode": None,
         }
+        if replay_headers:
+            if record["command"][1:3] != ["-p", str(self.directory)]:
+                raise ValueError("replay compiler must use the database in its execution directory")
+            database = Path(record["command"][2]) / "compile_commands.json"
+            database_digest = digest(database)
         if cleanup:
             record["vctip_cleanup"] = cleanup
         self.commands.append(record)
@@ -287,6 +303,20 @@ class NativeRun:
                 )
             if record["returncode"]:
                 raise subprocess.CalledProcessError(record["returncode"], command)
+            if replay_headers and tree["drained"] and tree.get("status") == "completed":
+                from qualification import REPLAY_EXECUTION_SUFFIX
+
+                if digest(database) != database_digest:
+                    raise ValueError("replay compilation database changed during analysis")
+                write_json(
+                    self.directory / (name + REPLAY_EXECUTION_SUFFIX),
+                    {
+                        "command": record["command"],
+                        "directory": record["directory"],
+                        "headers": list(replay_headers),
+                        "database": {"path": str(database), "sha256": database_digest},
+                    },
+                )
             return log
         except BaseException as exc:
             record["error"] = f"{type(exc).__name__}: {exc}"
@@ -414,7 +444,19 @@ def _expiry_result(root, directory, result, preset):
     if (
         not isinstance(result, dict)
         or result.get("schema")
-        not in {"native-tests-v1", "native-quality-v1", "native-build-v1", "native-spatial-optics-v1"}
+        not in {
+            "native-tests-v1",
+            "native-tests-v2",
+            "native-tests-v3",
+            "native-tests-v4",
+            "native-tests-v5",
+            "native-tests-v6",
+            "native-quality-v1",
+            "native-quality-v2",
+            "native-quality-v3",
+            "native-build-v1",
+            "native-spatial-optics-v1",
+        }
         or result.get("preset") != preset
     ):
         raise ValueError("unsupported closeout result")

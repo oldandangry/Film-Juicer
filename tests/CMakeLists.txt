@@ -95,6 +95,7 @@ juicer_register_tooling_tests(
 set(JUICER_RUST_TEST_RUNNER
     "${Python3_EXECUTABLE}" "${JUICER_TEST_ROOT}/scripts/verify.py" rust-tests
     --preset "${JUICER_TEST_PRESET_NAME}"
+    --request "${JUICER_RUST_TESTS_REQUEST}"
     --cargo "${JUICER_CARGO_EXECUTABLE}"
     --nextest "${JUICER_NEXTEST_EXECUTABLE}"
     --binaries-metadata "${JUICER_RUST_TESTS_BINARIES_METADATA}"
@@ -275,6 +276,9 @@ function(juicer_write_host_targets)
         string(APPEND juicer_host_target_paths "${separator}\"${target}\":\"$<TARGET_FILE:${target}>\"")
         set(separator ",\n")
     endforeach()
+    if(JUICER_GRAIN_PREVIEW AND NOT JUICER_CUDA_FREE_TESTS)
+        string(APPEND juicer_host_target_paths "${separator}\"JuicerProductionPreparedRenderProbe\":\"$<TARGET_FILE:JuicerProductionPreparedRenderProbe>\"")
+    endif()
     string(APPEND juicer_host_target_paths "\n}\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/host-targets.json"
         CONTENT "${juicer_host_target_paths}")
@@ -665,8 +669,20 @@ target_compile_features(JuicerOfxModuleTests PRIVATE cxx_std_20)
 target_include_directories(JuicerOfxModuleTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
 target_link_libraries(JuicerOfxModuleTests PRIVATE juicer_test_core film_juicer_rust juicer_ofx_headers)
 set_target_properties(JuicerOfxModuleTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
-juicer_add_host_test(Ofx.Host.Module JuicerOfxModuleTests custom "${CMAKE_CURRENT_SOURCE_DIR}/ofx/descriptor_manifest.json")
-set_tests_properties(Ofx.Host.Module PROPERTIES LABELS "host;boundary")
+if(JUICER_GRAIN_PREVIEW)
+    set(juicer_ofx_module_test Ofx.Host.GrainPreviewModule)
+    set(juicer_ofx_instance_test Ofx.Host.GrainPreviewInstance)
+    set(juicer_ofx_render_test Ofx.Host.GrainPreviewRender)
+    set(juicer_ofx_variant_argument --grain-preview)
+    set(juicer_ofx_manifest descriptor_manifest_grain_preview.json)
+else()
+    set(juicer_ofx_module_test Ofx.Host.Module)
+    set(juicer_ofx_instance_test Ofx.Host.Instance)
+    set(juicer_ofx_render_test Ofx.Host.Render)
+    set(juicer_ofx_manifest descriptor_manifest.json)
+endif()
+juicer_add_host_test(${juicer_ofx_module_test} JuicerOfxModuleTests custom
+    ${juicer_ofx_variant_argument} "${CMAKE_CURRENT_SOURCE_DIR}/ofx/${juicer_ofx_manifest}")
 
 add_executable(JuicerOfxContextTests ofx/context_test.cpp ofx/context_host.cpp ../native/ofx_exports.cpp)
 target_compile_features(JuicerOfxContextTests PRIVATE cxx_std_20)
@@ -692,8 +708,8 @@ target_include_directories(JuicerOfxInstanceTests PRIVATE "${JUICER_TEST_ROOT}/n
 target_link_libraries(JuicerOfxInstanceTests PRIVATE juicer_test_core film_juicer_rust juicer_ofx_headers)
 set_target_properties(JuicerOfxInstanceTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerOfxInstanceTests juicer_test_resources)
-juicer_add_host_test(Ofx.Host.Instance JuicerOfxInstanceTests custom --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/instance.json")
-set_tests_properties(Ofx.Host.Instance PROPERTIES LABELS "host;boundary")
+juicer_add_host_test(${juicer_ofx_instance_test} JuicerOfxInstanceTests custom
+    ${juicer_ofx_variant_argument} --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/instance.json")
 
 add_executable(JuicerOfxActionTests ofx/action_test.cpp ofx/instance_host.cpp ../native/ofx_exports.cpp)
 target_compile_features(JuicerOfxActionTests PRIVATE cxx_std_20)
@@ -710,8 +726,15 @@ target_include_directories(JuicerOfxRenderTests PRIVATE "${JUICER_TEST_ROOT}/nat
 target_link_libraries(JuicerOfxRenderTests PRIVATE juicer_test_core film_juicer_rust juicer_ofx_headers)
 set_target_properties(JuicerOfxRenderTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerOfxRenderTests juicer_test_resources)
-juicer_add_host_test(Ofx.Host.Render JuicerOfxRenderTests custom --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/render.json")
-set_tests_properties(Ofx.Host.Render PROPERTIES LABELS "host;boundary")
+juicer_add_host_test(${juicer_ofx_render_test} JuicerOfxRenderTests custom
+    ${juicer_ofx_variant_argument} --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/render.json")
+
+# Cargo can reuse an archive with an older timestamp after a feature switch.
+# A harness built after the switch still needs to relink for the selected variant.
+foreach(ofx_callback_target IN ITEMS JuicerOfxModuleTests JuicerOfxInstanceTests JuicerOfxRenderTests)
+    set_property(TARGET ${ofx_callback_target} APPEND PROPERTY LINK_DEPENDS
+        "$<TARGET_PROPERTY:film_juicer_rust,JUICER_RUST_FEATURE_INPUT>")
+endforeach()
 
 foreach(reference_target IN ITEMS JuicerOfxContextTests JuicerOfxInstanceTests JuicerOfxActionTests JuicerOfxRenderTests)
     target_sources(${reference_target} PRIVATE ofx/host_reference.cpp)
@@ -975,8 +998,8 @@ add_test(NAME Ofx.Gpu.CutoverContract COMMAND JuicerProcessorReferenceProbe --cu
 set_tests_properties(Ofx.Gpu.CutoverContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_library(juicer_render_test_objects OBJECT
-    ../native/juicer_cuda_api.cpp ../native/juicer_cuda_call_scope.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
-target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings)
+    ../native/juicer_cuda_api.cpp ../native/juicer_cuda_call_scope.cpp ../src/Cuda/JuicerCudaExecutor.cpp ../src/ProcessRoot.cpp)
+target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_render_test_objects PRIVATE JUICER_CUDA_RENDER_TEST_HOOK=1)
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp ofx/render_assertions.cpp
@@ -993,13 +1016,29 @@ add_executable(JuicerPreparedBoundaryProbe
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_test_core film_juicer_rust_test_support CUDA::cuda_driver)
 add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
-        "${CMAKE_INSTALL_PREFIX}/juicer.ofx.bundle/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
+        "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
         "${JUICER_TEST_ROOT}/Resources"
         "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat"
         "${JUICER_TEST_PRESET_NAME}"
         "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+if(JUICER_GRAIN_PREVIEW)
+    juicer_add_host_test(Ffi.Host.GrainPreviewDiscovery JuicerProductionPreparedRenderProbe custom
+        --grain-preview-discovery
+        "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
+        "$<TARGET_FILE:juicer>")
+    set_tests_properties(Ffi.Host.GrainPreviewDiscovery PROPERTIES LABELS "host" TIMEOUT 0)
+    add_test(NAME Ffi.Gpu.GrainPreviewStaged
+        COMMAND JuicerProductionPreparedRenderProbe --grain-preview-witness
+            "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>")
+    set_tests_properties(Ffi.Gpu.GrainPreviewStaged PROPERTIES
+        LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+endif()
+if(juicer_grain_aperture_consumer)
+    add_test(NAME Grain.Gpu.FilmOfxApertures COMMAND ${juicer_grain_aperture_consumer} --grain-preview-apertures)
+    set_tests_properties(Grain.Gpu.FilmOfxApertures PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+endif()
 if(MSVC)
     target_compile_options(JuicerPreparedBoundaryProbe PRIVATE $<$<COMPILE_LANGUAGE:C>:/W3;/WX>)
 else()
@@ -1303,6 +1342,9 @@ add_executable(JuicerGrainPrototype grain/grain_prototype.cpp grain/film_referen
 # Correlate SAT profiling with this prototype CUDA source in Release builds.
 set_property(SOURCE grain/film_reference.cu APPEND PROPERTY COMPILE_OPTIONS -lineinfo)
 target_link_libraries(JuicerGrainPrototype PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
+target_compile_definitions(JuicerGrainPrototype PRIVATE
+    JUICER_GRAIN_TEST_BANK="${JUICER_TEST_RESOURCE_DIR}/grain/portra-400"
+    JUICER_GRAIN_TEST_TABLES="${CMAKE_CURRENT_SOURCE_DIR}/grain/portra-table-fixtures")
 set_target_properties(JuicerGrainPrototype PROPERTIES LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerGrainPrototype juicer_test_resources)
@@ -1675,7 +1717,7 @@ juicer_add_python_test(NAME Ffi.Host.BuildArtifacts
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ffi.Host.PreparedValues Ffi.Host.OutputColorValues Ofx.Host.Actions Ofx.Host.Render Ofx.Host.RenderControls Ofx.Gpu.Render Ofx.Gpu.RenderTrace Ofx.Host.Instance Ofx.Host.Capture Ofx.Host.InstanceControls Ofx.Host.Context Ofx.Host.ContextControls Ofx.Host.Module Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.PreparedValues Ffi.Host.OutputColorValues Ofx.Host.Actions ${juicer_ofx_render_test} Ofx.Host.RenderControls Ofx.Gpu.Render Ofx.Gpu.RenderTrace ${juicer_ofx_instance_test} Ofx.Host.Capture Ofx.Host.InstanceControls Ofx.Host.Context Ofx.Host.ContextControls ${juicer_ofx_module_test} Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
@@ -1704,6 +1746,10 @@ juicer_write_host_targets()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json" juicer_gpu_contract)
+if(juicer_grain_aperture_consumer)
+    string(JSON aperture_contract GET "${juicer_gpu_contract}" grain_preview_motion_replay targets ${juicer_grain_aperture_consumer})
+    string(JSON juicer_gpu_contract SET "${juicer_gpu_contract}" targets ${juicer_grain_aperture_consumer} "${aperture_contract}")
+endif()
 string(JSON juicer_gpu_target_count LENGTH "${juicer_gpu_contract}" targets)
 math(EXPR juicer_gpu_last "${juicer_gpu_target_count} - 1")
 set(juicer_gpu_target_paths "{\n")
@@ -1741,6 +1787,6 @@ foreach(target IN LISTS juicer_rust_candidates)
 endforeach()
 list(APPEND juicer_rust_consumers JuicerOfxMeasurementModule)
 set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts
-    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
+    "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerHalationComparisonProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources;${juicer_grain_aperture_consumer}")
 juicer_write_python_targets()
 set(JUICER_RUST_TEST_CONSUMERS "${juicer_rust_consumers}" PARENT_SCOPE)

@@ -7,7 +7,7 @@ import hashlib
 import json
 import io
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import signal
 import time
@@ -22,6 +22,7 @@ import execution
 from qualification import (
     OPTICS_FUNCTION,
     OPTICS_TESTS,
+    candidate_source_digest,
     read_native_result,
     validate_build_result,
     validate_native_result,
@@ -237,7 +238,7 @@ class NativeResultTests(unittest.TestCase):
         }
         return result, payloads
 
-    def production_v2_fixture(self, preset="linux-release"):
+    def production_v2_fixture(self, preset="linux-release", *, module_record=None, rust_artifacts=None):
         result, payloads = self.production_fixture(preset)
         names = (
             "native-symbols",
@@ -253,6 +254,24 @@ class NativeResultTests(unittest.TestCase):
         )
         empty = hashlib.sha256(b"").hexdigest()
         module, ofx, cuda, render, fixture = (str(index) * 64 for index in range(1, 6))
+        stage_file, build_file = "module", "build-module"
+        ofx_file, cuda_file, render_file = "ofx", "cuda", "render"
+        windows = preset.startswith("windows")
+        pdb_file = "pdb"
+        native_archive, rust_archive = "native-symbols", "rust-symbols"
+        if module_record is not None:
+            stage_file, build_file = module_record["stage"], module_record["build"]
+            module = module_record["stage_sha256"]
+            build_module = PureWindowsPath(build_file)
+            pdb_file = str(build_module.with_suffix(".pdb"))
+            binaries = build_module.parent / "tests" / "bin"
+            ofx_file = str(binaries / "JuicerProductionOfxProbe.exe")
+            cuda_file = str(binaries / "JuicerProductionCudaAbiProbe.exe")
+            render_file = str(binaries / "JuicerProductionPreparedRenderProbe.exe")
+            native_archive = rust_artifacts["native_archive"]
+            rust_archive = rust_artifacts["variants"]["production"]["archive"]
+        symbol_file = pdb_file if windows else stage_file
+        scan_files = dict(zip(names[:4], (native_archive, rust_archive, stage_file, symbol_file), strict=True))
         commands = [
             {
                 "name": name,
@@ -266,13 +285,12 @@ class NativeResultTests(unittest.TestCase):
             for name in names
         ]
         by_name = {command["name"]: command for command in commands}
-        by_name["module-exports"]["command"] = ["scan", "module"]
-        symbol_file = "pdb" if preset.startswith("windows") else "module"
-        by_name["module-symbols"]["command"] = ["scan", symbol_file]
-        by_name["ofx-probe"]["command"] = ["ofx", "module"]
-        by_name["cuda-abi-probe"]["command"] = ["cuda"]
-        by_name["module-probe"]["command"] = ["probe", "module"]
-        by_name["prepared-render"]["command"] = ["render", "module", "resources", "fixture", preset, "updates"]
+        for name, file in scan_files.items():
+            by_name[name]["command"] = ["scan", file]
+        by_name["ofx-probe"]["command"] = [ofx_file, stage_file]
+        by_name["cuda-abi-probe"]["command"] = [cuda_file]
+        by_name["module-probe"]["command"] = ["probe", stage_file]
+        by_name["prepared-render"]["command"] = [render_file, stage_file, "resources", "fixture", preset, "updates"]
         commands_data = json.dumps(commands).encode()
         rows = []
         for route in ("negative-direct", "negative-print"):
@@ -317,29 +335,25 @@ class NativeResultTests(unittest.TestCase):
             "scanned": [
                 {
                     "name": name,
-                    "file": symbol_file if name == "module-symbols" else "module" if name == "module-exports" else name,
-                    "sha256": empty
-                    if name == "module-symbols" and symbol_file == "pdb"
-                    else module
-                    if name.startswith("module-")
-                    else empty,
+                    "file": file,
+                    "sha256": module if file == stage_file else empty,
                     "symbols_and_fault_strings_absent": True,
                     "legacy_symbols_absent": True,
                 }
-                for name in names[:4]
+                for name, file in scan_files.items()
             ],
             "build_inputs": {
-                "module": identity(module),
-                "build-module": identity(module),
-                "pdb": identity(empty),
-                "native-symbols": identity(empty),
-                "rust-symbols": identity(empty),
-                "ofx": identity(ofx),
-                "cuda": identity(cuda),
-                "render": identity(render),
+                stage_file: identity(module),
+                build_file: identity(module),
+                pdb_file: identity(empty),
+                native_archive: identity(empty),
+                rust_archive: identity(empty),
+                ofx_file: identity(ofx),
+                cuda_file: identity(cuda),
+                render_file: identity(render),
             },
             "consumed_inputs": {"fixture": identity(fixture)},
-            "loaded_module": {"file": "module", "build_file": "build-module", "sha256": module},
+            "loaded_module": {"file": stage_file, "build_file": build_file, "sha256": module},
             "probes": [
                 {
                     "name": name,
@@ -348,12 +362,12 @@ class NativeResultTests(unittest.TestCase):
                     "before_run_sha256": value,
                     "after_run_sha256": value,
                 }
-                for name, path, value in (("ofx", "ofx", ofx), ("cuda-abi", "cuda", cuda))
+                for name, path, value in (("ofx", ofx_file, ofx), ("cuda-abi", cuda_file, cuda))
             ],
             "prepared_render": {
-                "module": "module",
+                "module": stage_file,
                 "module_sha256": module,
-                "executable": "render",
+                "executable": render_file,
                 "executable_sha256_before": render,
                 "executable_sha256_after": render,
                 "fixture": "fixture",
@@ -867,6 +881,626 @@ class NativeResultTests(unittest.TestCase):
         with patch.object(Path, "read_bytes", side_effect=AssertionError("payload read")):
             with self.assertRaisesRegex(ValueError, "missing required native run members"):
                 read_native_result(self.bundle, result_bytes=raw)
+
+    def module_producer_fixture(self, preview="OFF", *, explicit_preview=True, testing="ON", raw_preview=None):
+        source = "C:/checkout"
+        preset = "windows-clang-release"
+        build = f"{source}/out/build/{preset}"
+        stage = f"{source}/out/stage/{preset}"
+        cmake = "C:/tools/cmake.exe"
+        python = "C:/venv/python.exe"
+        targets = ["bundle-archive", "JuicerOfxModuleTests"]
+        module_name = "juicer-grain-preview.ofx" if preview == "ON" else "juicer.ofx"
+        module = f"{build}/{module_name}"
+        module_stage = f"{stage}/portra-grain-preview" if preview == "ON" else stage
+        configure = [cmake, "--preset", preset, f"-DBUILD_TESTING={testing}", f"-DPython3_EXECUTABLE={python}"]
+        if explicit_preview:
+            configure.append(f"-DJUICER_GRAIN_PREVIEW:BOOL={preview}")
+        variants = {"production": ["grain-preview"] if preview == "ON" else []}
+        if testing == "ON":
+            variants["test-support"] = ["test-support"]
+        rust_variants = {}
+        for name, features in variants.items():
+            directory = f"{build}/cargo/{name}"
+            rust_variants[name] = {
+                "target_dir": directory,
+                "archive": f"{directory}/x86_64-pc-windows-msvc/release/film_juicer_plugin.lib",
+                "feature_input": f"{directory}/features.txt",
+                "stamp": f"{directory}/build.stamp",
+                "features": features,
+            }
+        sha256 = "a" * 64
+        candidate = {
+            "head": "source-baseline",
+            "preset": preset,
+            "inputs": {"CMakeLists.txt": {"git_blob": "b" * 40}},
+            "configuration": {
+                "CMAKE_HOME_DIRECTORY": source,
+                "CMAKE_INSTALL_PREFIX": stage,
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_COMPILER": "C:/tools/clang-cl.exe",
+                "CMAKE_CUDA_COMPILER": "C:/tools/nvcc.exe",
+                "BUILD_TESTING": testing,
+                "JUICER_GRAIN_PREVIEW": preview if raw_preview is None else raw_preview,
+                "JUICER_GRAIN_PREVIEW_CONFIGURED": preview,
+                "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": "OFF",
+            },
+            "version_commands": [
+                {"name": "cmake", "command": [cmake, "--version"], "returncode": 0, "output": "cmake version 4.3.3"}
+            ],
+        }
+        payloads = {
+            "candidate.json": json.dumps(candidate).encode(),
+            "candidate.patch": b"",
+            "production-module.json": json.dumps(
+                {
+                    "build": module,
+                    "stage": f"{module_stage}/{module_name}.bundle/Contents/Win64/{module_name}",
+                    "build_sha256": sha256,
+                    "stage_sha256": sha256,
+                }
+            ).encode(),
+            "rust-artifacts.json": json.dumps(
+                {
+                    "schema": "rust-artifacts-v2",
+                    "build": build,
+                    "native_archive": f"{build}/juicer_core.lib",
+                    "consumers": {"juicer": {"binary": module, "variant": "production"}},
+                    "variants": rust_variants,
+                }
+            ).encode(),
+        }
+        result = {
+            "schema": "native-build-v1",
+            "status": "passed",
+            "preset": preset,
+            "candidate_head": candidate["head"],
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
+            "production_module": True,
+            "targets": targets,
+            "commands": [
+                {
+                    "name": name,
+                    "command": command,
+                    "directory": source,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                }
+                for name, command in (
+                    ("configure", configure),
+                    ("build", [cmake, "--build", build, "--target", *targets, "--", "-k0"]),
+                    (
+                        "versions",
+                        [
+                            python,
+                            "-B",
+                            f"{source}/scripts/verify.py",
+                            "tool-versions",
+                            "--tool",
+                            "cmake",
+                            cmake,
+                        ],
+                    ),
+                )
+            ],
+        }
+        return result, payloads
+
+    def test_module_producer_requires_configured_cmake_build(self):
+        result, payloads = self.module_producer_fixture()
+        self.write_bundle(result, payloads)
+        self.assertEqual(read_native_result(self.bundle)["status"], "passed")
+        self.subtest_cases = (
+            "build-dir",
+            "working-dir",
+            "cmake",
+            "targets",
+            "extra-configure",
+            "missing-build",
+            "missing-versions",
+        )
+        for case in self.subtest_cases:
+            with self.subTest(case=case):
+                altered = copy.deepcopy(result)
+                operations = altered["commands"]
+                operation = operations[1]
+                diagnostic = "CMake producer build command differs"
+                if case == "build-dir":
+                    operation["command"][2] = "C:/checkout/out/build/windows-clang-debug"
+                elif case == "working-dir":
+                    operation["directory"] = "C:/other"
+                elif case == "cmake":
+                    operation["command"][0] = "C:/other/cmake.exe"
+                elif case == "targets":
+                    operation["command"][5] = "JuicerOfxRenderTests"
+                elif case == "extra-configure":
+                    extra = copy.deepcopy(operations[0])
+                    extra["name"] = "reconfigure"
+                    extra["command"][-1] = "-DJUICER_GRAIN_PREVIEW:BOOL=ON"
+                    operations.insert(1, extra)
+                    diagnostic = "unexpected CMake producer command sequence"
+                else:
+                    operations.pop(1 if case == "missing-build" else 2)
+                    diagnostic = "unexpected CMake producer command sequence"
+                (self.bundle / "result.json").write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    read_native_result(self.bundle)
+
+    test_module_producer_requires_configured_cmake_build.required_subtests = True
+
+    def test_module_producer_requires_configured_cmake_options(self):
+        passing = {
+            "explicit-ordinary": ("OFF", True, "ON", None),
+            "explicit-preview": ("ON", True, "ON", None),
+            "cached-ordinary": ("OFF", False, "ON", None),
+            "cached-preview": ("ON", False, "ON", None),
+            "cached-false-alias": ("OFF", False, "ON", "FaLsE"),
+            "cached-true-alias": ("ON", False, "ON", "TRUE"),
+            "cached-notfound": ("OFF", False, "ON", "preview-NOTFOUND"),
+            "testing-off": ("OFF", True, "OFF", None),
+        }
+        rejected = {
+            "contradictory-preview": (5, ["-DJUICER_GRAIN_PREVIEW:BOOL=ON"]),
+            "redirected-build": (6, ["-B", "C:/checkout/out/build/windows-clang-debug"]),
+            "redirected-source": (6, ["-S", "C:/other"]),
+            "contradictory-testing": (3, ["-DBUILD_TESTING=OFF"]),
+            "substituted-python": (4, ["-DPython3_EXECUTABLE=C:/other/python.exe"]),
+            "overridden-profile": (6, ["-DCMAKE_BUILD_TYPE=Debug"]),
+        }
+        self.subtest_cases = (
+            *passing,
+            *rejected,
+            "null-argument",
+            "null-directory",
+            "foreign-directory",
+            "cached-disagreement",
+            "explicit-disagreement",
+        )
+        for case, (preview, explicit_preview, testing, raw_preview) in passing.items():
+            with self.subTest(case=case):
+                result, payloads = self.module_producer_fixture(
+                    preview, explicit_preview=explicit_preview, testing=testing, raw_preview=raw_preview
+                )
+                self.write_bundle(result, payloads)
+                self.assertEqual(read_native_result(self.bundle)["status"], "passed")
+
+        result, payloads = self.module_producer_fixture()
+        self.write_bundle(result, payloads)
+        for case, (index, operands) in rejected.items():
+            with self.subTest(case=case):
+                altered = copy.deepcopy(result)
+                command = altered["commands"][0]["command"]
+                command[index : index + 1] = operands
+                (self.bundle / "result.json").write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "CMake producer configure command differs"):
+                    read_native_result(self.bundle)
+
+        with self.subTest(case="null-argument"):
+            altered = copy.deepcopy(result)
+            altered["commands"][0]["command"][4] = None
+            (self.bundle / "result.json").write_text(json.dumps(altered), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid CMake producer configure command arguments"):
+                read_native_result(self.bundle)
+        for case, directory, diagnostic in (
+            ("null-directory", None, "invalid CMake producer configure working directory"),
+            ("foreign-directory", "C:/other", "CMake producer configure command differs"),
+        ):
+            with self.subTest(case=case):
+                altered = copy.deepcopy(result)
+                altered["commands"][0]["directory"] = directory
+                (self.bundle / "result.json").write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    read_native_result(self.bundle)
+        for explicit, name in ((False, "cached-disagreement"), (True, "explicit-disagreement")):
+            with self.subTest(case=name):
+                result, payloads = self.module_producer_fixture("ON", explicit_preview=explicit, raw_preview="OFF")
+                self.write_bundle(result, payloads)
+                with self.assertRaisesRegex(ValueError, "cached preview value disagrees"):
+                    read_native_result(self.bundle)
+
+    test_module_producer_requires_configured_cmake_options.required_subtests = True
+
+    def module_producer_contract_fixture(self):
+        result, payloads = self.module_producer_fixture(testing="OFF")
+        module = json.loads(payloads["production-module.json"])
+        artifacts = json.loads(payloads["rust-artifacts.json"])
+        _, contract = self.production_v2_fixture(result["preset"], module_record=module, rust_artifacts=artifacts)
+        output = PureWindowsPath(f"C:/checkout/out/validation/{result['preset']}/results/run/production")
+        report = json.loads(contract["production-contract.json"])
+        report["commands"]["file"] = str(output / "commands.json")
+        payloads["production-contract.json"] = json.dumps(report).encode()
+        payloads["production-commands.json"] = contract["production-commands.json"]
+        targets = result["targets"]
+        targets.extend(["juicer", "JuicerProductionPreparedRenderProbe"])
+        result["commands"][1]["command"][-2:-2] = targets[-2:]
+        result["commands"].append(
+            {
+                "name": "production-contract",
+                "command": [
+                    "C:/venv/python.exe",
+                    "-B",
+                    "C:/checkout/tests/ffi/production_contract.py",
+                    "--preset",
+                    result["preset"],
+                    "--artifacts",
+                    output.as_posix(),
+                ],
+                "directory": "C:/checkout",
+                "returncode": 0,
+                "drained": True,
+                "process_status": "completed",
+            }
+        )
+        result["production_contract"] = True
+        return result, payloads
+
+    def test_module_producer_accepts_final_production_contract_only_when_requested(self):
+        result, payloads = self.module_producer_contract_fixture()
+        output = PureWindowsPath(result["commands"][-1]["command"][-1])
+        self.write_bundle(result, payloads)
+        # The bundle lives in a temporary directory unrelated to the recorded producer output.
+        summary = read_native_result(self.bundle)
+        self.assertTrue(summary["production_off"])
+        self.assertEqual(summary["prepared_render_cases"], 4)
+        command_error = "production contract command differs from the configured producer"
+        artifacts_error = "production contract artifacts path differs from the configured producer"
+        rejected = {
+            "not-requested": ("unexpected CMake producer command sequence", None, None),
+            "configure-as-contract": (command_error, slice(None), result["commands"][0]["command"]),
+            "wrong-python": (command_error, 0, "C:/other/python.exe"),
+            "wrong-script": (command_error, 2, "C:/other/tests/ffi/production_contract.py"),
+            "wrong-preset": (command_error, 4, "linux-release"),
+            "null-artifacts": (r"commands\[3\]\.command\[6\]", 6, None),
+            "foreign-artifacts": (
+                artifacts_error,
+                6,
+                "C:/other/out/validation/windows-clang-release/results/run/production",
+            ),
+            "wrong-artifacts-leaf": (
+                artifacts_error,
+                6,
+                "C:/checkout/out/validation/windows-clang-release/results/run/other",
+            ),
+            "foreign-run-artifacts": (
+                "production contract commands file differs from the recorded artifacts path",
+                6,
+                (output.parent.with_name("another-run") / output.name).as_posix(),
+            ),
+        }
+        self.subtest_cases = tuple(rejected)
+        for case, (diagnostic, operand, replacement) in rejected.items():
+            with self.subTest(case=case):
+                altered = copy.deepcopy(result)
+                if operand is None:
+                    altered["production_contract"] = False
+                else:
+                    altered["commands"][-1]["command"][operand] = replacement
+                (self.bundle / "result.json").write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    read_native_result(self.bundle)
+
+    test_module_producer_accepts_final_production_contract_only_when_requested.required_subtests = True
+
+    def test_module_producer_contract_binds_loaded_module(self):
+        result, payloads = self.module_producer_contract_fixture()
+        module = json.loads(payloads["production-module.json"])
+        module.update(build_sha256="b" * 64, stage_sha256="b" * 64)
+        wrong_digest = {**payloads, "production-module.json": json.dumps(module).encode()}
+
+        report = json.loads(payloads["production-contract.json"])
+        report["loaded_module"]["build_file"] = report["loaded_module"]["file"]
+        wrong_build = {**payloads, "production-contract.json": json.dumps(report).encode()}
+
+        module = json.loads(payloads["production-module.json"])
+        module["stage"] = "C:/other-stage/juicer.ofx"
+        artifacts = json.loads(payloads["rust-artifacts.json"])
+        _, contract = self.production_v2_fixture(result["preset"], module_record=module, rust_artifacts=artifacts)
+        report = json.loads(contract["production-contract.json"])
+        report["commands"]["file"] = str(PureWindowsPath(result["commands"][-1]["command"][-1]) / "commands.json")
+        wrong_stage = {
+            **payloads,
+            "production-contract.json": json.dumps(report).encode(),
+            "production-commands.json": contract["production-commands.json"],
+        }
+
+        report = json.loads(payloads["production-contract.json"])
+        report["variant"] = "grain-preview"
+        trace = json.loads(payloads["production-commands.json"])
+        next(row["command"] for row in trace if row["name"] == "ofx-probe").append("preview")
+        commands = json.dumps(trace).encode()
+        report["commands"]["sha256"] = hashlib.sha256(commands).hexdigest()
+        wrong_variant = {
+            **payloads,
+            "production-contract.json": json.dumps(report).encode(),
+            "production-commands.json": commands,
+        }
+        module_error = "production contract loaded module differs from the producing build and stage record"
+        cases = (
+            ("foreign-digests", wrong_digest, module_error),
+            ("substituted-build", wrong_build, module_error),
+            ("foreign-stage", wrong_stage, module_error),
+            ("wrong-variant", wrong_variant, "production contract variant differs from the configured producer"),
+        )
+        self.subtest_cases = tuple(name for name, _, _ in cases)
+        for case, altered, diagnostic in cases:
+            with self.subTest(case=case):
+                self.write_bundle(result, altered)
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    read_native_result(self.bundle)
+
+    test_module_producer_contract_binds_loaded_module.required_subtests = True
+
+    def test_module_producer_contract_requires_build_and_probe_inputs(self):
+        result, payloads = self.module_producer_contract_fixture()
+        altered = copy.deepcopy(result)
+        target = "JuicerProductionPreparedRenderProbe"
+        altered["targets"].remove(target)
+        altered["commands"][1]["command"].remove(target)
+        self.subtest_cases = ("missing-target", "foreign-archive", "foreign-render-probe")
+        with self.subTest(case="missing-target"):
+            self.write_bundle(altered, payloads)
+            with self.assertRaisesRegex(ValueError, "missing required production contract targets"):
+                read_native_result(self.bundle)
+
+        cases = (
+            ("foreign-archive", "rust-symbols", -1, "scan files differ from the producing build"),
+            ("foreign-render-probe", "prepared-render", 0, "probe executables differ from the producing build"),
+        )
+        for case, name, operand, diagnostic in cases:
+            with self.subTest(case=case):
+                report = json.loads(payloads["production-contract.json"])
+                trace = json.loads(payloads["production-commands.json"])
+                command = next(row["command"] for row in trace if row["name"] == name)
+                original = command[operand]
+                substituted = str(PureWindowsPath(original).with_name("foreign-" + PureWindowsPath(original).name))
+                report["build_inputs"][substituted] = report["build_inputs"].pop(original)
+                command[operand] = substituted
+                if name == "rust-symbols":
+                    next(row for row in report["scanned"] if row["name"] == name)["file"] = substituted
+                else:
+                    report["prepared_render"].update(executable=substituted, command=command)
+                evidence = json.dumps(trace).encode()
+                report["commands"]["sha256"] = hashlib.sha256(evidence).hexdigest()
+                self.write_bundle(
+                    result,
+                    {
+                        **payloads,
+                        "production-contract.json": json.dumps(report).encode(),
+                        "production-commands.json": evidence,
+                    },
+                )
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    read_native_result(self.bundle)
+
+    test_module_producer_contract_requires_build_and_probe_inputs.required_subtests = True
+
+    def test_module_producer_rejects_foreign_production_archives(self):
+        result, payloads = self.module_producer_fixture()
+        original = json.loads(payloads["rust-artifacts.json"])
+        archive = original["variants"]["production"]["archive"]
+        alternatives = {
+            "test-support": original["variants"]["test-support"]["archive"],
+            "wrong-target": archive.replace("/x86_64-pc-windows-msvc/", "/x86_64-unknown-linux-gnu/"),
+            "wrong-profile": archive.replace("/release/", "/debug/"),
+            "wrong-build": archive.replace("/windows-clang-release/", "/windows-clang-debug/"),
+        }
+        self.subtest_cases = tuple(alternatives)
+        for case, wrong_archive in alternatives.items():
+            with self.subTest(case=case):
+                artifacts = copy.deepcopy(original)
+                artifacts["variants"]["production"]["archive"] = wrong_archive
+                payloads["rust-artifacts.json"] = json.dumps(artifacts).encode()
+                self.write_bundle(result, payloads)
+                with self.assertRaisesRegex(
+                    ValueError, "Rust artifact paths differ from the configured build: production"
+                ):
+                    read_native_result(self.bundle)
+
+    test_module_producer_rejects_foreign_production_archives.required_subtests = True
+
+    def preview_probe_producer_fixture(self):
+        result, payloads = self.module_producer_fixture("ON", explicit_preview=False)
+        target = "JuicerProductionPreparedRenderProbe"
+        result["targets"].append(target)
+        result["commands"][1]["command"].insert(-2, target)
+        probe = {
+            "path": str(PureWindowsPath("C:/checkout/out/build/windows-clang-release/tests/bin") / (target + ".exe")),
+            "sha256": "d" * 64,
+        }
+        payloads["paired-probe.json"] = json.dumps(probe).encode()
+        return result, payloads
+
+    def paired_producer_fixture(self):
+        preview_result, preview_payloads = self.preview_probe_producer_fixture()
+        _, ordinary_payloads = self.module_producer_fixture()
+        candidate = json.loads(preview_payloads["candidate.json"])
+        del candidate["version_commands"]
+        patch = preview_payloads["candidate.patch"]
+        preset = candidate["preset"]
+        modules = {}
+        for role, producer in (("ordinary", ordinary_payloads), ("preview", preview_payloads)):
+            module = json.loads(producer["production-module.json"])
+            if role == "preview":
+                module.update(build_sha256="b" * 64, stage_sha256="b" * 64)
+            modules[role] = {
+                "preset": preset,
+                "configuration": json.loads(producer["candidate.json"])["configuration"],
+                "production_module": module,
+                "candidate_source": candidate_source_digest(candidate, patch),
+                "receipt": f"C:/checkout/out/validation/{preset}/results/{role}",
+                "result_sha256": "c" * 64,
+            }
+        probe = json.loads(preview_payloads["paired-probe.json"])
+        modules["preview"].update(paired_probe=probe, targets=preview_result["targets"])
+        command = [
+            probe["path"],
+            "--grain-preview-paired-discovery",
+            modules["preview"]["production_module"]["stage"],
+            modules["ordinary"]["production_module"]["stage"],
+        ]
+        caller, case_id = "grain-preview-paired-discovery", "ordinary-and-preview"
+        payloads = {
+            "candidate.json": json.dumps(candidate).encode(),
+            "candidate.patch": patch,
+            "production-modules.json": json.dumps(modules).encode(),
+            "paired-probe.json": json.dumps(probe).encode(),
+            "paired-list.jsonl": (json.dumps({"caller": caller, "id": case_id}) + "\n").encode(),
+            "paired-run.jsonl": b"".join(
+                (json.dumps({"caller": caller, **row}) + "\n").encode()
+                for row in (
+                    {"event": "membership", "ids": [case_id]},
+                    {"event": "start", "id": case_id},
+                    {"event": "terminal", "id": case_id, "outcome": "passed"},
+                )
+            ),
+        }
+        result = {
+            "schema": "native-paired-discovery-v1",
+            "test": "Ffi.Host.GrainPreviewPairedDiscovery",
+            "scope": "focused",
+            "status": "passed",
+            "preset": preset,
+            "candidate_head": candidate["head"],
+            "candidate_unchanged": True,
+            "shipping_isolation": False,
+            "commands": [
+                {
+                    "name": name,
+                    "directory": "C:/checkout",
+                    "command": argv,
+                    "returncode": 0,
+                    "drained": True,
+                    "process_status": "completed",
+                }
+                for name, argv in (("paired-list", [*command, "--list-cases"]), ("paired-run", command))
+            ],
+        }
+        return result, payloads
+
+    def test_module_producer_pair_binds_embedded_cached_preview(self):
+        result, payloads = self.paired_producer_fixture()
+        self.write_bundle(result, payloads)
+        self.assertEqual(read_native_result(self.bundle)["custom_cases"], 1)
+        modules = json.loads(payloads["production-modules.json"])
+        modules["preview"]["configuration"]["JUICER_GRAIN_PREVIEW"] = "OFF"
+        payloads["production-modules.json"] = json.dumps(modules).encode()
+        self.write_bundle(result, payloads)
+        with self.assertRaisesRegex(ValueError, "cached preview value disagrees"):
+            read_native_result(self.bundle)
+
+    def test_module_producer_pair_requires_probe_target_and_identity(self):
+        result, payloads = self.paired_producer_fixture()
+        probe = json.loads(payloads["paired-probe.json"])
+        self.write_bundle(result, payloads)
+        self.assertEqual(read_native_result(self.bundle)["paired_probe"], probe)
+
+        self.subtest_cases = ("target", "preview-record", "pair-record", "digest", "list-executable", "run-executable")
+        for case in self.subtest_cases:
+            with self.subTest(case=case):
+                altered = copy.deepcopy(result)
+                members = dict(payloads)
+                modules = json.loads(members["production-modules.json"])
+                if case == "target":
+                    modules["preview"]["targets"].remove("JuicerProductionPreparedRenderProbe")
+                elif case == "preview-record":
+                    del modules["preview"]["paired_probe"]
+                elif case == "pair-record":
+                    del members["paired-probe.json"]
+                elif case == "digest":
+                    members["paired-probe.json"] = json.dumps({**probe, "sha256": "e" * 64}).encode()
+                else:
+                    index = 0 if case == "list-executable" else 1
+                    altered["commands"][index]["command"][0] = "C:/stale/probe.exe"
+                members["production-modules.json"] = json.dumps(modules).encode()
+                self.write_bundle(altered, members)
+                with self.assertRaisesRegex(ValueError, "probe identity|declared probe"):
+                    read_native_result(self.bundle)
+
+    test_module_producer_pair_requires_probe_target_and_identity.required_subtests = True
+
+    def test_producer_and_pair_reject_wrong_json_field_types(self):
+        # Follow the metadata, tool/artifact records, embedded producer records and
+        # witness events consumed by the reader. Inputs are opaque source identities.
+        fixtures = {
+            "producer": self.preview_probe_producer_fixture(),
+            "contract": self.module_producer_contract_fixture(),
+            "pair": self.paired_producer_fixture(),
+        }
+        wrong_types = (None, 123, True, [], {}, "wrong")
+
+        def fields(value, path=()):
+            yield path, value
+            if path == ("inputs",):
+                return
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield from fields(child, (*path, key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    yield from fields(child, (*path, index))
+
+        for name, (result, payloads) in fixtures.items():
+            if name == "producer":
+                candidate = json.loads(payloads["candidate.json"])
+                candidate["new_files_base64"] = {"fixture.txt": "YQ=="}
+                payloads["candidate.json"] = json.dumps(candidate).encode()
+            elif name == "contract":
+                report = json.loads(payloads["production-contract.json"])
+                report["variant"] = "production"
+                payloads["production-contract.json"] = json.dumps(report).encode()
+            self.write_bundle(result, payloads)
+            self.assertEqual(read_native_result(self.bundle)["status"], "passed", name)
+            metadata = json.loads((self.bundle / "result.json").read_bytes())
+            documents = {"result.json": metadata}
+            documents.update({key: json.loads(data) for key, data in payloads.items() if key.endswith(".json")})
+            documents.update(
+                {
+                    key: [json.loads(line) for line in data.splitlines()]
+                    for key, data in payloads.items()
+                    if key.endswith(".jsonl")
+                }
+            )
+            for member, document in documents.items():
+                for path, value in fields(document):
+                    if member.endswith(".jsonl") and not path:
+                        continue
+                    for replacement in wrong_types:
+                        if type(replacement) is type(value):
+                            continue
+                        context = (name, member, path, type(replacement).__name__)
+                        mutated = copy.deepcopy(document)
+                        if path:
+                            parent = mutated
+                            for key in path[:-1]:
+                                parent = parent[key]
+                            parent[path[-1]] = replacement
+                        else:
+                            mutated = replacement
+                        encoded = json.dumps(mutated).encode()
+                        if member == "result.json":
+                            with self.assertRaisesRegex(ValueError, r"^result\.json", msg=str(context)) as failed:
+                                read_native_result(self.bundle, result_bytes=encoded)
+                            self.assert_receipt_type_field(failed.exception, member, path)
+                            continue
+                        if member.endswith(".jsonl"):
+                            encoded = b"".join(json.dumps(row).encode() + b"\n" for row in mutated)
+                        spec = copy.deepcopy(metadata)
+                        spec["members"][member] = {"bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}
+                        (self.bundle / member).write_bytes(encoded)
+                        with self.assertRaisesRegex(ValueError, member, msg=str(context)) as failed:
+                            read_native_result(self.bundle, result_bytes=json.dumps(spec).encode())
+                        self.assert_receipt_type_field(failed.exception, member, path)
+                        (self.bundle / member).write_bytes(payloads[member])
+
+    def assert_receipt_type_field(self, error, member, path):
+        field = member + "".join(f"[{key}]" if isinstance(key, int) else f".{key}" for key in path)
+        diagnostic = str(error)
+        if " (invalid CMake producer configure " in diagnostic:
+            start = diagnostic.index(" (invalid CMake producer configure ")
+            diagnostic = diagnostic[:start] + diagnostic[diagnostic.index(")", start) + 1 :]
+        self.assertTrue(diagnostic.startswith(field + ": expected "), str(error))
 
     def test_path_escape_rejected_before_payload_reads(self):
         self.save()

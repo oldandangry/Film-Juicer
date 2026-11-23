@@ -103,6 +103,14 @@ const REQUIRED: &[(&CStr, Kind)] = &[
     (c"HalationHighlightProtectionEv", Kind::Double),
     (c"HalationHighlightBoostRange", Kind::Double),
     (c"GrainActive", Kind::Boolean),
+    #[cfg(feature = "grain-preview")]
+    (c"GrainModel", Kind::StringChoice),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainAmountEv", Kind::Double),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainTexelPitchUm", Kind::Double),
+    #[cfg(feature = "grain-preview")]
+    (c"FilmGrainChromaFraction", Kind::Double),
     (c"GrainSublayersActive", Kind::Boolean),
     (c"GrainPreset", Kind::Choice),
     (c"GrainParticleAreaUm2", Kind::Double),
@@ -176,6 +184,8 @@ pub(crate) struct InstanceHandles {
     parameters: Vec<Parameter>,
     // Retained source/output handles remain host-owned until terminal Destroy.
     pub(in crate::ofx::host) clips: [sys::OfxImageClipHandle; 2],
+    #[cfg(feature = "grain-preview")]
+    pub(in crate::ofx::host) clip_properties: [sys::OfxPropertySetHandle; 2],
     _local: PhantomData<Rc<()>>,
 }
 
@@ -481,18 +491,17 @@ impl Callback<'_> {
             return Err(Status::BAD_HANDLE);
         }
         let mut clips = [std::ptr::null_mut(); 2];
-        for (clip, name) in clips.iter_mut().zip([c"Source", c"Output"]) {
-            let mut clip_properties = std::ptr::null_mut();
+        let mut clip_properties = [std::ptr::null_mut(); 2];
+        for ((clip, properties), name) in clips
+            .iter_mut()
+            .zip(&mut clip_properties)
+            .zip([c"Source", c"Output"])
+        {
             // SAFETY: Exact vendored outputs, live effect, immutable clip name.
             Status::acquisition(unsafe {
-                (self.loaded.suites.clip_handle)(
-                    self.effect,
-                    name.as_ptr(),
-                    clip,
-                    &mut clip_properties,
-                )
+                (self.loaded.suites.clip_handle)(self.effect, name.as_ptr(), clip, properties)
             })?;
-            if clip.is_null() || clip_properties.is_null() {
+            if clip.is_null() || properties.is_null() {
                 return Err(Status::BAD_HANDLE);
             }
         }
@@ -537,6 +546,8 @@ impl Callback<'_> {
             properties,
             parameters: acquired,
             clips,
+            #[cfg(feature = "grain-preview")]
+            clip_properties,
             _local: PhantomData,
         })
     }

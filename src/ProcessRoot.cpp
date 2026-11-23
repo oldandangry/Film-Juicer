@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -733,6 +734,8 @@ namespace JuicerProcess {
         Spektrafilm::ScanRoute scanRoute =
             Spektrafilm::kDefaultScanRoute;
         bool visualGrainPrepared = false;
+        const JuicerCuda::FilmGrain::FilmQuad* filmGrainBank = nullptr;
+        void* filmProxyWorkspace = nullptr;
         bool frameUseEventSubmitted = false;
 
         void set_failure(
@@ -809,6 +812,76 @@ namespace JuicerProcess {
         void free_scan_error_stage_now() noexcept;
         void free_auto_exposure_workspace_now() noexcept;
     };
+
+    static bool valid_film_grain_frame(const FjFilmGrain& input, int width, int height) {
+        using namespace JuicerCuda::FilmGrain;
+        constexpr double centerLimit = 262144.0 - kPlacementBlock;
+        const auto axis_supported = [pitch = static_cast<double>(input.pitch)](int origin, int size) {
+            if (size <= 0)
+                return false;
+            const auto last = static_cast<std::int64_t>(origin) + size - 1;
+            // Leave one placement block for the laying shift, seam and
+            // calibrated box edges. Wide and sub-texel edges are formed locally.
+            return last <= std::numeric_limits<int>::max() &&
+                   std::max(std::abs((origin + 0.5) * pitch), std::abs((static_cast<double>(last) + 0.5) * pitch)) < centerLimit;
+        };
+        const bool calibrated = input.sample_step[0] == 0.0 && input.sample_step[1] == 0.0;
+        if (std::ranges::any_of(input.calibrated_border, [calibrated](std::uint8_t cells) {
+                return cells > (calibrated ? 1 : 0);
+            }))
+            return false;
+        const auto& [left, top, right, bottom] = input.calibrated_border;
+        if (!std::isfinite(input.pitch) || input.pitch < kMinFootprint || input.pitch > kMaxFootprint ||
+            !std::isfinite(input.temporal_fraction) || input.temporal_fraction < 0.F || input.temporal_fraction >= 1.F ||
+            !std::isfinite(input.gain) || input.gain < 0.F ||
+            !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.F || input.chroma_fraction > 1.F ||
+            width <= left + right || height <= top + bottom ||
+            !axis_supported(input.origin_x, width - left - right) ||
+            !axis_supported(input.origin_y, height - top - bottom)) {
+            return false;
+        }
+        if (calibrated)
+            return true;
+        if (!std::isfinite(input.sample_pitch) || input.sample_pitch < kMinProxySampleFootprint ||
+            input.sample_pitch > kMaxFootprint)
+            return false;
+
+        enum class Axis : std::uint8_t {
+            X,
+            Y
+        };
+        const auto sample_axis_supported = [&input, width, height](Axis axis) {
+            const auto index = static_cast<std::size_t>(axis);
+            const int origin = axis == Axis::X ? input.origin_x : input.origin_y;
+            const int size = axis == Axis::X ? width : height;
+            const double extent = input.sample_extent[index];
+            const double step = input.sample_step[index];
+            const double start = input.sample_origin[index];
+            if (!std::isfinite(extent) || extent <= 0.0 ||
+                !std::isfinite(step) || step <= 0.0 || !std::isfinite(start) ||
+                (std::ceil(extent) - 0.5) * input.sample_pitch >= centerLimit)
+                return false;
+
+            const auto raw_edge = [origin, step, start](double pixel) {
+                return std::fma(origin + pixel, step, start);
+            };
+            if (!std::isfinite(raw_edge(0.0)) || !std::isfinite(raw_edge(size)))
+                return false;
+            const auto edge = [&raw_edge, extent](double pixel) {
+                return std::clamp(raw_edge(pixel), 0.0, extent);
+            };
+            const double first = edge(0.0);
+            const double last = edge(size);
+            const double firstEnd = edge(1.0);
+            const double lastStart = edge(size - 1.0);
+            // One outward-rounded empty border can abut either Full edge,
+            // but the axis and the neighbouring pixel must have support.
+            return last > first &&
+                   (firstEnd > first || (size > 1 && edge(2.0) > first)) &&
+                   (lastStart < last || (size > 1 && edge(size - 2.0) < last));
+        };
+        return sample_axis_supported(Axis::X) && sample_axis_supported(Axis::Y);
+    }
 
     bool validate_visual_grain_descriptor(
         const Root::PreparationIdentity& identity,
@@ -1059,6 +1132,7 @@ namespace JuicerProcess {
         const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSet,
         const ScatterHalationFrameDescriptor* scatterHalationDescriptor,
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
+        bool filmGrain,
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
         Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
@@ -1189,6 +1263,9 @@ namespace JuicerProcess {
             source = {spatialDir->scratchTier, spatialDir->planeRoles};
             target = {spatialDir->targetScratchTier, spatialDir->targetPlaneRoles};
             attachments.needSharedTmp = spatialDir->planeRoles.filterTempPlanes > 0;
+        }
+        if (filmGrain) {
+            attachments.needOptics = true;
         }
         if (visualGrain.has_value()) {
             if (visualGrain->renderExtent.width != requestedWidth ||
@@ -3792,6 +3869,14 @@ namespace JuicerProcess {
         return view.active ? view : VisualGrainWorkspaceView{};
     }
 
+    const JuicerCuda::FilmGrain::FilmQuad* Root::PreparedCudaFrame::film_grain_bank() const noexcept {
+        return _state ? _state->filmGrainBank : nullptr;
+    }
+
+    JuicerCuda::FilmGrain::ProxyWorkspace* Root::PreparedCudaFrame::film_proxy_workspace() const noexcept {
+        return _state ? static_cast<JuicerCuda::FilmGrain::ProxyWorkspace*>(_state->filmProxyWorkspace) : nullptr;
+    }
+
     Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
     Root::PreparedCudaFrame::capture_film_density_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
@@ -5279,6 +5364,17 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
+        if (request.filmGrain && !valid_film_grain_frame(*request.filmGrain, request.requestedWidth, request.requestedHeight)) {
+            const char* prefix = printRoute ? "print Film grain binding failed: invalid frame" : "direct Film grain binding failed: invalid frame";
+            const char* detail = cudaGetErrorString(cudaErrorInvalidValue);
+            std::array<char, 128> diagnostic{};
+            const auto length = std::snprintf(diagnostic.data(), diagnostic.size(), "%s: %s", prefix, detail ? detail : "(unknown)");
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(cudaErrorInvalidValue), length < 0 ? prefix : diagnostic.data());
+            frame._state->set_failure(
+                PreparedCudaFailureStage{printRoute ? "print_film_grain_binding" : "direct_film_grain_binding"},
+                prefix);
+            return frame;
+        }
         std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
         if (!begin_submission(
                 frame._state->transaction,
@@ -5297,6 +5393,7 @@ namespace JuicerProcess {
                 request.diffusionFrameSetDescriptor,
                 request.scatterHalationDescriptor,
                 request.visualGrainDescriptor,
+                request.filmGrain != nullptr,
                 request.effectsDescriptor,
                 request.identity.capturePolarity,
                 request.requestedWidth,
@@ -5332,6 +5429,28 @@ namespace JuicerProcess {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         JuicerCuda::ExecutorTest::observe_workspace_resource_acquired();
 #endif
+        if (request.filmGrain && !JuicerCuda::ensure_film_grain_uploaded(
+                                     *frame._state->resources, *request.filmGrain, frame._state->filmGrainBank, outError)) {
+            recordFailure("prepare_film_grain", "CUDA Film grain bank preparation failed");
+            frame.abort();
+            return frame;
+        }
+        if (request.filmGrain &&
+            JuicerCuda::FilmGrain::proxy_sample_bound(request.filmGrain->sample_extent, request.filmGrain->sample_step) >
+                JuicerCuda::FilmGrain::kProxySerialSamples) {
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+            JuicerCuda::RenderTest::observe_film_proxy_reservation();
+#endif
+            if (!frame._state->allocate_device_bytes(&frame._state->filmProxyWorkspace,
+                                                     sizeof(JuicerCuda::FilmGrain::ProxyWorkspace),
+                                                     "Film proxy transmission reduction",
+                                                     outError)) {
+                recordFailure("prepare_film_proxy", "CUDA Film proxy workspace preparation failed");
+                frame.abort();
+                return frame;
+            }
+        }
+
         if (!frame._state->prepare_diffusion_resources(
                 deviceContextKey,
                 request.identity,

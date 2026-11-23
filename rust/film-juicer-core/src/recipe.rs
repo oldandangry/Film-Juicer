@@ -190,6 +190,8 @@ pub struct Params {
     pub output_cctf_encoding: i32,
     pub output_gamut_compression_enabled: i32,
     pub grain: grain::Params,
+    #[cfg(feature = "grain-preview")]
+    pub film_grain: Option<grain::preview::Controls>,
     pub film_dust_amount: f32,
     pub film_scratch_amount: f32,
     pub gate_dust_amount: f32,
@@ -259,6 +261,8 @@ impl HalationReflectionSource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlError {
+    #[cfg(feature = "grain-preview")]
+    FilmGrain,
     DirectScanner,
     PrintGamma,
     PrintStage,
@@ -277,6 +281,10 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrain => {
+                "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls"
+            }
             Self::DirectScanner => "ResourceDescriptorMismatch phase=8 field=scanner_output",
             Self::PrintGamma => {
                 "InvalidAuthoredControl component=print_development field=print_gamma_factor"
@@ -314,6 +322,14 @@ pub enum PrepareError {
     Asset(AssetError),
     Development(film::Error),
     Control(ControlError),
+    #[cfg(feature = "grain-preview")]
+    FilmGrainGeometry,
+    #[cfg(feature = "grain-preview")]
+    FilmGrainFootprint {
+        long_edge_mm: f32,
+        size_um: f32,
+        width_texels: f32,
+    },
     Input(input::Error),
     Optics(optics::Error),
     HighlightBoost(optics::highlight_boost::Error),
@@ -370,6 +386,19 @@ impl fmt::Display for PrepareError {
             Self::Asset(error) => error.fmt(f),
             Self::Development(error) => error.fmt(f),
             Self::Control(error) => error.fmt(f),
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrainGeometry => f.write_str("Film v1 requires rendered frame geometry"),
+            #[cfg(feature = "grain-preview")]
+            Self::FilmGrainFootprint {
+                long_edge_mm,
+                size_um,
+                width_texels,
+            } => {
+                write!(
+                    f,
+                    "Film v1 unsupported physical sampler footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={size_um}, footprint_texels={width_texels})"
+                )
+            }
             Self::Input(error) => error.fmt(f),
             Self::Optics(error) => optics_diagnostic(*error, f),
             Self::HighlightBoost(error) => f.write_str(error.diagnostic()),
@@ -387,6 +416,12 @@ impl fmt::Display for PrepareError {
                 route,
                 stock,
             } => dir_diagnostic(error, *route, stock, f),
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::Bounds(
+                error @ (density::Error::FilmNormalization
+                | density::Error::FilmProjectionSpan
+                | density::Error::FilmSpectralRange),
+            ) => error.fmt(f),
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
@@ -599,6 +634,8 @@ struct Contents {
     optics: optics::Recipe,
     minimum: density::Minimum,
     grain: grain::Recipe,
+    #[cfg(feature = "grain-preview")]
+    film_grain: Option<grain::preview::Recipe>,
     effects: effects::Recipe,
     dir: dir::Recipe,
     film_bounds: density::Bounds,
@@ -727,6 +764,10 @@ impl RenderState {
     }
     pub fn grain(&self) -> &grain::Recipe {
         &self.contents[0].grain
+    }
+    #[cfg(feature = "grain-preview")]
+    pub fn film_grain(&self) -> Option<&grain::preview::Recipe> {
+        self.contents[0].film_grain.as_ref()
     }
     pub fn effects(&self) -> &effects::Recipe {
         &self.contents[0].effects
@@ -1085,7 +1126,7 @@ fn acquire_foundation(
         profile,
         film::Params {
             gamma_factor: params.film_gamma_factor,
-            layers_required: params.grain.active && params.grain.sublayers_active,
+            layers_required: current_grain(params).active && params.grain.sublayers_active,
             requested_route: params.scan_route,
         },
     )
@@ -1176,6 +1217,17 @@ fn acquire_foundation(
         mallett,
         hull,
     })
+}
+
+pub(crate) fn current_grain(params: &Params) -> grain::Params {
+    #[cfg(feature = "grain-preview")]
+    if params.film_grain.is_some() {
+        return grain::Params {
+            active: false,
+            ..params.grain
+        };
+    }
+    params.grain
 }
 
 fn enlarger_illuminant(choice: i32) -> &'static str {
@@ -1526,6 +1578,7 @@ fn lut_descriptor(
     film_bounds: &density::Bounds,
     print: Option<(&PrintProfile, &print::Bounds)>,
     viewing: &str,
+    resolution: u32,
 ) -> Result<scanner::LutDescriptor, PrepareError> {
     let common = scanner::LutDescriptorParams {
         route: params.scan_route,
@@ -1534,7 +1587,7 @@ fn lut_descriptor(
         density_bounds_hash: print.map_or(film_bounds.hash(), |(_, bounds)| bounds.hash()),
         viewing_illuminant: viewing.as_bytes(),
         observer_identity: b"CIE1931_2deg_380_780_5nm",
-        resolution: params.scanner_lut_resolution.clamp(17, 128) as u32,
+        resolution,
     };
     let input = match print {
         Some((profile, _)) => scanner::LutDescriptorInput::Print {
@@ -1585,13 +1638,83 @@ struct PrintAssembly {
     illuminant_hash: u64,
 }
 
-/// Complete one direct or print host state. No foreign record, frame geometry,
-/// CUDA residency, publication mutation or intermediate success escapes here.
+/// Complete one direct or print host state without frame-dependent grain.
 pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareError> {
+    prepare_state(
+        assets,
+        params,
+        #[cfg(feature = "grain-preview")]
+        None,
+    )
+}
+
+/// Sampling requested for this render of the private preview.
+#[cfg(feature = "grain-preview")]
+#[derive(Clone, Copy)]
+pub enum PreviewFrame {
+    Raster(grain::preview::Raster),
+    Thumbnail,
+}
+
+#[cfg(feature = "grain-preview")]
+pub fn prepare_for_frame(
+    assets: &Assets,
+    params: &Params,
+    frame: PreviewFrame,
+) -> Result<RenderState, PrepareError> {
+    prepare_state(assets, params, Some(frame))
+}
+
+fn prepare_state(
+    assets: &Assets,
+    params: &Params,
+    #[cfg(feature = "grain-preview")] frame: Option<PreviewFrame>,
+) -> Result<RenderState, PrepareError> {
     #[cfg(feature = "test-support")]
     testing::reset();
     trace_stage!(SelectedFilm);
     let film = assets.film(&params.film_profile_key)?;
+    #[cfg(feature = "grain-preview")]
+    if let Some(controls) = params.film_grain
+        && !controls.valid(
+            &params.film_profile_key,
+            params.camera_film_format_long_edge_mm,
+            params.scan_route,
+        )
+    {
+        return Err(ControlError::FilmGrain.into());
+    }
+    #[cfg(feature = "grain-preview")]
+    let film_grain = params
+        .film_grain
+        // Keep the authored selection for current_grain(), which disables
+        // Current while Film is selected, including on a grain-free thumbnail.
+        .filter(|_| !matches!(frame, Some(PreviewFrame::Thumbnail)))
+        .map(|controls| {
+            let Some(PreviewFrame::Raster(raster)) = frame else {
+                return Err(PrepareError::FilmGrainGeometry);
+            };
+            let long_edge_mm = params.camera_film_format_long_edge_mm;
+            let (footprint, sample_pitch, sampling) = raster.sampling(controls, long_edge_mm);
+            for (width_texels, minimum) in [
+                (footprint, density::portra::MIN_FOOTPRINT),
+                (sample_pitch, density::portra::MIN_PROXY_SAMPLE_FOOTPRINT),
+            ] {
+                if !(minimum..=density::portra::MAX_FOOTPRINT).contains(&width_texels) {
+                    return Err(PrepareError::FilmGrainFootprint {
+                        long_edge_mm,
+                        size_um: controls.texel_pitch_um,
+                        width_texels,
+                    });
+                }
+            }
+            let bank = assets.portra_grain_bank()?;
+            let table = assets.portra_grain_table(&bank, sample_pitch)?;
+            Ok::<_, PrepareError>(grain::preview::Recipe::new(
+                bank, table, controls, raster, footprint, sampling,
+            ))
+        })
+        .transpose()?;
     let selected_print = if print_route(params.scan_route) {
         trace_stage!(SelectedPrint);
         Some(assets.print(&params.print_profile_key)?)
@@ -1670,8 +1793,8 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     })
     .map_err(PrepareError::Optics)?;
     let minimum = density::Minimum::new([0.07, 0.08, 0.12]).map_err(PrepareError::Minimum)?;
-    let grain =
-        grain::Recipe::new(&acquired.development, params.grain).map_err(PrepareError::Grain)?;
+    let grain = grain::Recipe::new(&acquired.development, current_grain(params))
+        .map_err(PrepareError::Grain)?;
     let effects = effects::Recipe::new(effects::Params {
         film_dust_amount: params.film_dust_amount,
         film_scratch_amount: params.film_scratch_amount,
@@ -1689,8 +1812,17 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
             stock: film.info().stock().to_owned(),
         }
     })?;
-    let film_bounds =
-        density::Bounds::new(&acquired.development, &minimum).map_err(PrepareError::Bounds)?;
+    #[cfg(feature = "grain-preview")]
+    let film_bounds = match &film_grain {
+        Some(grain) => grain
+            .density_allowances()
+            .ok_or(density::Error::FilmNormalization)
+            .and_then(|allowances| density::Bounds::film_v1(&acquired.development, allowances)),
+        None => density::Bounds::new(&acquired.development, &minimum),
+    };
+    #[cfg(not(feature = "grain-preview"))]
+    let film_bounds = density::Bounds::new(&acquired.development, &minimum);
+    let film_bounds = film_bounds.map_err(PrepareError::Bounds)?;
     let profile_route_hash = profile_route_hash(params, film, selected_print.as_deref());
 
     // Route composition follows foundation, before focused payload construction.
@@ -1701,6 +1833,15 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         .map_err(PrepareError::PrintComposition)?;
     let (transform, gamut_hash) = output_policy(params)?;
     let scanner_params = scanner_params(params, transform.space());
+    #[cfg(feature = "grain-preview")]
+    let scanner_params = if film_grain.is_some() && selected_print.is_none() {
+        ScannerParams {
+            resolution: film_bounds.film_v1_scan_resolution(scanner_params.resolution),
+            ..scanner_params
+        }
+    } else {
+        scanner_params
+    };
     let print = match selected_print {
         Some(profile) => {
             let curves = profile
@@ -1750,7 +1891,14 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         )
         .to_owned();
     let direct_lut = if print.is_none() {
-        Some(lut_descriptor(params, film, &film_bounds, None, &viewing)?)
+        Some(lut_descriptor(
+            params,
+            film,
+            &film_bounds,
+            None,
+            &viewing,
+            scanner_params.resolution,
+        )?)
     } else {
         None
     };
@@ -1919,6 +2067,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
                 &film_bounds,
                 Some((&print.profile, &print.bounds)),
                 &viewing,
+                scanner_params.resolution,
             )
         })
         .transpose()?;
@@ -2127,6 +2276,10 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
             hash = hash::u64s(&[hash, optional]);
         }
     }
+    #[cfg(feature = "grain-preview")]
+    if let Some(film_grain) = &film_grain {
+        hash = hash::u64s(&[hash, film_grain.hash()]);
+    }
     #[cfg(feature = "test-support")]
     let hash = testing::identity(testing::ZeroIdentity::Recipe, hash);
     if hash == 0 || scanner_hash == 0 || scanner_recipe_hash == 0 || scanner.color.hash() == 0 {
@@ -2139,6 +2292,8 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         optics,
         minimum,
         grain,
+        #[cfg(feature = "grain-preview")]
+        film_grain,
         effects,
         dir,
         film_bounds,
@@ -2295,6 +2450,8 @@ pub(crate) mod test_support {
                 clump_morph_period_sec: 8.0,
                 debug_view: 0,
             },
+            #[cfg(feature = "grain-preview")]
+            film_grain: None,
             film_dust_amount: 0.0,
             film_scratch_amount: 0.0,
             gate_dust_amount: 0.0,

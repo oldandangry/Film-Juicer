@@ -136,6 +136,34 @@ statically and localizes those implementation symbols at the OFX C boundary so
 host libraries cannot interpose an incompatible libstdc++ implementation. See
 [Linux installation](linux.md) for host requirements.
 
+## Portra 400 grain preview
+
+The preview has its own OFX identifier, `com.juicer.Juicer.GrainPreview`. To
+stage the Windows Release preview from the current checkout, use an x64
+developer shell and enable the `JUICER_GRAIN_PREVIEW` CMake option, which
+defaults to OFF.
+
+```sh
+cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=ON -DBUILD_TESTING=OFF
+cmake --build --preset windows-clang-release --target bundle-archive
+```
+
+The archive target writes `juicer-grain-preview.ofx.bundle` and
+`juicer-grain-preview-Win64.tar.gz` under
+`out/stage/windows-clang-release/portra-grain-preview/`. The bundle contains
+the Portra 400 grain bank and its notices. To return the same configure cache
+to the standard plug-in, configure again with preview OFF.
+
+```sh
+cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=OFF
+```
+
+The verifier's `prepare` command accepts `--grain-preview ON` and
+`--grain-preview OFF`. Omit the switch to keep the configured value.
+The [Film v1 preview notes](../README.md#portra-400-film-v1-preview)
+identify the accepted Windows package and describe the reproduced Full-resolution
+limitation.
+
 ## Public test suite
 
 Public tests are organized by domain under `tests/` and use CTest as the

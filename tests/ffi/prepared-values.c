@@ -488,11 +488,12 @@ _Static_assert(offsetof(FjScatterHalation, channels) == 40, "FjScatterHalation.c
 _Static_assert(sizeof(((FjScatterHalation*)0)->channels) / sizeof(FjHalationChannel) == 3, "FjScatterHalation.channels extent");
 _Static_assert(sizeof(FjOptics) == 3056 && _Alignof(FjOptics) == 8, "FjOptics layout");
 _Static_assert(offsetof(FjOptics, highlight_boost) == 3024, "FjOptics.highlight_boost offset");
-_Static_assert(sizeof(FjPreparedHostData) == 6824 && _Alignof(FjPreparedHostData) == 8, "FjPreparedHostData layout");
+_Static_assert(sizeof(FjPreparedHostData) == 6832 && _Alignof(FjPreparedHostData) == 8, "FjPreparedHostData layout");
 _Static_assert(offsetof(FjPreparedHostData, spatial_dir) == 4576, "FjPreparedHostData.spatial_dir offset");
 _Static_assert(offsetof(FjPreparedHostData, grain) == 5096, "FjPreparedHostData.grain offset");
 _Static_assert(offsetof(FjPreparedHostData, effects) == 5904, "FjPreparedHostData.effects offset");
 _Static_assert(offsetof(FjPreparedHostData, noise) == 6736, "FjPreparedHostData.noise offset");
+_Static_assert(offsetof(FjPreparedHostData, film_grain) == 6824, "FjPreparedHostData.film_grain offset");
 _Static_assert(FJ_HALATION_FRAME_NONE == 0, "halation NONE tag");
 _Static_assert(FJ_HALATION_FRAME_RAW == 1, "halation RAW tag");
 _Static_assert(FJ_HALATION_FRAME_PIXEL_SIZE == 2, "halation PIXEL_SIZE tag");

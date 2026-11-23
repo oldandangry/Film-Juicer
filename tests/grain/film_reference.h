@@ -152,5 +152,5 @@ namespace GrainPrototype {
     FilmTables read_film_tables(const std::filesystem::path& directory, float footprint);
 
     // Fixed little-endian research capture. Throws on I/O or representation failure.
-    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint);
+    FilmBank read_film_bank(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory = {});
 } // namespace GrainPrototype

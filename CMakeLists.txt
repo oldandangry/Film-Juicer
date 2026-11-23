@@ -11,14 +11,15 @@ if(CMAKE_HOST_WIN32)
         set(CMAKE_CUDA_HOST_COMPILER "${JUICER_NVCC_MSVC}" CACHE FILEPATH "NVCC MSVC host")
     endif()
     set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+    # Keep the CUDA compiler ABI probe from starting a persistent PDB server.
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
     # MSVC's /RTC stack/uninitialised checks cannot be combined with /O2.
     set(CMAKE_MSVC_RUNTIME_CHECKS "")
 endif()
 
 project(FilmJuicer LANGUAGES CXX CUDA)
-if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
 endif()
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
    NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$" OR
@@ -56,6 +57,8 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
     message(FATAL_ERROR "Use a Debug or Release Ninja preset")
 endif()
 
+option(JUICER_GRAIN_PREVIEW "Build the private Portra grain preview" OFF)
+
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
 include(cmake/JuicerRust.cmake)
@@ -85,6 +88,12 @@ set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 add_library(juicer MODULE native/ofx_exports.cpp)
 target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
+if(JUICER_GRAIN_PREVIEW)
+    set_target_properties(juicer PROPERTIES OUTPUT_NAME "juicer-grain-preview")
+    set(JUICER_GRAIN_PREVIEW_CONFIGURED ON CACHE INTERNAL "Configured product preview")
+else()
+    set(JUICER_GRAIN_PREVIEW_CONFIGURED OFF CACHE INTERNAL "Configured product preview")
+endif()
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
     # not need separable compilation. Resolve it once at the final module.
@@ -105,7 +114,7 @@ foreach(probe JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe)
         "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
     target_link_libraries(${probe} PRIVATE
         juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
-        CUDA::cudart CUDA::cuda_driver)
+        CUDA::cudart)
     set_target_properties(${probe} PROPERTIES
         LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
@@ -183,9 +192,70 @@ add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
 
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
+
+# The witness links its density tap as the Film stage owner, so the direct
+# implementation is not extracted from juicer_core. The executor, CUDA sampler
+# and Rust preview are the same production objects used by the OFX module.
+set(juicer_motion_replay_configured OFF)
+set(juicer_grain_aperture_target OFF)
+if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(juicer_grain_aperture_target JuicerGrainMotionReplay)
+        set(aperture_directory "${CMAKE_BINARY_DIR}/grain-motion")
+        set(juicer_motion_replay_configured ON)
+    elseif(WIN32)
+        set(juicer_grain_aperture_target JuicerGrainOfxApertureTests)
+        set(aperture_directory "${CMAKE_BINARY_DIR}/grain-apertures")
+    endif()
+endif()
+if(juicer_grain_aperture_target)
+    add_executable(${juicer_grain_aperture_target} EXCLUDE_FROM_ALL
+        tests/ffi/production-ofx-render.cpp
+        tests/grain/motion-density.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
+        tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
+    target_include_directories(${juicer_grain_aperture_target} PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi"
+        "${PROJECT_SOURCE_DIR}/tests/grain")
+    target_compile_definitions(${juicer_grain_aperture_target} PRIVATE
+        JUICER_GRAIN_MOTION_REPLAY=1
+        JUICER_GRAIN_TEST_BANK="${PROJECT_SOURCE_DIR}/Resources/grain/portra-400"
+        JUICER_GRAIN_TEST_TABLES="${PROJECT_SOURCE_DIR}/tests/grain/portra-table-fixtures")
+    target_link_libraries(${juicer_grain_aperture_target} PRIVATE
+        juicer_core film_juicer_rust juicer_dependencies CUDA::cuda_driver)
+    set_target_properties(${juicer_grain_aperture_target} PROPERTIES
+        LINKER_LANGUAGE CXX CUDA_RESOLVE_DEVICE_SYMBOLS ON
+        RUNTIME_OUTPUT_DIRECTORY "${aperture_directory}/bin")
+    if(WIN32)
+        set(aperture_resource_names ${JUICER_RUNTIME_RESOURCES}
+            grain/portra-400/manifest.json grain/portra-400/records.f32 grain/portra-400/sums.f32)
+        set(aperture_resources)
+        foreach(resource IN LISTS aperture_resource_names)
+            set(input "${PROJECT_SOURCE_DIR}/Resources/${resource}")
+            set(output "${aperture_directory}/Resources/${resource}")
+            get_filename_component(directory "${output}" DIRECTORY)
+            add_custom_command(OUTPUT "${output}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${directory}"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${input}" "${output}"
+                DEPENDS "${input}" VERBATIM)
+            list(APPEND aperture_resources "${output}")
+        endforeach()
+        add_custom_target(juicer_grain_aperture_resources DEPENDS ${aperture_resources})
+        add_dependencies(${juicer_grain_aperture_target} juicer_grain_aperture_resources)
+    else()
+        add_custom_command(TARGET JuicerGrainMotionReplay POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink "${PROJECT_SOURCE_DIR}/Resources"
+                "${aperture_directory}/Resources"
+            VERBATIM)
+    endif()
+    set(juicer_grain_aperture_consumer ${juicer_grain_aperture_target})
+endif()
+set(JUICER_GRAIN_MOTION_REPLAY_CONFIGURED "${juicer_motion_replay_configured}" CACHE INTERNAL
+    "Whether native quality can analyze the configured motion replay consumers")
+set(JUICER_GRAIN_APERTURE_TARGET "${juicer_grain_aperture_target}" CACHE INTERNAL
+    "Native executable providing the linked Film aperture witness")
 if(BUILD_TESTING)
     add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
 
 juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
-    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})
+    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS} ${juicer_grain_aperture_consumer})

@@ -140,15 +140,23 @@ impl Instance {
         &self,
         input: state::FrameInput<'_>,
         assets: &Assets,
+        #[cfg(feature = "grain-preview")] frame: recipe::PreviewFrame,
     ) -> Result<Arc<recipe::RenderState>, state::Error> {
-        self.publication.admit_frame(input, |params| {
+        let prepare = |params: &recipe::Params| {
             #[cfg(feature = "test-support")]
             testing::before_prepare();
+            #[cfg(feature = "grain-preview")]
+            let outcome = recipe::prepare_for_frame(assets, params, frame);
+            #[cfg(not(feature = "grain-preview"))]
             let outcome = recipe::prepare(assets, params);
             #[cfg(feature = "test-support")]
             testing::after_prepare();
             outcome
-        })
+        };
+        #[cfg(feature = "grain-preview")]
+        return self.publication.admit_preview_frame(input, frame, prepare);
+        #[cfg(not(feature = "grain-preview"))]
+        self.publication.admit_frame(input, prepare)
     }
     #[cfg(feature = "test-support")]
     pub(crate) fn observe(&self) -> Result<state::Observation, state::Error> {

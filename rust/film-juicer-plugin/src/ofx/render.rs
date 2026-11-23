@@ -10,6 +10,8 @@ use film_juicer_core::{
 };
 use super::host::{Callback, Status};
 use crate::cuda;
+#[cfg(feature = "grain-preview")]
+use film_juicer_core::film::grain::preview::{ProxyGrid, Raster};
 
 // Admission delivery is best-effort. Formatting must not introduce an
 // infallible allocation before the fallible host-message copy.
@@ -31,6 +33,189 @@ fn domain(bounds: [i32; 4]) -> Result<Domain, Status> {
         y2: bounds[3],
     })
     .map_err(|_| Status::FATAL)
+}
+
+#[cfg(feature = "grain-preview")]
+struct CompleteFrameMapping {
+    canonical: [f64; 4],
+    full_grid: Option<ProxyGrid>,
+}
+
+#[cfg(feature = "grain-preview")]
+struct AxisSupport {
+    span: [f64; 2],
+    empty: [bool; 2],
+}
+
+#[cfg(feature = "grain-preview")]
+fn proxy_axis_support(
+    bounds: [f64; 2],
+    minimum: f64,
+    extent: f64,
+    scale: f64,
+) -> Option<AxisSupport> {
+    let [lower, upper] = bounds;
+    let count = upper - lower;
+    let origin = lower / scale - minimum;
+    let step = scale.recip();
+    let end = count.mul_add(step, origin);
+    if count < 1.0
+        || !origin.is_finite()
+        || !end.is_finite()
+        || !extent.is_finite()
+        || extent <= 0.0
+    {
+        return None;
+    }
+    let edge = |i: f64| i.mul_add(step, origin).clamp(0.0, extent);
+    let span = [edge(0.0), edge(count)];
+    let empty = [edge(1.0) == span[0], edge(count - 1.0) == span[1]];
+    // Match the kernel's clamped edges, including a positive neighbor for
+    // each empty end. Native repeats this support check for raw callers.
+    (span[0] < span[1]
+        && (!empty[0] || (count > 1.0 && edge(2.0) > span[0]))
+        && (!empty[1] || (count > 1.0 && edge(count - 2.0) < span[1])))
+        .then_some(AxisSupport { span, empty })
+}
+
+#[cfg(feature = "grain-preview")]
+fn complete_frame_mapping(
+    args: &super::host::RenderArgs,
+    source: &super::host::Image<'_>,
+    destination: &super::host::Image<'_>,
+    window: [i32; 4],
+    canonical: [f64; 4],
+) -> Option<CompleteFrameMapping> {
+    let [x1, y1, x2, y2] = canonical;
+    let [scale_x, scale_y] = args.scale;
+    let standard_scale =
+        scale_x == scale_y && source.scale == args.scale && destination.scale == args.scale;
+    let reduced = scale_x < 1.0 && scale_y < 1.0;
+    let resized = reduced && source.scale == [1.0; 2] && destination.scale == [1.0; 2];
+    if !canonical.into_iter().all(f64::is_finite)
+        || x1 >= x2
+        || y1 >= y2
+        || !args
+            .scale
+            .into_iter()
+            .all(|scale| scale.is_finite() && scale > 0.0)
+        || !(standard_scale || resized)
+        || source.pixel_aspect_ratio != 1.0
+        || destination.pixel_aspect_ratio != 1.0
+        || destination.definition != source.definition
+        || source.bounds != source.definition
+        || destination.bounds != source.definition
+        || window != source.definition
+    {
+        return None;
+    }
+    let minimum = [x1.floor(), y1.floor()];
+    let extent = [x2.ceil() - minimum[0], y2.ceil() - minimum[1]];
+    for axis in 0..2 {
+        let scale = args.scale[axis];
+        let endpoints = [canonical[axis], canonical[axis + 2]];
+        let scaled = endpoints.map(|endpoint| endpoint * scale);
+        let outward = [scaled[0].floor(), scaled[1].ceil()];
+        let observed = [
+            f64::from(source.definition[axis]),
+            f64::from(source.definition[axis + 2]),
+        ];
+        if !reduced {
+            if observed != outward {
+                return None;
+            }
+            continue;
+        }
+        let tight = std::array::from_fn(|edge| {
+            let nearest = scaled[edge].round();
+            if endpoints[edge] != 0.0 && nearest / endpoints[edge] == scale {
+                nearest
+            } else {
+                outward[edge]
+            }
+        });
+        let actual = proxy_axis_support(observed, minimum[axis], extent[axis], scale)?;
+        let nominal = proxy_axis_support(outward, minimum[axis], extent[axis], scale);
+        // Dropping a leading cell re-anchors the grid. Compare support at
+        // BOTH ends after that change, even if the trailing bound did not move.
+        let removable: [bool; 2] = std::array::from_fn(|edge| {
+            (outward[edge] - tight[edge]).abs() == 1.0
+                && nominal.as_ref().is_some_and(|nominal| {
+                    nominal.empty[edge]
+                        && actual.span[0] <= nominal.span[0]
+                        && actual.span[1] >= nominal.span[1]
+                })
+        });
+        if standard_scale {
+            if !(0..2).all(|edge| {
+                observed[edge] == outward[edge]
+                    || (removable[edge] && observed[edge] == tight[edge])
+            }) {
+                return None;
+            }
+        } else if observed != tight {
+            return None;
+        }
+    }
+    Some(CompleteFrameMapping {
+        canonical,
+        full_grid: reduced.then(|| ProxyGrid {
+            extent,
+            step: args.scale.map(f64::recip),
+            origin: std::array::from_fn(|axis| {
+                f64::from(source.definition[axis]) / args.scale[axis] - minimum[axis]
+            }),
+            size: std::array::from_fn(|axis| source.definition[axis + 2] - source.definition[axis]),
+        }),
+    })
+}
+
+#[cfg(feature = "grain-preview")]
+fn film_geometry_error(
+    callback: &Callback<'_>,
+    args: &super::host::RenderArgs,
+    source: &super::host::Image<'_>,
+    destination: &super::host::Image<'_>,
+    window: [i32; 4],
+    canonical: [f64; 4],
+) -> Status {
+    let mut text = AdmissionText(String::new());
+    if write!(
+        text,
+        "Film v1 requires complete square-pixel source and output images that agree with the action's canonical mapping. canonical={canonical:?} action_scale={:?} source_scale={:?} output_scale={:?} source_definition={:?} output_definition={:?} source_bounds={:?} output_bounds={:?} window={window:?} source_par={} output_par={} time={}",
+        args.scale,
+        source.scale,
+        destination.scale,
+        source.definition,
+        destination.definition,
+        source.bounds,
+        destination.bounds,
+        source.pixel_aspect_ratio,
+        destination.pixel_aspect_ratio,
+        args.time,
+    )
+    .is_ok()
+    {
+        callback.message(c"FilmJuicerFilmGrainGeometry", &text.0);
+    }
+    Status::FAILED
+}
+
+#[cfg(feature = "grain-preview")]
+fn film_time_error(callback: &Callback<'_>, time: f64) -> Status {
+    let range = cuda::FILM_GRAIN_TIME_RANGE;
+    let mut text = AdmissionText(String::new());
+    if write!(
+        text,
+        "Film v1 frame time must be finite and within {} to {} frames, inclusive. time={time}",
+        range.start(),
+        range.end(),
+    )
+    .is_ok()
+    {
+        callback.message(c"FilmJuicerFilmGrainTime", &text.0);
+    }
+    Status::FAILED
 }
 
 fn frame_position(time: f64) -> Result<(f64, u64), Status> {
@@ -134,10 +319,55 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             None => owner.state.frame_input(),
         };
     }
+    #[cfg(feature = "grain-preview")]
+    let film_selected = input
+        .as_ref()
+        .is_ok_and(|input| input.film_grain_selected());
+    #[cfg(feature = "grain-preview")]
+    let film_thumbnail = film_selected && callback.thumbnail(&owner.handles);
+    #[cfg(feature = "grain-preview")]
+    let film_mapping = if film_selected && !film_thumbnail {
+        if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
+            return Err(film_time_error(callback, args.time));
+        }
+        let canonical = callback.canonical_region(&owner.handles, args.time)?;
+        let Some(mapping) = complete_frame_mapping(&args, source, destination, window, canonical)
+        else {
+            return Err(film_geometry_error(
+                callback,
+                &args,
+                source,
+                destination,
+                window,
+                canonical,
+            ));
+        };
+        Some(mapping)
+    } else {
+        None
+    };
+    #[cfg(feature = "grain-preview")]
+    let preview_frame = if film_thumbnail {
+        film_juicer_core::recipe::PreviewFrame::Thumbnail
+    } else {
+        film_juicer_core::recipe::PreviewFrame::Raster(Raster {
+            long_edge_px: full.width.max(full.height),
+            full_grid: film_mapping.as_ref().and_then(|mapping| mapping.full_grid),
+        })
+    };
+    #[cfg(feature = "grain-preview")]
+    let film_canonical = film_mapping.map(|mapping| mapping.canonical);
+    #[cfg(not(feature = "grain-preview"))]
+    let film_canonical = None;
     #[cfg(feature = "test-support")]
     let input_identity = input.as_ref().map_or(0, state::FrameInput::input_identity);
     let admitted = match input {
-        Ok(input) => owner.state.admit_frame(input, assets),
+        Ok(input) => owner.state.admit_frame(
+            input,
+            assets,
+            #[cfg(feature = "grain-preview")]
+            preview_frame,
+        ),
         Err(error) => Err(error),
     };
     let admitted = match admitted {
@@ -148,7 +378,25 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         Err(error) if allocation(&error) => return Err(Status::MEMORY),
         Err(error) => {
             let mut text = AdmissionText(String::new());
-            if write!(text, "{error}").is_ok() {
+            let diagnostic = write!(text, "{error}");
+            #[cfg(feature = "grain-preview")]
+            let diagnostic = diagnostic.and_then(|()| {
+                if matches!(
+                    error,
+                    state::Error::Preparation(
+                        film_juicer_core::recipe::PrepareError::FilmGrainFootprint { .. }
+                    )
+                ) {
+                    write!(
+                        text,
+                        " (rendered={}x{}, action_scale={:?})",
+                        full.width, full.height, args.scale
+                    )
+                } else {
+                    Ok(())
+                }
+            });
+            if diagnostic.is_ok() {
                 callback.message(c"FilmJuicerRenderAdmission", &text.0);
             }
             return Err(Status::FATAL);
@@ -192,7 +440,21 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         pixel_aspect_ratio: 0.0,
     };
     if state.effects().active() {
-        let canonical = callback.canonical_region(&owner.handles, args.time)?;
+        let canonical = match film_canonical {
+            Some(region) => region,
+            None => callback.canonical_region(&owner.handles, args.time)?,
+        };
+        let scale = source.scale;
+        // Pre-resized preview images can report unit image scales. Dust and
+        // scratches use the action scale when it describes the complete raster.
+        #[cfg(feature = "grain-preview")]
+        let scale = if film_canonical.is_some()
+            || complete_frame_mapping(&args, source, destination, window, canonical).is_some()
+        {
+            args.scale
+        } else {
+            scale
+        };
         let definition = domain(source.definition)?;
         effects = cuda::sys::FjEffectsGeometry {
             pixel_definition: cuda::sys::FjExtent {
@@ -205,8 +467,8 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             canonical_y: canonical[1],
             canonical_width: canonical[2] - canonical[0],
             canonical_height: canonical[3] - canonical[1],
-            scale_x: source.scale[0],
-            scale_y: source.scale[1],
+            scale_x: scale[0],
+            scale_y: scale[1],
             pixel_aspect_ratio: source.pixel_aspect_ratio,
         };
         #[cfg(feature = "test-support")]

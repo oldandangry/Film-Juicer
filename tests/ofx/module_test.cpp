@@ -47,9 +47,9 @@ namespace {
             return kOfxStatFailed;
         return status;
     }
-    std::vector<Call> expected(int context = 0, int depth = 0) {
+    std::vector<Call> expected(const char* label, int context = 0, int depth = 0) {
         return {
-            {"effect_first", {}, 0, {}, 0, 0}, {"param_set", {}, 0, {}, 0, 0}, {"param_props", {}, 0, {}, 0, 0}, {"effect_second", {}, 0, {}, 0, 0}, {"string", kOfxPropLabel, 0, "Juicer", 0, 1}, {"string", kOfxPropShortLabel, 0, "Juicer", 0, 1}, {"string", kOfxPropLongLabel, 0, "Juicer", 0, 1}, {"string", kOfxImageEffectPluginPropGrouping, 0, "Negative-juice", 0, 1}, {"dimension", kOfxImageEffectPropSupportedContexts, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedContexts, context, kOfxImageEffectContextFilter, 0, 1}, {"dimension", kOfxImageEffectPropSupportedPixelDepths, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedPixelDepths, depth, kOfxBitDepthFloat, 0, 1}, {"int", kOfxImageEffectPluginPropSingleInstance, 0, {}, 0, 1}, {"int", kOfxImageEffectPluginPropHostFrameThreading, 0, {}, 0, 1}, {"int", kOfxImageEffectPropSupportsMultiResolution, 0, {}, 1, 1}, {"int", kOfxImageEffectPropSupportsTiles, 0, {}, 0, 1}, {"string", kOfxImageEffectPluginRenderThreadSafety, 0, kOfxImageEffectRenderUnsafe, 0, 1}, {"string", kOfxImageEffectPropCudaRenderSupported, 0, "true", 0, 1}, {"string", kOfxImageEffectPropCudaStreamSupported, 0, "true", 0, 1}};
+            {"effect_first", {}, 0, {}, 0, 0}, {"param_set", {}, 0, {}, 0, 0}, {"param_props", {}, 0, {}, 0, 0}, {"effect_second", {}, 0, {}, 0, 0}, {"string", kOfxPropLabel, 0, label, 0, 1}, {"string", kOfxPropShortLabel, 0, label, 0, 1}, {"string", kOfxPropLongLabel, 0, label, 0, 1}, {"string", kOfxImageEffectPluginPropGrouping, 0, "Negative-juice", 0, 1}, {"dimension", kOfxImageEffectPropSupportedContexts, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedContexts, context, kOfxImageEffectContextFilter, 0, 1}, {"dimension", kOfxImageEffectPropSupportedPixelDepths, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedPixelDepths, depth, kOfxBitDepthFloat, 0, 1}, {"int", kOfxImageEffectPluginPropSingleInstance, 0, {}, 0, 1}, {"int", kOfxImageEffectPluginPropHostFrameThreading, 0, {}, 0, 1}, {"int", kOfxImageEffectPropSupportsMultiResolution, 0, {}, 1, 1}, {"int", kOfxImageEffectPropSupportsTiles, 0, {}, 0, 1}, {"string", kOfxImageEffectPluginRenderThreadSafety, 0, kOfxImageEffectRenderUnsafe, 0, 1}, {"string", kOfxImageEffectPropCudaRenderSupported, 0, "true", 0, 1}, {"string", kOfxImageEffectPropCudaStreamSupported, 0, "true", 0, 1}};
     }
     std::string key(const Call& call) {
         return call.property.empty() ? call.operation : call.operation + "/" + call.property;
@@ -79,11 +79,16 @@ namespace {
             ids.emplace_back(id);
         return ids;
     }
-    void describe(OfxPlugin* plugin, Host& host, const char* manifest_path) {
+    struct DescriptorExpectation {
+        const char* label;
+        const char* manifest_path;
+    };
+
+    void describe(OfxPlugin* plugin, Host& host, const DescriptorExpectation& descriptor) {
         const auto ids = describe_ids();
         require(ids.size() == 303, "Describe membership size");
         const JuicerTests::Cohort rows("ofx.module.describe", ids);
-        const auto baseline = expected();
+        const auto baseline = expected(descriptor.label);
         const auto run_matrix = [&](std::string_view group, const auto& names, const auto& indices, bool is_optional, bool is_acquisition) {
             for (std::size_t n = 0; n < names.size(); ++n)
                 for (int status = 0; status < 15; ++status) {
@@ -122,7 +127,7 @@ namespace {
                 if (call.operation == "int")
                     actual[call.property] = nlohmann::json::array({call.integer});
             }
-            std::ifstream in(manifest_path);
+            std::ifstream in(descriptor.manifest_path);
             require(bool(in), "manifest open");
             nlohmann::json oracle;
             in >> oracle;
@@ -209,7 +214,7 @@ namespace {
             host.depth_dimension = 3;
         },
             kOfxStatOK,
-            expected(2, 3));
+            expected(descriptor.label, 2, 3));
         host.statuses.clear();
         host.null_outputs.clear();
         host.context_dimension = host.depth_dimension = 0;
@@ -222,7 +227,10 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
-    require(argc == 2, "expected descriptor manifest path");
+    const bool preview = argc == 3 && std::string_view(argv[1]) == "--grain-preview";
+    require(argc == 2 || preview, "expected [--grain-preview] descriptor manifest path");
+    const DescriptorExpectation descriptor{preview ? "Film-Juicer Grain Preview" : "Juicer", argv[argc - 1]};
+    const char* identifier = preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
     JuicerTests::CaseLog log;
     const JuicerTests::Cohort lifecycle_rows("ofx.module.lifecycle", {"discovery/native_before", "discovery/empty_unload", "discovery/native_after", "load/fetch_reentry", "reload/suite_copy", "rebind/rejected", "rebind/recovery"});
     OfxPlugin* plugin = nullptr;
@@ -234,7 +242,7 @@ int main(int argc, char** argv) try {
                     !OfxGetPlugin(-1) && !OfxGetPlugin(1) && !OfxGetPlugin(std::numeric_limits<int>::min()) && !OfxGetPlugin(std::numeric_limits<int>::max()) &&
                     !fj_ofx_plugin(-1) && !fj_ofx_plugin(1) && !fj_ofx_plugin(std::numeric_limits<int>::min()) && !fj_ofx_plugin(std::numeric_limits<int>::max()),
                 "discovery bounds or identity");
-        require(std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->apiVersion == 1 && std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer" && plugin->pluginVersionMajor == 1 && plugin->pluginVersionMinor == 0 && plugin->setHost && plugin->mainEntry, "plugin descriptor");
+        require(plugin->pluginApi && std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->apiVersion == 1 && plugin->pluginIdentifier && std::string_view(plugin->pluginIdentifier) == identifier && plugin->pluginVersionMajor == 1 && plugin->pluginVersionMinor == 0 && plugin->setHost && plugin->mainEntry, "plugin descriptor");
         {
             auto row = lifecycle_rows.case_event("discovery/native_before");
             require_native_available();
@@ -382,7 +390,7 @@ int main(int argc, char** argv) try {
     }
     {
         JuicerTests::CaseEvent test(kCaller, "describe");
-        describe(plugin, host, argv[1]);
+        describe(plugin, host, descriptor);
         test.passed();
     }
     {
@@ -403,7 +411,7 @@ int main(int argc, char** argv) try {
             nested = action(plugin, kOfxActionUnload);
         };
         require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK && nested == kOfxStatErrFatal, "reentrant unload");
-        check_calls(host, expected(), "reentry");
+        check_calls(host, expected(descriptor.label), "reentry");
         test.passed();
     }
     {
@@ -419,7 +427,7 @@ int main(int argc, char** argv) try {
             const int status = action(plugin, kOfxActionDescribe, host.effect_handle());
             host.property.propSetString = original;
             require(status == kOfxStatOK, "loaded suite table was not copied");
-            check_calls(host, expected(), "suite copy");
+            check_calls(host, expected(descriptor.label), "suite copy");
             row.passed();
         }
         {

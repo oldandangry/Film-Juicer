@@ -1,0 +1,47 @@
+{
+  "authority": "Preview descriptor labels and regular descriptor property contract",
+  "properties": {
+    "OfxImageEffectPluginPropGrouping": [
+      "Negative-juice"
+    ],
+    "OfxImageEffectPluginPropHostFrameThreading": [
+      0
+    ],
+    "OfxImageEffectPluginPropSingleInstance": [
+      0
+    ],
+    "OfxImageEffectPluginRenderThreadSafety": [
+      "OfxImageEffectRenderUnsafe"
+    ],
+    "OfxImageEffectPropCudaRenderSupported": [
+      "true"
+    ],
+    "OfxImageEffectPropCudaStreamSupported": [
+      "true"
+    ],
+    "OfxImageEffectPropSupportedContexts": [
+      "OfxImageEffectContextFilter"
+    ],
+    "OfxImageEffectPropSupportedPixelDepths": [
+      "OfxBitDepthFloat"
+    ],
+    "OfxImageEffectPropSupportsMultiResolution": [
+      1
+    ],
+    "OfxImageEffectPropSupportsTiles": [
+      0
+    ],
+    "OfxPropLabel": [
+      "Film-Juicer Grain Preview"
+    ],
+    "OfxPropLongLabel": [
+      "Film-Juicer Grain Preview"
+    ],
+    "OfxPropShortLabel": [
+      "Film-Juicer Grain Preview"
+    ],
+    "OfxPropType": [
+      "OfxTypeImageEffect"
+    ]
+  }
+}

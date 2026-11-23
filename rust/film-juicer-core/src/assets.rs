@@ -1,6 +1,10 @@
 //! Process asset ownership. Published handles outlive cache release and this owner.
 
 mod derived;
+#[cfg(any(feature = "grain-preview", test))]
+mod grain;
+#[cfg(any(feature = "grain-preview", test))]
+pub use grain::{PortraGrainBank, PortraGrainError, PortraGrainRecord, PortraGrainTable};
 pub use derived::{DerivedError, Illuminants, InputHull, OutputBoundary};
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -32,19 +36,31 @@ use crate::profile::{
 #[derive(Debug)]
 pub enum AssetError {
     Catalog(Arc<CatalogError>),
-    MissingProfile { role: Role, key: String },
+    MissingProfile {
+        role: Role,
+        key: String,
+    },
     ProfileDecode(ProfileError),
     ProfileCompletion(ProfileCompletionError),
-    ProfileCachePoisoned { role: Role },
+    ProfileCachePoisoned {
+        role: Role,
+    },
     Reconstruction(Arc<ReadError>),
     Cmf(Arc<ReadError>),
-    CsvSource { source: CsvSource, error: ReadError },
-    CsvCachePoisoned { source: CsvSource },
+    CsvSource {
+        source: CsvSource,
+        error: ReadError,
+    },
+    CsvCachePoisoned {
+        source: CsvSource,
+    },
     Calibration(Arc<calibration::Error>),
     CalibrationCachePoisoned,
     Noise(Arc<noise::Error>),
     NoiseCachePoisoned,
     Derived(DerivedError),
+    #[cfg(any(feature = "grain-preview", test))]
+    PortraGrain(Arc<PortraGrainError>),
 }
 
 impl fmt::Display for AssetError {
@@ -64,6 +80,8 @@ impl fmt::Display for AssetError {
             Self::Noise(source) => write!(f, "{source}"),
             Self::NoiseCachePoisoned => write!(f, "noise cache poisoned"),
             Self::Derived(source) => write!(f, "{source}"),
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::PortraGrain(source) => write!(f, "{source}"),
         }
     }
 }
@@ -80,6 +98,8 @@ impl std::error::Error for AssetError {
             Self::Calibration(source) => Some(source.as_ref()),
             Self::Noise(source) => Some(source.as_ref()),
             Self::Derived(source) => Some(source),
+            #[cfg(any(feature = "grain-preview", test))]
+            Self::PortraGrain(source) => Some(source.as_ref()),
             Self::MissingProfile { .. }
             | Self::ProfileCachePoisoned { .. }
             | Self::CsvCachePoisoned { .. }
@@ -280,6 +300,12 @@ impl MallettSourcePath {
 
 pub struct Assets {
     resource_dir: PathBuf,
+    #[cfg(any(feature = "grain-preview", test))]
+    portra_grain: OnceLock<Result<Arc<PortraGrainBank>, Arc<PortraGrainError>>>,
+    #[cfg(any(feature = "grain-preview", test))]
+    portra_table: Mutex<Option<Arc<PortraGrainTable>>>,
+    #[cfg(any(feature = "grain-preview", test))]
+    portra_table_request: std::sync::atomic::AtomicU64,
     catalog: OnceLock<Result<CatalogSnapshot, Arc<CatalogError>>>,
     hanatos: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     arctic: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
@@ -302,6 +328,12 @@ impl Assets {
     pub fn new(resource_dir: PathBuf) -> Self {
         Self {
             resource_dir,
+            #[cfg(any(feature = "grain-preview", test))]
+            portra_grain: OnceLock::new(),
+            #[cfg(any(feature = "grain-preview", test))]
+            portra_table: Mutex::new(None),
+            #[cfg(any(feature = "grain-preview", test))]
+            portra_table_request: std::sync::atomic::AtomicU64::new(0),
             catalog: OnceLock::new(),
             hanatos: OnceLock::new(),
             arctic: OnceLock::new(),

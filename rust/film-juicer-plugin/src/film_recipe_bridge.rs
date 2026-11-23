@@ -979,6 +979,10 @@ impl Failure {
             match error {
                 density::Error::Minimum => FJ_FILM_RECIPE_MINIMUM,
                 density::Error::Span { .. } => FJ_FILM_RECIPE_BOUNDS_SPAN,
+                #[cfg(feature = "grain-preview")]
+                density::Error::FilmNormalization
+                | density::Error::FilmProjectionSpan
+                | density::Error::FilmSpectralRange => FJ_FILM_RECIPE_BOUNDS_SPAN,
                 density::Error::ZeroIdentity => FJ_FILM_RECIPE_IDENTITY,
             },
         );
