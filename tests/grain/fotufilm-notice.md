@@ -14,8 +14,13 @@ loop in FilmGrainTiles.swift needed to sample signed full-frame coordinates.
 It reuses the upstream table builder, placement, footprint and blend helpers.
 
 The analytic rectangle and constant-light cases are Film-Juicer test stimuli.
-The local Portra 400, Gold 200 and Provia 100F banks retain the existing
-Film-Juicer profiles' Andrea Volpato / Spektrafilm CC BY-SA 4.0 lineage and
-are kept in ignored research evidence. Gold and Provia use stock-specific grain
-parameters from Fotufilm profiles, which carry the separate MUAStudio/Fotufilm
+The frozen Portra 400 bank is checked in and packaged with Film-Juicer Grain
+Preview. Its [bank notice](../../Resources/grain/portra-400/NOTICE.md) records
+the profile and generator attribution and where to find the accompanying
+licenses.
+
+Gold 200 and Provia 100F remain local research banks. Their base Film-Juicer
+profiles retain the Andrea Volpato / spektrafilm CC BY-SA 4.0 lineage. They
+use stock-specific grain parameters from Fotufilm profiles, which carry the
+MUAStudio/Fotufilm
 [CC BY-SA 4.0 film-profile notice](https://github.com/DhaliwalX/fotufilm-engine/blob/87a3f46af093a9e6bf76acf21aca83d3b9e2c600/licenses/FILM-PROFILES.txt).

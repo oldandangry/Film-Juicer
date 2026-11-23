@@ -139,8 +139,9 @@ host libraries cannot interpose an incompatible libstdc++ implementation. See
 ## Portra 400 grain preview
 
 The preview has its own OFX identifier, `com.juicer.Juicer.GrainPreview`. To
-stage the Windows Release preview from an x64 developer shell, enable the
-`JUICER_GRAIN_PREVIEW` CMake option, which defaults to OFF.
+stage the Windows Release preview from the current checkout, use an x64
+developer shell and enable the `JUICER_GRAIN_PREVIEW` CMake option, which
+defaults to OFF.
 
 ```sh
 cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=ON -DBUILD_TESTING=OFF
@@ -159,7 +160,9 @@ cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=OFF
 
 The verifier's `prepare` command accepts `--grain-preview ON` and
 `--grain-preview OFF`. Omit the switch to keep the configured value.
-[Film v1 controls in Resolve](../README.md#portra-400-film-v1-preview)
+The [Film v1 preview notes](../README.md#portra-400-film-v1-preview)
+identify the accepted Windows package and describe the reproduced Full-resolution
+limitation.
 
 ## Public test suite
 
