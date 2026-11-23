@@ -695,6 +695,7 @@ namespace JuicerProcess {
         std::array<float, 9> focusedXyzToLinearSrgb{};
         bool focusedApplyInputChromaticAdapt = false;
         std::optional<Scanner::ColorRuntime> focusedScannerColor;
+        JuicerCuda::ScannerSpectra focusedScannerSpectra{};
         std::optional<Gamut::OutputGamutTransform> focusedOutputGamutTransform;
         const JuicerCuda::Resources::DeviceScanRange* focusedScanRange = nullptr;
         const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
@@ -719,6 +720,8 @@ namespace JuicerProcess {
         JuicerCuda::VisualGrainPreparedDensityLayersView
             preparedGrainDensityLayers{};
         JuicerCuda::PrintResourceDescriptors printDescriptors{};
+        std::array<float, 3> printPreflashRawCmy{};
+        float printNormalizer = 1.0F;
         Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
         JuicerCuda::VisualGrainPreparedGaussianView
             preparedGrainDyeCloud[3][3] = {};
@@ -3996,6 +3999,7 @@ namespace JuicerProcess {
         view.film.dirCouplersHash = resources.filmDirHash;
         view.scanRange = _state->focusedScanRange;
         view.scanLut = _state->focusedScanLut;
+        view.scannerSpectra = &_state->focusedScannerSpectra;
         view.scannerColor = &*_state->focusedScannerColor;
         view.outputGamutTransform = _state->focusedOutputGamutTransform ? &*_state->focusedOutputGamutTransform : nullptr;
         view.outputGamutCmax = resources.outputGamutCmax;
@@ -4183,8 +4187,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::PrintPreparedView Root::PreparedCudaFrame::print_resources() const noexcept {
         PrintPreparedView view{};
         if (!_state || !_state->resources || !Spektrafilm::scan_route_is_print(_state->scanRoute) ||
-            !_state->transaction.active || _state->transaction.committed ||
-            _state->printDescriptors.hash == 0) {
+            !_state->transaction.active || _state->transaction.committed) {
             return view;
         }
         const JuicerCuda::Resources& resources = *_state->resources;
@@ -4194,38 +4197,37 @@ namespace JuicerProcess {
         view.filmDensityTables.epsY = resources.printFilmDensityTables.epsY;
         view.filmDensityTables.baseDensityMin = resources.printFilmDensityTables.baseDensityMin;
         view.filmDensityTables.K = resources.printFilmDensityTables.K;
-        view.filmDensityTables.hasBaseline = resources.printFilmDensityTables.hasBaseline;
-        view.filmDensityTables.invYn = resources.printFilmDensityTables.invYn;
         view.printSensC = {resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd};
         view.printSensM = {resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd};
         view.printSensY = {resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd};
         view.printDcC = {resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd};
-        view.printDcM = {resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
-        view.printDcY = {resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
+        view.printDcM = {resources.printDcC.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
+        view.printDcY = {resources.printDcC.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
         view.mainIlluminant = resources.printIllumFiltered;
-        view.mainIlluminantHost =
-            resources.printIllumFilteredHostValid ? resources.printIllumFilteredHost.data() : nullptr;
         view.preflashIlluminant = resources.printPreflashIllumFiltered;
         view.spectralSampleCount = resources.printIllumK;
-        std::copy_n(resources.printPreflashRaw, 3, view.preflashRawCmy);
-        view.normalizer = resources.printBalanceNormalizer;
+        std::copy_n(_state->printPreflashRawCmy.data(), 3, view.preflashRawCmy);
+        view.normalizer = _state->printNormalizer;
         view.filmDensityTablesHash = resources.printFilmDensityTablesDescriptorHash;
         view.profileTablesHash = resources.printProfileTablesDescriptorHash;
         view.mainIlluminantHash = resources.printMainIlluminantDescriptorHash;
         view.preflashIlluminantHash = resources.printPreflashIlluminantDescriptorHash;
-        view.preflashRawHash = resources.printPreflashRawDescriptorHash;
-        view.balanceHash = resources.printBalanceDescriptorHash;
-        view.preparationHash = resources.printPreparationDescriptorHash;
         view.preflashActive = descriptors.preflashActive;
         view.active =
-            view.filmDensityTablesHash == descriptors.filmDensityTables.hash &&
-            view.profileTablesHash == descriptors.profileTables.hash &&
-            view.mainIlluminantHash == descriptors.mainIlluminant.hash &&
-            view.balanceHash == descriptors.balance.hash &&
-            view.preparationHash == descriptors.hash &&
-            (!view.preflashActive ||
-             (view.preflashIlluminantHash == descriptors.preflashIlluminant.hash &&
-              view.preflashRawHash == descriptors.preflashRaw.hash));
+            view.filmDensityTablesHash != 0 && view.filmDensityTablesHash == descriptors.filmDensityTablesHash &&
+            view.filmDensityTables.K == Spectral::kNumSamples &&
+            view.filmDensityTables.epsC && view.filmDensityTables.epsM && view.filmDensityTables.epsY &&
+            view.filmDensityTables.baseDensityMin &&
+            view.profileTablesHash != 0 && view.profileTablesHash == descriptors.profileTablesHash &&
+            view.printDcC.x && view.printDcC.y && view.printDcM.y && view.printDcY.y &&
+            view.printSensC.y && view.printSensM.y && view.printSensY.y &&
+            view.mainIlluminantHash != 0 && view.mainIlluminantHash == descriptors.mainIlluminantHash &&
+            view.mainIlluminant && view.spectralSampleCount == Spectral::kNumSamples &&
+            (view.preflashActive
+                 ? view.preflashIlluminantHash != 0 && view.preflashIlluminantHash == descriptors.preflashIlluminantHash &&
+                       view.preflashIlluminant && resources.printPreflashIllumK == Spectral::kNumSamples
+                 : !view.preflashIlluminant && view.preflashIlluminantHash == 0 &&
+                       resources.printPreflashIllumK == 0);
         return view;
     }
 
@@ -5357,6 +5359,8 @@ namespace JuicerProcess {
                 return frame;
             }
             frame._state->printDescriptors = request.print->descriptors;
+            frame._state->printPreflashRawCmy = request.print->preflashRawCmy;
+            frame._state->printNormalizer = request.print->normalizer;
         }
         if (request.identity.grainActive && !request.noise) {
             outError.diagnostic = "MissingRequiredResource phase=grain_static field=noise";
@@ -5529,6 +5533,13 @@ namespace JuicerProcess {
         frame._state->focusedXyzToLinearSrgb = request.focused.xyzToLinearSrgb;
         frame._state->focusedApplyInputChromaticAdapt = request.focused.applyInputChromaticAdapt;
         frame._state->focusedScannerColor = request.scannerColor;
+        const auto& tables = request.focused.scannerTables;
+        auto& spectra = frame._state->focusedScannerSpectra;
+        for (std::size_t k = 0; k < std::size(spectra.wavelengths); ++k) {
+            spectra.wavelengths[k] = {
+                tables.epsC[k], tables.epsM[k], tables.epsY[k], tables.baseDensityMin.empty() ? 0.0F : tables.baseDensityMin[k], tables.Ax[k], tables.Ay[k], tables.Az[k]};
+        }
+        spectra.inverseYNormalization = tables.invYn;
         frame._state->focusedOutputGamutTransform =
             outputGamut.enabled ? std::optional{outputGamut.transform} : std::nullopt;
         if (request.scannerPostEffects) {

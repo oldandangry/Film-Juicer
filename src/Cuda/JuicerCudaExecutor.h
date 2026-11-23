@@ -76,6 +76,11 @@ namespace JuicerCuda {
     };
 
 
+    bool pack_scan_color(
+        ScanColorPayload& destination,
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+        const OutputGamutRecipe& recipe);
+
     AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
         const FrameRect& sourceBounds,
         const FrameRect& meterBounds,

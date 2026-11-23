@@ -1,6 +1,6 @@
 //! Complete scanner output preparation; no pixel execution or retained input.
 
-use crate::{color, hash};
+use crate::{color, hash, spectral};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +126,54 @@ impl Color {
     }
     pub fn hash(&self) -> u64 {
         self.hash
+    }
+
+    pub(crate) fn spectral_binding_digest(
+        &self,
+        route: u8,
+        profile_key: &str,
+        asset_token: u64,
+        tables: &spectral::Tables,
+        gamut_enabled: bool,
+    ) -> u64 {
+        let mut digest = hash::FNV_OFFSET;
+        hash::update_bytes(&mut digest, &1_u32.to_le_bytes());
+        hash::update_bytes(&mut digest, &u32::from(route).to_le_bytes());
+        hash::update_bytes(&mut digest, &(profile_key.len() as u64).to_le_bytes());
+        hash::update_bytes(&mut digest, profile_key.as_bytes());
+        hash::update_bytes(&mut digest, &asset_token.to_le_bytes());
+        for lane in tables.dyes_cmy().iter().chain(tables.weighted_xyz()) {
+            hash::update_resource_f32s(&mut digest, lane);
+        }
+        hash::update_bytes(&mut digest, &[u8::from(tables.has_baseline())]);
+        if tables.has_baseline() {
+            hash::update_resource_f32s(&mut digest, tables.baseline_min());
+        }
+        hash::update_resource_f32s(&mut digest, &[tables.inv_yn()]);
+        hash::update_resource_f32s(&mut digest, &self.illuminant_xyz);
+        hash::update_resource_f32s(&mut digest, &self.cat02);
+        hash::update_resource_f32s(&mut digest, &self.xyz_to_rgb);
+        let flags = u32::from(self.apply_cctf)
+            | (u32::from(self.input_is_output_space()) << 1)
+            | (u32::from(gamut_enabled) << 2);
+        hash::update_bytes(&mut digest, &u32::from(self.output_space).to_le_bytes());
+        hash::update_bytes(&mut digest, &flags.to_le_bytes());
+        hash::update_bytes(&mut digest, &1_u32.to_le_bytes());
+        let cctf = self.cctf;
+        hash::update_bytes(&mut digest, &(cctf.kind as u32).to_le_bytes());
+        hash::update_resource_f32s(
+            &mut digest,
+            &[
+                cctf.gamma,
+                cctf.a,
+                cctf.b,
+                cctf.c,
+                cctf.d,
+                cctf.linear_cutoff,
+            ],
+        );
+        hash::update_resource_f32s(&mut digest, &self.dwg_to_output);
+        digest
     }
 }
 

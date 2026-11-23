@@ -100,8 +100,6 @@ namespace JuicerCuda {
         std::span<const float> mainIlluminant;
         std::span<const float> preflashIlluminant;
         std::array<float, 3> preflashRawCmy{};
-        float factorMidgray = 1.0f;
-        float factorMidgrayComp = 1.0f;
         float normalizer = 1.0f;
     };
 

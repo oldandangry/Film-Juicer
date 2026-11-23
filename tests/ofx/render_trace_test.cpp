@@ -1,5 +1,8 @@
 #include "render_gpu_fixture.h"
 #include "render_assertions.h"
+#include "production_images.h"
+#include "Cuda/Scan/JuicerCudaScanDensityCaptureTest.h"
+#include "GamutCompression.h"
 #include "Hash.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "processor_test_hooks.h"
@@ -17,8 +20,12 @@
 #include <exception>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
+
+#include <cuda.h>
 
 extern "C" FjStatus fj_test_ofx_instance_observe(OfxImageEffectHandle, FjInstanceObservation**, FjErrorBuffer*);
 
@@ -73,6 +80,210 @@ namespace {
                                  "render frame, identity or submission observation");
         return images.pixels(images.read());
     }
+
+    class DensityCaptureScope {
+    public:
+        static constexpr std::size_t kPixels = 35;
+        using Sample = JuicerCuda::ScanDensityCaptureTest::ScanSample;
+        using Samples = std::array<Sample, kPixels>;
+
+        explicit DensityCaptureScope(cudaStream_t stream) : stream_(stream) {
+            using namespace JuicerCuda::ScanDensityCaptureTest;
+            CUcontext streamContext = nullptr;
+            ofx_test::require_render(cuCtxGetCurrent(&context_) == CUDA_SUCCESS && context_ &&
+                                         cuStreamGetCtx(stream_, &streamContext) == CUDA_SUCCESS && streamContext == context_,
+                                     "density observation requires the active frame context");
+            ofx_test::require_cuda(cudaMalloc(&device_, sizeof(Samples)), "allocate scan observation");
+            const auto status = cudaMemsetAsync(device_, 255, sizeof(Samples), stream_);
+            if (status != cudaSuccess) {
+                (void)cudaFree(device_);
+                ofx_test::require_cuda(status, "clear density observation");
+            }
+            previous_ = swap_density_capture({device_, kPixels, 7, 5});
+        }
+        ~DensityCaptureScope() {
+            JuicerCuda::ScanDensityCaptureTest::swap_density_capture(previous_);
+            if (cuCtxPushCurrent(context_) == CUDA_SUCCESS) {
+                (void)cudaStreamSynchronize(stream_);
+                (void)cudaFree(device_);
+                CUcontext restored = nullptr;
+                (void)cuCtxPopCurrent(&restored);
+            }
+        }
+        DensityCaptureScope(const DensityCaptureScope&) = delete;
+        DensityCaptureScope& operator=(const DensityCaptureScope&) = delete;
+
+        Samples read() const {
+            CUcontext context = nullptr;
+            ofx_test::require_render(cuCtxGetCurrent(&context) == CUDA_SUCCESS && context == context_, "density observation context changed");
+            Samples words{};
+            ofx_test::require_cuda(cudaMemcpyAsync(words.data(), device_, sizeof(words), cudaMemcpyDeviceToHost, stream_), "read density observation");
+            ofx_test::require_cuda(cudaStreamSynchronize(stream_), "complete density observation");
+            return words;
+        }
+
+    private:
+        cudaStream_t stream_;
+        CUcontext context_ = nullptr;
+        Sample* device_ = nullptr;
+        JuicerCuda::ScanDensityCaptureTest::DensityCapture previous_{};
+    };
+
+    nlohmann::json float_bits(std::span<const float> values) {
+        auto words = nlohmann::json::array();
+        for (const float value : values) {
+            words.push_back(std::bit_cast<std::uint32_t>(value));
+        }
+        return words;
+    }
+
+    template <typename T>
+    nlohmann::json scan_sample_bits(const DensityCaptureScope::Samples& samples, T (DensityCaptureScope::Sample::*field)[3]) {
+        using Word = std::conditional_t<std::is_same_v<T, float>, std::uint32_t, std::uint64_t>;
+        auto words = nlohmann::json::array();
+        for (const auto& sample : samples) {
+            for (const T value : sample.*field) {
+                ofx_test::require_render(std::isfinite(value), "scan observation is missing a finite stage value");
+                words.push_back(std::bit_cast<Word>(value));
+            }
+        }
+        return words;
+    }
+
+    nlohmann::json capture_reference_inputs(const ofx_test::Case& test, const char* film, std::uint32_t route) {
+        ofx_test::DeviceImages images({test.width, test.height, test.components});
+        tokens();
+        ofx_test::RenderHost fixture;
+        ofx_test::author_parameters(fixture.host(), fixture.effect(), test);
+        fixture.host().set_value(fixture.effect(), "FilmProfileKey", {std::string(film)});
+        fixture.host().set_value(fixture.effect(), "GlareActive", {0});
+        ofx_test::configure(fixture.host(), fixture.effect(), test, {images.stream(), images.source(), images.destination()});
+        change(fixture, "GlareActive", kOfxChangeUserEdited, test.time);
+        const auto capture = [&] {
+            using Sample = DensityCaptureScope::Sample;
+            DensityCaptureScope witness(images.stream());
+            const auto delivered = render(fixture, images, test.time);
+            const auto samples = witness.read();
+            return nlohmann::json{{"developed_cmy_bits", scan_sample_bits(samples, &Sample::density)},
+                                  {"device_xyz_bits", scan_sample_bits(samples, &Sample::xyz)},
+                                  {"device_corrected_xyz_bits", scan_sample_bits(samples, &Sample::correctedXYZ)},
+                                  {"device_adapted_xyz_bits", scan_sample_bits(samples, &Sample::adaptedXYZ)},
+                                  {"device_signed_rgb_bits", scan_sample_bits(samples, &Sample::signedRGB)},
+                                  {"device_output_bits", float_bits(delivered)}};
+        };
+        auto cold = capture();
+        const auto warm = capture();
+        ofx_test::require_render(cold == warm, "scanner stage capture changed on a fixed grain-off render");
+        const auto source = ofx_test::initial_source(test);
+        std::vector<float> returnedSource(source.size());
+        ofx_test::require_cuda(cudaMemcpy(returnedSource.data(), images.source(), images.bytes(), cudaMemcpyDeviceToHost), "verify scanner reference source");
+        ofx_test::require_render(float_bits(source) == float_bits(returnedSource), "scanner reference source changed");
+
+        const Observation held(fixture.effect());
+        const auto& state = held.view.published;
+        const auto& post = state.scanner_post_effects;
+        ofx_test::require_render(state.route == route && !post.glare_active && !state.grain.active, "scanner reference captured the wrong route or stochastic controls");
+        ofx_test::require_render(!state.effects.active && post.lens_blur_radius == 0 && post.unsharp_amount == 0.0F, "scanner reference captured a spatial output effect");
+        const auto& scanner = state.scanner_tables;
+        const auto& color = state.output_color;
+        const auto& correction = state.scanner_correction;
+        const auto key = [](FjStringView value) -> std::string_view {
+            return value.count ? std::string_view(value.data, value.count) : std::string_view{};
+        };
+        ofx_test::require_render(key(state.film_profile_key) == film, "scanner reference published the wrong film profile");
+        const auto lane = [](const FjFloatSpan& values) {
+            ofx_test::require_render(values.data && values.count == 81, "missing held scanner spectrum");
+            return float_bits({values.data, values.count});
+        };
+        auto pixels = nlohmann::json::array();
+        const auto activeWidth = static_cast<std::size_t>(test.width) * static_cast<std::size_t>(test.components);
+        const auto pitch = activeWidth + ofx_test::kProductionPitchPadding;
+        for (std::size_t y = 0; y < static_cast<std::size_t>(test.height); ++y) {
+            for (std::size_t column = 0; column < activeWidth; ++column) {
+                pixels.push_back(std::bit_cast<std::uint32_t>(source[y * pitch + column]));
+            }
+        }
+        const auto& encoding = color.encoding;
+        const std::array coefficients{encoding.gamma, encoding.a, encoding.b, encoding.c, encoding.d, encoding.linear_cutoff};
+        constexpr auto flags = FJ_COLOR_ENCODE_CCTF | FJ_COLOR_INPUT_IS_OUTPUT_SPACE | FJ_COLOR_GAMUT_COMPRESSION;
+        const auto& boundary = color.gamut_cmax;
+        ofx_test::require_render(color.flags == flags && encoding.cctf_kind == FJ_CCTF_SRGB && color.color_space == FJ_OUTPUT_SRGB &&
+                                     boundary.data && boundary.count == Gamut::kOutputBoundaryValueCount,
+                                 "scanner reference requires the complete sRGB gamut and transfer inputs");
+        cold.update({{"schema", "scanner-reference-input-v3"},
+                     {"id", test.id},
+                     {"shape", {test.height, test.width, test.components}},
+                     {"route", state.route},
+                     {"film", film},
+                     {"paper", key(state.print_profile_key)},
+                     {"frame", test.time},
+                     {"frame_rate", 24},
+                     {"grain", 0},
+                     {"glare", 0},
+                     {"source_bits", std::move(pixels)},
+                     {"dye_bits", {lane(scanner.dyes_cmy[0]), lane(scanner.dyes_cmy[1]), lane(scanner.dyes_cmy[2])}},
+                     {"weight_bits", {lane(scanner.weighted_xyz[0]), lane(scanner.weighted_xyz[1]), lane(scanner.weighted_xyz[2])}},
+                     {"base_bits", scanner.has_baseline ? lane(scanner.baseline_min) : nlohmann::json::array()},
+                     {"inverse_y_bits", std::bit_cast<std::uint32_t>(scanner.inv_yn)},
+                     {"white_bits", float_bits(color.illuminant_xyz)},
+                     {"cat02_bits", float_bits(color.cat02)},
+                     {"xyz_to_rgb_bits", float_bits(color.xyz_to_rgb)},
+                     {"gamut_hash", color.gamut_recipe_hash},
+                     {"gamut_table_hash", color.gamut_table_hash},
+                     {"gamut_cmax_bits", float_bits({boundary.data, boundary.count})},
+                     {"gamut_lightness_bits", float_bits(color.lightness_knee)},
+                     {"gamut_chroma_bits", float_bits(color.chroma_knee)},
+                     {"native_to_d65_bits", float_bits(color.native_rgb_to_d65_xyz)},
+                     {"d65_to_native_bits", float_bits(color.d65_xyz_to_native_rgb)},
+                     {"oklab_matrices_bits", {float_bits(Gamut::kOklabXyzToLms), float_bits(Gamut::kOklabLmsToXyz), float_bits(Gamut::kOklabLmsRootToLab), float_bits(Gamut::kOklabLabToLmsRoot)}},
+                     {"output_color_space", color.color_space},
+                     {"output_color_flags", color.flags},
+                     {"cctf_kind", encoding.cctf_kind},
+                     {"cctf_bits", float_bits(coefficients)},
+                     {"correction_active", correction.active},
+                     {"slope_bits", std::bit_cast<std::uint32_t>(correction.xyz_slope)},
+                     {"offset_bits", std::bit_cast<std::uint32_t>(correction.xyz_offset)},
+                     {"recipe_hash", state.recipe_hash},
+                     {"scanner_hash", state.scanner_hash}});
+        return cold;
+    }
+
+    int run_reference_inputs(int argc, char** argv) {
+        constexpr std::string_view caller = "ofx.gpu.scanner_reference_inputs";
+        struct Case {
+            ofx_test::Case image;
+            const char* film = nullptr;
+            std::uint32_t route = 0;
+        };
+        constexpr std::array cases{
+            Case{{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_DIRECT},
+            Case{{"negative-print", "negative-print", "NegativePrintScan", 0, 4}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_PRINT},
+            Case{{"positive-direct", "positive-direct", "NegativeDirectScan", 0, 3}, "fujifilm_provia_100f", FJ_ROUTE_POSITIVE_DIRECT},
+            Case{{"positive-print", "positive-print", "NegativePrintScan", 0, 4}, "fujifilm_provia_100f", FJ_ROUTE_POSITIVE_PRINT}};
+        if (JuicerTests::list_requested(argc, argv)) {
+            for (const auto& test : cases) {
+                JuicerTests::list_case(caller, test.image.id);
+            }
+            return 0;
+        }
+        JuicerTests::CaseLog log;
+        std::vector<std::string> ids;
+        ids.reserve(cases.size());
+        for (const auto& test : cases) {
+            ids.emplace_back(test.image.id);
+        }
+        JuicerTests::Cohort cohort(std::string(caller), ids);
+        std::puts("CTEST_FULL_OUTPUT");
+        for (const auto& test : cases) {
+            auto row = cohort.case_event(test.image.id);
+            const auto input = capture_reference_inputs(test.image, test.film, test.route);
+            std::puts(input.dump().c_str());
+            row.passed();
+        }
+        log.finish();
+        return 0;
+    }
+
     void check_highlight_carrier(std::size_t index) {
         using namespace JuicerCuda::ExecutorTest;
         constexpr int width = 97;
@@ -793,6 +1004,9 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string_view(argv[1]) == "--scanner-reference-inputs") {
+        return run_reference_inputs(argc, argv);
+    }
     if (JuicerTests::list_requested(argc, argv)) {
         for (const auto* id : kRows)
             JuicerTests::list_case(kCaller, id);

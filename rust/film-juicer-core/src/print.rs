@@ -264,11 +264,7 @@ impl ResourceDescriptors {
         ]);
         let mut profile_tables_hash = hash::FNV_OFFSET;
         hash::update_bytes(&mut profile_tables_hash, &2_u32.to_le_bytes());
-        for word in [
-            input.profile.asset_token(),
-            input.curves.hash(),
-            sensitivities_hash,
-        ] {
+        for word in [input.curves.hash(), sensitivities_hash] {
             hash::update_bytes(&mut profile_tables_hash, &word.to_le_bytes());
         }
         hash::update_bytes(

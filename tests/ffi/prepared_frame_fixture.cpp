@@ -220,44 +220,14 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.mainIlluminant = span(source.main_illuminant);
             out.preflashIlluminant = span(source.preflash_illuminant);
             std::copy_n(source.preflash_raw_cmy, 3, out.preflashRawCmy.begin());
-            out.factorMidgray = view.print_balance.factor_midgray;
-            out.factorMidgrayComp = view.print_balance.factor_midgray_comp;
             out.normalizer = source.normalizer;
-
             auto& descriptors = out.descriptors;
-            descriptors.filmDensityTables.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.filmDensityTables.spectralSampleCount = 81;
-            descriptors.filmDensityTables.hash = source.film_density_hash;
-            descriptors.profileTables.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.profileTables.densitySampleCount =
-                static_cast<std::uint32_t>(source.log_exposure.count);
-            descriptors.profileTables.spectralSampleCount = 81;
-            descriptors.profileTables.hash = source.profile_tables_hash;
-            descriptors.mainIlluminant.hash = source.main_illuminant_hash;
-            descriptors.mainIlluminant.cmyCc = {
-                source.main_cc_cmy[0], source.main_cc_cmy[1], source.main_cc_cmy[2]};
-            descriptors.preflashIlluminant.hash = source.preflash_illuminant_hash;
-            descriptors.preflashIlluminant.cmyCc = {
-                source.preflash_cc_cmy[0], source.preflash_cc_cmy[1], source.preflash_cc_cmy[2]};
-            descriptors.preflashRaw.hash = source.preflash_raw_hash;
-            descriptors.preflashRaw.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.preflashRaw.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.preflashRaw.filteredPreflashIlluminantHash =
-                source.preflash_illuminant_hash;
-            descriptors.balance.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.balance.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.balance.filmRawRecipeHash = view.film_exposure.hash;
-            descriptors.balance.filmDevelopRecipeHash = view.film_development.hash;
-            descriptors.balance.filteredMainIlluminantHash = source.main_illuminant_hash;
-            descriptors.balance.hash = source.balance_hash;
+            descriptors.filmDensityTablesHash = source.film_density_hash;
+            descriptors.profileTablesHash = source.profile_tables_hash;
+            descriptors.mainIlluminantHash = source.main_illuminant_hash;
+            descriptors.preflashIlluminantHash = source.preflash_illuminant_hash;
+            descriptors.mainCmyCc = {source.main_cc_cmy[0], source.main_cc_cmy[1], source.main_cc_cmy[2]};
             descriptors.preflashActive = (source.flags & FJ_PRINT_PREFLASH) != 0;
-            descriptors.hash = source.hash;
         }
 
         void fill_output_gamut(const FjOutputColor& source, OutputGamutRecipe& out) {
@@ -281,6 +251,9 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             std::copy_n(source.xyz_to_rgb, 9, out.xyzToRgb);
             std::copy_n(source.illuminant_xyz, 3, out.illuminantXYZ);
             out.preparedEncoding = source.encoding;
+            out.encoding.colorSpace = static_cast<OutputEncoding::ColorSpace>(source.output_space);
+            out.encoding.applyCctfEncoding = (source.flags & FJ_COLOR_ENCODE_CCTF) != 0;
+            out.encoding.inputIsOutputSpace = (source.flags & FJ_COLOR_INPUT_IS_OUTPUT_SPACE) != 0;
             out.outputGamutRecipeHash = source.active_gamut_recipe_hash;
             out.hash = source.hash;
         }
@@ -328,7 +301,8 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.scannerLutDescriptor.baseDensityHash = view.scanner_lut.base_density_hash;
             out.scannerLutDescriptor.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
             out.scannerLutDescriptor.observerHash = view.scanner_lut.observer_hash;
-            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), span(scanner.baseline_min), 81, scanner.inv_yn, scanner.has_baseline != 0};
+            const auto base = scanner.has_baseline ? span(scanner.baseline_min) : std::span<const float>{};
+            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), base, 81, scanner.inv_yn, scanner.has_baseline != 0};
             out.exposureSampleCount = 81;
             out.exposureIlluminant = span(exposure.mallett_illuminant);
             out.filmTcLut = span(exposure.tc_lut_rgba);

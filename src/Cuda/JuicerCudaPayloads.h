@@ -64,7 +64,6 @@ namespace JuicerCuda {
 
     // Output encoding payload for device kernels (scanner path uses inputIsOutputSpace=1).
     struct OutputEncodingPayload {
-        int outputColorSpaceIndex = 0;
         int applyCctfEncoding = 1;
         int inputIsOutputSpace = 1;
         float dwgToOutput[9] = {
@@ -97,28 +96,18 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT outputGamutCmax = nullptr;
         float outputGamutNativeRgbToD65Xyz[9] = {0.0f};
         float outputGamutD65XyzToNativeRgb[9] = {0.0f};
-        float outputGamutOklabXyzToLms[9] = {0.0f};
-        float outputGamutOklabLmsToXyz[9] = {0.0f};
-        float outputGamutOklabLmsRootToLab[9] = {0.0f};
-        float outputGamutOklabLabToLmsRoot[9] = {0.0f};
         float outputGamutLightnessKnee[3] = {0.95f, 1.0f, 1.6f};
         float outputGamutChromaKnee[3] = {0.95f, 1.0f, 1.6f};
         int outputGamutActive = 0;
         OutputEncodingPayload encoding{};
     };
 
-    struct ScanTablesPayload {
+    struct FilmDensityTablesPayload {
         const float* JUICER_RESTRICT epsC = nullptr;
         const float* JUICER_RESTRICT epsM = nullptr;
         const float* JUICER_RESTRICT epsY = nullptr;
-        const float* JUICER_RESTRICT Ax = nullptr;
-        const float* JUICER_RESTRICT Ay = nullptr;
-        const float* JUICER_RESTRICT Az = nullptr;
         const float* JUICER_RESTRICT baseDensityMin = nullptr;
         int K = 0;
-        int hasBaseline = 0;
-        float invYn = 1.0f;
-        int mediumIsNegative = 1;
         float min_cmy[3] = {0.0f, 0.0f, 0.0f};
         float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
     };
@@ -464,7 +453,7 @@ namespace JuicerCuda {
 
     struct PrintExposePayload {
         int active = 0;
-        ScanTablesPayload negTables{};
+        FilmDensityTablesPayload negTables{};
         const float* JUICER_RESTRICT printIllumFiltered = nullptr;
         int printIllumK = 0;
         DeviceCurveView printSensC{};
@@ -487,6 +476,21 @@ namespace JuicerCuda {
         int mediumIsNegative = 1;
         float min_cmy[3] = {0.0f, 0.0f, 0.0f};
         float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
+    };
+
+    struct ScannerWavelength {
+        float dyeC;
+        float dyeM;
+        float dyeY;
+        float baseDensity;
+        float weightX;
+        float weightY;
+        float weightZ;
+    };
+
+    struct ScannerSpectra {
+        ScannerWavelength wavelengths[81];
+        float inverseYNormalization;
     };
 
     struct ScanStagePayload {
@@ -536,27 +540,6 @@ namespace JuicerCuda {
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};
-        FilmRawPayload filmRaw{};
-    };
-
-    // Broad CUDA payload used by the monolithic launch path; focused direct rendering uses
-    // DirectPipelineRunParams.
-    struct PipelineRunParams {
-        const void* src = nullptr;
-        std::size_t srcRowBytes = 0;
-        void* dst = nullptr;
-        std::size_t dstRowBytes = 0;
-        int width = 0;
-        int height = 0;
-        int nComponents = 0;
-
-        // Stage-scoped payloads.
-        FilmExposurePayload filmExpose{};
-        FilmDevelopPayload filmDevelop{};
-        PrintExposePayload printExpose{};
-        PrintDevelopPayload printDevelop{};
-        ScanStagePayload scanStage{};
-
         FilmRawPayload filmRaw{};
     };
 

@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use crate::assets::{PortraGrainBank, PortraGrainTable};
 use crate::{hash, route::ScanRoute};
-use super::super::density::portra;
+use super::super::{
+    Development,
+    density::{self, portra},
+};
 
 pub const DEFAULT_CHROMA: f64 = 1.0;
 
@@ -288,9 +291,18 @@ impl Recipe {
         self.chroma_fraction
     }
 
-    pub(crate) fn density_allowances(&self) -> Option<[f32; 2]> {
+    pub(crate) fn density_bounds(
+        &self,
+        development: &Development,
+    ) -> Result<density::Bounds, density::Error> {
         // Transmission averaging preserves the density enclosure of its samples.
-        portra::allowances(&self.bank, &self.table, self.gain)
+        density::Bounds::portra_film_v1(
+            development,
+            &self.bank,
+            &self.table,
+            self.gain,
+            self.chroma_fraction,
+        )
     }
 
     pub fn hash(&self) -> u64 {

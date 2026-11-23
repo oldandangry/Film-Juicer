@@ -31,7 +31,6 @@ namespace Scanner {
 } // namespace Scanner
 
 namespace JuicerCuda {
-    struct PipelineRunParams;
     namespace FilmGrain {
         struct ProxyWorkspace;
     }
@@ -217,6 +216,7 @@ namespace JuicerProcess {
 
             struct FocusedPreparedView {
                 JuicerCuda::FilmPreparedView film{};
+                const JuicerCuda::ScannerSpectra* scannerSpectra = nullptr;
                 const JuicerCuda::Resources::DeviceScanRange* scanRange = nullptr;
                 const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
                 const Scanner::ColorRuntime* scannerColor = nullptr;

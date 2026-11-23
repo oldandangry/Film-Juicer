@@ -695,7 +695,6 @@ pub enum Calibration {
 
 pub struct ScannerOutput {
     params: ScannerParams,
-    viewing_illuminant: String,
     tables: spectral::Tables,
     color: scanner::Color,
     lut: scanner::LutDescriptor,
@@ -884,9 +883,6 @@ impl Preflash {
 impl ScannerOutput {
     pub fn params(&self) -> &ScannerParams {
         &self.params
-    }
-    pub fn viewing_illuminant(&self) -> &str {
-        &self.viewing_illuminant
     }
     pub fn tables(&self) -> &spectral::Tables {
         &self.tables
@@ -1532,6 +1528,7 @@ fn scanner_recipe_hash(
     route: ScanRoute,
     polarity: Polarity,
     viewing: &str,
+    raw_digest: u64,
     reference_hash: u64,
     gamut_hash: u64,
 ) -> u64 {
@@ -1545,7 +1542,7 @@ fn scanner_recipe_hash(
         ],
     );
     hash::update_bytes(&mut identity, viewing.as_bytes());
-    hash::update_bytes(&mut identity, &params.resolution.to_le_bytes());
+    hash::update_bytes(&mut identity, &raw_digest.to_le_bytes());
     hash::update_bytes(&mut identity, &(params.output_space as i32).to_le_bytes());
     hash::update_bytes(
         &mut identity,
@@ -1814,10 +1811,7 @@ fn prepare_state(
     })?;
     #[cfg(feature = "grain-preview")]
     let film_bounds = match &film_grain {
-        Some(grain) => grain
-            .density_allowances()
-            .ok_or(density::Error::FilmNormalization)
-            .and_then(|allowances| density::Bounds::film_v1(&acquired.development, allowances)),
+        Some(grain) => grain.density_bounds(&acquired.development),
         None => density::Bounds::new(&acquired.development, &minimum),
     };
     #[cfg(not(feature = "grain-preview"))]
@@ -1833,15 +1827,6 @@ fn prepare_state(
         .map_err(PrepareError::PrintComposition)?;
     let (transform, gamut_hash) = output_policy(params)?;
     let scanner_params = scanner_params(params, transform.space());
-    #[cfg(feature = "grain-preview")]
-    let scanner_params = if film_grain.is_some() && selected_print.is_none() {
-        ScannerParams {
-            resolution: film_bounds.film_v1_scan_resolution(scanner_params.resolution),
-            ..scanner_params
-        }
-    } else {
-        scanner_params
-    };
     let print = match selected_print {
         Some(profile) => {
             let curves = profile
@@ -1883,20 +1868,13 @@ fn prepare_state(
         }
         None => None,
     };
-    let viewing = print
-        .as_ref()
-        .map_or_else(
-            || film.info().viewing_illuminant(),
-            |print| print.profile.info().viewing_illuminant(),
-        )
-        .to_owned();
     let direct_lut = if print.is_none() {
         Some(lut_descriptor(
             params,
             film,
             &film_bounds,
             None,
-            &viewing,
+            film.info().viewing_illuminant(),
             scanner_params.resolution,
         )?)
     } else {
@@ -1999,15 +1977,24 @@ fn prepare_state(
         _ => None,
     };
 
-    let (scanner_profile, viewing_kind) = match &print {
+    let (scanner_profile, viewing, viewing_kind, scanner_key, scanner_asset_token) = match &print {
         Some(print) => (
             print.profile.tables(),
+            print.profile.info().viewing_illuminant(),
             print.profile.info().viewing_illuminant_kind(),
+            params.print_profile_key.as_str(),
+            print.profile.asset_token(),
         ),
-        None => (film.tables(), film.info().viewing_illuminant_kind()),
+        None => (
+            film.tables(),
+            film.info().viewing_illuminant(),
+            film.info().viewing_illuminant_kind(),
+            params.film_profile_key.as_str(),
+            film.asset_token(),
+        ),
     };
     trace_stage!(ScannerPayload);
-    let scanner_illuminant = profile_illuminant(&acquired.illuminants, &viewing, viewing_kind)?
+    let scanner_illuminant = profile_illuminant(&acquired.illuminants, viewing, viewing_kind)?
         .ok_or(ControlError::ScannerPayload(params.scan_route))?;
     let scanner_white =
         match spectral::checked_integrate_white(acquired.observer.borrow(), &scanner_illuminant) {
@@ -2039,6 +2026,13 @@ fn prepare_state(
         active_gamut_recipe_hash: active_gamut_hash,
     })
     .map_err(PrepareError::ScannerColor)?;
+    let raw_scanner_digest = scanner_color.spectral_binding_digest(
+        route_tag(params.scan_route),
+        scanner_key,
+        scanner_asset_token,
+        &scanner_tables,
+        params.output_gamut_compression_enabled != 0,
+    );
     let boundary = if params.output_gamut_compression_enabled != 0 {
         trace_stage!(OutputBoundary);
         Some(assets.output_boundary(
@@ -2066,7 +2060,7 @@ fn prepare_state(
                 film,
                 &film_bounds,
                 Some((&print.profile, &print.bounds)),
-                &viewing,
+                viewing,
                 scanner_params.resolution,
             )
         })
@@ -2124,9 +2118,12 @@ fn prepare_state(
                 None
             };
             trace_stage!(ScannerCorrection);
+            let correction_required = correction_params
+                .print_inputs_required()
+                .map_err(PrepareError::ScannerCorrection)?;
             let correction = scanner::Correction::print(
                 correction_params,
-                Some(scanner::PrintInput {
+                correction_required.then(|| scanner::PrintInput {
                     tables: correction_tables(&scanner_tables),
                     film_base_density: film.tables().base_density(),
                     film_channel_density_cmy: film.tables().channel_density(),
@@ -2184,9 +2181,12 @@ fn prepare_state(
         }
         (None, None, None) => {
             trace_stage!(ScannerCorrection);
+            let correction_required = correction_params
+                .direct_inputs_required()
+                .map_err(PrepareError::ScannerCorrection)?;
             let correction = scanner::Correction::direct(
                 correction_params,
-                Some(scanner::DirectInput {
+                correction_required.then(|| scanner::DirectInput {
                     tables: correction_tables(&scanner_tables),
                     film_base_density: film.tables().base_density(),
                     film_log_exposure: acquired.development.log_exposure(),
@@ -2209,25 +2209,24 @@ fn prepare_state(
         _ => unreachable!("print route privately owns all print construction products"),
     };
     trace_stage!(FinalIdentity);
+    let viewing = match &route {
+        PreparedRoute::Direct(_) => film.info().viewing_illuminant(),
+        PreparedRoute::Print(print) => print.profile.info().viewing_illuminant(),
+    };
     let scanner_recipe_hash = scanner_recipe_hash(
         scanner_params,
         params.scan_route,
         film.info().polarity(),
-        &viewing,
+        viewing,
+        raw_scanner_digest,
         reference.hash(),
         gamut_hash,
     );
-    let scanner_hash = hash::u64s(&[
-        scanner_bounds_hash,
-        scanner_tables.hash(),
-        u64::from(scanner_params.resolution),
-        active_gamut_hash,
-    ]);
+    let scanner_hash = hash::u64s(&[raw_scanner_digest, active_gamut_hash]);
     #[cfg(feature = "test-support")]
     let scanner_hash = testing::identity(testing::ZeroIdentity::Scanner, scanner_hash);
     let scanner = ScannerOutput {
         params: scanner_params,
-        viewing_illuminant: viewing,
         tables: scanner_tables,
         color: scanner_color,
         lut,

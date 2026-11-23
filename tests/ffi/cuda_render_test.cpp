@@ -428,6 +428,8 @@ namespace JuicerCudaTest {
     }
 
     void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext) {
+        auto& root = JuicerCuda::borrow_root(cuda);
+        const JuicerCuda::ResourceManager::DeviceContextKey contextKey{context.device_id, reinterpret_cast<void*>(context.context)};
         const auto check = [&](const FjFrame& candidateFrame, const FjSubmission& candidateSubmission, const FjPreparedHostData& candidate, const char* rejectedField) {
             std::array<char, 256> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
@@ -444,6 +446,38 @@ namespace JuicerCudaTest {
         };
         // A valid producer projection reaches the first cancellation checkpoint;
         // malformed bindings must stop before that checkpoint or any GPU work.
+        check(frame, submission, prepared, nullptr);
+        const auto rejectScanner = [&](const FjPreparedHostData& changed, const char* field, std::string_view name) {
+            const auto owner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, contextKey);
+            const auto fences = JuicerProcess::TestSupport::RootLifetimeObserver::fences(root);
+            check(frame, submission, changed, field);
+            require(JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, contextKey) == owner, "invalid scanner input reached context resource publication");
+            require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(root) == fences, "invalid scanner input retained new CUDA work");
+            std::cout << "frame binding route=" << prepared.route << " scanner=" << name << " rejected before execution\n";
+        };
+        auto scannerInput = prepared;
+        --scannerInput.scanner_spectra.dye_c.count;
+        rejectScanner(scannerInput, "scanner_spectra", "short-dye");
+        scannerInput = prepared;
+        scannerInput.scanner_spectra.weighted_y.data = nullptr;
+        rejectScanner(scannerInput, "scanner_spectra", "missing-weight-data");
+        scannerInput = prepared;
+        scannerInput.scanner_spectra.base_density = {prepared.scanner_spectra.dye_c.data, 80};
+        rejectScanner(scannerInput, "scanner_spectra.base_density", "short-base");
+        scannerInput.scanner_spectra.base_density.count = 0;
+        rejectScanner(scannerInput, "scanner_spectra.base_density", "unexpected-base-data");
+        scannerInput.scanner_spectra.base_density = {nullptr, 81};
+        rejectScanner(scannerInput, "scanner_spectra.base_density", "missing-base-data");
+        scannerInput = prepared;
+        std::swap(scannerInput.scanner_spectra.dye_c, scannerInput.scanner_spectra.dye_m);
+        rejectScanner(scannerInput, "submission_identity", "swapped-dyes");
+        scannerInput = prepared;
+        scannerInput.scanner_spectra.inverse_y_normalization *= 2.F;
+        rejectScanner(scannerInput, "submission_identity", "changed-inverse-y");
+        scannerInput = prepared;
+        auto& cat02First = scannerInput.output_color.cat02[0];
+        cat02First = std::nextafter(cat02First, std::numeric_limits<float>::infinity());
+        rejectScanner(scannerInput, "submission_identity", "changed-cat02");
         check(frame, submission, prepared, nullptr);
         // These literal corruptions replace the retired post-copy recipe
         // mutations; a complete held state cannot contain either mismatch.

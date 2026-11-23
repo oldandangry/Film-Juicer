@@ -31,16 +31,19 @@
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     const JuicerCuda::DirectPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     void* cudaStreamOpaque,
     JuicerCuda::CameraFilmLinearExposurePlanes carrier);
 
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
     const JuicerCuda::PrintPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     void* cudaStreamOpaque,
     JuicerCuda::CameraFilmLinearExposurePlanes carrier);
 
 extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
     const JuicerCuda::DirectPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -49,6 +52,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
 
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     const JuicerCuda::PrintPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -134,6 +138,7 @@ juicer_cuda_print_focused_develop_from_enlarger_linear(
 
 extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
     const JuicerCuda::DirectPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     const float* dDensityC,
     const float* dDensityM,
     const float* dDensityY,
@@ -145,6 +150,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
 
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(
     const JuicerCuda::PrintPipelineRunParams* hParams,
+    const JuicerCuda::ScannerSpectra& spectra,
     const float* dDensityC,
     const float* dDensityM,
     const float* dDensityY,
@@ -268,10 +274,6 @@ juicer_cuda_build_print_spatial_dir_cached_log_raw_from_camera_film_linear(
     float* logRawB,
     float* logRawG,
     float* logRawR,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t juicer_cuda_print_pipeline(
-    const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
 #include "Cuda/JuicerCudaExecutor.h"
@@ -775,6 +777,60 @@ namespace {
 } // namespace
 
 namespace JuicerCuda {
+    bool pack_scan_color(
+        ScanColorPayload& destination,
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+        const OutputGamutRecipe& recipe) {
+        if (!prepared.scannerColor) {
+            return false;
+        }
+        const Scanner::ColorRuntime& color = *prepared.scannerColor;
+        copy_float9(destination.cat02, color.cat02);
+        copy_float9(destination.xyzToRgb, color.xyzToRgb);
+        copy_float3(destination.illuminantXYZ, color.illuminantXYZ);
+        destination.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
+        destination.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
+        const auto& encoding = color.preparedEncoding;
+        destination.encoding.cctf.kind = static_cast<int>(encoding.cctf_kind);
+        destination.encoding.cctf.gamma = encoding.gamma;
+        destination.encoding.cctf.a = encoding.a;
+        destination.encoding.cctf.b = encoding.b;
+        destination.encoding.cctf.c = encoding.c;
+        destination.encoding.cctf.d = encoding.d;
+        destination.encoding.cctf.linearCutoff = encoding.linear_cutoff;
+        copy_float9(destination.encoding.dwgToOutput, encoding.dwg_to_output);
+        destination.outputGamutActive = 0;
+        destination.outputGamutCmax = nullptr;
+        if (!recipe.enabled) {
+            return true;
+        }
+        if (!prepared.outputGamutTransform ||
+            !prepared.outputGamutCmax) {
+            return false;
+        }
+        destination.outputGamutCmax = prepared.outputGamutCmax;
+        copy_float9(
+            destination.outputGamutNativeRgbToD65Xyz,
+            prepared.outputGamutTransform->nativeRgbToD65Xyz.data());
+        copy_float9(
+            destination.outputGamutD65XyzToNativeRgb,
+            prepared.outputGamutTransform->d65XyzToNativeRgb.data());
+        destination.outputGamutLightnessKnee[0] =
+            recipe.lightnessKneeThreshold;
+        destination.outputGamutLightnessKnee[1] =
+            recipe.lightnessKneeLimit;
+        destination.outputGamutLightnessKnee[2] =
+            recipe.lightnessKneePower;
+        destination.outputGamutChromaKnee[0] =
+            recipe.chromaKneeThreshold;
+        destination.outputGamutChromaKnee[1] =
+            recipe.chromaKneeLimit;
+        destination.outputGamutChromaKnee[2] =
+            recipe.chromaKneePower;
+        destination.outputGamutActive = 1;
+        return true;
+    }
+
     JuicerCuda::AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
         const JuicerCuda::FrameRect& sourceBounds,
         const JuicerCuda::FrameRect& meterBounds,
@@ -997,57 +1053,6 @@ namespace {
         destination.mediumIsNegative = source.mediumIsNegative;
         copy_float3(destination.min_cmy, source.min_cmy);
         copy_float3(destination.inv_max_cmy, source.inv_max_cmy);
-    }
-
-    void pack_output_gamut_payload(
-        JuicerCuda::ScanColorPayload& destination,
-        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
-        const OutputGamutRecipe& recipe,
-        const ExecutionErrors& errors) {
-        destination.outputGamutActive = 0;
-        destination.outputGamutCmax = nullptr;
-        if (!recipe.enabled) {
-            return;
-        }
-        if (!prepared.outputGamutTransform ||
-            !prepared.outputGamutCmax) {
-            errors.fail_submission(
-                "pack_output_gamut_payload",
-                "CUDA output gamut payload binding failed",
-                JuicerCuda::Failure{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity"});
-        }
-        destination.outputGamutCmax = prepared.outputGamutCmax;
-        copy_float9(
-            destination.outputGamutNativeRgbToD65Xyz,
-            prepared.outputGamutTransform->nativeRgbToD65Xyz.data());
-        copy_float9(
-            destination.outputGamutD65XyzToNativeRgb,
-            prepared.outputGamutTransform->d65XyzToNativeRgb.data());
-        copy_float9(
-            destination.outputGamutOklabXyzToLms,
-            Gamut::kOklabXyzToLms.data());
-        copy_float9(
-            destination.outputGamutOklabLmsToXyz,
-            Gamut::kOklabLmsToXyz.data());
-        copy_float9(
-            destination.outputGamutOklabLmsRootToLab,
-            Gamut::kOklabLmsRootToLab.data());
-        copy_float9(
-            destination.outputGamutOklabLabToLmsRoot,
-            Gamut::kOklabLabToLmsRoot.data());
-        destination.outputGamutLightnessKnee[0] =
-            recipe.lightnessKneeThreshold;
-        destination.outputGamutLightnessKnee[1] =
-            recipe.lightnessKneeLimit;
-        destination.outputGamutLightnessKnee[2] =
-            recipe.lightnessKneePower;
-        destination.outputGamutChromaKnee[0] =
-            recipe.chromaKneeThreshold;
-        destination.outputGamutChromaKnee[1] =
-            recipe.chromaKneeLimit;
-        destination.outputGamutChromaKnee[2] =
-            recipe.chromaKneePower;
-        destination.outputGamutActive = 1;
     }
 
     void meter_camera_exposure(
@@ -1668,27 +1673,13 @@ namespace {
         scanStage.scanLutPchipCellMin = prepared.scanLut->cellMin;
         scanStage.scanLutPchipCellMax = prepared.scanLut->cellMax;
         scanStage.scanLutRes = static_cast<int>(prepared.scanLut->res);
-        const Scanner::ColorRuntime& color = *prepared.scannerColor;
-        copy_float9(scanStage.scanColor.cat02, color.cat02);
-        copy_float9(scanStage.scanColor.xyzToRgb, color.xyzToRgb);
-        copy_float3(scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
-        pack_output_gamut_payload(
-            scanStage.scanColor,
-            prepared,
-            outputGamut,
-            errors);
-        scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-        scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
-        scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
-        const auto& encoding = color.preparedEncoding;
-        scanStage.scanColor.encoding.cctf.kind = static_cast<int>(encoding.cctf_kind);
-        scanStage.scanColor.encoding.cctf.gamma = encoding.gamma;
-        scanStage.scanColor.encoding.cctf.a = encoding.a;
-        scanStage.scanColor.encoding.cctf.b = encoding.b;
-        scanStage.scanColor.encoding.cctf.c = encoding.c;
-        scanStage.scanColor.encoding.cctf.d = encoding.d;
-        scanStage.scanColor.encoding.cctf.linearCutoff = encoding.linear_cutoff;
-        copy_float9(scanStage.scanColor.encoding.dwgToOutput, encoding.dwg_to_output);
+        if (!JuicerCuda::pack_scan_color(scanStage.scanColor, prepared, outputGamut)) {
+            errors.fail_submission(
+                "pack_scan_color",
+                "CUDA scanner colour payload binding failed",
+                JuicerCuda::Failure{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0},
+                                    "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity"});
+        }
         scanStage.correctionActive = scannerCorrection.active ? 1 : 0;
         scanStage.correctionSlope = scannerCorrection.xyzSlope;
         scanStage.correctionOffset = scannerCorrection.xyzOffset;
@@ -1810,6 +1801,7 @@ namespace {
 
     void scan_direct_output(
         JuicerCuda::DirectPipelineRunParams& run,
+        const JuicerCuda::ScannerSpectra& spectra,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
         const RouteDescriptors& descriptors,
@@ -1842,6 +1834,7 @@ namespace {
                 if (const auto* fused = std::get_if<FusedDirScanner>(&scannerInput)) {
                     launchError = juicer_cuda_direct_focused_scan_linear_rgb(
                         &run,
+                        spectra,
                         optical.rgb.r,
                         optical.rgb.g,
                         optical.rgb.b,
@@ -1851,6 +1844,7 @@ namespace {
                     const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
                     launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
                         &run,
+                        spectra,
                         density.c,
                         density.m,
                         density.y,
@@ -1908,7 +1902,10 @@ namespace {
             }
         } else {
             launchError = juicer_cuda_negative_direct_pipeline(
-                &run, frame.stream, std::get<MonolithicScan>(scannerInput).cameraFilmLinear);
+                &run,
+                spectra,
+                frame.stream,
+                std::get<MonolithicScan>(scannerInput).cameraFilmLinear);
         }
         if (launchError != cudaSuccess) {
             errors.fail_stage("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
@@ -2479,6 +2476,7 @@ namespace {
 
     void scan_print_output(
         JuicerCuda::PrintPipelineRunParams& run,
+        const JuicerCuda::ScannerSpectra& spectra,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
         const RouteDescriptors& descriptors,
@@ -2518,6 +2516,7 @@ namespace {
                 if (const auto* fused = std::get_if<FusedDirScanner>(&scannerInput)) {
                     launchError = juicer_cuda_print_focused_scan_linear_rgb(
                         &run,
+                        spectra,
                         optical.rgb.r,
                         optical.rgb.g,
                         optical.rgb.b,
@@ -2536,6 +2535,7 @@ namespace {
                     const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
                     launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
                         &run,
+                        spectra,
                         density.c,
                         density.m,
                         density.y,
@@ -2601,7 +2601,10 @@ namespace {
             }
         } else {
             launchError = juicer_cuda_print_focused_pipeline(
-                &run, frame.stream, std::get<MonolithicScan>(scannerInput).cameraFilmLinear);
+                &run,
+                spectra,
+                frame.stream,
+                std::get<MonolithicScan>(scannerInput).cameraFilmLinear);
         }
         if (launchError != cudaSuccess) {
             errors.fail_stage(
@@ -2887,6 +2890,7 @@ namespace JuicerCuda {
         }
         scan_direct_output(
             run,
+            *prepared.scannerSpectra,
             preparedFrame,
             focusedWorkspace,
             descriptors,
@@ -3189,6 +3193,7 @@ namespace JuicerCuda {
         }
         scan_print_output(
             run,
+            *prepared.scannerSpectra,
             preparedFrame,
             focusedWorkspace,
             descriptors,

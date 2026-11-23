@@ -1209,8 +1209,9 @@ foreach(mode IN ITEMS Gpu Trace)
         ../native/ofx_exports.cpp)
     if(mode STREQUAL "Trace")
         target_sources(${target} PRIVATE ofx/processor_test_hooks.cpp
+            ofx/production_images.cpp ../src/Cuda/Scan/JuicerCudaScanPipeline.cu
             $<TARGET_OBJECTS:juicer_executor_failure_test_objects>)
-        target_compile_definitions(${target} PRIVATE JUICER_EXECUTOR_FAILURE_TEST_HOOK=1
+        target_compile_definitions(${target} PRIVATE JUICER_EXECUTOR_FAILURE_TEST_HOOK=1 JUICER_SCAN_DENSITY_CAPTURE_TEST=1
             JUICER_PARAMETER_IDENTITIES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json")
     endif()
     target_compile_features(${target} PRIVATE cxx_std_20)
@@ -1224,6 +1225,8 @@ foreach(mode IN ITEMS Gpu Trace)
             "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/render-gpu-${JUICER_TEST_PRESET_NAME}.json")
     else()
         add_test(NAME ${registration} COMMAND ${target})
+        add_test(NAME Ofx.Gpu.ScannerReferenceInputs COMMAND ${target} --scanner-reference-inputs)
+        set_tests_properties(Ofx.Gpu.ScannerReferenceInputs PROPERTIES LABELS "gpu;reference" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
     endif()
     set_tests_properties(${registration} PROPERTIES LABELS "gpu;boundary" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 endforeach()

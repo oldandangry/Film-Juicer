@@ -56,6 +56,11 @@ pub fn finite_f32s(samples: &[f32]) -> Result<u64, NonfiniteSample> {
 /// This single stream has no prefix or mask and does not normalize a final zero.
 pub fn resource_f32s(samples: &[f32]) -> u64 {
     let mut hash = FNV_OFFSET;
+    update_resource_f32s(&mut hash, samples);
+    hash
+}
+
+pub(crate) fn update_resource_f32s(hash: &mut u64, samples: &[f32]) {
     for &sample in samples {
         let bits = if sample.is_nan() {
             0x7fc00000
@@ -64,9 +69,8 @@ pub fn resource_f32s(samples: &[f32]) -> u64 {
         } else {
             sample.to_bits()
         };
-        update_bytes(&mut hash, &bits.to_le_bytes());
+        update_bytes(hash, &bits.to_le_bytes());
     }
-    hash
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

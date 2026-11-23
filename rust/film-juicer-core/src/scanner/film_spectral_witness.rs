@@ -1,7 +1,5 @@
-//! Portra Film preview spectral enclosure witness. The host reader follows the
-//! CUDA PCHIP operations and uses the actual Rust-produced six-array LUT.
+//! Signed Portra Film density envelope and enlarger transmission witnesses.
 
-use super::{Lut, LutInput, LutTables};
 use crate::{
     assets::Assets,
     film::{
@@ -9,130 +7,139 @@ use crate::{
         density::{Bounds, portra},
     },
     route::ScanRoute,
-    spectral,
 };
 
-fn hermite(a: f32, b: f32, ma: f32, mb: f32, t: f32) -> f32 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * a
-        + (t3 - 2.0 * t2 + t) * ma
-        + (-2.0 * t3 + 3.0 * t2) * b
-        + (t3 - t2) * mb
-}
-fn mix(a: f32, b: f32, t: f32) -> f32 {
-    a + t * (b - a)
+#[test]
+fn portra_small_format_high_gain_bounds() {
+    let assets =
+        Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+    let film = assets.film("kodak_portra_400").unwrap();
+    let bank = assets.portra_grain_bank().unwrap();
+    for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
+        let development = film::Development::new(
+            film.clone(),
+            film::Params {
+                gamma_factor: 1.0,
+                layers_required: false,
+                requested_route: route,
+            },
+        )
+        .unwrap();
+        for (mm, width, amount) in [
+            (8.0_f32, 8192.0, 3),
+            (8.0_f32, 4832.0, 3),
+            (11.66, 4832.0, 3),
+            (8.0, 3840.0, 3),
+            (11.66, 3840.0, 3),
+            (8.0, 1920.0, 3),
+            (11.66, 1920.0, 3),
+            (8.0, 4832.0, 2),
+            (36.0, 4832.0, 3),
+        ] {
+            let footprint = (f64::from(mm) * 2000.0 / width) as f32;
+            let table = assets.portra_grain_table(&bank, footprint).unwrap();
+            let gain = 2.0_f32.powi(amount) / 0.5;
+            let original = Bounds::film_v1(
+                &development,
+                portra::allowances(&bank, &table, gain).unwrap(),
+            );
+            if width >= 3840.0 && amount == 3 && mm == 8.0 {
+                assert!(matches!(
+                    original,
+                    Err(film::density::Error::FilmProjectionSpan)
+                ));
+            } else if width >= 3840.0 && amount == 3 && mm == 11.66 {
+                assert!(matches!(
+                    original,
+                    Err(film::density::Error::FilmSpectralRange)
+                ));
+            } else {
+                assert!(original.is_ok());
+            }
+            for colour in [0.0, 0.37, 1.0] {
+                let bounds = Bounds::portra_film_v1(&development, &bank, &table, gain, colour)
+                    .unwrap_or_else(|error| panic!("{route:?} {mm} mm {width} px {amount} EV, width {footprint}, Colour {colour}: {error}"));
+                println!(
+                    "{route:?} {mm} mm {width} px {amount} EV Size 0.5 Colour {colour} width {footprint}"
+                );
+                verify_density_box(&development, &bounds);
+                if let Ok(original) = &original {
+                    assert_eq!(original.hash(), bounds.hash());
+                }
+            }
+        }
+    }
 }
 
-// Mirrors JuicerCudaDeviceHelpers.cuh's PCHIP reader, including cell limiting.
-// This is a host witness; the GPU consumer still needs its own route test.
-fn sample(lut: &Lut, normalized: [f32; 3]) -> [f32; 3] {
-    let r = lut.resolution() as usize;
-    let axis = normalized.map(|x| {
-        assert!((0.0..=1.0).contains(&x), "out-of-bounds density {x}");
-        let p = x * (r - 1) as f32;
-        if p >= (r - 1) as f32 {
-            (r - 2, 1.0)
-        } else {
-            let i = p.floor() as usize;
-            (i, p - i as f32)
+fn verify_density_box(development: &film::Development, bounds: &Bounds) {
+    let lo = bounds.minimum_cmy().map(f64::from);
+    let hi = bounds.maximum_cmy().map(f64::from);
+    let span = hi.into_iter().fold(0.0, f64::max) - lo.into_iter().fold(0.0, f64::min);
+    assert!((0.0..=64.0).contains(&span));
+    let curves = development.profile().tables();
+    let mut minimum = (0, f64::INFINITY);
+    // Visit every box corner at every active wavelength. Monotonicity of
+    // exp10 and linear density then enclose the entire interior.
+    for (i, (dyes, &base)) in curves
+        .channel_density()
+        .iter()
+        .zip(curves.base_density())
+        .enumerate()
+    {
+        if base.is_nan() || dyes.iter().any(|dye| dye.is_nan()) {
+            continue;
         }
-    });
-    let [(c, tc), (m, tm), (y, ty)] = axis;
-    std::array::from_fn(|channel| {
-        let get = |v: &[f32], dc: usize, dm: usize, dy: usize| {
-            v[((((c + dc) * r + m + dm) * r + y + dy) * 3) + channel]
-        };
-        let along_c = |dm, dy| {
-            hermite(
-                get(lut.log2_xyz(), 0, dm, dy),
-                get(lut.log2_xyz(), 1, dm, dy),
-                get(lut.slope_c(), 0, dm, dy),
-                get(lut.slope_c(), 1, dm, dy),
-                tc,
-            )
-        };
-        let slope_m = |dm, dy| {
-            mix(
-                get(lut.slope_m(), 0, dm, dy),
-                get(lut.slope_m(), 1, dm, dy),
-                tc,
-            )
-        };
-        let value = |dy| {
-            hermite(
-                along_c(0, dy),
-                along_c(1, dy),
-                slope_m(0, dy),
-                slope_m(1, dy),
-                tm,
-            )
-        };
-        let slope_y = |dy| {
-            mix(
-                mix(
-                    get(lut.slope_y(), 0, 0, dy),
-                    get(lut.slope_y(), 1, 0, dy),
-                    tc,
-                ),
-                mix(
-                    get(lut.slope_y(), 0, 1, dy),
-                    get(lut.slope_y(), 1, 1, dy),
-                    tc,
-                ),
-                tm,
-            )
-        };
-        let i = (((c * (r - 1) + m) * (r - 1) + y) * 3) + channel;
-        hermite(value(0), value(1), slope_y(0), slope_y(1), ty)
-            .clamp(lut.cell_min()[i], lut.cell_max()[i])
-            .exp2()
-    })
+        for corner in 0..8 {
+            let density = (0..3).fold(f64::from(base), |d, k| {
+                d + f64::from(dyes[k]) * if corner & (1 << k) == 0 { lo[k] } else { hi[k] }
+            });
+            assert!(
+                density.is_finite() && density >= -30.0,
+                "{i} {corner} {density}"
+            );
+            assert!(10.0_f32.powf(-density as f32).is_finite());
+            if density < minimum.1 {
+                minimum = (i, density);
+            }
+        }
+    }
+    assert!(minimum.1.is_finite());
+    println!(
+        "CMY {lo:?} to {hi:?}, span {span} D, spectral {} D @ {} nm",
+        minimum.1,
+        380 + minimum.0 * 5
+    );
 }
 
 #[test]
-fn portra_film_envelope_scanner_and_enlarger_spectral_witness() {
+fn portra_film_envelope_and_enlarger_transmission() {
     // Keep the portrait control and exercise the 4832-pixel sub-texel
     // requests at the maximum Amount for their Size.
-    spectral_witness((36_000.0 / 7418.0 / 0.5) as f32, 16.0, 129);
-    spectral_witness((8_000.0 / 4832.0 / 4.0) as f32, 2.0, 17);
+    spectral_witness((36_000.0 / 7418.0 / 0.5) as f32, 16.0, 1.0);
+    spectral_witness((8_000.0 / 4832.0 / 4.0) as f32, 2.0, 1.0);
     spectral_witness(
         (f64::from(11.66_f32) * 1000.0 / 4832.0 / 4.0) as f32,
         2.0,
-        17,
+        1.0,
     );
-    spectral_witness((240_000.0 / 92.0) as f32, 16.0, 17);
+    spectral_witness((240_000.0 / 92.0) as f32, 16.0, 1.0);
+    for width in [3840.0, 4832.0] {
+        for mm in [8.0_f32, 11.66] {
+            spectral_witness((f64::from(mm) * 2000.0 / width) as f32, 16.0, 1.0);
+        }
+    }
+    spectral_witness((16_000.0 / 4832.0) as f32, 16.0, 0.37);
+    spectral_witness(1.953_125, 16.0, 0.0);
 }
 
-fn spectral_witness(footprint: f32, gain: f32, minimum_resolution: u32) {
-    // Predeclared criterion: 1% relative, with 1e-10 absolute XYZ for
-    // scanner's logarithmic floor, and 1e-8 absolute print exposure.
+fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
     const REL: f64 = 0.01;
     let assets =
         Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
     let film = assets.film("kodak_portra_400").unwrap();
     let paper = assets.print("kodak_portra_endura").unwrap();
     let curves = assets.illuminants().unwrap();
-    let d50 = curves.d50().unwrap();
     let tungsten = curves.tungsten().unwrap();
-    let cmf = assets.cmf().unwrap();
-    assert_eq!(cmf.rows().len(), 81);
-    let observer: [[f32; 81]; 3] =
-        std::array::from_fn(|c| std::array::from_fn(|i| cmf.rows()[i][c + 1]));
-    let tables = spectral::build_tables(spectral::Input {
-        dyes_cmy: film.tables().channel_density(),
-        observer: spectral::Observer {
-            x: &observer[0],
-            y: &observer[1],
-            z: &observer[2],
-        },
-        illuminant: d50,
-        baseline: Some(spectral::Baseline {
-            minimum: film.tables().base_density(),
-            midpoint: None,
-        }),
-        illuminant_hash: 1,
-    });
     let development = film::Development::new(
         film.clone(),
         film::Params {
@@ -144,76 +151,40 @@ fn spectral_witness(footprint: f32, gain: f32, minimum_resolution: u32) {
     .unwrap();
     let bank = assets.portra_grain_bank().unwrap();
     let table = assets.portra_grain_table(&bank, footprint).unwrap();
-    let allowances = portra::allowances(&bank, &table, gain).unwrap();
-    let bounds = Bounds::film_v1(&development, allowances).unwrap();
+    let bounds = Bounds::portra_film_v1(&development, &bank, &table, gain, colour).unwrap();
+    println!("spectral witness footprint {footprint}, gain {gain}, Colour {colour}");
+    verify_density_box(&development, &bounds);
     let lo = *bounds.minimum_cmy();
     let hi = *bounds.maximum_cmy();
-    let inv = *bounds.inv_span_cmy();
-    let resolution = bounds.film_v1_scan_resolution(17);
-    assert!(resolution >= minimum_resolution);
-    for span in inv {
-        assert!(span.recip() / (resolution - 1) as f32 <= 0.26);
-    }
-    let dyes = tables.dyes_cmy();
-    let weights = tables.weighted_xyz();
-    let lut = Lut::new(LutInput {
-        tables: LutTables {
-            eps_c: &dyes[0],
-            eps_m: &dyes[1],
-            eps_y: &dyes[2],
-            weighted_x: &weights[0],
-            weighted_y: &weights[1],
-            weighted_z: &weights[2],
-            baseline_min: Some(tables.baseline_min()),
-            sample_count: 81,
-            inv_yn: tables.inv_yn(),
-        },
-        range_min_cmy: lo.map(|x| -x),
-        inverse_span_cmy: inv,
-        medium: 0,
-        resolution,
-    })
-    .unwrap();
-    // Corners, faces, non-grid interiors, and ordinary developed densities.
-    let coordinates: [Vec<f32>; 3] = std::array::from_fn(|k| {
-        [0.0, 0.173, 0.5, 0.831, 1.0]
+    let dyes = film.tables().channel_density();
+    let base = film.tables().base_density();
+    let densities: [Vec<f32>; 3] = std::array::from_fn(|k| {
+        [lo[k], 0.04, 0.5, 1.0, 2.0, hi[k]]
             .into_iter()
-            .chain(
-                [0.04, 0.5, 1.0, 2.0]
-                    .into_iter()
-                    .map(|d| (d - lo[k]) * inv[k]),
-            )
+            .chain([0.173, 0.5, 0.831].map(|t| lo[k] + t * (hi[k] - lo[k])))
+            .filter(|density| (lo[k]..=hi[k]).contains(density))
             .collect()
     });
-    for &a in &coordinates[0] {
-        for &b in &coordinates[1] {
-            for &c in &coordinates[2] {
-                let normalized = [a, b, c];
-                let density: [f32; 3] =
-                    std::array::from_fn(|k| lo[k] + normalized[k] * (hi[k] - lo[k]));
-                let actual = sample(&lut, normalized);
-                let mut xyz = [0.0_f64; 3];
+    for &c in &densities[0] {
+        for &m in &densities[1] {
+            for &y in &densities[2] {
+                let density = [c, m, y];
                 let mut print64 = [0.0_f64; 3];
                 let mut print32 = [0.0_f32; 3];
                 for i in 0..81 {
-                    let spectral64 = (0..3)
-                        .map(|k| f64::from(density[k]) * f64::from(dyes[k][i]))
-                        .sum::<f64>()
-                        + f64::from(tables.baseline_min()[i]);
-                    let light64 = 10.0_f64.powf(-spectral64);
-                    let spectral32 = density[0] * dyes[0][i]
-                        + density[1] * dyes[1][i]
-                        + density[2] * dyes[2][i]
-                        + tables.baseline_min()[i];
+                    let spectral64 = f64::from(density[0]) * f64::from(dyes[i][0])
+                        + f64::from(density[1]) * f64::from(dyes[i][1])
+                        + f64::from(density[2]) * f64::from(dyes[i][2])
+                        + f64::from(base[i]);
+                    let print_light = 10.0_f64.powf(-spectral64) * f64::from(tungsten[i]);
+                    let spectral32 = density[0] * dyes[i][0]
+                        + density[1] * dyes[i][1]
+                        + density[2] * dyes[i][2]
+                        + base[i];
                     let light32 = (-spectral32 * std::f32::consts::LOG2_10).exp2() * tungsten[i];
                     for k in 0..3 {
-                        let weighted = light64 * f64::from(weights[k][i]);
-                        if !weighted.is_nan() {
-                            xyz[k] += weighted;
-                        }
                         let sens = paper.tables().linear_sensitivity()[i][k];
                         if !sens.is_nan() {
-                            let print_light = light64 * f64::from(tungsten[i]);
                             if !print_light.is_nan() {
                                 print64[k] += print_light * f64::from(sens);
                             }
@@ -224,12 +195,6 @@ fn spectral_witness(footprint: f32, gain: f32, minimum_resolution: u32) {
                     }
                 }
                 for k in 0..3 {
-                    let expected = (xyz[k] * f64::from(tables.inv_yn())).max(0.0) + 1e-10;
-                    assert!(
-                        (f64::from(actual[k]) - expected).abs() <= 1e-10 + REL * expected,
-                        "scanner {density:?} channel {k}: {} vs {expected}",
-                        actual[k]
-                    );
                     assert!(print32[k].is_finite() && print64[k].is_finite());
                     assert!(
                         (f64::from(print32[k]) - print64[k]).abs() <= 1e-8 + REL * print64[k].abs(),

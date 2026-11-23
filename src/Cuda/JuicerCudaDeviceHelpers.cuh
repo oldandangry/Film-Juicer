@@ -878,12 +878,11 @@ static __device__ __forceinline__ bool print_spectral_integrate_device(
     }
 
     const int negK = expose.negTables.K;
-    if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY) {
+    if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY ||
+        !expose.negTables.baseDensityMin) {
         rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
         return false;
     }
-
-    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseDensityMin;
 
     if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
         rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
@@ -909,7 +908,7 @@ static __device__ __forceinline__ bool print_spectral_integrate_device(
             continue;
         }
 
-        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseDensityMin + i) : 0.0f;
+        const float baseD = ldg_f(expose.negTables.baseDensityMin + i);
         const float densitySpectral =
             D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
             D_cmy[1] * ldg_f(expose.negTables.epsM + i) +

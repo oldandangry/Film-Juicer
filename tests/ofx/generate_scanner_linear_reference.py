@@ -1,0 +1,282 @@
+"""Generate offline spectral scanner references from linked OFX input captures."""
+
+import argparse
+import ast
+import hashlib
+import json
+import math
+from pathlib import Path
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+import numpy as np
+import opt_einsum
+
+
+SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
+REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"
+ROUTES = ("negative-direct", "negative-print", "positive-direct", "positive-print")
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def reference_primitives(repository):
+    git = ["git", "-C", str(repository)]
+    revision = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    if revision != SPEKTRAFILM_REVISION:
+        raise ValueError(f"unexpected Spektrafilm revision {revision}")
+    sources = {
+        "model/develop.py": "compute_density_spectral",
+        "utils/conversions.py": "density_to_light",
+    }
+    namespace = {"np": np, "contract": opt_einsum.contract}
+    digests = {}
+    for relative, name in sources.items():
+        path = f"src/spektrafilm/{relative}"
+        # These numerical functions depend only on NumPy and opt-einsum. Load
+        # their exact committed definitions without the runtime's other stages.
+        source = subprocess.check_output([*git, "show", f"{revision}:{path}"])
+        matching = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == name]
+        if len(matching) != 1:
+            raise ValueError(f"expected one definition of {name} at {revision}:{path}")
+        exec(compile(ast.Module(body=matching, type_ignores=[]), path, "exec"), namespace)
+        digests[path] = sha256(source)
+    return namespace["compute_density_spectral"], namespace["density_to_light"], digests
+
+
+def read_capture(result_dir):
+    result = json.loads((result_dir / "result.json").read_bytes())
+    if (
+        result.get("status") != "passed"
+        or not result.get("candidate_unchanged")
+        or REGISTRATION not in result.get("selection", ())
+    ):
+        raise ValueError("expected a completed, unchanged scanner input capture")
+    test_log = (result_dir / "ctest.xml").read_bytes()
+    (test,) = [entry for entry in ET.fromstring(test_log).iter("testcase") if entry.get("name") == REGISTRATION]
+    stdout = test.findtext("system-out", "")
+    records = (json.loads(line) for line in stdout.splitlines() if line.startswith("{"))
+    rows = [
+        record
+        for record in records
+        if record.get("schema")
+        in {"scanner-reference-input-v1", "scanner-reference-input-v2", "scanner-reference-input-v3"}
+    ]
+    if (
+        tuple(row.get("id") for row in rows) != ROUTES
+        or any(row.get("route") != route for route, row in enumerate(rows))
+        or len({row["schema"] for row in rows}) != 1
+    ):
+        raise ValueError("unexpected reference input membership")
+    return (
+        result["preset"],
+        rows,
+        {
+            "candidate_sha256": sha256((result_dir / "candidate.json").read_bytes()),
+            "capture_sha256": sha256(test_log),
+        },
+    )
+
+
+def promote(words, shape):
+    return np.asarray(words, dtype="<u4").view("<f4").astype(np.float64).reshape(shape)
+
+
+def corrected_xyz(xyz, slope, offset):
+    if slope is None:
+        return xyz.copy()
+    luminance = np.clip(slope * xyz[:, 1] + offset, 0.0, 1.0)
+    return xyz * (luminance / (xyz[:, 1] + 1e-10))[:, None]
+
+
+def device_stage(words, expected, width, limit=None):
+    observed = np.asarray(words, dtype="<u8").view("<f8").reshape(expected.shape)
+    if not np.isfinite(observed).all():
+        raise ValueError("missing or nonfinite CUDA stage sample")
+    delta = observed - expected
+    absolute = np.abs(delta)
+    pixel, channel = np.unravel_index(np.argmax(absolute), expected.shape)
+    return {
+        "worst_xy": [int(pixel % width), int(pixel // width)],
+        "channel": int(channel),
+        "observed": float(observed[pixel, channel]),
+        "expected": float(expected[pixel, channel]),
+        "max_abs": float(absolute[pixel, channel]),
+        "delta": delta.tolist(),
+        **(
+            {"limit": float(limit[pixel, channel]), "passed": bool(np.all(absolute <= limit))}
+            if limit is not None
+            else {}
+        ),
+    }
+
+
+def reinhard_knee(values, parameters):
+    threshold, limit, power = parameters
+    normalized = np.maximum(values - threshold, 0.0) / (limit - threshold)
+    compressed = threshold + (limit - threshold) * normalized / (1.0 + normalized**power) ** (1.0 / power)
+    return np.where(values > threshold, compressed, values)
+
+
+def output_gamut(row, signed_rgb):
+    native_to_d65 = promote(row["native_to_d65_bits"], (3, 3))
+    d65_to_native = promote(row["d65_to_native_bits"], (3, 3))
+    xyz_to_lms, lms_to_xyz, roots_to_lab, lab_to_roots = promote(row["oklab_matrices_bits"], (4, 3, 3))
+    cmax = promote(row["gamut_cmax_bits"], (64, 720))
+    lab = np.cbrt(signed_rgb @ native_to_d65.T @ xyz_to_lms.T) @ roots_to_lab.T
+    lab[:, 0] = reinhard_knee(lab[:, 0], promote(row["gamut_lightness_bits"], (3,)))
+    hue = np.arctan2(lab[:, 2], lab[:, 1])
+    chroma = np.hypot(lab[:, 1], lab[:, 2])
+
+    minimum = float(np.float32(0.02))
+    lightness_position = 63 * np.clip((lab[:, 0] - minimum) / (1.0 - minimum), 0.0, 1.0)
+    hue_position = 720 * ((hue + math.pi) % math.tau) / math.tau
+    lightness = np.floor(lightness_position).astype(int)
+    hue_bin = np.floor(hue_position).astype(int)
+    lightness_fraction = lightness_position - lightness
+    hue_fraction = hue_position - hue_bin
+    next_lightness = np.minimum(lightness + 1, 63)
+    h0, h1 = hue_bin % 720, (hue_bin + 1) % 720
+    lo = (1 - hue_fraction) * cmax[lightness, h0] + hue_fraction * cmax[lightness, h1]
+    hi = (1 - hue_fraction) * cmax[next_lightness, h0] + hue_fraction * cmax[next_lightness, h1]
+    boundary = np.maximum((1 - lightness_fraction) * lo + lightness_fraction * hi, 1e-9)
+    compressed = boundary * reinhard_knee(chroma / boundary, promote(row["gamut_chroma_bits"], (3,)))
+    lab[:, 1:] *= np.divide(compressed, chroma, out=np.ones_like(chroma), where=chroma > 0)[:, None]
+    return (lab @ lab_to_roots.T) ** 3 @ lms_to_xyz.T @ d65_to_native.T
+
+
+def delivered_reference(row, source, signed_rgb):
+    if (row["output_color_space"], row["output_color_flags"], row["cctf_kind"]) != (0, 7, 2):
+        raise ValueError("expected prepared sRGB with gamut compression and encoding enabled")
+    linear = output_gamut(row, signed_rgb)
+    encoded = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.maximum(linear, 0) ** (1 / 2.4) - 0.055)
+    expected = np.empty_like(source, dtype="<f4")
+    expected[:, :3] = np.clip(encoded, 0.0, 1.0)
+    observed = promote(row["device_output_bits"], source.shape)
+    if source.shape[1] == 4:
+        expected[:, 3] = source[:, 3]
+    alpha_matches = np.array_equal(observed[:, 3:].view("<u8"), source[:, 3:].view("<u8"))
+    absolute = np.abs(observed[:, :3] - expected[:, :3])
+    mean = np.mean(absolute, axis=0)
+    p999 = np.sort(absolute, axis=0)[math.ceil(0.999 * len(absolute)) - 1]
+    maximum = np.max(absolute, axis=0)
+    native_pixel_bound = 2e-4 + 3e-4 * np.abs(expected[:, :3])
+    return {
+        "output_bits": expected.view("<u4").reshape(-1).tolist(),
+        "mae": mean.tolist(),
+        "p99_9": p999.tolist(),
+        "max_abs": maximum.tolist(),
+        "alpha_matches": bool(alpha_matches),
+        "passed": bool(
+            alpha_matches
+            and np.isfinite(observed).all()
+            and np.all(absolute <= native_pixel_bound)
+            and np.all(mean <= 0.25 / 1023)
+            and np.all(p999 <= 1 / 1023)
+            and np.all(maximum <= 2 / 1023)
+        ),
+    }
+
+
+def reference_row(row, density_spectral, density_to_light):
+    height, width, components = row["shape"]
+    if (height, width, components) != (5, 7, 3 + row["route"] % 2) or row["glare"] or row["grain"]:
+        raise ValueError(f"invalid deterministic scanner capture for {row['id']}")
+    pixels = height * width
+    source = promote(row["source_bits"], (pixels, components))
+    cmy = promote(row["developed_cmy_bits"], (pixels, 3))
+    dye = promote(row["dye_bits"], (3, 81)).T
+    weights = promote(row["weight_bits"], (3, 81)).T
+    base = promote(row["base_bits"], (81,)) if row["base_bits"] else np.zeros(81)
+    (inverse_y,) = promote([row["inverse_y_bits"]], (1,))
+    cat02 = promote(row["cat02_bits"], (3, 3))
+    xyz_to_rgb = promote(row["xyz_to_rgb_bits"], (3, 3))
+    slope, offset = promote([row["slope_bits"], row["offset_bits"]], (2,))
+    if not row["correction_active"]:
+        slope = None
+    if not np.isfinite(source).all() or not np.isfinite(cmy).all() or not np.isfinite(inverse_y):
+        raise ValueError(f"nonfinite capture input in {row['id']}")
+
+    scalar_xyz = []
+    for densities in cmy:
+        terms = [[], [], []]
+        for sample, floor, weight in zip(dye, base, weights, strict=True):
+            if not any(map(math.isfinite, weight)) or any(map(math.isnan, (*sample, floor))):
+                continue
+            absorbance = math.fsum(float(d) * float(a) for d, a in zip(densities, sample, strict=True)) + float(floor)
+            transmission = 10.0**-absorbance
+            for lane, value in zip(terms, weight, strict=True):
+                if math.isfinite(value):
+                    lane.append(transmission * float(value))
+        scalar_xyz.append([max(0.0, math.fsum(lane) * float(inverse_y)) + 1e-10 for lane in terms])
+    scalar_xyz = np.asarray(scalar_xyz)
+    active_weights = np.where(np.isfinite(weights), weights, 0.0)
+    primitive_light = density_to_light(density_spectral(dye, cmy[None, :, :], base), 1.0)[0]
+    primitive_xyz = np.maximum(primitive_light @ active_weights * inverse_y, 0.0) + 1e-10
+    scalar_corrected = corrected_xyz(scalar_xyz, slope, offset)
+    adapted = scalar_corrected @ cat02.T
+    rgb_terms = adapted[:, None, :] * xyz_to_rgb[None, :, :]
+    signed_rgb = np.asarray([[math.fsum(lane) for lane in pixel] for pixel in rgb_terms])
+    primitive_rgb = corrected_xyz(primitive_xyz, slope, offset) @ cat02.T @ xyz_to_rgb.T
+    if not np.allclose(scalar_xyz, primitive_xyz, rtol=1e-13, atol=1e-15) or not np.allclose(
+        signed_rgb, primitive_rgb, rtol=1e-13, atol=1e-15
+    ):
+        raise ValueError(f"shared-input Spektrafilm and scalar references diverged for {row['id']}")
+
+    reference = {
+        "input": row,
+        "xyz": scalar_xyz.tolist(),
+        "corrected_xyz": scalar_corrected.tolist(),
+        "adapted_xyz": adapted.tolist(),
+        "signed_rgb": signed_rgb.tolist(),
+        "rgb_terms": rgb_terms.tolist(),
+        "shared_reference_max_abs_xyz_delta": float(np.max(np.abs(scalar_xyz - primitive_xyz))),
+        "shared_reference_max_abs_rgb_delta": float(np.max(np.abs(signed_rgb - primitive_rgb))),
+    }
+    if row["schema"] != "scanner-reference-input-v1":
+        reference["device_stages"] = {
+            "xyz": device_stage(row["device_xyz_bits"], scalar_xyz, width, 1e-10 + 0.01 * np.abs(scalar_xyz)),
+            "corrected_xyz": device_stage(row["device_corrected_xyz_bits"], scalar_corrected, width),
+            "adapted_xyz": device_stage(row["device_adapted_xyz_bits"], adapted, width),
+            "signed_rgb": device_stage(
+                row["device_signed_rgb_bits"], signed_rgb, width, 1e-6 + 1e-4 * np.sum(np.abs(rgb_terms), axis=-1)
+            ),
+        }
+    if row["schema"] == "scanner-reference-input-v3":
+        reference["delivered"] = delivered_reference(row, source, signed_rgb)
+    return reference
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("capture", type=Path, help="completed native scanner reference input run directory")
+    parser.add_argument("spektrafilm", type=Path, help="Git checkout containing the approved Spektrafilm revision")
+    parser.add_argument("output", type=Path, help="new offline reference document")
+    args = parser.parse_args()
+    preset, captures, provenance = read_capture(args.capture)
+    density_spectral, density_to_light, source_hashes = reference_primitives(args.spektrafilm)
+    report = {
+        "schema": "scanner-numerical-reference-v3",
+        "preset": preset,
+        "spektrafilm_revision": SPEKTRAFILM_REVISION,
+        "spektrafilm_sources": source_hashes,
+        "generator_sha256": sha256(Path(__file__).read_bytes()),
+        "dependencies": {"python": sys.version, "numpy": np.__version__, "opt-einsum": opt_einsum.__version__},
+        **provenance,
+        "rows": [reference_row(row, density_spectral, density_to_light) for row in captures],
+    }
+    with args.output.open("x", encoding="utf-8") as output:
+        json.dump(report, output, indent=2, allow_nan=False)
+        output.write("\n")
+    stages_passed = all(
+        stage.get("passed", True) for row in report["rows"] for stage in row.get("device_stages", {}).values()
+    )
+    delivered_passed = all(row.get("delivered", {}).get("passed", True) for row in report["rows"])
+    return int(not (stages_passed and delivered_passed))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

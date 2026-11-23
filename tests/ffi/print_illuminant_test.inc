@@ -15,7 +15,7 @@ namespace PrintIlluminantTest {
     void metadata(const FjPrintIlluminantFailure& failure, std::uint32_t reason, std::uint32_t sample = UINT32_MAX);
     void zero(const FjIlluminant& out);
     struct PreparedPrintFacts {
-        std::uint64_t printHash = 0;
+        std::uint64_t mainIlluminantHash = 0;
         std::size_t preflashCount = 0;
     };
     bool inspect_prepared_print(void* opaque,
@@ -27,7 +27,7 @@ namespace PrintIlluminantTest {
             diagnostic = "prepared print state has no complete resource input";
             return false;
         }
-        facts.printHash = input->descriptors.hash;
+        facts.mainIlluminantHash = input->descriptors.mainIlluminantHash;
         facts.preflashCount = input->preflashIlluminant.size();
         return true;
     }
@@ -407,7 +407,7 @@ namespace PrintIlluminantTest {
         require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
                     owner.borrow().assets, disabled, PrintPreflashTest::frame_facts(controls), &disabledFacts, &inspect_prepared_print, diagnostic),
                 diagnostic.c_str());
-        require(disabledFacts.printHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash omits constructor input");
+        require(disabledFacts.mainIlluminantHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash leaves only the main light");
         // The complete disabled input must leave the raw-constructor fault armed.
         consume_stage10(literalCases);
         publication_event.passed();
@@ -418,7 +418,7 @@ namespace PrintIlluminantTest {
         require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
                     owner.borrow().assets, active, PrintPreflashTest::frame_facts(controls), &activeFacts, &inspect_prepared_print, diagnostic),
                 diagnostic.c_str());
-        require(activeFacts.printHash != 0 && activeFacts.preflashCount == 81,
+        require(activeFacts.mainIlluminantHash != 0 && activeFacts.preflashCount == 81,
                 "active preflash input is supplied from the completed held state");
         consume_stage10(literalCases);
     }

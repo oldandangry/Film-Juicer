@@ -59,87 +59,18 @@ namespace JuicerCuda {
     struct PrintResourceInput;
     struct StaticNoiseInput;
 
-    // Focused print-preparation contract:
-    // - producer: complete Rust preparation supplies resolved descriptors and host inputs;
-    //   consumers: prepare_print_resources() and pack_print_cuda_payloads().
-    // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
-    //   spectral derivation, profile packing, allocation, or upload.
-    // - layouts/units: canonical 81-sample host/device spectra, capture-film spectral density,
-    //   resolved density curves on the selected Float32 logE axis, and C/M/Y channel order.
-    //   Filter values are Kodak CC units.
-    // - ownership/lifetime: host inputs borrow held preparation storage for the immediate call;
-    //   device arrays and scalar results are exact-context/epoch Resources residency exposed
-    //   through PreparedCudaFrame.
-    // - schema/hash: profile-table schema v2 separates resolved density-table content from selected
-    //   stock identity. Balance/preflash schema v2 retain stock identity without creative curves.
-    //   Descriptors exclude file discovery, CUDA pointers, frame tokens, and launch policy.
-    // - preparation point: Root's prepared-frame boundary.
-    // - disabled behavior: disabled preflash has zero descriptor identity and no upload.
-    struct PrintProfileTablesDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 2u;
-
-        std::uint64_t printProfileAssetVersionToken = 0;
-        std::uint64_t densityCurvesHash = 0;
-        std::uint64_t sensitivitiesHash = 0;
-        std::uint32_t densitySampleCount = 0;
-        std::uint32_t spectralSampleCount = 0;
-        std::uint64_t hash = 0;
-    };
-
-    struct PrintFilmDensityTablesDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 1u;
-
-        std::uint64_t filmProfileAssetVersionToken = 0;
-        std::uint64_t densityTablesHash = 0;
-        std::uint32_t spectralSampleCount = 0;
-        std::uint64_t hash = 0;
-    };
-
-    struct FilteredPrintIlluminantDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 1u;
-
-        std::uint64_t printIlluminantHash = 0;
-        std::uint64_t dichroicResourceHash = 0;
-        CmyCcTriplet cmyCc{};
-        bool preflash = false;
-        std::uint64_t hash = 0;
-    };
-
-    struct PrintPreflashRawDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 2u;
-
-        std::uint64_t filmProfileAssetVersionToken = 0;
-        std::uint64_t printProfileAssetVersionToken = 0;
-        std::uint64_t filteredPreflashIlluminantHash = 0;
-        std::uint64_t hash = 0;
-    };
-
-    struct PrintBalanceDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 3u;
-
-        std::uint64_t filmProfileAssetVersionToken = 0;
-        std::uint64_t filmRawRecipeHash = 0;
-        std::uint64_t filmDevelopRecipeHash = 0;
-        std::uint64_t printProfileAssetVersionToken = 0;
-        std::uint64_t filteredMainIlluminantHash = 0;
-        float cameraExposureCompensationEv = 0.0f;
-        std::uint64_t printBalanceRecipeHash = 0;
-        std::uint64_t hash = 0;
-    };
-
+    // Rust-derived device identities for one exact-context Print owner.
     struct PrintResourceDescriptors {
-        PrintProfileTablesDescriptor profileTables{};
-        PrintFilmDensityTablesDescriptor filmDensityTables{};
-        FilteredPrintIlluminantDescriptor mainIlluminant{};
-        FilteredPrintIlluminantDescriptor preflashIlluminant{};
-        PrintPreflashRawDescriptor preflashRaw{};
-        PrintBalanceDescriptor balance{};
+        std::uint64_t filmDensityTablesHash = 0;
+        std::uint64_t profileTablesHash = 0;
+        std::uint64_t mainIlluminantHash = 0;
+        std::uint64_t preflashIlluminantHash = 0;
+        CmyCcTriplet mainCmyCc{};
         bool preflashActive = false;
-        std::uint64_t hash = 0;
     };
 
     struct PrintPreparedView {
-        ScanTablesPayload filmDensityTables{};
+        FilmDensityTablesPayload filmDensityTables{};
         DeviceCurveView printSensC{};
         DeviceCurveView printSensM{};
         DeviceCurveView printSensY{};
@@ -147,7 +78,6 @@ namespace JuicerCuda {
         DeviceCurveView printDcM{};
         DeviceCurveView printDcY{};
         const float* mainIlluminant = nullptr;
-        const float* mainIlluminantHost = nullptr;
         const float* preflashIlluminant = nullptr;
         int spectralSampleCount = 0;
         float preflashRawCmy[3] = {0.0f, 0.0f, 0.0f};
@@ -156,9 +86,6 @@ namespace JuicerCuda {
         std::uint64_t profileTablesHash = 0;
         std::uint64_t mainIlluminantHash = 0;
         std::uint64_t preflashIlluminantHash = 0;
-        std::uint64_t preflashRawHash = 0;
-        std::uint64_t balanceHash = 0;
-        std::uint64_t preparationHash = 0;
         bool preflashActive = false;
         bool active = false;
     };
@@ -166,7 +93,6 @@ namespace JuicerCuda {
     struct PrintCudaPayloadPack {
         PrintExposePayload expose{};
         PrintDevelopPayload develop{};
-        float printRawScale = 1.0f;
     };
 
     struct AutoExposurePreviewDescriptor {
@@ -264,17 +190,12 @@ namespace JuicerCuda {
             RetireEntry& operator=(RetireEntry&&) noexcept = default;
         };
 
-        struct DeviceSpectralTables {
+        struct DeviceFilmDensityTables {
             float* epsC = nullptr;
             float* epsM = nullptr;
             float* epsY = nullptr;
-            float* Ax = nullptr;
-            float* Ay = nullptr;
-            float* Az = nullptr;
             float* baseDensityMin = nullptr;
             int K = 0;
-            int hasBaseline = 0;
-            float invYn = 1.0f;
         };
 
         struct DeviceScanRange {
@@ -389,7 +310,7 @@ namespace JuicerCuda {
         float* tablesIllum = nullptr;
         float* mallettBasis = nullptr;
 
-        // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
+        // Shared single-plane WÃƒâ€”H float scratch used as a blur/unsharp intermediate.
         // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
         float* sharedTmpPlane = nullptr;
         void* unfencedFrameUseStreamOpaque = nullptr;
@@ -406,9 +327,6 @@ namespace JuicerCuda {
         std::uint64_t printProfileTablesDescriptorHash = 0;
         std::uint64_t printMainIlluminantDescriptorHash = 0;
         std::uint64_t printPreflashIlluminantDescriptorHash = 0;
-        std::uint64_t printPreflashRawDescriptorHash = 0;
-        std::uint64_t printBalanceDescriptorHash = 0;
-        std::uint64_t printPreparationDescriptorHash = 0;
 
         // The selected TC method owns one integrated 192x192x4 table.
         float* filmTcLut = nullptr;
@@ -468,7 +386,7 @@ namespace JuicerCuda {
                                             {nullptr, nullptr, nullptr}};
 
         // Focused print resources carry the accepted preparation descriptor identities.
-        DeviceSpectralTables printFilmDensityTables;
+        DeviceFilmDensityTables printFilmDensityTables;
 
         // Serializes multi-step serving mutations. Always take this mutex before `m`.
         std::mutex servingUpdateMutex;
@@ -499,22 +417,12 @@ namespace JuicerCuda {
         int wangHeight = 0;
         int wangCount = 0;
         int wangColors = 0;
-        int printPreflashShapeK = 0;
         int printIllumK = 0;
         int printPreflashIllumK = 0;
-        float printBalanceFactorMidgray = 1.0f;
-        float printBalanceFactorMidgrayComp = 1.0f;
-        float printBalanceNormalizer = 1.0f;
         int filmTcLutExtent = 0;
         int densityCurvesLayersChannelN[3] = {0, 0, 0};
-        float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
-        std::array<float, 81> printIllumFilteredHost{};
-        std::array<float, 81> printPreflashIllumFilteredHost{};
 
         Spektrafilm::RgbToRawMethod filmRgbToRawMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
-        bool printPreflashValid = false;
-        bool printIllumFilteredHostValid = false;
-        bool printPreflashIllumFilteredHostValid = false;
         bool frameUseFenceQuarantined = false;
         bool contextInvalidatedByProvenLoss = false;
 

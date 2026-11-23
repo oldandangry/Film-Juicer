@@ -157,7 +157,6 @@ pub struct Tables {
     white_xyz: [f32; 3],
     has_baseline: bool,
     illuminant_hash: u64,
-    hash: u64,
 }
 impl Tables {
     pub fn lambda_nm(&self) -> &[f32; 81] {
@@ -194,7 +193,29 @@ impl Tables {
         self.illuminant_hash
     }
     pub fn hash(&self) -> u64 {
-        self.hash
+        let fields = [
+            self.illuminant_hash,
+            digest(&self.lambda_nm),
+            digest(&[5.0]),
+            digest(&[self.inv_yn]),
+            digest(&self.white_xyz),
+            digest(&self.white_xyz),
+            digest(&self.weighted_xyz[0]),
+            digest(&self.weighted_xyz[1]),
+            digest(&self.weighted_xyz[2]),
+            digest(&self.illuminant),
+            digest(&self.observer_xyz[0]),
+            digest(&self.observer_xyz[1]),
+            digest(&self.observer_xyz[2]),
+            digest(&self.dyes_cmy[0]),
+            digest(&self.dyes_cmy[1]),
+            digest(&self.dyes_cmy[2]),
+            digest(&self.baseline_min),
+            digest(&self.baseline_mid),
+            digest(&[0.0]),
+            hash::bytes(&[u8::from(self.has_baseline)]),
+        ];
+        hash::u64s(&fields)
     }
 }
 
@@ -242,28 +263,6 @@ pub fn build_tables(input: Input<'_>) -> Tables {
     } else {
         input.illuminant_hash
     };
-    let fields = [
-        illuminant_hash,
-        digest(&lambda_nm),
-        digest(&[5.0]),
-        digest(&[inv_yn]),
-        digest(&white_xyz),
-        digest(&white_xyz),
-        digest(&weighted_xyz[0]),
-        digest(&weighted_xyz[1]),
-        digest(&weighted_xyz[2]),
-        digest(input.illuminant),
-        digest(&observer_xyz[0]),
-        digest(&observer_xyz[1]),
-        digest(&observer_xyz[2]),
-        digest(&dyes_cmy[0]),
-        digest(&dyes_cmy[1]),
-        digest(&dyes_cmy[2]),
-        digest(&baseline_min),
-        digest(&baseline_mid),
-        digest(&[0.0]),
-        hash::bytes(&[u8::from(has_baseline)]),
-    ];
     Tables {
         lambda_nm,
         illuminant: *input.illuminant,
@@ -276,7 +275,6 @@ pub fn build_tables(input: Input<'_>) -> Tables {
         white_xyz,
         has_baseline,
         illuminant_hash,
-        hash: hash::u64s(&fields),
     }
 }
 
