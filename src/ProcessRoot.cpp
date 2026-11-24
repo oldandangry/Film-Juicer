@@ -652,8 +652,7 @@ namespace JuicerProcess {
         };
 
         struct ScanErrorFrameStage {
-            int* deviceFlag = nullptr;
-            int* hostFlag = nullptr;
+            JuicerCuda::ScanErrorBuffer buffer;
             void* eventOpaque = nullptr;
             bool flagUsed = false;
             bool readbackPending = false;
@@ -1906,7 +1905,7 @@ namespace JuicerProcess {
             return false;
         }
         auto& stage = scanErrorStage;
-        if (!JuicerCuda::acquire_scan_error_buffer(*resources, stage.deviceFlag, stage.hostFlag, outError)) {
+        if (!JuicerCuda::acquire_scan_error_buffer(*resources, stage.buffer, outError)) {
             (void)cudaEventDestroy(event);
             return false;
         }
@@ -1919,7 +1918,7 @@ namespace JuicerProcess {
         JuicerCuda::Failure& outError) {
         outError = {};
         ScanErrorFrameStage& stage = scanErrorStage;
-        if (!stage.hostFlag) {
+        if (!stage.buffer.host) {
             return true;
         }
         if (!resources) {
@@ -1937,7 +1936,7 @@ namespace JuicerProcess {
             if (recordStatus == cudaSuccess) {
                 if (JuicerCuda::retain_scan_error_readback(
                         *resources,
-                        stage.hostFlag,
+                        stage.buffer.host,
                         stage.eventOpaque,
                         stage.identity,
                         stage.readbackPending,
@@ -1954,7 +1953,7 @@ namespace JuicerProcess {
         }
         if (complete) {
             JuicerCuda::Failure releaseError;
-            if (!JuicerCuda::release_scan_error_buffer(*resources, stage.hostFlag, releaseError) && success) {
+            if (!JuicerCuda::release_scan_error_buffer(*resources, stage.buffer.host, releaseError) && success) {
                 outError = std::move(releaseError);
                 success = false;
             }
@@ -3233,7 +3232,7 @@ namespace JuicerProcess {
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
         stage.identity.dirRecipeHash = _state->resources->filmDirHash;
         stage.identity.dirDescriptorHash = _state->spatialDirDescriptor.hash;
-        outScanErrorFlag = stage.deviceFlag;
+        outScanErrorFlag = stage.buffer.device;
         if (!outScanErrorFlag) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_missing"},
@@ -3274,7 +3273,7 @@ namespace JuicerProcess {
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
-        if (scanErrorFlag != stage.deviceFlag) {
+        if (scanErrorFlag != stage.buffer.device) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_mismatch"},
                 "CUDA scan error validation failed");
@@ -3286,9 +3285,9 @@ namespace JuicerProcess {
                                     ? reinterpret_cast<cudaEvent_t>(stage.eventOpaque)
                                     : nullptr;
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
-        if (stage.hostFlag && scanEvent) {
+        if (stage.buffer.host && scanEvent) {
             cudaError_t flagErr = cudaMemcpyAsync(
-                stage.hostFlag,
+                stage.buffer.host,
                 scanErrorFlag,
                 sizeof(int),
                 cudaMemcpyDeviceToHost,

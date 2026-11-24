@@ -1786,9 +1786,9 @@ namespace JuicerCuda {
             resources.completionEventPoolOpaque.clear();
             resources.pendingFrameUseEvents.clear();
             resources.pendingScanErrorReadbacks.clear();
-            for (const auto& buffer : resources.scanErrorBuffers) {
-                if (buffer.host) {
-                    (void)cudaFreeHost(buffer.host);
+            for (const auto& slot : resources.scanErrorBuffers) {
+                if (slot.buffer.host) {
+                    (void)cudaFreeHost(slot.buffer.host);
                 }
             }
             resources.scanErrorBuffers.clear();
@@ -3241,7 +3241,8 @@ namespace JuicerCuda {
             }
         }
         resources.pendingScanErrorReadbacks.clear();
-        for (auto& buffer : resources.scanErrorBuffers) {
+        for (auto& slot : resources.scanErrorBuffers) {
+            auto& buffer = slot.buffer;
             if (buffer.host) {
                 const auto status = cudaFreeHost(buffer.host);
                 if (status != cudaSuccess) {
@@ -3259,7 +3260,7 @@ namespace JuicerCuda {
         return true;
     }
 
-    bool acquire_scan_error_buffer(Resources& resources, int*& device, int*& host, Failure& outError) {
+    bool acquire_scan_error_buffer(Resources& resources, ScanErrorBuffer& outBuffer, Failure& outError) {
         outError = {};
         std::lock_guard<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, true)) {
@@ -3268,7 +3269,7 @@ namespace JuicerCuda {
 
         auto& buffers = resources.scanErrorBuffers;
         // Prepare two independent leases at first use, before either can be pending.
-        auto available = std::ranges::find(buffers, false, &Resources::ScanErrorBuffer::leased);
+        auto available = std::ranges::find(buffers, false, &Resources::ScanErrorBufferSlot::leased);
         if (buffers.size() < 2 || available == buffers.end()) {
             const auto capacity = std::max(std::size_t{2}, buffers.size() + 1);
             try {
@@ -3290,19 +3291,20 @@ namespace JuicerCuda {
                     set_failure(outError, runtime_failure_status(status), "allocate pinned scan error buffer failed");
                     return false;
                 }
-                buffers.push_back({static_cast<int*>(pointer), pinned, false});
+                buffers.push_back({{static_cast<int*>(pointer), pinned}, false});
             }
-            available = std::ranges::find(buffers, false, &Resources::ScanErrorBuffer::leased);
+            available = std::ranges::find(buffers, false, &Resources::ScanErrorBufferSlot::leased);
         }
         available->leased = true;
-        device = available->device;
-        host = available->host;
+        outBuffer = available->buffer;
         return true;
     }
 
     static bool release_scan_error_buffer_locked(Resources& resources, int* host, Failure& outError) {
         auto& buffers = resources.scanErrorBuffers;
-        const auto buffer = std::ranges::find(buffers, host, &Resources::ScanErrorBuffer::host);
+        const auto buffer = std::ranges::find(buffers, host, [](const auto& slot) {
+            return slot.buffer.host;
+        });
         if (!host || buffer == buffers.end() || !buffer->leased) {
             outError.diagnostic = "scan error buffer lease missing";
             return false;

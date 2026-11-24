@@ -168,6 +168,11 @@ namespace JuicerCuda {
         std::string paperProfileKey;
     };
 
+    struct ScanErrorBuffer {
+        int* device = nullptr;
+        int* host = nullptr;
+    };
+
     struct Resources {
         struct PendingFrameUseEvent {
             void* eventOpaque = nullptr;
@@ -267,9 +272,8 @@ namespace JuicerCuda {
             bool hasReadback = false;
         };
 
-        struct ScanErrorBuffer {
-            int* device = nullptr;
-            int* host = nullptr;
+        struct ScanErrorBufferSlot {
+            ScanErrorBuffer buffer;
             bool leased = false;
         };
 
@@ -341,7 +345,7 @@ namespace JuicerCuda {
         std::vector<void*> completionEventPoolOpaque;
         // Scan-error leases remain pending until their original stream event completes.
         std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
-        std::vector<ScanErrorBuffer> scanErrorBuffers;
+        std::vector<ScanErrorBufferSlot> scanErrorBuffers;
 
         DeviceCurve densB;
         DeviceCurve densG;
@@ -586,7 +590,7 @@ namespace JuicerCuda {
         ScanErrorReadbackIdentity identity;
     };
 
-    bool acquire_scan_error_buffer(Resources& resources, int*& device, int*& host, Failure& outError);
+    bool acquire_scan_error_buffer(Resources& resources, ScanErrorBuffer& outBuffer, Failure& outError);
     bool release_scan_error_buffer(Resources& resources, int* host, Failure& outError);
     bool retain_scan_error_readback(
         Resources& resources,
