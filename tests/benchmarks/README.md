@@ -30,7 +30,10 @@ rendezvous as measure mode. Measure mode requires the corresponding check
 receipt and retains the raw A/A and reordered cubic/spectral timing samples,
 with median and linearly interpolated p90 for each arm. A/A ratios are the
 second cubic arm divided by the first. A/B ratios are spectral divided by cubic.
-Both modes require the pinned products, symbol layouts and qualified workload
+For a full-length diagnostic trace, use `--mode profile --nsys <executable>`
+with the same unprofiled check receipt. Profile mode retains the same render
+sequence and a CUDA trace per arm. The 5% timing gate applies in measure mode.
+All modes require the pinned products, symbol layouts and qualified workload
 bindings. The product driver leaves the final measured render's owner live
 until the observer admits the single untimed reporter.
 

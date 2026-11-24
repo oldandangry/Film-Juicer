@@ -2288,12 +2288,15 @@ def scanner_paired(args):
         raise ValueError("run scanner paired timing on its native platform")
     if len(set(args.workloads)) != len(args.workloads):
         raise ValueError("scanner paired workload membership contains duplicates")
-    if (args.mode == "measure") != (args.check_result is not None):
+    driver_mode = "check" if args.mode == "check" else "measure"
+    if (driver_mode == "measure") != (args.check_result is not None):
         raise ValueError("scanner paired timing requires prior check-mode evidence")
     if args.check_arm and args.mode != "check":
         raise ValueError("single-arm observation only applies in check mode")
-    if args.nsys and args.mode != "check":
-        raise ValueError("CUDA profiling requires check mode")
+    if args.mode == "profile" and not args.nsys:
+        raise ValueError("profile mode requires --nsys")
+    if args.mode == "measure" and args.nsys:
+        raise ValueError("use profile mode for a full-length CUDA trace")
     if (args.capture_density or args.held_density) and (
         args.mode != "check" or args.workloads != ["preview-negative-direct-film-v1-full-36"]
     ):
@@ -2422,7 +2425,7 @@ def scanner_paired(args):
                             "--campaign",
                             "scanner-paired",
                             "--mode",
-                            args.mode,
+                            driver_mode,
                             "--lane",
                             "shipping",
                             "--workload",
@@ -2455,7 +2458,7 @@ def scanner_paired(args):
                                 "mode": "tail",
                                 "run": args.run_id,
                                 "arm": name,
-                                "last_ordinal": 2 if args.mode == "check" else 40,
+                                "last_ordinal": 2 if driver_mode == "check" else 40,
                                 "command": list(map(str, command)),
                                 "ready": str(ready),
                                 "release": str(release),
@@ -2498,7 +2501,7 @@ def scanner_paired(args):
                         run.command(f"{workload}-{name}", command, env=environment)
                         host = json.loads(native_receipt.read_text(encoding="utf-8"))
                         tail = json.loads(tail_receipt.read_text(encoding="utf-8"))
-                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm, scanner_entry, benchmark)
+                        item = read_scanner_timing_arm(host, tail, workload, driver_mode, arm, scanner_entry, benchmark)
                         if host["scanner_paired"].get("fixture") != ("archived-preview" if material else None):
                             raise ValueError("driver did not bind the requested Preview fixture")
                         if args.read_cubic_grid and arm == "cubic":
@@ -2669,7 +2672,7 @@ def main():
     command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
     command.add_argument("--run-id", required=True)
     command.add_argument("--inputs", required=True, type=Path)
-    command.add_argument("--mode", required=True, choices=("check", "measure"))
+    command.add_argument("--mode", required=True, choices=("check", "measure", "profile"))
     command.add_argument("--workloads", required=True, nargs="+", choices=SCANNER_PAIRED_ROWS)
     command.add_argument("--check-result", type=Path)
     command.add_argument("--check-arm", choices=("spectral", "cubic"), help="qualify one held tail in check mode")
