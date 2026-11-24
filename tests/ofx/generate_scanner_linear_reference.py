@@ -17,6 +17,7 @@ import opt_einsum
 SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
 REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"
 ROUTES = ("negative-direct", "negative-print", "positive-direct", "positive-print")
+NATURAL_GLARE_TRACE = "fixed/negative-print"
 
 
 def sha256(data):
@@ -63,11 +64,19 @@ def read_capture(result_dir):
         record
         for record in records
         if record.get("schema")
-        in {"scanner-reference-input-v1", "scanner-reference-input-v2", "scanner-reference-input-v3"}
+        in {
+            "scanner-reference-input-v1",
+            "scanner-reference-input-v2",
+            "scanner-reference-input-v3",
+            "scanner-reference-input-v4",
+        }
     ]
+    current = rows and rows[0]["schema"] == "scanner-reference-input-v4"
+    ids = (*ROUTES, NATURAL_GLARE_TRACE) if current else ROUTES
+    routes = (0, 1, 2, 3, 1) if current else (0, 1, 2, 3)
     if (
-        tuple(row.get("id") for row in rows) != ROUTES
-        or any(row.get("route") != route for route, row in enumerate(rows))
+        tuple(row.get("id") for row in rows) != ids
+        or tuple(row.get("route") for row in rows) != routes
         or len({row["schema"] for row in rows}) != 1
     ):
         raise ValueError("unexpected reference input membership")
@@ -183,7 +192,12 @@ def delivered_reference(row, source, signed_rgb):
 
 def reference_row(row, density_spectral, density_to_light):
     height, width, components = row["shape"]
-    if (height, width, components) != (5, 7, 3 + row["route"] % 2) or row["glare"] or row["grain"]:
+    natural_glare = row["id"] == NATURAL_GLARE_TRACE
+    if (
+        (height, width, components) != (5, 7, 3 + row["route"] % 2)
+        or bool(row["glare"]) != natural_glare
+        or row["grain"]
+    ):
         raise ValueError(f"invalid deterministic scanner capture for {row['id']}")
     pixels = height * width
     source = promote(row["source_bits"], (pixels, components))
@@ -217,10 +231,22 @@ def reference_row(row, density_spectral, density_to_light):
     primitive_light = density_to_light(density_spectral(dye, cmy[None, :, :], base), 1.0)[0]
     primitive_xyz = np.maximum(primitive_light @ active_weights * inverse_y, 0.0) + 1e-10
     scalar_corrected = corrected_xyz(scalar_xyz, slope, offset)
+    primitive_corrected = corrected_xyz(primitive_xyz, slope, offset)
+    if natural_glare:
+        if row["reconstruction"] != 1 or row["source_origin"] != [0, 0] or row["frame_token"] != 37:
+            raise ValueError("natural glare trace controls changed")
+        percent = promote(row["glare_field_bits"], (pixels,))
+        white = promote(row["white_bits"], (3,))
+        if not np.isfinite(percent).all() or not np.all(percent > 0) or not np.isfinite(white).all():
+            raise ValueError("invalid natural glare field or scanner white")
+        # Freeze the realized post-blur field as an input to the optical oracle.
+        glare_xyz = 0.01 * percent[:, None] * white[None, :]
+        scalar_corrected += glare_xyz
+        primitive_corrected += glare_xyz
     adapted = scalar_corrected @ cat02.T
     rgb_terms = adapted[:, None, :] * xyz_to_rgb[None, :, :]
     signed_rgb = np.asarray([[math.fsum(lane) for lane in pixel] for pixel in rgb_terms])
-    primitive_rgb = corrected_xyz(primitive_xyz, slope, offset) @ cat02.T @ xyz_to_rgb.T
+    primitive_rgb = primitive_corrected @ cat02.T @ xyz_to_rgb.T
     if not np.allclose(scalar_xyz, primitive_xyz, rtol=1e-13, atol=1e-15) or not np.allclose(
         signed_rgb, primitive_rgb, rtol=1e-13, atol=1e-15
     ):
@@ -245,7 +271,7 @@ def reference_row(row, density_spectral, density_to_light):
                 row["device_signed_rgb_bits"], signed_rgb, width, 1e-6 + 1e-4 * np.sum(np.abs(rgb_terms), axis=-1)
             ),
         }
-    if row["schema"] == "scanner-reference-input-v3":
+    if row["schema"] in {"scanner-reference-input-v3", "scanner-reference-input-v4"}:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
     return reference
 
@@ -255,6 +281,7 @@ def main():
     parser.add_argument("capture", type=Path, help="completed native scanner reference input run directory")
     parser.add_argument("spektrafilm", type=Path, help="Git checkout containing the approved Spektrafilm revision")
     parser.add_argument("output", type=Path, help="new offline reference document")
+    parser.add_argument("--trace-fixture", type=Path, help="freeze the matched natural-glare trace pixels")
     args = parser.parse_args()
     preset, captures, provenance = read_capture(args.capture)
     density_spectral, density_to_light, source_hashes = reference_primitives(args.spektrafilm)
@@ -275,6 +302,43 @@ def main():
         stage.get("passed", True) for row in report["rows"] for stage in row.get("device_stages", {}).values()
     )
     delivered_passed = all(row.get("delivered", {}).get("passed", True) for row in report["rows"])
+    if args.trace_fixture and stages_passed and delivered_passed:
+        (trace,) = [row for row in report["rows"] if row["input"]["id"] == NATURAL_GLARE_TRACE]
+        capture = trace["input"]
+        fixture = {
+            "schema": "spectral-scanner-trace-v1",
+            "preset": preset,
+            "reference_sha256": sha256(args.output.read_bytes()),
+            "inputs": {
+                key: capture[key]
+                for key in (
+                    "id",
+                    "shape",
+                    "route",
+                    "film",
+                    "paper",
+                    "reconstruction",
+                    "frame_token",
+                    "frame_rate",
+                    "source_origin",
+                    "session_token",
+                    "instance_token",
+                    "clip_token",
+                    "grain",
+                    "glare",
+                    "glare_controls_bits",
+                    "glare_blur_radius",
+                    "recipe_hash",
+                    "scanner_hash",
+                    "source_bits",
+                    "glare_field_bits",
+                )
+            },
+            "output_bits": trace["delivered"]["output_bits"],
+        }
+        with args.trace_fixture.open("x", encoding="utf-8", newline="\n") as output:
+            json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
+            output.write("\n")
     return int(not (stages_passed and delivered_passed))
 
 

@@ -8,6 +8,7 @@ namespace JuicerCuda::ScanDensityCaptureTest {
 
     struct ScanSample {
         float density[3];
+        float glarePercent;
         double xyz[3];
         double correctedXYZ[3];
         double adaptedXYZ[3];

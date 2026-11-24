@@ -1212,7 +1212,9 @@ foreach(mode IN ITEMS Gpu Trace)
             ofx/production_images.cpp ../src/Cuda/Scan/JuicerCudaScanPipeline.cu
             $<TARGET_OBJECTS:juicer_executor_failure_test_objects>)
         target_compile_definitions(${target} PRIVATE JUICER_EXECUTOR_FAILURE_TEST_HOOK=1 JUICER_SCAN_DENSITY_CAPTURE_TEST=1
-            JUICER_PARAMETER_IDENTITIES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json")
+            JUICER_PARAMETER_IDENTITIES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json"
+            JUICER_SPECTRAL_TRACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/trace-${JUICER_TEST_PRESET_NAME}.json"
+            JUICER_SPECTRAL_TRACE_PRESET="${JUICER_TEST_PRESET_NAME}")
     endif()
     target_compile_features(${target} PRIVATE cxx_std_20)
     target_include_directories(${target} PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")

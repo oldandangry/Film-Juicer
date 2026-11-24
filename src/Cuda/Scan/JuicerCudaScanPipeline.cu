@@ -1803,6 +1803,7 @@ namespace {
         mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgb);
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         if (observed) {
+            observed->glarePercent = glarePercent ? glarePercent[index] : 0.0F;
             copy_sample_device(observed->correctedXYZ, xyz);
             copy_sample_device(observed->adaptedXYZ, adapted);
             copy_sample_device(observed->signedRGB, rgb);
