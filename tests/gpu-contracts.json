@@ -22,7 +22,7 @@
     },
     "JuicerOfxRenderTraceTests": {
       "protocol": "custom",
-      "registrations": 4
+      "registrations": 5
     },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
@@ -116,6 +116,7 @@
     "Ofx.Gpu.ScannerReferenceInputs": 1,
     "Ofx.Gpu.RenderReferenceInputs": 1,
     "Ofx.Gpu.PrintGlareLaunches": 1,
+    "Ofx.Gpu.RetainedHighGainReference": 1,
     "Ofx.Gpu.ProcessorReference": 1,
     "Ofx.Gpu.ProcessorReferenceInputs": 1,
     "Ofx.Gpu.ProcessorScannerReferenceInputs": 1,

@@ -27,7 +27,9 @@ ordinary pair uses Current. Preview can exercise both Current and Film v1.
 `ofx.py scanner-paired` takes a native Release preset, an input manifest, a
 fresh run ID and one or more `--workloads`. Its check mode uses the same tail
 rendezvous as measure mode. Measure mode requires the corresponding check
-receipt and retains the raw A/A and reordered cubic/spectral timing samples.
+receipt and retains the raw A/A and reordered cubic/spectral timing samples,
+with median and linearly interpolated p90 for each arm. A/A ratios are the
+second cubic arm divided by the first. A/B ratios are spectral divided by cubic.
 Both modes require the pinned products, symbol layouts and qualified workload
 bindings. The product driver leaves the final measured render's owner live
 until the observer admits the single untimed reporter.

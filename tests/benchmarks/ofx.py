@@ -2463,22 +2463,32 @@ def scanner_paired(args):
                                 "receipt": str(arm_dir),
                                 "result": item,
                                 "median_ns": statistics.median(samples),
-                                "p90_ns": samples[math.ceil(0.9 * len(samples)) - 1],
+                                "p90_ns": statistics.quantiles(samples, n=10, method="inclusive")[-1]
+                                if len(samples) > 1
+                                else samples[0],
                             }
                         )
                     results.append(runs)
                 paired = []
+                aa_ratios = []
                 for pair in results:
                     if len(pair) != 2:
                         continue
                     left, right = pair
                     reference, candidate = (left, right) if left["arm"] == "cubic" else (right, left)
                     if reference["arm"] == candidate["arm"]:
+                        aa_ratios.append({key: right[key] / left[key] for key in ("median_ns", "p90_ns")})
                         continue
                     paired.append({key: candidate[key] / reference[key] for key in ("median_ns", "p90_ns")})
                 gated = args.mode == "measure" and variant == "ordinary"
                 passed = not gated or all(all(value <= 1.05 for value in pair.values()) for pair in paired)
-                report["workloads"][workload] = {"gated": gated, "passed": passed, "pairs": results, "ratios": paired}
+                report["workloads"][workload] = {
+                    "gated": gated,
+                    "passed": passed,
+                    "pairs": results,
+                    "aa_ratios": aa_ratios,
+                    "ratios": paired,
+                }
                 all_gates = all_gates and passed
             if not all_gates:
                 raise ValueError("ordinary small-grid timing exceeds the 5% median or p90 limit")

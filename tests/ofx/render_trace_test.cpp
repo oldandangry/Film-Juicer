@@ -10,6 +10,7 @@
 #include "../ffi/preparation_fixture.h"
 #include "../ffi/owner_fixture.h"
 #include "module_test.h"
+#include "Cuda/JuicerCudaPayloads.h"
 
 #include <array>
 #include <bit>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -25,6 +27,9 @@
 #include <vector>
 
 #include <cuda.h>
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
+    const JuicerCuda::DirectPipelineRunParams*, const JuicerCuda::ScannerSpectra&, const float*, const float*, const float*, float*, float*, float*, const float*, void*);
 
 namespace {
     constexpr std::string_view kCaller = "ofx.gpu.render_trace";
@@ -365,6 +370,92 @@ namespace {
                                  FJ_ROUTE_NEGATIVE_PRINT,
                                  &kFixedGlareMinusZero}};
         return report_reference_inputs(caller, cases, listing);
+    }
+
+    int run_retained_high_gain_reference(bool listing) {
+        constexpr std::string_view caller = "ofx.gpu.retained_high_gain_reference";
+        const auto path = std::filesystem::path(JUICER_SPECTRAL_TRACE_PATH).parent_path() / "retained-high-gain-inputs.json";
+        std::ifstream file(path);
+        ofx_test::require_render(static_cast<bool>(file), "open retained high-gain scanner fixture");
+        const auto fixture = nlohmann::json::parse(file);
+        ofx_test::require_render(fixture.at("schema") == "juicer-scanner-retained-high-gain-v1", "retained high-gain fixture schema");
+        const char* const preset = std::string_view(JUICER_SPECTRAL_TRACE_PRESET).starts_with("windows-") ? "windows-clang-release" : "linux-release";
+        const auto& frozen = fixture.at("platforms").at(preset);
+        const auto& records = frozen.at("rows");
+        ofx_test::require_render(records.is_array() && records.size() == 18, "retained high-gain sample census");
+        std::vector<std::string> ids;
+        for (const auto& record : records) {
+            ids.push_back(record.at("id").get<std::string>());
+            if (listing)
+                JuicerTests::list_case(caller, ids.back());
+        }
+        if (listing)
+            return 0;
+
+        const auto word = [](const nlohmann::json& value) {
+            ofx_test::require_render(value.is_number_unsigned() && value.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max(),
+                                     "retained high-gain Float32 word");
+            return std::bit_cast<float>(value.get<std::uint32_t>());
+        };
+        const auto& packet = frozen.at("packet");
+        JuicerCuda::ScannerSpectra spectra{};
+        spectra.inverseYNormalization = word(packet.at("inverse_y"));
+        for (std::size_t wave = 0; wave < std::size(spectra.wavelengths); ++wave) {
+            spectra.wavelengths[wave] = {word(packet.at("dye_c").at(wave)), word(packet.at("dye_m").at(wave)), word(packet.at("dye_y").at(wave)), word(packet.at("baseline").at(wave)), word(packet.at("weight_x").at(wave)), word(packet.at("weight_y").at(wave)), word(packet.at("weight_z").at(wave))};
+        }
+        constexpr auto pixels = ofx_test::ScanReferenceCapture::kPixels;
+        std::array<float, pixels * 3> density{};
+        JuicerCuda::DirectPipelineRunParams run{};
+        run.width = 7;
+        run.height = 5;
+        run.nComponents = 3;
+        const auto& cat02 = frozen.at("cat02");
+        const auto& xyzToRgb = frozen.at("xyz_to_rgb");
+        ofx_test::require_render(cat02.is_array() && cat02.size() == std::size(run.scanStage.scanColor.cat02) &&
+                                     xyzToRgb.is_array() && xyzToRgb.size() == std::size(run.scanStage.scanColor.xyzToRgb),
+                                 "retained high-gain scanner matrix shape");
+        std::ranges::transform(cat02, run.scanStage.scanColor.cat02, word);
+        std::ranges::transform(xyzToRgb, run.scanStage.scanColor.xyzToRgb, word);
+        for (std::size_t index = 0; index < records.size(); ++index) {
+            const auto& sample = records.at(index);
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                density[channel * pixels + index] = word(sample.at("film_cmy").at(channel));
+        }
+
+        ofx_test::DeviceImages images({7, 5, 3});
+        float* const source = images.source();
+        float* const destination = images.destination();
+        run.src = source;
+        run.dst = destination;
+        run.srcRowBytes = images.bytes() / static_cast<std::size_t>(run.height);
+        run.dstRowBytes = images.destination_bytes() / static_cast<std::size_t>(run.height);
+        ofx_test::require_cuda(cudaMemcpyAsync(source, density.data(), sizeof(density), cudaMemcpyHostToDevice, images.stream()), "stage held high-gain C/M/Y");
+        ofx_test::ScanReferenceCapture capture(images.stream());
+        ofx_test::require_cuda(juicer_cuda_direct_focused_scan_linear_density_rgb(&run, spectra, source, source + pixels, source + 2 * pixels, destination, destination + pixels, destination + 2 * pixels, nullptr, images.stream()),
+                               "launch scanner on retained high-gain C/M/Y");
+        const auto observed = capture.read();
+        const auto arithmetic = ofx_test::scan_reference_arithmetic(observed);
+        JuicerTests::CaseLog log;
+        JuicerTests::Cohort rows(std::string(caller), ids);
+        std::puts("CTEST_FULL_OUTPUT");
+        for (std::size_t index = 0; index < records.size(); ++index) {
+            auto row = rows.case_event(ids[index]);
+            const auto& expected = records.at(index);
+            const auto& actual = observed[index];
+            ofx_test::require_render(ofx_test::scan_float_words(actual.density) == expected.at("film_cmy"), "plane scanner consumed different C/M/Y words");
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const auto xyz = expected.at("xyz_float64").at(channel).get<double>();
+                const auto rgb = expected.at("rgb_float64").at(channel).get<double>();
+                ofx_test::require_render(std::abs(actual.xyz[channel] - xyz) <= 1e-10 + 0.01 * std::abs(xyz), "retained high-gain XYZ outside its Float64 bound");
+                ofx_test::require_render(std::abs(actual.signedRGB[channel] - rgb) <= expected.at("rgb_error_limit").at(channel).get<double>(),
+                                         "retained high-gain signed RGB outside its Float64 bound");
+            }
+            const nlohmann::json report{{"id", ids[index]}, {"xyz", actual.xyz}, {"adapted_xyz", actual.adaptedXYZ}, {"signed_rgb", actual.signedRGB}, {"wavelength_arithmetic", arithmetic.at(index)}};
+            std::puts(report.dump().c_str());
+            row.passed();
+        }
+        log.finish();
+        return 0;
     }
 
     int run_print_glare_launches(bool listing) {
@@ -1186,6 +1277,9 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string_view(argv[1]) == "--retained-high-gain-reference") {
+        return run_retained_high_gain_reference(JuicerTests::list_requested(argc, argv));
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--scanner-reference-inputs") {
         return run_reference_inputs(JuicerTests::list_requested(argc, argv));
     }
