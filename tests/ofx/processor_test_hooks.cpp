@@ -259,6 +259,16 @@ namespace JuicerCuda::ExecutorTest {
                 return true;
             }
         }
+        if (std::strcmp(label, "output gamut Cmax") == 0) {
+            ++resourceFailures->cmaxAttempts;
+            if (resourceFailures->cmax.has_value()) {
+                failure = *resourceFailures->cmax;
+                resourceFailures->cmax.reset();
+                resourceFailures->record_injection();
+                return true;
+            }
+            return false;
+        }
         const std::optional<Failure>* injected = nullptr;
         if (std::strcmp(label, "STBN") == 0) {
             ++resourceFailures->stbnAttempts;

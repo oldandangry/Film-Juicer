@@ -3841,6 +3841,59 @@ namespace {
             warm.passed();
         }
     }
+    void run_output_gamut_failure_cases(CallbackSession& runtime) {
+        const std::array cases{Case{"gamut-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"gamut-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
+        JuicerTests::Cohort rows("output_gamut_cmax", {"gamut-direct/allocation-failure", "gamut-direct/retry", "gamut-direct/warm-no-repeat", "gamut-print/allocation-failure", "gamut-print/retry", "gamut-print/warm-no-repeat"});
+        for (const auto& test : cases) {
+            JuicerTestSupport::InstanceFixture state;
+            MembershipRetirement stateRetirement{runtime, state};
+            auto parameters = parameters_for(test);
+            parameters.values.grain.active = false;
+            parameters.values.output_gamut_compression_enabled = 1;
+            parameters.values.output_color_space = Spektrafilm::scan_route_is_print(test.route) ? 1 : 0;
+            const JuicerCuda::Failure allocation{JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation), "output gamut Cmax fixture failure"};
+            const auto capture_allocations = [&](JuicerCuda::ExecutorTest::ResourceFailures& observation) {
+                JuicerCuda::ExecutorTest::resourceFailures = &observation;
+                try {
+                    auto pixels = render_case(runtime, test, parameters, state);
+                    JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                    return pixels;
+                } catch (...) {
+                    JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                    throw;
+                }
+            };
+
+            auto failureRow = rows.case_event(std::string(test.name) + "/allocation-failure");
+            JuicerCuda::ExecutorTest::ResourceFailures failures;
+            failures.cmax = allocation;
+            auto classified = allocation;
+            classified.diagnostic += " route=";
+            classified.diagnostic += Spektrafilm::scan_route_metadata(test.route).key;
+            check_resource_failure(runtime, test, parameters, state, failures, classified, "prepare_focused_route_resources", true);
+            if (failures.cmax || failures.cmaxAttempts != 1 || failures.injections != 1)
+                throw std::runtime_error("output gamut Cmax fault did not reach the live owner exactly once");
+            failureRow.passed();
+
+            auto retryRow = rows.case_event(std::string(test.name) + "/retry");
+            JuicerCuda::ExecutorTest::ResourceFailures retry;
+            const auto restored = capture_allocations(retry);
+            if (retry.cmaxAttempts != 1 || retry.injections != 0)
+                throw std::runtime_error("output gamut Cmax retry did not perform one allocation");
+            retryRow.passed();
+
+            auto warmRow = rows.case_event(std::string(test.name) + "/warm-no-repeat");
+            JuicerCuda::ExecutorTest::ResourceFailures warm;
+            warm.cmax = allocation;
+            const auto repeated = capture_allocations(warm);
+            if (!warm.cmax || warm.cmaxAttempts != 0 || warm.injections != 0)
+                throw std::runtime_error("warm output gamut repeated the Cmax allocation");
+            RenderAssertions::compare_bits(std::string(test.name) + " warmed output gamut", restored, repeated);
+            warmRow.passed();
+        }
+    }
+
     void run_defect_fence_failure_cases(CallbackSession& runtime) {
         const std::array<Case, 2> cases{{{"defect-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"defect-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
@@ -4810,6 +4863,10 @@ int main(int argc, char** argv) try {
                         JuicerTests::list_case("scanner_lut_upload", std::string(route) + "/position/" + std::to_string(position));
                     JuicerTests::list_case("scanner_lut_upload", std::string(route) + "/warm-render");
                 }
+            } else if (std::string_view(argv[2]) == "OutputGamut") {
+                for (const char* route : {"gamut-direct", "gamut-print"})
+                    for (const char* phase : {"allocation-failure", "retry", "warm-no-repeat"})
+                        JuicerTests::list_case("output_gamut_cmax", std::string(route) + "/" + phase);
             } else if (std::string_view(argv[2]) == "DefectFence") {
                 for (const char* route : {"defect-direct", "defect-print"})
                     for (const char* timing : {"event-create", "event-record"})
@@ -5065,6 +5122,8 @@ int main(int argc, char** argv) try {
                 run_defect_fence_failure_cases(runtime);
             } else if (resourceFailure == "ScannerLut") {
                 run_scanner_lut_upload_failure_cases(runtime);
+            } else if (resourceFailure == "OutputGamut") {
+                run_output_gamut_failure_cases(runtime);
             } else if (resourceFailure == "GrainUpload") {
                 run_grain_upload_failure_cases(runtime);
             } else {

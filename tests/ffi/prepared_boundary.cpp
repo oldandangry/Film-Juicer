@@ -7,18 +7,25 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <exception>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
+
+#include <cuda_runtime.h>
 
 #include "prepared_descriptors.h"
 #include "prepared_frame_fixture.h"
 #include "spatial_optics_fixture.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_cuda_prepared.h"
 #include "Cuda/JuicerCudaHostViews.h"
+#include "Hash.h"
 
 namespace {
 
@@ -63,6 +70,112 @@ namespace {
         prepared.scanner_post = {post.glare_active ? FJ_POST_GLARE : 0u, post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px, post.glare_blur_radius, post.lens_blur_sigma_px, post.lens_blur_radius, post.unsharp_sigma_px, post.unsharp_radius, post.unsharp_amount, post.hash};
         prepared.output_color = state.output_color;
         prepared.print = state.print;
+    }
+
+    bool check_optional_scanner_base(FjCuda* cuda, const FjFrame& frame, const FjSubmission& originalSubmission, const FjPreparedHostData& original, const FjHostPreparation* host, std::string& diagnostic) {
+        const auto& source = frame.source;
+        const auto& destination = frame.destination;
+        const auto& bounds = destination.bounds;
+        const auto& window = frame.render_window;
+        if (source.components != FJ_COMPONENTS_RGBA || destination.components != FJ_COMPONENTS_RGBA || source.row_bytes <= 0 || destination.row_bytes <= 0 ||
+            bounds.x2 <= bounds.x1 || bounds.y2 <= bounds.y1 || bounds.x1 != window.x1 || bounds.x2 != window.x2 || bounds.y1 != window.y1 || bounds.y2 != window.y2 ||
+            source.bounds.x1 != bounds.x1 || source.bounds.x2 != bounds.x2 || source.bounds.y1 != bounds.y1 || source.bounds.y2 != bounds.y2) {
+            diagnostic = "optional scanner base fixture requires a matching pitched RGBA destination";
+            return false;
+        }
+        const auto stride = static_cast<std::size_t>(destination.row_bytes);
+        const auto sourceStride = static_cast<std::size_t>(source.row_bytes);
+        const auto columns = static_cast<std::size_t>(bounds.x2 - bounds.x1);
+        const auto rows = static_cast<std::size_t>(bounds.y2 - bounds.y1);
+        const auto rgbaBytes = columns * 4 * sizeof(float);
+        if (stride <= rgbaBytes || sourceStride < rgbaBytes) {
+            diagnostic = "optional scanner base fixture is missing its pitch guard";
+            return false;
+        }
+        auto* const stream = reinterpret_cast<cudaStream_t>(frame.stream);
+        auto* const device = reinterpret_cast<void*>(destination.address);
+        const auto* const sourceDevice = reinterpret_cast<const void*>(source.address);
+        std::vector<std::byte> initial(stride * rows);
+        std::vector<std::byte> sourceBytes(sourceStride * rows);
+        if (cudaStreamSynchronize(stream) != cudaSuccess || cudaMemcpy(initial.data(), device, initial.size(), cudaMemcpyDeviceToHost) != cudaSuccess ||
+            cudaMemcpy(sourceBytes.data(), sourceDevice, sourceBytes.size(), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            diagnostic = "could not read initial optional scanner base destination";
+            return false;
+        }
+
+        const std::array<float, 81> zeros{};
+        auto absent = original;
+        absent.scanner_spectra.base_density = {};
+        auto explicitZero = absent;
+        explicitZero.scanner_spectra.base_density = {zeros.data(), zeros.size()};
+        const auto select = [&originalSubmission](const FjPreparedHostData& value) {
+            auto selected = originalSubmission;
+            const auto& color = value.output_color;
+            const std::uint64_t gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
+            const auto combined = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(value), gamut});
+            selected.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(value.recipe_hash, value.dir_couplers.hash, combined, value.auto_exposure.hash).scannerHash;
+            return selected;
+        };
+        const auto absentSubmission = select(absent);
+        const auto zeroSubmission = select(explicitZero);
+        if (absentSubmission.scanner_hash == zeroSubmission.scanner_hash) {
+            diagnostic = "scanner base presence did not change the selected binding";
+            return false;
+        }
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        unsigned abortQueries = 0;
+        const FjAbortCallback abort{[](void* user) noexcept -> std::uint32_t {
+                                        ++*static_cast<unsigned*>(user);
+                                        return FJ_ABORT_CONTINUE;
+                                    },
+                                    &abortQueries};
+        const auto rejected = JuicerCudaTest::render_raw_prepared(cuda, frame, absentSubmission, explicitZero, abort, &error, host);
+        if (rejected.status.category != FJ_STATUS_UNSUPPORTED_INPUT || rejected.status.api != FJ_API_NONE || rejected.status.native_code != 0 ||
+            abortQueries != 0 || std::string_view{text.data(), error.length} != "MalformedPreparedHostData field=submission_identity") {
+            diagnostic = "explicit zero scanner base was accepted with the absent binding";
+            return false;
+        }
+
+        std::vector<std::byte> withoutBase(initial.size());
+        std::vector<std::byte> withBase(initial.size());
+        const auto render = [&](const FjPreparedHostData& value, const FjSubmission& submission, std::vector<std::byte>& result) {
+            if (cudaMemcpy(device, initial.data(), initial.size(), cudaMemcpyHostToDevice) != cudaSuccess)
+                return false;
+            const auto outcome = JuicerCudaTest::render_raw_prepared(cuda, frame, submission, value, {}, &error, host);
+            return outcome.status.category == FJ_STATUS_SUCCESS && outcome.status.api == FJ_API_NONE && outcome.status.native_code == 0 &&
+                   cudaStreamSynchronize(stream) == cudaSuccess && cudaMemcpy(result.data(), device, result.size(), cudaMemcpyDeviceToHost) == cudaSuccess;
+        };
+        if (!render(absent, absentSubmission, withoutBase) || !render(explicitZero, zeroSubmission, withBase) || withoutBase != withBase) {
+            diagnostic = "coherent absent and explicit zero scanner bases did not produce identical pitched output";
+            return false;
+        }
+        for (std::size_t row = 0; row < rows; ++row) {
+            for (std::size_t column = 0; column < columns; ++column) {
+                const auto columnOffset = column * 4 * sizeof(float);
+                const auto* output = withBase.data() + row * stride + columnOffset;
+                std::array<float, 3> rgb{};
+                std::memcpy(rgb.data(), output, sizeof(rgb));
+                if (!std::ranges::all_of(rgb, [](float value) {
+                        return std::isfinite(value);
+                    }) ||
+                    std::memcmp(output + sizeof(rgb), sourceBytes.data() + row * sourceStride + columnOffset + sizeof(rgb), sizeof(float)) != 0) {
+                    diagnostic = "optional scanner base case changed alpha or produced nonfinite colour";
+                    return false;
+                }
+            }
+            const auto guard = row * stride + rgbaBytes;
+            if (std::memcmp(initial.data() + guard, withBase.data() + guard, stride - rgbaBytes) != 0) {
+                diagnostic = "optional scanner base case wrote the row guard";
+                return false;
+            }
+        }
+        if (cudaMemcpy(device, initial.data(), initial.size(), cudaMemcpyHostToDevice) != cudaSuccess) {
+            diagnostic = "could not restore the original scanner base destination";
+            return false;
+        }
+        std::cout << "CTEST_FULL_OUTPUT\noptional scanner base absent key=" << absentSubmission.scanner_hash << " present-zero key=" << zeroSubmission.scanner_hash << " matched pitched output\n";
+        return true;
     }
 
 } // namespace
@@ -352,6 +465,9 @@ namespace JuicerCudaTest {
                                                "-frame-" + std::to_string(snapshot.frameToken.value) + "-snapshot-" + std::to_string(snapshot.snapshotId) +
                                                "-time-" + std::to_string(frame.time_frames) + "-phase-" + invocation.phase;
                 check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, inputs.hostPreparation, invocationContext);
+                if (invocation.phase == "negative-print/cold" &&
+                    !check_optional_scanner_base(runtime.cuda, frame, submission, prepared, inputs.hostPreparation, diagnostic))
+                    return false;
                 if (invocation.grainDispatchContract)
                     check_grain_dispatch(runtime.cuda, frame, submission, prepared, inputs.hostPreparation);
                 const auto result = render_raw_prepared(runtime.cuda, frame, submission, prepared, {}, &error, inputs.hostPreparation);

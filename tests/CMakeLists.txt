@@ -1134,7 +1134,7 @@ add_test(NAME Ofx.Gpu.ExecutorFailureOrder
     COMMAND JuicerExecutorFailureOrderProbe --failure-order)
 set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
-foreach(resource_failure IN ITEMS DefectFence GrainUpload ScannerLut)
+foreach(resource_failure IN ITEMS DefectFence GrainUpload ScannerLut OutputGamut)
     add_test(NAME "Ofx.Gpu.ResourceFailure.${resource_failure}"
         COMMAND JuicerExecutorFailureOrderProbe --resource-failure "${resource_failure}")
     set_tests_properties("Ofx.Gpu.ResourceFailure.${resource_failure}" PROPERTIES

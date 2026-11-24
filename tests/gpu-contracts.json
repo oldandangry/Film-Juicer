@@ -62,7 +62,7 @@
     },
     "JuicerExecutorFailureOrderProbe": {
       "protocol": "custom",
-      "registrations": 10
+      "registrations": 11
     },
     "JuicerAdapterTraceProbe": {
       "protocol": "custom",
@@ -131,6 +131,7 @@
     "Ofx.Gpu.WorkspaceReferenceInputs": 2,
     "Ofx.Gpu.ExecutorFailureOrder": 1,
     "Ofx.Gpu.ResourceFailure.ScannerLut": 1,
+    "Ofx.Gpu.ResourceFailure.OutputGamut": 1,
     "Ofx.Gpu.ResourceFailure.DefectFence": 1,
     "Ofx.Gpu.ResourceFailure.GrainUpload": 1,
     "Ofx.Gpu.EffectsFrame": 1,
