@@ -1732,7 +1732,12 @@ namespace {
     __device__ bool spectral_xyz(
         const JuicerCuda::ScannerSpectra& spectra,
         const float (&density)[3],
-        double (&xyz)[3]) {
+        double (&xyz)[3]
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        ,
+        JuicerCuda::ScanDensityCaptureTest::ScanSample* observed
+#endif
+    ) {
         if (!isfinite(density[0]) || !isfinite(density[1]) || !isfinite(density[2])) {
             return false;
         }
@@ -1743,8 +1748,15 @@ namespace {
             const bool activeX = isfinite(sample.weightX);
             const bool activeY = isfinite(sample.weightY);
             const bool activeZ = isfinite(sample.weightZ);
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+            auto* const step = observed ? observed->wavelengths + (&sample - spectra.wavelengths) : nullptr;
+#endif
             if ((!activeX && !activeY && !activeZ) ||
                 isnan(sample.dyeC) || isnan(sample.dyeM) || isnan(sample.dyeY) || isnan(sample.baseDensity)) {
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+                if (step)
+                    step->activeWeights = 0;
+#endif
                 continue;
             }
             const double spectralDensity = static_cast<double>(density[0]) * sample.dyeC +
@@ -1768,6 +1780,19 @@ namespace {
             if (activeZ) {
                 z += transmission * sample.weightZ;
             }
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+            if (step) {
+                step->density = spectralDensity;
+                step->exponent = static_cast<float>(-spectralDensity);
+                step->transmission = transmission;
+                step->accumulated[0] = x;
+                step->accumulated[1] = y;
+                step->accumulated[2] = z;
+                step->activeWeights = static_cast<unsigned>(activeX) |
+                                      (static_cast<unsigned>(activeY) << 1) |
+                                      (static_cast<unsigned>(activeZ) << 2);
+            }
+#endif
         }
         const float scaledX = x * spectra.inverseYNormalization;
         const float scaledY = y * spectra.inverseYNormalization;
@@ -1775,6 +1800,13 @@ namespace {
         if (!isfinite(scaledX) || !isfinite(scaledY) || !isfinite(scaledZ)) {
             return false;
         }
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        if (observed) {
+            observed->scaledXYZ[0] = scaledX;
+            observed->scaledXYZ[1] = scaledY;
+            observed->scaledXYZ[2] = scaledZ;
+        }
+#endif
         xyz[0] = static_cast<double>(fmaxf(scaledX, 0.0F)) + 1e-10;
         xyz[1] = static_cast<double>(fmaxf(scaledY, 0.0F)) + 1e-10;
         xyz[2] = static_cast<double>(fmaxf(scaledZ, 0.0F)) + 1e-10;
@@ -1893,7 +1925,12 @@ namespace {
 #endif
         double xyz[3];
         double rgbOut[3];
-        const bool success = spectral_xyz(spectra, D_cmy, xyz);
+        const bool success = spectral_xyz(spectra, D_cmy, xyz
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+                                          ,
+                                          observed
+#endif
+        );
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         if (observed && success) {
             copy_sample_device(observed->density, D_cmy);
@@ -2102,7 +2139,12 @@ namespace {
 #endif
 
                 double xyz[3];
-                const bool success = spectral_xyz(spectra, D_cmy, xyz);
+                const bool success = spectral_xyz(spectra, D_cmy, xyz
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+                                                  ,
+                                                  observed
+#endif
+                );
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                 if (observed && success) {
                     copy_sample_device(observed->density, D_cmy);

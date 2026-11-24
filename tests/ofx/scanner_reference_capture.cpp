@@ -118,6 +118,25 @@ namespace ofx_test {
                 {"device_signed_rgb_bits", stage_words(samples, &Sample::signedRGB)}};
     }
 
+    nlohmann::json scan_reference_arithmetic(const ScanReferenceCapture::Samples& samples) {
+        auto pixels = nlohmann::json::array();
+        pixels.get_ref<nlohmann::json::array_t&>().reserve(samples.size());
+        for (const auto& sample : samples) {
+            auto steps = nlohmann::json::array();
+            steps.get_ref<nlohmann::json::array_t&>().reserve(std::size(sample.wavelengths));
+            for (const auto& step : sample.wavelengths) {
+                require(step.activeWeights <= 7, "scan arithmetic did not reach a wavelength sample");
+                if (step.activeWeights == 0) {
+                    steps.push_back(nullptr);
+                    continue;
+                }
+                steps.push_back({step.activeWeights, std::bit_cast<std::uint64_t>(step.density), std::bit_cast<std::uint32_t>(step.exponent), std::bit_cast<std::uint32_t>(step.transmission), scan_float_words(step.accumulated)});
+            }
+            pixels.push_back({{"steps", std::move(steps)}, {"scaled_xyz_bits", scan_float_words(sample.scaledXYZ)}});
+        }
+        return pixels;
+    }
+
     nlohmann::json scan_reference_inputs(const FjPreparedStateView& state) {
         const auto lane = [](const FjFloatSpan& values) {
             require(values.data && values.count == 81, "missing held scanner spectrum");

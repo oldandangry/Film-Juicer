@@ -7,6 +7,14 @@
 
 namespace JuicerCuda::ScanDensityCaptureTest {
 
+    struct WavelengthSample {
+        double density;
+        float exponent;
+        float transmission;
+        float accumulated[3];
+        unsigned activeWeights;
+    };
+
     struct ScanSample {
         float density[3];
         float glarePercent;
@@ -14,6 +22,8 @@ namespace JuicerCuda::ScanDensityCaptureTest {
         double correctedXYZ[3];
         double adaptedXYZ[3];
         double signedRGB[3];
+        WavelengthSample wavelengths[81];
+        float scaledXYZ[3];
     };
 
     struct GlareLaunch {

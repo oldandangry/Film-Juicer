@@ -4734,7 +4734,8 @@ namespace {
                 std::bit_cast<std::uint64_t>(view.captured.camera_exposure_compensation_ev) != std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0) ||
                 seen.frame_token != 37 || seen.frame_rate != 24.0 || seen.render_bounds[0] != test.originX || seen.render_bounds[1] != test.originY)
                 throw std::runtime_error("processor scanner fixture captured the wrong controls or frame");
-            const auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
+            auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
+            report["wavelength_arithmetic"] = ofx_test::scan_reference_arithmetic(observed);
             std::puts(report.dump().c_str());
             row.passed();
         }
@@ -4787,7 +4788,8 @@ namespace {
                 std::bit_cast<std::uint64_t>(view.captured.camera_exposure_compensation_ev) != 0 ||
                 seen.frame_token != 37 || seen.frame_rate != 24.0 || seen.render_bounds[0] != test.originX || seen.render_bounds[1] != test.originY)
                 throw std::runtime_error("extended processor scanner capture controls differ");
-            const auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor, "scanner-reference-processor-extended-v1");
+            auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor, "scanner-reference-processor-extended-v1");
+            report["wavelength_arithmetic"] = ofx_test::scan_reference_arithmetic(observed);
             if (fixturePath) {
                 const auto& reference = fixtures.at(index);
                 for (const char* name : {"id", "shape", "route", "reconstruction", "film", "paper", "source_origin", "frame", "frame_rate", "grain", "glare", "exposure_bits", "source_bits"}) {

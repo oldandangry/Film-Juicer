@@ -43,5 +43,6 @@ namespace ofx_test {
     nlohmann::json scan_float_words(std::span<const float> values);
     std::array<float, ScanReferenceCapture::kPixels> scan_glare_field(const ScanReferenceCapture::Samples& samples);
     nlohmann::json scan_reference_stages(const ScanReferenceCapture::Samples& samples);
+    nlohmann::json scan_reference_arithmetic(const ScanReferenceCapture::Samples& samples);
     nlohmann::json scan_reference_inputs(const FjPreparedStateView& state);
 } // namespace ofx_test

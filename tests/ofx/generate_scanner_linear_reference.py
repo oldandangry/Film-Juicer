@@ -299,6 +299,118 @@ def delivered_reference(row, source, signed_rgb):
     }
 
 
+def wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y):
+    """Check the actual loop records and attribute the evaluator residual on the worst pixels."""
+    height, width, components = row["shape"]
+    expected = promote(reference["delivered"]["output_bits"], (height * width, components))
+    observed = promote(row["device_output_bits"], expected.shape)
+    pixel, _ = np.unravel_index(np.argmax(np.abs(observed[:, :3] - expected[:, :3])), (height * width, 3))
+    coordinates = {(int(pixel % width), int(pixel // width))}
+    for tap in ("xyz", "signed_rgb"):
+        coordinates.add(tuple(reference["device_stages"][tap]["worst_xy"]))
+    captured = row["wavelength_arithmetic"]
+    xyz_stage = np.asarray(row["device_xyz_bits"], dtype="<u8").view("<f8").reshape(-1, 3)
+    corrected_stage = np.asarray(row["device_corrected_xyz_bits"], dtype="<u8").view("<f8").reshape(-1, 3)
+    adapted_stage = np.asarray(row["device_adapted_xyz_bits"], dtype="<u8").view("<f8").reshape(-1, 3)
+    rgb_stage = np.asarray(row["device_signed_rgb_bits"], dtype="<u8").view("<f8").reshape(-1, 3)
+    cat02 = promote(row["cat02_bits"], (3, 3))
+    xyz_to_rgb = promote(row["xyz_to_rgb_bits"], (3, 3))
+    if len(captured) != height * width:
+        raise ValueError("scanner arithmetic trace has the wrong raster shape")
+
+    output = []
+    for x, y in sorted(coordinates):
+        index = y * width + x
+        trace = captured[index]
+        prior = [0.0, 0.0, 0.0]
+        terms = {name: [[], [], []] for name in ("device_dot", "narrowed_exponent", "device_intrinsic")}
+        dot_error = narrowing_error = intrinsic_error = 0.0
+        distinct_steps = 0
+        fused = split = True
+        for step, samples, floor, lanes in zip(trace["steps"], dye, base, weights, strict=True):
+            mask = sum((1 << channel) for channel, val in enumerate(lanes) if math.isfinite(val))
+            if not mask or any(map(math.isnan, (*samples, floor))):
+                if step is not None:
+                    raise ValueError("scanner device arithmetic did not omit an inactive wavelength")
+                continue
+            if step is None or step[0] != mask:
+                raise ValueError("scanner device arithmetic omitted an active wavelength or lane")
+            _, density_bits, exponent_bits, transmission_bits, accumulated_bits = step
+            observed_density = struct.unpack("<d", struct.pack("<Q", density_bits))[0]
+            exponent, transmission = promote([exponent_bits, transmission_bits], (2,))
+            accumulated = promote(accumulated_bits, (3,)).tolist()
+            dot_terms = [float(a) * float(b) for a, b in zip(cmy[index], samples, strict=True)] + [float(floor)]
+            expected_density = math.fsum(dot_terms)
+            residual = abs(expected_density - observed_density)
+            if residual > 4.0 * sys.float_info.epsilon * math.fsum(map(abs, dot_terms)):
+                raise ValueError("scanner device dye dot differs from the Float64 arithmetic")
+            dot_error = max(dot_error, residual)
+            if np.float32(-observed_density).view("<u4") != exponent_bits:
+                raise ValueError("scanner exponent differs from the rounded device dye dot")
+            narrowing_error = max(narrowing_error, abs(float(exponent) + observed_density))
+            rounded_transmission = 10.0 ** float(exponent)
+            intrinsic_error = max(intrinsic_error, abs(float(transmission) - rounded_transmission))
+            for channel, weight in enumerate(map(float, lanes)):
+                fused_sum = split_sum = prior[channel]
+                if mask & (1 << channel):
+                    for name, value in zip(
+                        terms, (10.0**-observed_density, rounded_transmission, float(transmission)), strict=True
+                    ):
+                        terms[name][channel].append(value * weight)
+                    fused_sum = float(np.float32(math.fma(float(transmission), weight, prior[channel])))
+                    split_sum = float(np.float32(float(np.float32(float(transmission) * weight)) + prior[channel]))
+                    distinct_steps += fused_sum != split_sum
+                fused &= accumulated[channel] == fused_sum
+                split &= accumulated[channel] == split_sum
+            prior = accumulated
+        if not (fused or split):
+            raise ValueError("scanner wavelength accumulation differs from both ordered Float32 forms")
+        scaled = np.asarray(np.asarray(prior, dtype="<f4") * np.float32(inverse_y), dtype="<f4")
+        if scaled.view("<u4").tolist() != trace["scaled_xyz_bits"]:
+            raise ValueError("scanner inverse-Y multiplication differs from the ordered device accumulation")
+        device_xyz = np.maximum(scaled.astype(np.float64), 0.0) + 1e-10
+        if not np.array_equal(device_xyz, xyz_stage[index]):
+            raise ValueError("scanner output differs from the captured nonnegative Float64 XYZ floor")
+
+        cat02_terms = cat02 * corrected_stage[index]
+        device_rgb_terms = xyz_to_rgb * adapted_stage[index]
+        for label, transform_terms, actual in (
+            ("CAT02", cat02_terms, adapted_stage[index]),
+            ("XYZ to RGB", device_rgb_terms, rgb_stage[index]),
+        ):
+            for lane, value in zip(transform_terms, actual, strict=True):
+                if abs(math.fsum(lane) - value) > 4.0 * sys.float_info.epsilon * math.fsum(map(abs, lane)):
+                    raise ValueError(f"{label} device matrix residual exceeds ordered Float64 rounding")
+
+        def normalized(lanes):
+            return [max(0.0, math.fsum(lane) * float(inverse_y)) + 1e-10 for lane in lanes]
+
+        output.append(
+            {
+                "xy": [x, y],
+                "accumulation": "fused"
+                if fused and not split
+                else "split"
+                if split and not fused
+                else "indistinguishable",
+                "steps_distinguishing_fused_from_split": distinct_steps,
+                "max_abs_dye_dot": dot_error,
+                "max_abs_exponent_narrowing": narrowing_error,
+                "max_abs_intrinsic_vs_float64_pow": intrinsic_error,
+                "xyz_by_precision_stage": {
+                    "float64_reference": reference["xyz"][index],
+                    **{name: normalized(lanes) for name, lanes in terms.items()},
+                    "device_accumulation": normalized([[val] for val in prior]),
+                    "device_normalization_and_floor": device_xyz.tolist(),
+                },
+                "rgb_terms": reference["rgb_terms"][index],
+                "device_cat02_terms": cat02_terms.tolist(),
+                "device_rgb_terms": device_rgb_terms.tolist(),
+            }
+        )
+    return output
+
+
 def reference_row(row, density_spectral, density_to_light):
     height, width, components = row["shape"]
     trace = FIXED_TRACES.get(row["id"])
@@ -409,6 +521,8 @@ def reference_row(row, density_spectral, density_to_light):
         "scanner-reference-processor-extended-v1",
     }:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
+    if "wavelength_arithmetic" in row:
+        reference["wavelength_precision"] = wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y)
     return reference
 
 
@@ -424,6 +538,10 @@ def main():
     parser.add_argument("--render-fixtures", type=Path, help="freeze the matched OFX render fixture cohort")
     parser.add_argument("--accepted-fixtures", type=Path, help="freeze the accepted clean capture fixture cohort")
     parser.add_argument("--processor-fixtures", type=Path, help="freeze the processor callback fixture cohort")
+    parser.add_argument("--processor-inputs", action="store_true", help="read the processor callback capture cohort")
+    parser.add_argument(
+        "--processor-scanner-inputs", action="store_true", help="read the extended scanner capture cohort"
+    )
     parser.add_argument(
         "--processor-scanner-fixtures", type=Path, help="freeze the extended grain-off scanner fixture cohort"
     )
@@ -433,9 +551,9 @@ def main():
         registration = ACCEPTED_REGISTRATION
     elif args.render_fixtures:
         registration = RENDER_REGISTRATION
-    elif args.processor_scanner_fixtures:
+    elif args.processor_scanner_inputs or args.processor_scanner_fixtures:
         registration = EXTENDED_PROCESSOR_REGISTRATION
-    elif args.processor_fixtures:
+    elif args.processor_inputs or args.processor_fixtures:
         registration = PROCESSOR_REGISTRATION
     elif args.workspace_fixtures:
         registration = WORKSPACE_REGISTRATION
