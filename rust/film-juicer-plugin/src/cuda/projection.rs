@@ -151,7 +151,6 @@ fn empty_print() -> sys::FjPrint {
         preflash_illuminant: float_span(&[]),
         flags: 0,
         main_cc_cmy: [0.0; 3],
-        preflash_cc_cmy: [0.0; 3],
         exposure: 0.0,
         preflash_exposure: 0.0,
         preflash_raw_cmy: [0.0; 3],
@@ -160,9 +159,7 @@ fn empty_print() -> sys::FjPrint {
         profile_tables_hash: 0,
         main_illuminant_hash: 0,
         preflash_illuminant_hash: 0,
-        preflash_raw_hash: 0,
-        balance_hash: 0,
-        hash: 0,
+        glare_hash: 0,
     }
 }
 
@@ -429,7 +426,6 @@ pub(super) fn host_data(
             0
         };
         print.main_cc_cmy = *print_state.filters().main_cmy_cc();
-        print.preflash_cc_cmy = *print_state.filters().preflash_cmy_cc();
         print.exposure = exposure_params.print_exposure;
         print.preflash_exposure = exposure_params.preflash_exposure;
         print.normalizer = balance.normalizer();
@@ -441,9 +437,7 @@ pub(super) fn host_data(
         print.profile_tables_hash = descriptors.profile_tables_hash();
         print.main_illuminant_hash = descriptors.main_illuminant_hash();
         print.preflash_illuminant_hash = descriptors.preflash_illuminant_hash();
-        print.preflash_raw_hash = descriptors.preflash_raw_hash();
-        print.balance_hash = descriptors.balance_hash();
-        print.hash = descriptors.hash();
+        print.glare_hash = print_state.glare_hash();
     }
 
     let dyes = scanner_tables.dyes_cmy();

@@ -455,7 +455,7 @@ class NativeBoundary(unittest.TestCase):
         # The executor also binds the existing frame-local print-glare seed.
         # Retire color hashing everywhere while retaining that exact consumer.
         glare_seed = """Hash::hash_uint64_values(
-                {recipeHash,
+                {glareHash,
                  snapshot.frameToken.value,
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)})"""

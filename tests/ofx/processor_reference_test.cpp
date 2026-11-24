@@ -766,6 +766,7 @@ namespace {
         auto input = ofx_test::scan_reference_inputs(state);
         const auto& post = state.scanner_post_effects;
         const std::array controls{post.unsharp_sigma_px, post.unsharp_amount};
+        const std::array glareControls{post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px};
         const auto key = [](FjStringView value) {
             return value.count ? std::string_view(value.data, value.count) : std::string_view{};
         };
@@ -773,6 +774,7 @@ namespace {
                       {"paper", key(state.print_profile_key)},
                       {"grain", state.grain.active != 0},
                       {"glare", post.glare_active != 0},
+                      {"glare_controls_bits", ofx_test::scan_float_words(glareControls)},
                       {"unsharp_radius", post.unsharp_radius},
                       {"unsharp_controls_bits", ofx_test::scan_float_words(controls)}});
         return input;
@@ -5369,14 +5371,12 @@ int main(int argc, char** argv) try {
         }
 #else
         if (!emit) {
-            if (std::equal(freshPlus.begin(), freshPlus.end(), freshMinus.begin())) {
-                throw std::runtime_error("signed-zero fresh print renders did not differ");
-            }
+            RenderAssertions::compare_bits("matched Print glare across exposure zero signs", freshPlus, freshMinus);
             JuicerTestSupport::InstanceFixture transition;
             MembershipRetirement transitionRetirement{runtime, transition};
-            compare_pixels("glare plus to minus initial", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
-            compare_pixels("glare plus to minus", render_case(runtime, cases[6], parameters_for(cases[6]), transition), freshMinus);
-            compare_pixels("glare minus to plus", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
+            RenderAssertions::compare_bits("glare plus to minus initial", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
+            RenderAssertions::compare_bits("glare plus to minus", render_case(runtime, cases[6], parameters_for(cases[6]), transition), freshMinus);
+            RenderAssertions::compare_bits("glare minus to plus", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
         }
         JuicerTestSupport::InstanceFixture emptyWindowState;
         MembershipRetirement emptyWindowStateRetirement{runtime, emptyWindowState};

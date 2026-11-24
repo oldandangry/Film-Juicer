@@ -680,6 +680,7 @@ pub struct PrintState {
     balance: print::Balance,
     resource_descriptors: print::ResourceDescriptors,
     correction: scanner::Correction,
+    glare_hash: u64,
     hash: u64,
 }
 pub struct Preflash {
@@ -817,6 +818,9 @@ impl DirectState {
     }
 }
 impl PrintState {
+    pub fn glare_hash(&self) -> u64 {
+        self.glare_hash
+    }
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -1569,6 +1573,21 @@ fn scanner_recipe_hash(
     hash::update_bytes(&mut identity, &gamut_hash.to_le_bytes());
     identity
 }
+
+fn print_glare_hash(route: ScanRoute, key: &str, effects: &scanner::PostEffects) -> u64 {
+    let fields = effects.fields();
+    if !fields.glare_active() {
+        return 0;
+    }
+    let mut identity = hash::FNV_OFFSET;
+    hash::update_bytes(&mut identity, b"print-glare-v1");
+    hash::update_bytes(&mut identity, &[route_tag(route)]);
+    hash::update_bytes(&mut identity, &(key.len() as u64).to_le_bytes());
+    hash::update_bytes(&mut identity, key.as_bytes());
+    hash::update_bytes(&mut identity, &[1]);
+    update_floats(&mut identity, &fields.values()[..3]);
+    identity
+}
 fn lut_descriptor(
     params: &Params,
     film: &FilmProfile,
@@ -2146,6 +2165,14 @@ fn prepare_state(
             )
             .map_err(PrepareError::ScannerCorrection)?;
             let bounds_hash = print.bounds.hash();
+            let glare_hash = print_glare_hash(
+                params.scan_route,
+                &params.print_profile_key,
+                &scanner_post_effects,
+            );
+            if scanner_post_effects.fields().glare_active() && glare_hash == 0 {
+                return Err(ControlError::Identity(params.scan_route).into());
+            }
             let hash = hash::u64s(&[
                 print.filters.hash(),
                 print.exposure.hash(),
@@ -2173,6 +2200,7 @@ fn prepare_state(
                     balance,
                     resource_descriptors,
                     correction,
+                    glare_hash,
                     hash,
                 }),
                 lut,
@@ -2612,5 +2640,68 @@ mod tests {
             state.development().log_exposure().len(),
             state.development().normalized_curves_cmy().len()
         );
+    }
+
+    #[test]
+    fn print_glare_identity_matches_reviewed_known_answers() {
+        let mut params = scanner::PostEffectsParams {
+            route: ScanRoute::NegativePrint,
+            glare_active: true,
+            glare_percent: f32::from_bits(0x3cf5_c28f),
+            glare_roughness: f32::from_bits(0x3f33_3333),
+            glare_blur_sigma_px: f32::from_bits(0x3f00_0000),
+            lens_blur_sigma_px: 0.0,
+            unsharp_sigma_px: 0.0,
+            unsharp_amount: 0.0,
+        };
+        for (route, key, expected) in [
+            (
+                ScanRoute::NegativePrint,
+                "kodak_portra_endura",
+                0xf618_c9a2_7080_fb03,
+            ),
+            (
+                ScanRoute::NegativePrint,
+                "kodak_ultra_endura",
+                0xf358_9058_de05_8d92,
+            ),
+            (
+                ScanRoute::PositivePrint,
+                "kodak_portra_endura",
+                0xecf7_7afb_fba9_bf31,
+            ),
+            (
+                ScanRoute::PositivePrint,
+                "kodak_ultra_endura",
+                0x0135_0cec_7669_ec74,
+            ),
+        ] {
+            params.route = route;
+            let original = scanner::describe_post_effects(params).unwrap();
+            assert_eq!(print_glare_hash(route, key, &original), expected);
+
+            let sharpened = scanner::describe_post_effects(scanner::PostEffectsParams {
+                unsharp_sigma_px: 0.7,
+                unsharp_amount: 0.7,
+                ..params
+            })
+            .unwrap();
+            assert_ne!(original.hash(), sharpened.hash());
+            assert_eq!(print_glare_hash(route, key, &sharpened), expected);
+
+            for inactive in [
+                scanner::PostEffectsParams {
+                    glare_active: false,
+                    ..params
+                },
+                scanner::PostEffectsParams {
+                    glare_percent: 0.0,
+                    ..params
+                },
+            ] {
+                let inactive = scanner::describe_post_effects(inactive).unwrap();
+                assert_eq!(print_glare_hash(route, key, &inactive), 0);
+            }
+        }
     }
 }

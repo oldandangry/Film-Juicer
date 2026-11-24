@@ -56,7 +56,7 @@ namespace JuicerCuda {
         float filmRouteCorrectionScale = 1.0f;
         float printExposure = 0.0f;
         float preflashExposure = 0.0f;
-        std::uint64_t recipeHash = 0;
+        std::uint64_t glareHash = 0;
         bool cameraAutoEnabled = false;
         const ExecutionFrame& frame;
         ResourceManager::SubmissionSnapshot& snapshot;

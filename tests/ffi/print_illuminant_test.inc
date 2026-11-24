@@ -278,7 +278,8 @@ namespace PrintIlluminantTest {
                 for (unsigned variant = 0; variant < 6; ++variant)
                     product_ids.emplace_back("print-illuminant/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
         JuicerTests::Cohort product_rows("print_illuminant.recipe_tuple", product_ids);
-        for (const auto& expected : captured.at("products")) {
+        for (auto expected : captured.at("products")) {
+            PrintIlluminantFixtures::select_frozen_light_hashes(expected, "descriptors");
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
             const unsigned variant = expected.at("variant");
@@ -318,7 +319,7 @@ namespace PrintIlluminantTest {
                 const auto& mainCmy = print.main_cc_cmy;
                 actual["main_cmy"] = words(mainCmy, 3);
                 if ((print.flags & FJ_PRINT_PREFLASH) != 0) {
-                    actual["preflash_cmy"] = words(print.preflash_cc_cmy, 3);
+                    actual["preflash_cmy"] = words(view.print_effective_preflash_cmy_cc, 3);
                 } else {
                     require(p.values.print_preflash_exposure == 0 && p.values.preflash_m_filter_cc == 0 && p.values.preflash_y_filter_cc == 0 &&
                                 std::all_of(std::begin(p.values.print_ui_ymc_cc), std::end(p.values.print_ui_ymc_cc), [](double value) {
@@ -329,9 +330,9 @@ namespace PrintIlluminantTest {
                         return std::bit_cast<std::uint32_t>(value) == 0;
                     };
                     require(print.preflash_illuminant.data == nullptr && print.preflash_illuminant.count == 0 &&
-                                print.preflash_illuminant_hash == 0 && print.preflash_raw_hash == 0 &&
+                                print.preflash_illuminant_hash == 0 &&
                                 zero(print.preflash_exposure) &&
-                                std::all_of(std::begin(print.preflash_cc_cmy), std::end(print.preflash_cc_cmy), zero) &&
+                                std::all_of(std::begin(view.print_effective_preflash_cmy_cc), std::end(view.print_effective_preflash_cmy_cc), zero) &&
                                 std::all_of(std::begin(print.preflash_raw_cmy), std::end(print.preflash_raw_cmy), zero),
                             "inactive preflash projection is absent/zero before capture metadata mapping");
                     actual["preflash_cmy"] = words(mainCmy, 3);
@@ -350,7 +351,7 @@ namespace PrintIlluminantTest {
                 // is an empty span in FjPrint and the original scratch stayed +0.
                 actual["preflash"] = words(preflashScratch.data(), preflashScratch.size());
                 actual["raw"] = words(print.preflash_raw_cmy, 3);
-                actual["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
+                actual["descriptors"] = {print.main_illuminant_hash, print.preflash_illuminant_hash};
             }
             if (actual != expected)
                 throw std::runtime_error("print illuminant product route=" + std::to_string(route) +

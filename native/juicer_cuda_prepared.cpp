@@ -403,7 +403,7 @@ namespace JuicerCuda {
         if (print) {
             preparation.print = decode_print(source.print);
         }
-        execute_prepared(root, {preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
+        execute_prepared(root, {preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.print.glare_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
         return true;
     }
 

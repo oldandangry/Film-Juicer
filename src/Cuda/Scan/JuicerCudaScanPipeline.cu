@@ -2415,6 +2415,11 @@ namespace {
         glare.originY = options.glareOriginY;
         glare.percent = options.glarePercent;
         glare.roughness = options.glareRoughness;
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        if (auto* observed = densityCapture.glare) {
+            *observed = {glare.seed, glare.originX, glare.originY, static_cast<int>(glare.mediumId), blur ? options.glareRadius : 0, observed->count + 1};
+        }
+#endif
         optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(glare);
         auto status = cudaGetLastError();
         if (status == cudaSuccess && blur) {

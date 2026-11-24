@@ -646,16 +646,18 @@ namespace IlluminantConstruction {
                 ASSERT_EQ(fj_test_print_preflash_prepare(&input, &preflash, &failure, nullptr).category, FJ_STATUS_SUCCESS);
                 result["preflash_light"] = span_bits(productView.print.preflash_illuminant);
                 result["preflash_raw"] = bits(preflash.cmy);
-                result["print_descriptors"] = {productView.print.hash, productView.print.main_illuminant_hash, productView.print.preflash_illuminant_hash, productView.print.preflash_raw_hash, productView.print.balance_hash};
-                EXPECT_EQ(prepared.print.hash, productView.print.hash);
+                result["print_descriptors"] = {productView.print.main_illuminant_hash, productView.print.preflash_illuminant_hash};
+                EXPECT_EQ(prepared.print.glare_hash, productView.print.glare_hash);
                 EXPECT_EQ(prepared.print_balance.hash, productView.print_balance.hash);
                 ASSERT_EQ(prepared.print.main_illuminant.count, productView.print.main_illuminant.count);
                 EXPECT_EQ(std::memcmp(prepared.print.main_illuminant.data, productView.print.main_illuminant.data, prepared.print.main_illuminant.count * sizeof(float)), 0);
                 ASSERT_EQ(prepared.print.preflash_illuminant.count, productView.print.preflash_illuminant.count);
                 EXPECT_EQ(std::memcmp(prepared.print.preflash_illuminant.data, productView.print.preflash_illuminant.data, prepared.print.preflash_illuminant.count * sizeof(float)), 0);
             }
-            const bool matches = result == row["expected"];
-            EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(row["expected"], result).front().dump());
+            auto expected = row.at("expected");
+            PrintIlluminantFixtures::select_frozen_light_hashes(expected, "print_descriptors");
+            const bool matches = result == expected;
+            EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(expected, result).front().dump());
 
             product_case.passed();
         }

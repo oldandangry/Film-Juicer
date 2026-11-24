@@ -789,7 +789,6 @@ pub struct FjPrint {
     pub preflash_illuminant: FjFloatSpan,
     pub flags: u32,
     pub main_cc_cmy: [f32; 3usize],
-    pub preflash_cc_cmy: [f32; 3usize],
     pub exposure: f32,
     pub preflash_exposure: f32,
     pub preflash_raw_cmy: [f32; 3usize],
@@ -798,13 +797,11 @@ pub struct FjPrint {
     pub profile_tables_hash: u64,
     pub main_illuminant_hash: u64,
     pub preflash_illuminant_hash: u64,
-    pub preflash_raw_hash: u64,
-    pub balance_hash: u64,
-    pub hash: u64,
+    pub glare_hash: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPrint"][::core::mem::size_of::<FjPrint>() - 224usize];
+    ["Size of FjPrint"][::core::mem::size_of::<FjPrint>() - 192usize];
     ["Alignment of FjPrint"][::core::mem::align_of::<FjPrint>() - 8usize];
     ["Offset of field: FjPrint::film_density_cmy"]
         [::core::mem::offset_of!(FjPrint, film_density_cmy) - 0usize];
@@ -823,28 +820,23 @@ const _: () = {
     ["Offset of field: FjPrint::flags"][::core::mem::offset_of!(FjPrint, flags) - 112usize];
     ["Offset of field: FjPrint::main_cc_cmy"]
         [::core::mem::offset_of!(FjPrint, main_cc_cmy) - 116usize];
-    ["Offset of field: FjPrint::preflash_cc_cmy"]
-        [::core::mem::offset_of!(FjPrint, preflash_cc_cmy) - 128usize];
-    ["Offset of field: FjPrint::exposure"][::core::mem::offset_of!(FjPrint, exposure) - 140usize];
+    ["Offset of field: FjPrint::exposure"][::core::mem::offset_of!(FjPrint, exposure) - 128usize];
     ["Offset of field: FjPrint::preflash_exposure"]
-        [::core::mem::offset_of!(FjPrint, preflash_exposure) - 144usize];
+        [::core::mem::offset_of!(FjPrint, preflash_exposure) - 132usize];
     ["Offset of field: FjPrint::preflash_raw_cmy"]
-        [::core::mem::offset_of!(FjPrint, preflash_raw_cmy) - 148usize];
+        [::core::mem::offset_of!(FjPrint, preflash_raw_cmy) - 136usize];
     ["Offset of field: FjPrint::normalizer"]
-        [::core::mem::offset_of!(FjPrint, normalizer) - 160usize];
+        [::core::mem::offset_of!(FjPrint, normalizer) - 148usize];
     ["Offset of field: FjPrint::film_density_hash"]
-        [::core::mem::offset_of!(FjPrint, film_density_hash) - 168usize];
+        [::core::mem::offset_of!(FjPrint, film_density_hash) - 152usize];
     ["Offset of field: FjPrint::profile_tables_hash"]
-        [::core::mem::offset_of!(FjPrint, profile_tables_hash) - 176usize];
+        [::core::mem::offset_of!(FjPrint, profile_tables_hash) - 160usize];
     ["Offset of field: FjPrint::main_illuminant_hash"]
-        [::core::mem::offset_of!(FjPrint, main_illuminant_hash) - 184usize];
+        [::core::mem::offset_of!(FjPrint, main_illuminant_hash) - 168usize];
     ["Offset of field: FjPrint::preflash_illuminant_hash"]
-        [::core::mem::offset_of!(FjPrint, preflash_illuminant_hash) - 192usize];
-    ["Offset of field: FjPrint::preflash_raw_hash"]
-        [::core::mem::offset_of!(FjPrint, preflash_raw_hash) - 200usize];
-    ["Offset of field: FjPrint::balance_hash"]
-        [::core::mem::offset_of!(FjPrint, balance_hash) - 208usize];
-    ["Offset of field: FjPrint::hash"][::core::mem::offset_of!(FjPrint, hash) - 216usize];
+        [::core::mem::offset_of!(FjPrint, preflash_illuminant_hash) - 176usize];
+    ["Offset of field: FjPrint::glare_hash"]
+        [::core::mem::offset_of!(FjPrint, glare_hash) - 184usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1739,7 +1731,7 @@ pub struct FjPreparedHostData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6832usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6800usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1780,17 +1772,17 @@ const _: () = {
     ["Offset of field: FjPreparedHostData::print"]
         [::core::mem::offset_of!(FjPreparedHostData, print) - 1296usize];
     ["Offset of field: FjPreparedHostData::optics"]
-        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1520usize];
+        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1488usize];
     ["Offset of field: FjPreparedHostData::spatial_dir"]
-        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4576usize];
+        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4544usize];
     ["Offset of field: FjPreparedHostData::grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, grain) - 5096usize];
+        [::core::mem::offset_of!(FjPreparedHostData, grain) - 5064usize];
     ["Offset of field: FjPreparedHostData::effects"]
-        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5904usize];
+        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5872usize];
     ["Offset of field: FjPreparedHostData::noise"]
-        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6736usize];
+        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6704usize];
     ["Offset of field: FjPreparedHostData::film_grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6824usize];
+        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6792usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;

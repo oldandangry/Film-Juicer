@@ -1190,7 +1190,7 @@ namespace {
                 prepared.filmRouteCorrectionScale,
                 prepared.printExposure,
                 prepared.preflashExposure,
-                prepared.state.recipe_hash,
+                prepared.state.print.glare_hash,
                 (prepared.state.film_exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0,
                 frame,
                 snapshot,

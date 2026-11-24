@@ -338,6 +338,7 @@ pub(crate) struct FjPreparedStateView {
     pub(crate) print_gamma: f64,
     pub(crate) print_filter_main_cmy_cc: [f32; 3],
     pub(crate) print_filter_preflash_cmy_cc: [f32; 3],
+    pub(crate) print_effective_preflash_cmy_cc: [f32; 3],
     pub(crate) print_normalization_mode: u32,
     pub(crate) normalize_print_exposure: u32,
     pub(crate) print_exposure_compensation: u32,
@@ -1271,11 +1272,6 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
                 0
             },
             main_cc_cmy: *print.filters().main_cmy_cc(),
-            preflash_cc_cmy: if print.preflash().is_some() {
-                *print.filters().preflash_cmy_cc()
-            } else {
-                [0.0; 3]
-            },
             exposure: exposure.print_exposure,
             preflash_exposure: exposure.preflash_exposure,
             preflash_raw_cmy: print
@@ -1286,13 +1282,14 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
             profile_tables_hash: descriptors.profile_tables_hash(),
             main_illuminant_hash: descriptors.main_illuminant_hash(),
             preflash_illuminant_hash: descriptors.preflash_illuminant_hash(),
-            preflash_raw_hash: descriptors.preflash_raw_hash(),
-            balance_hash: descriptors.balance_hash(),
-            hash: descriptors.hash(),
+            glare_hash: print.glare_hash(),
         };
         out.print_gamma = print.gamma();
         out.print_filter_main_cmy_cc = *print.filters().main_cmy_cc();
         out.print_filter_preflash_cmy_cc = *print.filters().preflash_cmy_cc();
+        if print.preflash().is_some() {
+            out.print_effective_preflash_cmy_cc = out.print_filter_preflash_cmy_cc;
+        }
         out.print_normalization_mode = u32::from(print.exposure().normalization_mode());
         out.normalize_print_exposure = u32::from(exposure.normalize);
         out.print_exposure_compensation = u32::from(exposure.compensate);
@@ -2612,7 +2609,7 @@ pub(crate) fn layout_facts() -> &'static [usize] {
         FjPreparedSpectralView => [lambda_nm, illuminant, observer_xyz, weighted_xyz, dyes_cmy, baseline_min, baseline_mid, inv_yn, white_xyz, has_baseline, illuminant_hash, hash],
         FjPreparedInputPolicy => [meter, band_pass_active, apply_hanatos_window, apply_hanatos_surface, projection_illuminant, input_compression_active, film_format_long_edge_mm, uv, ir, hanatos_spectral_blur, nominal_white_xyz, projection_white_xyz, hanatos_window, hanatos_surface_rgb, input_hull_hash, tc_source_hash],
         FjPreparedScannerPolicy => [black_correction, white_correction, glare_active, black_level, white_level, glare_percent, glare_roughness, glare_blur_sigma_px, lens_blur_sigma_px, unsharp_sigma_px, unsharp_amount],
-        FjPreparedStateView => [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash],
+        FjPreparedStateView => [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash],
         FjPreparationTrace => [count, stages],
         FjOutputCacheHooks => [after_miss, after_selection],
         FjCacheMetrics => [allocations, derivations, destructions, live_bytes, peak_bytes, reentries, reentry_failures],

@@ -972,7 +972,7 @@ namespace {
         const JuicerCuda::VisualGrainPayloadInput& grain;
         const OutputGamutRecipe& outputGamut;
         std::uint64_t scannerBoundsHash{};
-        std::uint64_t recipeHash{};
+        std::uint64_t glareHash{};
         bool cameraAutoEnabled{};
         Spektrafilm::AutoExposureMethod meteringMethod{};
         const JuicerProcess::Root::PreparedFrameInput& preparation;
@@ -2487,7 +2487,7 @@ namespace {
         const std::optional<DirBuildResult>& dirBuild,
         bool gateOutputActive,
         const JuicerCuda::ExecutionFrame& frame,
-        std::uint64_t recipeHash,
+        std::uint64_t glareHash,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const ExecutionErrors& errors) {
         cudaError_t launchError = cudaSuccess;
@@ -2508,7 +2508,7 @@ namespace {
                 }
             }
             const std::uint64_t glareSeed = Hash::hash_uint64_values(
-                {recipeHash,
+                {glareHash,
                  snapshot.frameToken.value,
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)});
@@ -3204,7 +3204,7 @@ namespace JuicerCuda {
             dirBuild,
             gateOutputActive,
             frame,
-            input.recipeHash,
+            input.glareHash,
             snapshot,
             errors);
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -3256,7 +3256,7 @@ namespace JuicerCuda {
             errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
         }
         const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
-        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.glareHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
             execute_print_schedule(root, schedule, recovery, abortCallback);
         } else {

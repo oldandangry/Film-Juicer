@@ -483,7 +483,7 @@ namespace PrintBalanceTest {
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView directView{};
         status(direct.view(directView, error));
-        require(directView.print.hash == 0 && directView.print_balance.hash == 0, "direct route omits balance and its input");
+        require(directView.print.glare_hash == 0 && directView.print_balance.hash == 0, "direct route omits balance and its input");
         struct BoundFacts {
             float normalizer = 0;
         } bound;

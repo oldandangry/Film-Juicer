@@ -189,7 +189,7 @@ namespace JuicerTestSupport {
         const auto zero = [](float value) {
             return std::bit_cast<std::uint32_t>(value) == 0;
         };
-        if (state.print_recipe_hash != 0 || state.print.hash != 0 || state.print.flags != 0 ||
+        if (state.print_recipe_hash != 0 || state.print.glare_hash != 0 || state.print.flags != 0 ||
             state.print_profile_asset_version != 0 || state.print_profile_key.count != 0 ||
             balance.hash != 0 || balance.filtered_main_illuminant_hash != 0 ||
             !std::all_of(factors.begin(), factors.end(), zero) ||

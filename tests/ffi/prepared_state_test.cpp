@@ -36,6 +36,7 @@
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
 #include "prepared_state_oracle.h"
+#include "Hash.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_call_scope.h"
 #include "gtest_cases.h"
@@ -234,6 +235,27 @@ namespace {
             throw std::runtime_error("prepared-state oracle live backing relationship mismatch");
     }
 
+    std::uint64_t expected_print_glare_hash(const FjPreparedStateView& actual) {
+        const auto& post = actual.scanner_post_effects;
+        if ((actual.route != FJ_ROUTE_NEGATIVE_PRINT && actual.route != FJ_ROUTE_POSITIVE_PRINT) || !post.glare_active)
+            return 0;
+        const std::string_view label = "print-glare-v1";
+        const auto keyLength = static_cast<std::uint64_t>(actual.print_profile_key.count);
+        const auto route = static_cast<std::uint8_t>(actual.route);
+        constexpr auto active = std::uint8_t{1};
+        const std::array controls{std::bit_cast<std::uint32_t>(post.glare_percent),
+                                  std::bit_cast<std::uint32_t>(post.glare_roughness),
+                                  std::bit_cast<std::uint32_t>(post.glare_blur_sigma_px)};
+        auto digest = Hash::kFnvOffset;
+        Hash::hash_bytes_update(digest, label.data(), label.size());
+        Hash::hash_bytes_update(digest, &route, sizeof(route));
+        Hash::hash_bytes_update(digest, &keyLength, sizeof(keyLength));
+        Hash::hash_bytes_update(digest, actual.print_profile_key.data, actual.print_profile_key.count);
+        Hash::hash_bytes_update(digest, &active, sizeof(active));
+        Hash::hash_bytes_update(digest, controls.data(), sizeof(controls));
+        return digest;
+    }
+
     void record_projection(const JuicerTestSupport::PreparationInput& params, const FjAssets* resourceOwner, const FjPreparedStateView& actual) {
         const auto name = projection_case(params);
         if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
@@ -243,7 +265,13 @@ namespace {
         const auto& row = oracle_row(name);
         const auto wire = params.record();
         PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(wire));
-        PreparedStateOracle::compare(row.at("expected"), PreparedStateOracle::view(actual));
+        auto expected = row.at("expected");
+        for (const char* key : {"preflash_raw_hash", "balance_hash", "hash"})
+            ASSERT_EQ(expected.at("print").erase(key), 1U);
+        auto live = PreparedStateOracle::view(actual);
+        ASSERT_EQ(actual.print.glare_hash, expected_print_glare_hash(actual));
+        ASSERT_EQ(live.at("print").erase("glare_hash"), 1U);
+        PreparedStateOracle::compare(expected, live);
         Json relations = Json::array();
         // Frozen native.* labels now identify raw consumers of the same Rust cache entry.
         if (actual.input_hull.xy.count != 0) {
@@ -924,8 +952,12 @@ namespace {
         EXPECT_NE(first.scanner_color.hash, second.scanner_color.hash);
         EXPECT_EQ(first.scanner_lut.hash, second.scanner_lut.hash);
         EXPECT_EQ(first.scanner_tables.hash, second.scanner_tables.hash);
-        EXPECT_EQ(first.scanner_hash, second.scanner_hash);
-        EXPECT_EQ(first.print.hash, second.print.hash);
+        EXPECT_NE(first.scanner_hash, second.scanner_hash);
+        EXPECT_EQ(first.print.film_density_hash, second.print.film_density_hash);
+        EXPECT_EQ(first.print.profile_tables_hash, second.print.profile_tables_hash);
+        EXPECT_EQ(first.print.main_illuminant_hash, second.print.main_illuminant_hash);
+        EXPECT_EQ(first.print.preflash_illuminant_hash, second.print.preflash_illuminant_hash);
+        EXPECT_EQ(first.print.glare_hash, second.print.glare_hash);
         EXPECT_EQ(first.output_boundary.entry_identity, second.output_boundary.entry_identity);
         observe_encoding_relation(first.output_boundary.entry_identity == second.output_boundary.entry_identity);
         encodedCase.passed();
@@ -1172,8 +1204,8 @@ namespace {
     }
 
     auto cleared_fields(const FjPrint& value) {
-        const auto& [film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, preflash_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, preflash_raw_hash, balance_hash, hash] = value;
-        return std::tie(film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, preflash_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, preflash_raw_hash, balance_hash, hash);
+        const auto& [film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, glare_hash] = value;
+        return std::tie(film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, glare_hash);
     }
 
     auto cleared_fields(const FjPrintBalance& value) {
@@ -1232,8 +1264,8 @@ namespace {
     }
 
     auto cleared_fields(const FjPreparedStateView& value) {
-        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
-        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
+        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
+        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
     }
 
     template <class T>

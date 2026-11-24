@@ -47,7 +47,7 @@ namespace ofx_test {
             (void)cudaFree(device_);
             check_cuda(status, "clear scan observation");
         }
-        previous_ = JuicerCuda::ScanDensityCaptureTest::swap_density_capture({device_, kPixels, 7, 5});
+        previous_ = JuicerCuda::ScanDensityCaptureTest::swap_density_capture({device_, kPixels, 7, 5, &glare_});
     }
 
     ScanReferenceCapture::~ScanReferenceCapture() {
@@ -67,6 +67,10 @@ namespace ofx_test {
         check_cuda(cudaMemcpyAsync(samples.data(), device_, sizeof(samples), cudaMemcpyDeviceToHost, stream_), "read scan observation");
         check_cuda(cudaStreamSynchronize(stream_), "complete scan observation");
         return samples;
+    }
+
+    const JuicerCuda::ScanDensityCaptureTest::GlareLaunch& ScanReferenceCapture::glare_launch() const noexcept {
+        return glare_;
     }
 
     nlohmann::json scan_float_words(std::span<const float> values) {
@@ -123,7 +127,8 @@ namespace ofx_test {
             {"slope_bits", std::bit_cast<std::uint32_t>(correction.xyz_slope)},
             {"offset_bits", std::bit_cast<std::uint32_t>(correction.xyz_offset)},
             {"recipe_hash", state.recipe_hash},
-            {"scanner_hash", state.scanner_hash}};
+            {"scanner_hash", state.scanner_hash},
+            {"print_glare_hash", state.print.glare_hash}};
         if (gamut) {
             input.update({{"gamut_hash", color.gamut_recipe_hash},
                           {"gamut_table_hash", color.gamut_table_hash},

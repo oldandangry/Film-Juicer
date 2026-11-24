@@ -158,7 +158,7 @@ namespace PrintPreflashTest {
                             row["light"] = words(lightScratch.data(), lightScratch.size());
                             row["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
                             row["print_sensitivity_cmy"] = words(print.sensitivity_cmy.data, print.sensitivity_cmy.count);
-                            row["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
+                            row["descriptors"] = {print.main_illuminant_hash, print.preflash_illuminant_hash};
                         }
                         products.push_back(row);
                         require(products.back() == expectedProducts.at(products.size() - 1), "per-case complete print preflash product");
@@ -376,7 +376,10 @@ namespace PrintPreflashTest {
         transport_event.passed();
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
-        require(product_observations(resources, captured.at("products")) == captured.at("products"), "all 72 frozen caller values, input bindings, descriptor and final/seed identities");
+        auto expectedProducts = captured.at("products");
+        for (auto& row : expectedProducts)
+            PrintIlluminantFixtures::select_frozen_light_hashes(row, "descriptors");
+        require(product_observations(resources, expectedProducts) == expectedProducts, "all 72 frozen caller values, input bindings, light and final/seed identities");
         JuicerTests::CaseEvent caller_event("cpp", "print-preflash/actual-caller");
         caller(resources);
         caller_event.passed();
@@ -615,7 +618,7 @@ namespace PrintPreflashTest {
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView directView{};
         status(direct.view(directView, error));
-        require(directView.print.hash == 0 && directView.print.preflash_illuminant.count == 0,
+        require(directView.print.glare_hash == 0 && directView.print.preflash_illuminant.count == 0,
                 "direct complete state omits print preflash and its input");
         status(fj_test_film_recipe_fault(11, 0));
         payload_guard();

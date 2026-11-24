@@ -162,7 +162,7 @@ namespace {
         const auto fixture = nlohmann::json::parse(stream);
         const std::string preset = JUICER_SPECTRAL_TRACE_PRESET;
         const std::string referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
-        ofx_test::require_render(fixture.at("schema") == "spectral-scanner-trace-v3" && fixture.at("preset") == preset &&
+        ofx_test::require_render(fixture.at("schema") == "spectral-scanner-trace-v4" && fixture.at("preset") == preset &&
                                      fixture.at("reference_preset") == referencePreset,
                                  "fixed scanner fixture schema or preset changed");
         const auto& row = fixture.at("rows").at(id);
@@ -188,6 +188,7 @@ namespace {
             {"unsharp_controls_bits", ofx_test::scan_float_words(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
             {"recipe_hash", state.recipe_hash},
             {"scanner_hash", state.scanner_hash},
+            {"print_glare_hash", state.print.glare_hash},
             {"source_bits", source_bits(image, ofx_test::initial_source(image))},
             {"glare_field_bits", ofx_test::scan_float_words(glare)}};
         ofx_test::require_render(row.at("inputs") == inputs, "fixed scanner fixture inputs changed");
@@ -360,6 +361,100 @@ namespace {
                                  FJ_ROUTE_NEGATIVE_PRINT,
                                  &kFixedGlareMinusZero}};
         return report_reference_inputs(caller, cases, listing);
+    }
+
+    int run_print_glare_launches(bool listing) {
+        using Handoff = JuicerCuda::ExecutorTest::WorkspaceHandoff;
+        constexpr std::array phases{"fused", "materialized", "warm", "frame-edit", "origin-edit", "glare-off"};
+        constexpr std::array cases{kFixedNegativePrint, kFixedPositivePrint};
+        constexpr std::array<std::uint64_t, 2> identities{0xf618c9a27080fb03ULL, 0xecf77afbfba9bf31ULL};
+        constexpr std::array<std::uint64_t, 2> seeds{0x368f350b0108787aULL, 0x8aaee75c5d1781d1ULL};
+        const std::string caller = "ofx.gpu.print_glare_launches";
+        std::vector<std::string> ids;
+        ids.reserve(cases.size() * phases.size());
+        for (const auto& test : cases)
+            for (const auto* phase : phases)
+                ids.emplace_back(std::string(test.name) + "/" + phase);
+        if (listing) {
+            for (const auto& id : ids)
+                JuicerTests::list_case(caller, id);
+            return 0;
+        }
+
+        JuicerTests::CaseLog log;
+        JuicerTests::Cohort rows(caller, ids);
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            auto test = cases[index];
+            test.origin = {-13, 7};
+            const std::string prefix = std::string(test.name) + "/";
+            ofx_test::DeviceImages images({7, 5, test.components});
+            fj_test_ofx_render_tokens(kSession, test.instance, kClip);
+            ofx_test::RenderHost fixture;
+            configure_fixed_scan(fixture, images, test);
+
+            const auto observe = [&](double time, Handoff schedule, bool active = true) {
+                JuicerCuda::ExecutorTest::reset_workspace_transitions();
+                ofx_test::ScanReferenceCapture capture(images.stream());
+                (void)render(fixture, images, time, test.instance);
+                const auto field = ofx_test::scan_glare_field(capture.read());
+                const auto& launch = capture.glare_launch();
+                const Observation held(fixture.effect());
+                ofx_test::require_render(JuicerCuda::ExecutorTest::workspaceHandoff == schedule, "Print glare witness dispatched the wrong schedule");
+                ofx_test::require_render(held.view.published.print.glare_hash == (active ? identities[index] : 0),
+                                         "Print glare witness prepared the wrong glare identity");
+                ofx_test::require_render(launch.count == (active ? 1U : 0U), "Print glare witness launch count");
+                if (active) {
+                    const auto seed = Hash::hash_uint64_values({identities[index], static_cast<std::uint64_t>(time), static_cast<std::uint64_t>(test.origin.x), static_cast<std::uint64_t>(test.origin.y)});
+                    ofx_test::require_render(launch.medium == 1 && launch.originX == test.origin.x && launch.originY == test.origin.y &&
+                                                 launch.blurRadius > 0 && launch.seed == seed,
+                                             "Print glare witness seed, domain, origin or blur changed");
+                    if (time == 37.0 && test.origin.x == -13)
+                        ofx_test::require_render(launch.seed == seeds[index], "Print glare witness differs from the frozen seed");
+                }
+                ofx_test::require_render(std::ranges::all_of(field, [active](float value) {
+                                             return std::isfinite(value) && (active ? value > 0.0F : value == 0.0F);
+                                         }),
+                                         "Print glare witness field activation");
+                std::printf("print glare route=%s frame=%.0f origin=(%d,%d) domain=%d blur=%d seed=%llu launches=%u\n",
+                            test.name,
+                            time,
+                            test.origin.x,
+                            test.origin.y,
+                            launch.medium,
+                            launch.blurRadius,
+                            static_cast<unsigned long long>(launch.seed),
+                            launch.count);
+                return ofx_test::scan_float_words(field);
+            };
+
+            auto fused = rows.case_event(prefix + "fused");
+            const auto original = observe(37.0, Handoff::FusedDirScanner);
+            fused.passed();
+            fixture.host().set_value(fixture.effect(), "CouplersActive", {0});
+            change(fixture, "CouplersActive", kOfxChangeUserEdited, 37.0);
+            auto plane = rows.case_event(prefix + "materialized");
+            ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) == original, "fused and plane glare fields differ");
+            plane.passed();
+            auto warm = rows.case_event(prefix + "warm");
+            ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) == original, "warm Print glare field changed");
+            warm.passed();
+            auto frame = rows.case_event(prefix + "frame-edit");
+            ofx_test::require_render(observe(38.0, Handoff::MaterializedDensity) != original, "frame token did not change Print glare");
+            frame.passed();
+            auto origin = rows.case_event(prefix + "origin-edit");
+            ++test.origin.x;
+            configure_fixed_scan(fixture, images, test);
+            ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) != original, "origin edit did not change Print glare");
+            origin.passed();
+            auto off = rows.case_event(prefix + "glare-off");
+            fixture.host().set_value(fixture.effect(), "GlareActive", {0});
+            change(fixture, "GlareActive", kOfxChangeUserEdited, 37.0);
+            (void)observe(37.0, Handoff::Monolithic, false);
+            off.passed();
+            fixture.close();
+        }
+        log.finish();
+        return 0;
     }
 
     void check_highlight_carrier(std::size_t index) {
@@ -1057,6 +1152,9 @@ int main(int argc, char** argv) try {
     }
     if (argc >= 2 && std::string_view(argv[1]) == "--render-gpu-reference-inputs") {
         return run_render_gpu_reference_inputs(JuicerTests::list_requested(argc, argv));
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "--print-glare-launches") {
+        return run_print_glare_launches(JuicerTests::list_requested(argc, argv));
     }
     if (JuicerTests::list_requested(argc, argv)) {
         for (const auto* id : kRows)

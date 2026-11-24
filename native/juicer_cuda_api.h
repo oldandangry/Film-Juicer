@@ -413,7 +413,6 @@ typedef struct FjPrint {
     FjFloatSpan preflash_illuminant;
     uint32_t flags; /* FJ_PRINT_* */
     float main_cc_cmy[3];
-    float preflash_cc_cmy[3];
     float exposure;
     float preflash_exposure;
     float preflash_raw_cmy[3]; /* derive_preflash_raw result; relative exposure. */
@@ -422,9 +421,7 @@ typedef struct FjPrint {
     uint64_t profile_tables_hash;
     uint64_t main_illuminant_hash;
     uint64_t preflash_illuminant_hash;
-    uint64_t preflash_raw_hash;
-    uint64_t balance_hash;
-    uint64_t hash;
+    uint64_t glare_hash; /* Resolved Print glare identity. Zero when inactive. */
 } FjPrint;
 
 #define FJ_DIFFUSION_GLIMMERGLASS 0U

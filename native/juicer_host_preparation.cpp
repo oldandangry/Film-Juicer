@@ -83,7 +83,7 @@ namespace JuicerCuda {
             set_failure(rejected, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "Gaussian kernel projection invalid");
             return false;
         };
-        if (!preparation.user || !preparation.scanner_lut || !preparation.gaussian)
+        if (!preparation.user || !preparation.gaussian)
             return invalid();
         FjGaussianKernelFailure failure{};
         std::array<char, 256> text{};

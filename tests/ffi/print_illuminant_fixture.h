@@ -8,6 +8,16 @@
 #include <nlohmann/json.hpp>
 
 namespace PrintIlluminantFixtures {
+    inline void select_frozen_light_hashes(nlohmann::json& record, const char* member) {
+        if (!record.contains(member))
+            return;
+        auto& hashes = record.at(member);
+        if (!hashes.is_array() || hashes.size() != 5 ||
+            !hashes.at(1).is_number_unsigned() || !hashes.at(2).is_number_unsigned())
+            throw std::runtime_error("invalid frozen Print descriptor hashes");
+        hashes = nlohmann::json::array({hashes.at(1), hashes.at(2)});
+    }
+
     // Earlier captures retain their bytes. Only explicitly adopted downstream
     // products receive ordered test/replace operations for the approved erff policy.
     inline nlohmann::json apply(const std::filesystem::path& path, const nlohmann::json& original) {

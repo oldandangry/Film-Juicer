@@ -28,11 +28,13 @@ namespace ofx_test {
         ScanReferenceCapture(const ScanReferenceCapture&) = delete;
         ScanReferenceCapture& operator=(const ScanReferenceCapture&) = delete;
         Samples read() const;
+        const JuicerCuda::ScanDensityCaptureTest::GlareLaunch& glare_launch() const noexcept;
 
     private:
         cudaStream_t stream_;
         CUcontext context_ = nullptr;
         Sample* device_ = nullptr;
+        JuicerCuda::ScanDensityCaptureTest::GlareLaunch glare_{};
         JuicerCuda::ScanDensityCaptureTest::DensityCapture previous_{};
     };
 

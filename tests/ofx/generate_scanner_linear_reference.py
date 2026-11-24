@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import math
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -47,6 +48,18 @@ PROCESSOR_CASES.update(
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def expected_print_glare_hash(row):
+    if not row["glare"]:
+        return 0
+    key = row["paper"].encode("utf-8")
+    data = b"print-glare-v1" + struct.pack("<BQ", row["route"], len(key)) + key
+    data += struct.pack("<BIII", 1, *row["glare_controls_bits"])
+    value = 14695981039346656037
+    for byte in data:
+        value = ((value ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return value
 
 
 def reference_primitives(repository):
@@ -292,6 +305,8 @@ def reference_row(row, density_spectral, density_to_light):
         row["reconstruction"] != explicit[2] or tuple(row["source_origin"]) != explicit[3] or row["frame_token"] != 37
     ):
         raise ValueError(f"fixed trace controls changed for {row['id']}")
+    if "print_glare_hash" in row and row["print_glare_hash"] != expected_print_glare_hash(row):
+        raise ValueError(f"prepared Print glare identity differs from the independent value for {row['id']}")
     pixels = height * width
     source = promote(row["source_bits"], (pixels, components))
     cmy = promote(row["developed_cmy_bits"], (pixels, 3))
@@ -466,6 +481,7 @@ def write_trace_fixture(report, digest, path):
         "unsharp_controls_bits",
         "recipe_hash",
         "scanner_hash",
+        "print_glare_hash",
         "source_bits",
         "glare_field_bits",
     )
@@ -477,7 +493,7 @@ def write_trace_fixture(report, digest, path):
         for name, reference in refs.items()
     }
     fixture = {
-        "schema": "spectral-scanner-trace-v3",
+        "schema": "spectral-scanner-trace-v4",
         "preset": preset,
         "reference_preset": reference_preset,
         "reference_sha256": digest,

@@ -30,6 +30,7 @@
 #include "juicer_test_api.h"
 #include "juicer_cuda_owner.h"
 #include "prepared_product_fixture.h"
+#include "print_illuminant_fixture.h"
 #include "spectral_source_fixture.h"
 #include "test_asset_workspace.h"
 
@@ -510,11 +511,12 @@ namespace {
                         result["main_light"] = bits(view.print.main_illuminant.data, view.print.main_illuminant.count);
                         result["preflash_light"] = bits(view.print.preflash_illuminant.data, view.print.preflash_illuminant.count);
                         result["preflash_raw"] = bits(view.print.preflash_raw_cmy, 3);
-                        result["print_descriptors"] = {view.print.hash, view.print.main_illuminant_hash, view.print.preflash_illuminant_hash, view.print.preflash_raw_hash, view.print.balance_hash};
+                        result["print_descriptors"] = {view.print.main_illuminant_hash, view.print.preflash_illuminant_hash};
                     }
-                    const auto& expected = fixture.contains("expected_records")
-                                               ? fixture.at("expected_records").at(row.at("expected_record").get<std::size_t>())
-                                               : row.at("expected");
+                    auto expected = fixture.contains("expected_records")
+                                        ? fixture.at("expected_records").at(row.at("expected_record").get<std::size_t>())
+                                        : row.at("expected");
+                    PrintIlluminantFixtures::select_frozen_light_hashes(expected, "print_descriptors");
                     if (result != expected) {
                         const auto diff = Json::diff(expected, result);
                         throw std::runtime_error("completed product first difference " + std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(method) + "/" + label.get<std::string>() + ": " + diff[0].dump());

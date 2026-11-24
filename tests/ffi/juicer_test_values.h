@@ -1461,6 +1461,7 @@ typedef struct FjPreparedStateView {
     FjPrint print;
     double print_gamma;
     float print_filter_main_cmy_cc[3], print_filter_preflash_cmy_cc[3];
+    float print_effective_preflash_cmy_cc[3];
     uint32_t print_normalization_mode, normalize_print_exposure, print_exposure_compensation;
     uint32_t calibration; /* 0 MissingFile, 1 MissingEntry, 2 Calibrated. */
     float neutral_cmy_cc[3];
