@@ -98,6 +98,8 @@ namespace {
         Case{"negative-print-clipped-quarter", "negative-print", "NegativePrintScan", 0, 4, 1208, 2},
         Case{"negative-direct-time-endpoint", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
         Case{"negative-print-time-endpoint", "negative-print", "NegativePrintScan", 0, 4, 1920, 1080},
+        Case{"negative-direct-small-format-high-gain", "negative-direct", "NegativeDirectScan", 0, 4, 4832, 96},
+        Case{"negative-print-small-format-high-gain", "negative-print", "NegativePrintScan", 0, 4, 4832, 96},
     };
     struct GrainGeometry {
         OfxRectD canonical{};
@@ -895,14 +897,15 @@ namespace {
             const bool eightMmProxy = std::string_view(test.id).ends_with("-8mm-proxy");
             const bool clippedQuarter = std::string_view(test.id).ends_with("-clipped-quarter");
             const bool timeEndpoint = std::string_view(test.id).ends_with("-time-endpoint");
-            if (proxy || smallerFormats || thumbnails || eightMmProxy || clippedQuarter || timeEndpoint)
+            const bool smallFormatHighGain = std::string_view(test.id).ends_with("-small-format-high-gain");
+            if (proxy || smallerFormats || thumbnails || eightMmProxy || clippedQuarter || timeEndpoint || smallFormatHighGain)
                 host.set_value(effect, "GlareActive", {0});
             host.set_value(effect, "CameraFilmFormatPreset", {2});
             host.set_value(effect, "CameraFilmFormatMm", {36.0});
             require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "preview create");
             lifecycle.created(effect);
             Case renderTest = test;
-            auto source = initial_source(renderTest);
+            auto source = smallFormatHighGain ? flat_grain_source(renderTest) : initial_source(renderTest);
             const auto bytes = source.size() * sizeof(float);
             require_cuda(cudaMalloc(&device.source, bytes), "allocate preview source");
             require_cuda(cudaMalloc(&device.destination, bytes), "allocate preview destination");
@@ -925,6 +928,94 @@ namespace {
                 }
                 return words;
             };
+            if (smallFormatHighGain) {
+                constexpr double time = 0.0;
+                struct Request {
+                    int width, height;
+                    double mm, amount;
+                };
+                constexpr std::array requests{
+                    Request{4832, 96, 8.0, 3.0},
+                    Request{4832, 96, 11.66, 3.0},
+                    Request{3840, 96, 8.0, 3.0},
+                    Request{3840, 96, 11.66, 3.0},
+                    Request{4832, 2016, 8.0, 3.0},
+                    Request{4832, 2016, 11.66, 3.0},
+                    Request{1920, 96, 8.0, 3.0},
+                    Request{1920, 96, 11.66, 3.0},
+                    Request{4832, 96, 8.0, 2.0},
+                    Request{4832, 96, 36.0, 3.0},
+                };
+                auto full = [&](int width, int height) {
+                    device.release_images();
+                    renderTest.width = width;
+                    renderTest.height = height;
+                    source = flat_grain_source(renderTest);
+                    const auto imageBytes = source.size() * sizeof(float);
+                    require_cuda(cudaMalloc(&device.source, imageBytes), "allocate Full source");
+                    require_cuda(cudaMalloc(&device.destination, imageBytes), "allocate Full destination");
+                    configure(host, effect, renderTest, device);
+                };
+                change("GrainModel", {std::string("film_v1")});
+                change("GrainActive", {1});
+                const auto reference = render(time);
+                Json rows = Json::array();
+                std::set<std::tuple<int, int, double>> highGain;
+                for (const auto& [width, height, mm, amount] : requests) {
+                    if (renderTest.width != width || renderTest.height != height)
+                        full(width, height);
+                    change("GrainActive", {0});
+                    change("CameraFilmFormatMm", {mm});
+                    change("FilmGrainAmountEv", {amount});
+                    change("FilmGrainTexelPitchUm", {0.5});
+                    require(host.value(effect, "CameraFilmFormatPreset") == std::vector<InstanceValue>{0} &&
+                                host.value(effect, "CameraFilmFormatMm") == std::vector<InstanceValue>{mm} &&
+                                host.value(effect, "FilmGrainAmountEv") == std::vector<InstanceValue>{amount} &&
+                                host.value(effect, "FilmGrainTexelPitchUm") == std::vector<InstanceValue>{0.5} &&
+                                host.value(effect, "FilmGrainChromaFraction") == colourDefault,
+                            "effective Film settings differ from the high-gain request");
+                    const auto off = render(time);
+                    change("GrainActive", {1});
+                    const auto sampleWidth = static_cast<float>(static_cast<double>(static_cast<float>(mm)) * 2000.0 / width);
+                    Json row{{"width", width}, {"height", height}, {"mm", mm}, {"amount_ev", amount}, {"size_um", 0.5}, {"colour", 1.0}, {"sample_width", sampleWidth}, {"grain_changes_output", false}};
+                    try {
+                        require(render(time) != off, "Film did not change matched grain-off pixels");
+                        row["grain_changes_output"] = true;
+                        row["ofx_status"] = kOfxStatOK;
+                        row["finite_rgb"] = true;
+                        row["alpha_padding_source_preserved"] = true;
+                        row["released_both_images_once"] = true;
+                        if (mm != 36.0 && width != 1920 && amount == 3.0)
+                            require(highGain.emplace(width, height, mm).second, "repeated high-gain Full combination");
+                    } catch (const std::exception& error) {
+                        row["failure"] = error.what();
+                    }
+                    std::cout << test.id << ' ' << row.dump() << '\n';
+                    rows.push_back(std::move(row));
+                }
+                full(test.width, test.height);
+                change("CameraFilmFormatMm", {36.0});
+                change("FilmGrainAmountEv", amountDefault);
+                change("FilmGrainTexelPitchUm", sizeDefault);
+                require(render(time) == reference, "restored 36 mm Film frame changed");
+                const std::set expected{
+                    std::tuple{3840, 96, 8.0},
+                    std::tuple{3840, 96, 11.66},
+                    std::tuple{4832, 96, 8.0},
+                    std::tuple{4832, 96, 11.66},
+                    std::tuple{4832, 2016, 8.0},
+                    std::tuple{4832, 2016, 11.66},
+                };
+                const bool passed = highGain == expected && std::ranges::all_of(rows, [](const auto& row) {
+                                        return row.contains("ofx_status") && !row.contains("failure");
+                                    });
+                allPassed = allPassed && passed;
+                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"paused_36mm_returned", true}});
+                require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
+                device.release_images();
+                event.complete(passed);
+                continue;
+            }
             if (timeEndpoint) {
                 constexpr double below29 = 0.29 * 100.0;
                 static_assert(below29 < 29.0);

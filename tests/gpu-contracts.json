@@ -332,8 +332,8 @@
     },
     "native_membership": {
       "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 21,
-        "terminal": 21,
+        "listed": 23,
+        "terminal": 23,
         "required": [
           [
             "grain-preview-render",
@@ -400,7 +400,9 @@
           ["grain-preview-render", "negative-direct-clipped-quarter"],
           ["grain-preview-render", "negative-print-clipped-quarter"],
           ["grain-preview-render", "negative-direct-time-endpoint"],
-          ["grain-preview-render", "negative-print-time-endpoint"]
+          ["grain-preview-render", "negative-print-time-endpoint"],
+          ["grain-preview-render", "negative-direct-small-format-high-gain"],
+          ["grain-preview-render", "negative-print-small-format-high-gain"]
         ]
       }
     }
