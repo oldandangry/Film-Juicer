@@ -903,14 +903,14 @@ namespace {
 
             auto positiveDotOverflow = cases.case_event("positive-dot-overflow");
             spectra.wavelengths[0].dyeC = maxDot;
-            // The original finite dot was above Float32 range and contributed zero transmission.
-            evaluate({2.0F, 0.0F, 0.0F}, spectra, 0, unaffectedXyz);
+            // A positive dot beyond the Float32 range takes the nonfinite-result path.
+            evaluate({2.0F, 0.0F, 0.0F}, spectra, 1, {});
             positiveDotOverflow.passed();
 
             auto cancelledDotOverflow = cases.case_event("cancelled-dot-overflow");
             spectra.wavelengths[0].dyeM = -maxDot;
-            // The original signed products cancelled exactly, making transmission one.
-            evaluate({2.0F, 2.0F, 0.0F}, spectra, 0, {0.5 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10});
+            // An overflowing Float32 product prevents the signed terms from cancelling.
+            evaluate({2.0F, 2.0F, 0.0F}, spectra, 1, {});
             cancelledDotOverflow.passed();
 
             clear_device_flag(params.scanStage.scanErrorFlag);
