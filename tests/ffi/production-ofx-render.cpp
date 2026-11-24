@@ -1737,6 +1737,7 @@ namespace {
         require(paths.nativeScannerFrame ? capture.at("schema") == "juicer-native-scanner-frame-v1"
                                          : capture.at("schema") == "juicer-ofx-capture-v1" && capture.at("complete") == true && capture.at("status") == kOfxStatOK,
                 "unsupported or incomplete replay capture");
+        const bool replayGrain = paths.nativeScannerFrame && capture.contains("grain_replay");
         require(std::filesystem::is_directory(paths.module.parent_path().parent_path() / "Resources"), "module Resources directory unavailable");
         const auto sourceName = capture.at("source_file").get<std::string>();
         require(std::filesystem::path(sourceName).filename() == std::filesystem::path(sourceName), "invalid replay source filename");
@@ -1754,9 +1755,9 @@ namespace {
         const auto get = module.symbol<Get>("OfxGetPlugin");
         require(count() == 1 && get(0) != nullptr, "replay plugin discovery failed");
         auto* plugin = get(0);
+        const bool preview = replayGrain || paths.module.filename() == "juicer-grain-preview.ofx";
         require(plugin->setHost && plugin->mainEntry && plugin->pluginIdentifier &&
-                    std::string_view(plugin->pluginIdentifier) ==
-                        (std::filesystem::path(paths.module).filename() == "juicer-grain-preview.ofx" ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
+                    std::string_view(plugin->pluginIdentifier) == (preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
                 "unexpected replay plugin");
         InstanceHost host;
         DeviceBuffers device;
@@ -1764,12 +1765,17 @@ namespace {
         require(lifecycle.load() == kOfxStatOK, "replay module load failed");
         require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
                 "replay context description failed");
+        std::vector<ofx_test::InstanceParamDefinition> definitions(ofx_test::kInstanceParameters.begin(), ofx_test::kInstanceParameters.end());
+        if (replayGrain) {
+            using Kind = ofx_test::InstanceParamKind;
+            definitions.insert(definitions.end(), {{"GrainModel", Kind::StringChoice}, {"FilmGrainAmountEv", Kind::Double}, {"FilmGrainTexelPitchUm", Kind::Double}, {"FilmGrainChromaFraction", Kind::Double}});
+        }
         std::set<std::string> declared;
         bool cubicScanner = false;
         for (const auto& call : host.calls()) {
             if (paths.nativeScannerFrame && call.operation == "param_define" && call.property == "ScannerLutResolution")
                 cubicScanner = true;
-            if (call.operation == "param_define" && std::any_of(ofx_test::kInstanceParameters.begin(), ofx_test::kInstanceParameters.end(), [&](const auto& definition) {
+            if (call.operation == "param_define" && std::any_of(definitions.begin(), definitions.end(), [&](const auto& definition) {
                     return definition.name == call.property;
                 }))
                 declared.insert(call.property);
@@ -1777,14 +1783,31 @@ namespace {
         auto* effect = host.create_effect();
         Json parameters = capture.at("parameters");
         require(parameters.is_object(), "replay parameters must be an object");
+        Json grainTokens = nullptr;
         if (paths.nativeScannerFrame) {
-            require(parameters.at("GrainActive").at("values") == Json::array({0}) &&
+            require(parameters.at("GrainActive").at("values") == Json::array({replayGrain ? 1 : 0}) &&
                         parameters.at("GlareActive").at("values") == Json::array({0}),
-                    "native scanner frame requires grain and glare disabled");
+                    "native scanner frame requires glare disabled and controlled grain");
             for (const auto& parameter : parameters.items())
                 require(declared.contains(parameter.key()), "native scanner frame requests an undeclared parameter");
             if (cubicScanner)
                 require(host.value(effect, "ScannerLutResolution") == std::vector<InstanceValue>{17}, "unexpected native cubic scanner grid");
+        }
+        if (replayGrain) {
+            grainTokens = capture.at("grain_replay");
+            require(grainTokens.is_array() && grainTokens.size() == 3 &&
+                        std::all_of(grainTokens.begin(), grainTokens.end(), [](const Json& word) {
+                            return word.is_number_unsigned();
+                        }),
+                    "native scanner grain replay requires three exact unsigned words");
+            using TokenSetter = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
+            const auto setTokens = module.symbol<TokenSetter>(cubicScanner ? "fj_preview_benchmark_set_tokens" : "fj_spectral_replay_set_tokens");
+            if (cubicScanner) {
+                using Configure = int (*)(int, int);
+                if (const auto configure = module.find_symbol<Configure>("fj_preview_benchmark_configure_scanner"))
+                    require(configure(0, 0) == 1, "legacy replay companion did not select the settled cubic scanner");
+            }
+            setTokens(grainTokens.at(0).get<std::uint64_t>(), grainTokens.at(1).get<std::uint64_t>(), grainTokens.at(2).get<std::uint64_t>());
         }
         Json overrides = Json::object();
         Json originalValues = Json::object();
@@ -1814,7 +1837,7 @@ namespace {
         }
         std::set<std::string> supplied;
         Json defaults = Json::array();
-        for (const auto& definition : ofx_test::kInstanceParameters) {
+        for (const auto& definition : definitions) {
             const std::string name(definition.name);
             if (!declared.contains(name))
                 continue;
@@ -1909,10 +1932,10 @@ namespace {
             require(call.status == kOfxStatOK && (paths.nativeScannerFrame || supplied.contains(call.target) || advanced_default(call.target)),
                     std::string("uncaptured required replay parameter: ") + call.target);
             if (supplied.contains(call.target)) {
-                const auto* const definition = std::find_if(ofx_test::kInstanceParameters.data(), ofx_test::kInstanceParameters.data() + ofx_test::kInstanceParameters.size(), [&](const auto& item) {
+                const auto definition = std::find_if(definitions.begin(), definitions.end(), [&](const auto& item) {
                     return item.name == call.target;
                 });
-                require(definition != ofx_test::kInstanceParameters.data() + ofx_test::kInstanceParameters.size() &&
+                require(definition != definitions.end() &&
                             call.values == replay_values(parameters.at(call.target), definition->kind),
                         std::string("replay getter changed from captured snapshot: ") + call.target);
             }
@@ -1926,8 +1949,10 @@ namespace {
         module.close();
         restore.restore();
         Json report{{"schema", "juicer-ofx-replay-v1"}, {"rows", std::move(rows)}, {"reads", std::move(reads)}, {"advanced_defaults", std::move(defaults)}, {"parameters", resolved}, {"context_restored", restore.restored}};
-        if (paths.nativeScannerFrame)
+        if (paths.nativeScannerFrame) {
             report["cubic_grid"] = cubicScanner ? Json(17) : Json(nullptr);
+            report["grain_replay"] = std::move(grainTokens);
+        }
         if (!paths.parameters.empty())
             report["parameter_overrides"] = {{"path", paths.parameters.string()}, {"values", std::move(overrides)}, {"original_values", std::move(originalValues)}, {"ignored_absent_advanced", std::move(ignoredOverrides)}};
         std::ofstream manifest(paths.output / "replay.json");

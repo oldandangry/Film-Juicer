@@ -222,6 +222,7 @@ def compare_scanner_frame(directory, frame):
     for side, report in reports.items():
         require(report["context_restored"] and report["schema"] == "juicer-ofx-replay-v1", "native replay completion")
         require(report["cubic_grid"] == (17 if side == "reference" else None), "native scanner method identity")
+        require(report.get("grain_replay") == manifest.get("grain_replay"), "native replay tokens differ")
         require([row["pass"] for row in report["rows"]] == ["cold", "warm"], "native replay membership")
         require(
             all(row["status"] == 0 and row["source_preserved"] and row["stream_completed"] for row in report["rows"]),
@@ -229,7 +230,7 @@ def compare_scanner_frame(directory, frame):
         )
         require(
             compare_pixels(directory / side / "cold.f32", directory / side / "warm.f32", shape)["bit_identical"],
-            f"{side} grain-off native replay output changed on warm render",
+            f"{side} native replay output changed on warm render",
         )
     require(reports["reference"]["parameters"] == reports["candidate"]["parameters"], "native scanner controls differ")
     files = {side: directory / side / "cold.f32" for side in SIDES}
@@ -452,7 +453,7 @@ def main():
     capture.add_argument("--run-id", required=True)
     frames = capture.add_mutually_exclusive_group()
     frames.add_argument("--frame", type=Path, help="replay a retained actual OFX frame capture")
-    frames.add_argument("--scanner-frame", type=Path, help="compare an explicitly authored grain-off native OFX frame")
+    frames.add_argument("--scanner-frame", type=Path, help="compare a native OFX frame with controlled grain and glare")
     capture.add_argument(
         "--parameter-overrides", type=Path, help="explicit counterfactual values; capture remains immutable"
     )

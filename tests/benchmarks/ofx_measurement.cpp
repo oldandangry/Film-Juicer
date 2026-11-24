@@ -27,6 +27,7 @@
 #include <psapi.h>
 #else
 #include <dlfcn.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 #endif
 
@@ -850,8 +851,18 @@ namespace {
                              {"source_releases", host.image_release_count(effect, "Source")},
                              {"destination_releases", host.image_release_count(effect, "Output")},
                              {"output_digest", output_digest(output)}};
+#ifndef _WIN32
+            // LLDB launches its Linux attach helper from the parent of this
+            // standalone driver. Admit only that debugger family at the barrier.
+            const auto debuggerPid = getppid();
+            require(debuggerPid > 1 && prctl(PR_SET_PTRACER, static_cast<unsigned long>(debuggerPid), 0UL, 0UL, 0UL) == 0,
+                    "could not admit the timing driver's parent debugger");
+#endif
             write_ready_record(args.tailReady, ready);
             const auto release = wait_for_release(args, ordinal);
+#ifndef _WIN32
+            require(prctl(PR_SET_PTRACER, 0UL, 0UL, 0UL, 0UL) == 0, "could not clear the timing driver's debugger admission");
+#endif
             report["tail_ready"] = ready;
             CUcontext reporterContext = nullptr;
             driver_check(cuCtxGetCurrent(&reporterContext), "read reporter context");

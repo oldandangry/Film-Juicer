@@ -36,7 +36,7 @@ namespace ofx_test {
             throw std::runtime_error("archived grain capture membership");
         const auto recipe_word = [](const std::string& word) {
             std::uint64_t value = 0;
-            const auto end = word.data() + word.size();
+            const auto* const end = word.data() + word.size();
             const auto parsed = std::from_chars(word.data(), end, value);
             return parsed.ec == std::errc{} && parsed.ptr == end && value != 0;
         };

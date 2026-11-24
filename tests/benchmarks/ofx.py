@@ -2274,6 +2274,9 @@ def scanner_paired(args):
         raise ValueError("scanner paired workload membership contains duplicates")
     if (args.mode == "measure") != (args.check_result is not None):
         raise ValueError("scanner paired timing requires prior check-mode evidence")
+    if args.check_arm and args.mode != "check":
+        raise ValueError("single-arm observation only applies in check mode")
+    scope = "single-arm-tail" if args.check_arm else "paired"
     build = ROOT / "out/build" / args.preset
     directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
     inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
@@ -2289,6 +2292,7 @@ def scanner_paired(args):
         if (
             checked["schema"] != "juicer-scanner-paired-v1"
             or checked["mode"] != "check"
+            or checked["scope"] != "paired"
             or checked["preset"] != args.preset
             or checked["inputs_sha256"] != inputs_sha
             or checked["status"] != "passed"
@@ -2300,6 +2304,7 @@ def scanner_paired(args):
         "status": "failed",
         "preset": args.preset,
         "mode": args.mode,
+        "scope": scope,
         "inputs_sha256": inputs_sha,
         "workloads": {},
         "commands": run.commands,
@@ -2320,20 +2325,21 @@ def scanner_paired(args):
             for workload in args.workloads:
                 variant, _, schedule, _ = SCANNER_PAIRED_ROWS[workload]
                 arms = inputs["variants"][variant]
-                qualification_row = inputs["row_bindings"][workload]
-                if (
-                    any(
-                        qualification_row[arm]["module_sha256"] != arms[arm]["module_sha256"]
-                        or qualification_row[arm]["schedule"] != schedule
-                        for arm in ("cubic", "spectral")
-                    )
-                    or qualification_row["cubic"]["grid"] != 17
-                ):
-                    raise ValueError(f"{workload} is missing the actual schedule and cubic grid qualification")
+                if not args.check_arm:
+                    qualification_row = inputs["row_bindings"][workload]
+                    if (
+                        any(
+                            qualification_row[arm]["module_sha256"] != arms[arm]["module_sha256"]
+                            or qualification_row[arm]["schedule"] != schedule
+                            for arm in ("cubic", "spectral")
+                        )
+                        or qualification_row["cubic"]["grid"] != 17
+                    ):
+                        raise ValueError(f"{workload} is missing the actual schedule and cubic grid qualification")
                 row_dir = directory / workload
                 row_dir.mkdir()
                 pairs = (
-                    [("cubic", "spectral")]
+                    [(args.check_arm,) if args.check_arm else ("cubic", "spectral")]
                     if args.mode == "check"
                     else [
                         ("cubic", "cubic"),
@@ -2441,7 +2447,10 @@ def scanner_paired(args):
                         )
                     results.append(runs)
                 paired = []
-                for left, right in results:
+                for pair in results:
+                    if len(pair) != 2:
+                        continue
+                    left, right = pair
                     reference, candidate = (left, right) if left["arm"] == "cubic" else (right, left)
                     if reference["arm"] == candidate["arm"]:
                         continue
@@ -2498,6 +2507,7 @@ def main():
     command.add_argument("--mode", required=True, choices=("check", "measure"))
     command.add_argument("--workloads", required=True, nargs="+", choices=SCANNER_PAIRED_ROWS)
     command.add_argument("--check-result", type=Path)
+    command.add_argument("--check-arm", choices=("spectral", "cubic"), help="qualify one held tail in check mode")
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)

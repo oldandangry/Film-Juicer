@@ -393,7 +393,10 @@ def stopped_predecessor(frame, ready):
     instance = ready["instance_data"]
     submission = instance + layout["owner_state"] + layout["instance_submission"]
     state = submission + layout["submission_state"] + layout["mutex_value"]
-    latch = state + layout["state_latch"]
+    optional_latch = state + layout["state_latch"]
+    if read(frame, optional_latch) != 1:
+        raise RuntimeError("measured request has no live Rust latch")
+    latch = optional_latch + layout["latch_value"]
     key = latch + layout["latch_key"]
     bindings = [read(frame, key + offset) for offset in layout["key_bindings"]]
     identity = submission + layout["submission_identity"] + layout["identity_value"]
@@ -411,8 +414,13 @@ def stopped_predecessor(frame, ready):
     ):
         raise RuntimeError("live Rust latch does not identify the measured request")
     runtime_arc = read(frame, instance + layout["owner_loaded"] + layout["admission_runtime"])
-    handle = read(frame, runtime_arc + layout["arc_value"] + layout["runtime_native"] + layout["native_handle"])
-    if not runtime_arc or not handle:
+    if not runtime_arc:
+        raise RuntimeError("measured instance has no live Rust Runtime")
+    native = runtime_arc + layout["arc_value"] + layout["runtime_native"]
+    if read(frame, native) != 1:
+        raise RuntimeError("measured Runtime has no native owner")
+    handle = read(frame, native + layout["native_value"] + layout["native_handle"])
+    if not handle:
         raise RuntimeError("measured instance has no live native Runtime")
     owner_map = handle + layout["cuda_root"] + layout["root_context_map"]
     first = read(frame, owner_map + layout["map_first"])
@@ -444,7 +452,7 @@ def stopped_predecessor(frame, ready):
                     **state_view,
                     "host": read(frame, begin),
                     "event": read(frame, begin + 8),
-                    "identity_epoch": read(frame, begin + 16 + layout["identity_epoch"]),
+                    "epoch_at_production": read(frame, begin + 16 + layout["identity_epoch"]),
                     "producer": [read(frame, begin + 16 + offset) for offset in layout["producer"]],
                     "route": read(frame, begin + 16 + layout["identity_route"], 4),
                 }
@@ -454,15 +462,19 @@ def stopped_predecessor(frame, ready):
         raise RuntimeError("no unique measured Root owner retained the scan result")
     held = candidates[0]
     if (
-        held["identity_epoch"] != held["epoch"]
+        held["epoch_at_production"] != held["epoch"]
         or not held["host"]
         or not held["event"]
         or held["event"] == ready["stop_event"]
         or (held["producer"] and held["producer"][:3] != [latch_id, ready["token"], bindings[2]])
     ):
         raise RuntimeError("measured predecessor scan retention disagrees with its Rust latch")
+    flag = read(frame, held["host"], 4)
+    if flag != 0:
+        raise RuntimeError("measured predecessor retained a nonzero scan flag")
     return {
         **held,
+        "completed_flag": flag,
         "handle": handle,
         "instance": instance_token,
         "latch_id": latch_id,
@@ -544,7 +556,7 @@ def tail(debugger):
             release_reporter(ready, "abort")
         if process and process.IsValid() and process.GetState() == lldb.eStateStopped:
             process.Detach()
-        if (not ready or Path(settings["release"]).is_file()) and child.poll() is None:
+        if not ready and child.poll() is None:
             child.terminate()
     finally:
         child_status = child.wait()
