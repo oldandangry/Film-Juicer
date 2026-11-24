@@ -159,6 +159,9 @@ namespace {
                exact_span(noise.wang_lut, lutCount, "noise.wang_lut", diagnostic);
     }
 
+} // namespace
+
+namespace JuicerCuda {
     std::uint64_t spectral_binding_digest(const FjPreparedHostData& source) {
         static_assert(std::endian::native == std::endian::little);
         const bool print = source.route == FJ_ROUTE_NEGATIVE_PRINT || source.route == FJ_ROUTE_POSITIVE_PRINT;
@@ -200,11 +203,13 @@ namespace {
         samples(encoding.dwg_to_output);
         return digest;
     }
+} // namespace JuicerCuda
 
+namespace {
     bool validate_frame_binding(const FjPreparedHostData& source, const JuicerCuda::ExecutionFrame& frame, const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot, std::string& diagnostic) {
         const auto& color = source.output_color;
         const std::uint64_t activeGamutHash = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
-        const auto scannerHash = Hash::hash_uint64_values({spectral_binding_digest(source), activeGamutHash});
+        const auto scannerHash = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(source), activeGamutHash});
         const auto expected = JuicerCuda::ResourceManager::make_key_digests(
             source.recipe_hash, source.dir_couplers.hash, scannerHash, source.auto_exposure.hash);
         const double frameFloor = std::floor(frame.timeFrames);

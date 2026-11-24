@@ -26,3 +26,10 @@ witnesses and now separately checks every encoding field from the catalogue.
 compiled C11/C++/Rust layouts/signatures, clearing/canaries, exact failures,
 constructor-stage faults, cold first access, held copies and projection integrity.
 The independent scanner pixel oracle remains unchanged.
+
+`scanner-binding-v1.json` supplies nine synthetic vectors to the native prepared
+projection and Rust scanner colour tests. The Float32 inputs vary by lane and
+wavelength. The independent little-endian stream and its FNV-1a word are frozen
+for each vector. Signed zeros and distinct NaN payloads produce the same word.
+Route, base presence, dye order, inverse-Y, CAT02 and encoding edits each change
+it. Nonfinite input words exercise serialization in isolation from rendering.

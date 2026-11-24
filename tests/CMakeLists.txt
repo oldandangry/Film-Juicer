@@ -854,7 +854,8 @@ set(JUICER_PREPARED_TEST_SOURCES
 add_executable(JuicerPreparedProjectionTests ${JUICER_PREPARED_TEST_SOURCES} ffi/spatial_optics_fixture.cpp)
 target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_test_core film_juicer_rust_test_support GTest::gtest juicer_host_gtest_main)
 target_compile_definitions(JuicerPreparedProjectionTests PRIVATE
-    FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}")
+    FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}"
+    FJ_SCANNER_BINDING_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/scanner/color-fixtures/scanner-binding-v1.json")
 set_target_properties(JuicerPreparedProjectionTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)

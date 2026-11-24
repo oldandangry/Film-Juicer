@@ -159,6 +159,27 @@ pub struct Tables {
     illuminant_hash: u64,
 }
 impl Tables {
+    #[cfg(test)]
+    pub(crate) fn for_scanner_binding_test(
+        [cyan, magenta, yellow, x, y, z]: [[f32; 81]; 6],
+        base: Option<[f32; 81]>,
+        inv_yn: f32,
+    ) -> Self {
+        Self {
+            lambda_nm: std::array::from_fn(|i| 380.0 + 5.0 * i as f32),
+            illuminant: [0.0; 81],
+            observer_xyz: [[0.0; 81]; 3],
+            weighted_xyz: [x, y, z],
+            dyes_cmy: [cyan, magenta, yellow],
+            baseline_min: base.unwrap_or([0.0; 81]),
+            baseline_mid: [0.0; 81],
+            inv_yn,
+            white_xyz: [0.0; 3],
+            has_baseline: base.is_some(),
+            illuminant_hash: 0,
+        }
+    }
+
     pub fn lambda_nm(&self) -> &[f32; 81] {
         &self.lambda_nm
     }

@@ -293,7 +293,7 @@
     "Ffi.Host.OutputColorValues": 1
   },
   "rust_cohorts": {
-    "film-juicer-core": 89,
+    "film-juicer-core": 90,
     "film-juicer-core::assets": 17,
     "film-juicer-core::calibration": 6,
     "film-juicer-core::color": 8,
