@@ -22,7 +22,7 @@
     },
     "JuicerOfxRenderTraceTests": {
       "protocol": "custom",
-      "registrations": 2
+      "registrations": 3
     },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
@@ -54,7 +54,7 @@
     },
     "JuicerProcessorReferenceProbe": {
       "protocol": "custom",
-      "registrations": 4
+      "registrations": 5
     },
     "JuicerPreparedBoundaryProbe": {
       "protocol": "custom",
@@ -118,10 +118,12 @@
     "Ofx.Gpu.Render": 1,
     "Ofx.Gpu.RenderTrace": 1,
     "Ofx.Gpu.ScannerReferenceInputs": 1,
+    "Ofx.Gpu.RenderReferenceInputs": 1,
     "Ofx.Gpu.ProcessorReference": 1,
     "Ofx.Gpu.SequentialOwners": 1,
     "Ofx.Gpu.CutoverContract": 8,
     "Ofx.Gpu.AcceptedCudaCaptures": 1,
+    "Ofx.Gpu.AcceptedCleanReferenceInputs": 1,
     "Ofx.Gpu.NoiseSourceLifetime": 4,
     "Ofx.Gpu.WorkspaceTransitions": 2,
     "Ofx.Gpu.ExecutorFailureOrder": 1,

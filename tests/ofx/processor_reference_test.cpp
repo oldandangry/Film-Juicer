@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -57,6 +58,10 @@
 
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
 #include "Cuda/JuicerCudaExecutor.h"
+#endif
+
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+#include "scanner_reference_capture.h"
 #endif
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -146,6 +151,7 @@ namespace {
             }
         }
     };
+
 
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
     std::array<std::vector<float>, 2> production_pixels() {
@@ -703,7 +709,12 @@ namespace {
     };
     thread_local DirSubmissionWitness* dirSubmissionWitness = nullptr;
 
-    std::vector<float> render_case(CallbackSession& runtime, const Case& test, const JuicerTestSupport::PreparationInput& parameters, JuicerTestSupport::InstanceFixture& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold") {
+    std::vector<float> render_case(CallbackSession& runtime, const Case& test, const JuicerTestSupport::PreparationInput& parameters, JuicerTestSupport::InstanceFixture& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold"
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+                                   ,
+                                   ofx_test::ScanReferenceCapture::Samples* scanCapture = nullptr
+#endif
+    ) {
         std::array<char, 512> identityText{};
         FjErrorBuffer identityError{identityText.data(), identityText.size(), 0};
         std::uint32_t initialized = 0;
@@ -764,6 +775,12 @@ namespace {
         }
         require_cuda(cudaMemcpy(device.source, input.data(), bytes, cudaMemcpyHostToDevice), "copy source");
         require_cuda(cudaMemcpy(device.destination, initialDestination.data(), destinationBytes, cudaMemcpyHostToDevice), "copy destination");
+
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        std::optional<ofx_test::ScanReferenceCapture> densityCapture;
+        if (scanCapture)
+            densityCapture.emplace(device.stream);
+#endif
 
         if (path == ExecutionPath::Processor && availability == PublishedRequestAvailability::Complete) {
             callback_render(runtime, test, parameters, state, device, {.sourcePitch = pitch, .destinationPitch = destinationPitch, .border = border, .uncovered = destinationLayout == DestinationLayout::Uncovered, .emptyWindow = emptyWindow});
@@ -868,6 +885,14 @@ namespace {
                     throw JuicerCuda::ExecutionFailure{{rendered.outcome.status, diagnostic}};
             }
         }
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        if (densityCapture) {
+            *scanCapture = densityCapture->read();
+            std::vector<float> remainingSource(sourceSamples);
+            require_cuda(cudaMemcpy(remainingSource.data(), device.source, bytes, cudaMemcpyDeviceToHost), "read captured scanner source");
+            RenderAssertions::compare_bits("captured scanner source", remainingSource, input);
+        }
+#endif
         require_cuda(cudaMemcpyAsync(output.data(), device.destination, destinationBytes, cudaMemcpyDeviceToHost, device.stream),
                      "copy destination");
         require_cuda(cudaStreamSynchronize(device.stream), "synchronize");
@@ -4411,33 +4436,101 @@ namespace {
 
 #if defined(JUICER_ACCEPTED_CAPTURE_PATH)
 namespace {
-    void run_accepted_clean_captures(CallbackSession& runtime) {
-        std::ifstream fixture(JUICER_ACCEPTED_CAPTURE_PATH);
-        if (!fixture) {
-            throw std::runtime_error("accepted CUDA capture fixture unavailable");
+    using AcceptedJson = nlohmann::json;
+    constexpr std::array kAcceptedCaseNames{"negative-direct-clean", "negative-print-clean", "positive-direct-clean", "positive-print-clean"};
+    constexpr std::array kAcceptedInputFields{
+        "capture_baseline", "source_shape", "layout", "source_color_space", "frame", "fps", "camera_format_long_edge_mm", "coordinate_map", "input_bits", "input_sha256", "pixel_bound", "compaction"};
+
+    AcceptedJson read_accepted_capture(bool archived) {
+        std::ifstream archivedStream(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH);
+        if (!archivedStream)
+            throw std::runtime_error("archived accepted capture input unavailable");
+        const auto original = AcceptedJson::parse(archivedStream);
+        if (archived)
+            return original;
+
+        std::ifstream spectralStream(JUICER_ACCEPTED_CAPTURE_PATH);
+        if (!spectralStream)
+            throw std::runtime_error("spectral accepted capture fixture unavailable");
+        auto spectral = AcceptedJson::parse(spectralStream);
+        const std::string preset = JUICER_ACCEPTED_CAPTURE_PRESET;
+        const std::string referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
+        if (spectral.at("schema") != "spectral-accepted-clean-v1" || spectral.at("preset") != preset ||
+            spectral.at("reference_preset") != referencePreset)
+            throw std::runtime_error("spectral accepted capture fixture identity");
+        for (const char* field : kAcceptedInputFields)
+            if (spectral.at(field) != original.at(field))
+                throw std::runtime_error(std::string("spectral accepted capture source differs at ") + field);
+        const auto& rows = spectral.at("cases");
+        if (!rows.is_array() || rows.size() != kAcceptedCaseNames.size())
+            throw std::runtime_error("spectral accepted capture membership");
+        for (std::size_t index = 0; index < kAcceptedCaseNames.size(); ++index) {
+            const auto& row = rows.at(index);
+            if (row.at("name") != kAcceptedCaseNames[index] || row.at("settings") != original.at("cases").at(index).at("settings"))
+                throw std::runtime_error("spectral accepted capture row order or settings");
         }
-        const auto captures = nlohmann::json::parse(fixture);
-        const auto decode = [](const nlohmann::json& bits) {
-            std::vector<float> pixels;
-            pixels.reserve(bits.size());
-            for (const auto& value : bits) {
-                pixels.push_back(std::bit_cast<float>(value.get<std::uint32_t>()));
-            }
-            return pixels;
+        return spectral;
+    }
+
+    std::vector<float> decode_accepted_pixels(const AcceptedJson& bits) {
+        if (!bits.is_array() || bits.size() != 105)
+            throw std::runtime_error("accepted capture requires 105 pixel words");
+        std::vector<float> pixels;
+        pixels.reserve(bits.size());
+        for (const auto& word : bits) {
+            if (!word.is_number_unsigned() || word.get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max())
+                throw std::runtime_error("accepted capture pixel word type");
+            const float sample = std::bit_cast<float>(word.get<std::uint32_t>());
+            if (!std::isfinite(sample))
+                throw std::runtime_error("accepted capture nonfinite pixel");
+            pixels.push_back(sample);
+        }
+        return pixels;
+    }
+
+    void append_accepted_stage_inputs(AcceptedJson& result, OfxImageEffectHandle effect) {
+        FjInstanceObservation* raw = nullptr;
+        if (!effect || fj_test_ofx_instance_observe(effect, &raw, nullptr).category != FJ_STATUS_SUCCESS || !raw)
+            throw std::runtime_error("accepted capture did not publish a state");
+        const auto release = [](FjInstanceObservation* owner) {
+            (void)fj_test_instance_observation_release(owner, nullptr);
         };
-        const auto input = decode(captures.at("input_bits"));
-        std::vector<std::string> intended;
-        intended.reserve(captures.at("cases").size());
-        for (const auto& capture : captures.at("cases"))
-            intended.push_back(capture.at("name").get<std::string>());
-        JuicerTests::Cohort rows("accepted_capture", intended);
+        const std::unique_ptr<FjInstanceObservation, decltype(release)> hold(raw, release);
+        FjInstanceObservationView view{};
+        FjOfxRenderObservation rendered{};
+        if (fj_test_instance_observation_view(hold.get(), &view, nullptr).category != FJ_STATUS_SUCCESS ||
+            fj_test_ofx_render_observe(effect, &rendered) != 1 || view.published.route != result.at("route") ||
+            view.captured.input_cctf_decoding || view.captured.output_cctf_encoding || view.captured.camera_auto_exposure_enabled ||
+            view.captured.camera_film_format_long_edge_mm != 35.0 || view.captured.dir_couplers.active ||
+            view.published.grain.active || view.published.effects.active || view.published.scanner_post_effects.glare_active ||
+            view.published.scanner_post_effects.lens_blur_radius || view.published.scanner_post_effects.unsharp_radius ||
+            view.published.output_color.color_space != FJ_OUTPUT_BT2020 || rendered.frame_token != 37 ||
+            rendered.frame_rate != 24.0 || rendered.native_entry_count != 1)
+            throw std::runtime_error("accepted capture prepared controls changed");
+        result.update(ofx_test::scan_reference_inputs(view.published));
+        result.update({{"frame_token", rendered.frame_token},
+                       {"frame_rate", rendered.frame_rate},
+                       {"reconstruction", view.captured.spectral_upsampling_mode},
+                       {"resolved_format_mm", view.captured.camera_film_format_long_edge_mm},
+                       {"source_origin", {rendered.render_bounds[0], rendered.render_bounds[1]}},
+                       {"grain", view.published.grain.active},
+                       {"glare", view.published.scanner_post_effects.glare_active}});
+    }
+
+    void run_accepted_clean_captures(CallbackSession& runtime, bool referenceInputs) {
+        const auto captures = read_accepted_capture(referenceInputs);
+        const auto input = decode_accepted_pixels(captures.at("input_bits"));
+        const std::vector<std::string> intended(kAcceptedCaseNames.begin(), kAcceptedCaseNames.end());
+        JuicerTests::Cohort rows(referenceInputs ? "accepted_capture_reference" : "accepted_capture", intended);
+        if (referenceInputs)
+            std::puts("CTEST_FULL_OUTPUT");
         for (const auto& capture : captures.at("cases")) {
             const auto& settings = capture.at("settings");
             const std::string name = capture.at("name").get<std::string>();
             auto row = rows.case_event(name);
             Case test{};
             test.name = name.c_str();
-            test.route = static_cast<Spektrafilm::ScanRoute>(settings.at("route").get<int>());
+            test.route = static_cast<Spektrafilm::ScanRoute>(settings.at("route").get<unsigned>());
             test.components = 3;
             test.sourcePixels = &input;
             test.fullWidth = settings.at("width").get<int>();
@@ -4456,14 +4549,32 @@ namespace {
             parameters.values.glare_percent = 0.03;
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
-            const auto pixels = render_case(runtime, test, parameters, state);
-            compare_pixels(name, pixels, decode(capture.at("output_bits")));
-            std::cerr << name << ": exact stored CUDA samples within retained pixel bounds\n";
+            if (referenceInputs) {
+                ofx_test::ScanReferenceCapture::Samples observed{};
+                const auto pixels = render_case(runtime, test, parameters, state, false, ExecutionPath::Processor, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "accepted-clean", &observed);
+                auto result = ofx_test::scan_reference_stages(observed);
+                result.update({{"schema", "scanner-reference-accepted-clean-v1"},
+                               {"id", name},
+                               {"shape", {test.height, test.width, test.components}},
+                               {"route", static_cast<unsigned>(test.route)},
+                               {"settings", settings},
+                               {"frame", test.time},
+                               {"source_bits", captures.at("input_bits")},
+                               {"device_output_bits", ofx_test::scan_float_words(pixels)},
+                               {"coordinate_map", captures.at("coordinate_map")},
+                               {"source_shape", captures.at("source_shape")}});
+                append_accepted_stage_inputs(result, runtime.find(state));
+                std::puts(result.dump().c_str());
+            } else {
+                const auto pixels = render_case(runtime, test, parameters, state);
+                compare_pixels(name, pixels, decode_accepted_pixels(capture.at("output_bits")));
+            }
             row.passed();
         }
     }
 } // namespace
 #endif
+
 
 int main(int argc, char** argv) try {
     const bool listing = JuicerTests::list_requested(argc, argv);
@@ -4655,9 +4766,16 @@ int main(int argc, char** argv) try {
             return 0;
         }
 #if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
+        if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-reference-inputs") {
+            JuicerTests::list_case("processor_operation", "accepted_clean_reference_inputs");
+            for (const char* name : kAcceptedCaseNames)
+                JuicerTests::list_case("accepted_capture_reference", name);
+            return 0;
+        }
+#endif
         if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-captures") {
-            using Json = nlohmann::json;
-            const auto manifest = Json::parse(std::ifstream(JUICER_ACCEPTED_CAPTURE_PATH));
+            const auto manifest = read_accepted_capture(false);
             JuicerTests::list_case("processor_operation", "accepted_clean_captures");
             for (const auto& row : manifest.at("cases"))
                 JuicerTests::list_case("accepted_capture", row.at("name").get_ref<const std::string&>());
@@ -4687,6 +4805,8 @@ int main(int argc, char** argv) try {
             operation_id = "cutover_contract";
         else if (mode == "--accepted-clean-captures")
             operation_id = "accepted_clean_captures";
+        else if (mode == "--accepted-clean-reference-inputs")
+            operation_id = "accepted_clean_reference_inputs";
         else if (mode == "--workspace-transitions")
             operation_id = "workspace_transitions";
         else if (mode == "--noise-lifetime")
@@ -4709,8 +4829,18 @@ int main(int argc, char** argv) try {
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
 #if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
+        if (argc == 2 && std::string(argv[1]) == "--accepted-clean-reference-inputs") {
+            run_accepted_clean_captures(runtime, true);
+            if (runtime.close().category != FJ_STATUS_SUCCESS)
+                throw std::runtime_error("accepted reference capture owner cleanup failed");
+            operation_event.passed();
+            case_log.finish();
+            return 0;
+        }
+#endif
         if (argc == 2 && std::string(argv[1]) == "--accepted-clean-captures") {
-            run_accepted_clean_captures(runtime);
+            run_accepted_clean_captures(runtime, false);
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("accepted capture owner cleanup failed");
             }

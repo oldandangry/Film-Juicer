@@ -1,8 +1,7 @@
 #include "render_gpu_fixture.h"
 #include "render_assertions.h"
 #include "production_images.h"
-#include "Cuda/Scan/JuicerCudaScanDensityCaptureTest.h"
-#include "GamutCompression.h"
+#include "scanner_reference_capture.h"
 #include "Hash.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "processor_test_hooks.h"
@@ -23,12 +22,9 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 #include <cuda.h>
-
-extern "C" FjStatus fj_test_ofx_instance_observe(OfxImageEffectHandle, FjInstanceObservation**, FjErrorBuffer*);
 
 namespace {
     constexpr std::string_view kCaller = "ofx.gpu.render_trace";
@@ -135,62 +131,6 @@ namespace {
         return images.pixels(images.read());
     }
 
-    class DensityCaptureScope {
-    public:
-        static constexpr std::size_t kPixels = 35;
-        using Sample = JuicerCuda::ScanDensityCaptureTest::ScanSample;
-        using Samples = std::array<Sample, kPixels>;
-
-        explicit DensityCaptureScope(cudaStream_t stream) : stream_(stream) {
-            using namespace JuicerCuda::ScanDensityCaptureTest;
-            CUcontext streamContext = nullptr;
-            ofx_test::require_render(cuCtxGetCurrent(&context_) == CUDA_SUCCESS && context_ &&
-                                         cuStreamGetCtx(stream_, &streamContext) == CUDA_SUCCESS && streamContext == context_,
-                                     "density observation requires the active frame context");
-            ofx_test::require_cuda(cudaMalloc(&device_, sizeof(Samples)), "allocate scan observation");
-            const auto status = cudaMemsetAsync(device_, 255, sizeof(Samples), stream_);
-            if (status != cudaSuccess) {
-                (void)cudaFree(device_);
-                ofx_test::require_cuda(status, "clear density observation");
-            }
-            previous_ = swap_density_capture({device_, kPixels, 7, 5});
-        }
-        ~DensityCaptureScope() {
-            JuicerCuda::ScanDensityCaptureTest::swap_density_capture(previous_);
-            if (cuCtxPushCurrent(context_) == CUDA_SUCCESS) {
-                (void)cudaStreamSynchronize(stream_);
-                (void)cudaFree(device_);
-                CUcontext restored = nullptr;
-                (void)cuCtxPopCurrent(&restored);
-            }
-        }
-        DensityCaptureScope(const DensityCaptureScope&) = delete;
-        DensityCaptureScope& operator=(const DensityCaptureScope&) = delete;
-
-        Samples read() const {
-            CUcontext context = nullptr;
-            ofx_test::require_render(cuCtxGetCurrent(&context) == CUDA_SUCCESS && context == context_, "density observation context changed");
-            Samples words{};
-            ofx_test::require_cuda(cudaMemcpyAsync(words.data(), device_, sizeof(words), cudaMemcpyDeviceToHost, stream_), "read density observation");
-            ofx_test::require_cuda(cudaStreamSynchronize(stream_), "complete density observation");
-            return words;
-        }
-
-    private:
-        cudaStream_t stream_;
-        CUcontext context_ = nullptr;
-        Sample* device_ = nullptr;
-        JuicerCuda::ScanDensityCaptureTest::DensityCapture previous_{};
-    };
-
-    nlohmann::json float_bits(std::span<const float> values) {
-        auto words = nlohmann::json::array();
-        for (const float value : values) {
-            words.push_back(std::bit_cast<std::uint32_t>(value));
-        }
-        return words;
-    }
-
     nlohmann::json source_bits(const ofx_test::Case& test, std::span<const float> source) {
         auto pixels = nlohmann::json::array();
         const auto activeWidth = static_cast<std::size_t>(test.width) * static_cast<std::size_t>(test.components);
@@ -201,12 +141,6 @@ namespace {
             }
         }
         return pixels;
-    }
-
-    std::array<float, DensityCaptureScope::kPixels> glare_field(const DensityCaptureScope::Samples& samples) {
-        std::array<float, DensityCaptureScope::kPixels> field{};
-        std::ranges::transform(samples, field.begin(), &DensityCaptureScope::Sample::glarePercent);
-        return field;
     }
 
     std::string_view profile_key(FjStringView key) {
@@ -248,17 +182,17 @@ namespace {
             {"clip_token", seen.clip_token},
             {"grain", state.grain.active},
             {"glare", post.glare_active},
-            {"glare_controls_bits", float_bits(glareControls)},
+            {"glare_controls_bits", ofx_test::scan_float_words(glareControls)},
             {"glare_blur_radius", post.glare_blur_radius},
             {"unsharp_radius", post.unsharp_radius},
-            {"unsharp_controls_bits", float_bits(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
+            {"unsharp_controls_bits", ofx_test::scan_float_words(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
             {"recipe_hash", state.recipe_hash},
             {"scanner_hash", state.scanner_hash},
             {"source_bits", source_bits(image, ofx_test::initial_source(image))},
-            {"glare_field_bits", float_bits(glare)}};
+            {"glare_field_bits", ofx_test::scan_float_words(glare)}};
         ofx_test::require_render(row.at("inputs") == inputs, "fixed scanner fixture inputs changed");
         const auto& expected = row.at("output_bits");
-        const auto samples = static_cast<std::size_t>(image.components) * DensityCaptureScope::kPixels;
+        const auto samples = static_cast<std::size_t>(image.components) * ofx_test::ScanReferenceCapture::kPixels;
         ofx_test::require_render(expected.is_array() && expected.size() == samples, "fixed scanner fixture output shape");
         std::vector<float> pixels;
         pixels.reserve(samples);
@@ -270,35 +204,26 @@ namespace {
         return pixels;
     }
 
-    template <typename T>
-    nlohmann::json scan_sample_bits(const DensityCaptureScope::Samples& samples, T (DensityCaptureScope::Sample::*field)[3]) {
-        using Word = std::conditional_t<std::is_same_v<T, float>, std::uint32_t, std::uint64_t>;
-        auto words = nlohmann::json::array();
-        for (const auto& sample : samples) {
-            for (const T value : sample.*field) {
-                ofx_test::require_render(std::isfinite(value), "scan observation is missing a finite stage value");
-                words.push_back(std::bit_cast<Word>(value));
-            }
-        }
-        return words;
-    }
-
     struct ScannerReferenceCase {
         ofx_test::Case image;
         const char* film = nullptr;
         std::uint32_t route = 0;
         const FixedScenario* trace = nullptr;
+        const ofx_test::RenderReferenceCase* render = nullptr;
     };
 
     nlohmann::json capture_reference_inputs(const ScannerReferenceCase& reference) {
         const auto& test = reference.image;
         const bool glareActive = reference.trace && reference.route != FJ_ROUTE_POSITIVE_DIRECT;
         const bool combined = reference.trace && reference.trace->combined;
-        ofx_test::DeviceImages images({test.width, test.height, test.components});
+        const int border = std::string_view(test.id) == "geometry/bounds" ? 1 : 0;
+        ofx_test::DeviceImages images({test.width, test.height, test.components, 5, 5, border});
         const auto instance = reference.trace ? reference.trace->instance : kInstance;
         fj_test_ofx_render_tokens(kSession, instance, kClip);
         ofx_test::RenderHost fixture;
-        if (reference.trace) {
+        if (reference.render) {
+            ofx_test::configure_reference_render(fixture, images, *reference.render);
+        } else if (reference.trace) {
             configure_fixed_scan(fixture, images, *reference.trace);
         } else {
             ofx_test::author_parameters(fixture.host(), fixture.effect(), test);
@@ -308,22 +233,17 @@ namespace {
             change(fixture, "GlareActive", kOfxChangeUserEdited, test.time);
         }
         const auto capture = [&] {
-            using Sample = DensityCaptureScope::Sample;
-            DensityCaptureScope witness(images.stream());
+            ofx_test::ScanReferenceCapture witness(images.stream());
             const auto delivered = render(fixture, images, test.time, instance);
             const auto samples = witness.read();
-            const auto glare = glare_field(samples);
+            const auto glare = ofx_test::scan_glare_field(samples);
             ofx_test::require_render(std::ranges::all_of(glare, [&](float value) {
                                          return std::isfinite(value) && (glareActive ? value > 0.0F : value == 0.0F);
                                      }),
                                      "scanner reference captured the wrong glare field");
-            return nlohmann::json{{"developed_cmy_bits", scan_sample_bits(samples, &Sample::density)},
-                                  {"glare_field_bits", float_bits(glare)},
-                                  {"device_xyz_bits", scan_sample_bits(samples, &Sample::xyz)},
-                                  {"device_corrected_xyz_bits", scan_sample_bits(samples, &Sample::correctedXYZ)},
-                                  {"device_adapted_xyz_bits", scan_sample_bits(samples, &Sample::adaptedXYZ)},
-                                  {"device_signed_rgb_bits", scan_sample_bits(samples, &Sample::signedRGB)},
-                                  {"device_output_bits", float_bits(delivered)}};
+            auto record = ofx_test::scan_reference_stages(samples);
+            record["device_output_bits"] = ofx_test::scan_float_words(delivered);
+            return record;
         };
         auto cold = capture();
         const auto warm = capture();
@@ -331,7 +251,7 @@ namespace {
         const auto source = ofx_test::initial_source(test);
         std::vector<float> returnedSource(source.size());
         ofx_test::require_cuda(cudaMemcpy(returnedSource.data(), images.source(), images.bytes(), cudaMemcpyDeviceToHost), "verify scanner reference source");
-        ofx_test::require_render(float_bits(source) == float_bits(returnedSource), "scanner reference source changed");
+        ofx_test::require_render(ofx_test::scan_float_words(source) == ofx_test::scan_float_words(returnedSource), "scanner reference source changed");
 
         const Observation held(fixture.effect());
         const auto& state = held.view.published;
@@ -344,24 +264,13 @@ namespace {
                                      (combined ? post.unsharp_radius > 0 && post.unsharp_amount == 0.7F
                                                : post.unsharp_radius == 0 && post.unsharp_amount == 0.0F),
                                  "scanner reference captured unexpected spatial output effects");
-        const auto& scanner = state.scanner_tables;
-        const auto& color = state.output_color;
-        const auto& correction = state.scanner_correction;
-        ofx_test::require_render(profile_key(state.film_profile_key) == reference.film, "scanner reference published the wrong film profile");
-        const auto lane = [](const FjFloatSpan& values) {
-            ofx_test::require_render(values.data && values.count == 81, "missing held scanner spectrum");
-            return float_bits({values.data, values.count});
-        };
-        const auto& encoding = color.encoding;
-        const std::array coefficients{encoding.gamma, encoding.a, encoding.b, encoding.c, encoding.d, encoding.linear_cutoff};
-        constexpr auto flags = FJ_COLOR_ENCODE_CCTF | FJ_COLOR_INPUT_IS_OUTPUT_SPACE | FJ_COLOR_GAMUT_COMPRESSION;
-        const auto& boundary = color.gamut_cmax;
-        ofx_test::require_render(color.flags == flags && encoding.cctf_kind == FJ_CCTF_SRGB && color.color_space == FJ_OUTPUT_SRGB &&
-                                     boundary.data && boundary.count == Gamut::kOutputBoundaryValueCount,
+        ofx_test::require_render(state.output_color.flags == (FJ_COLOR_ENCODE_CCTF | FJ_COLOR_INPUT_IS_OUTPUT_SPACE | FJ_COLOR_GAMUT_COMPRESSION) &&
+                                     state.output_color.color_space == FJ_OUTPUT_SRGB && state.output_color.encoding.cctf_kind == FJ_CCTF_SRGB,
                                  "scanner reference requires the complete sRGB gamut and transfer inputs");
+        ofx_test::require_render(profile_key(state.film_profile_key) == reference.film, "scanner reference published the wrong film profile");
         const auto seen = render_observation(fixture.effect());
         const std::array glareControls{post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px};
-        cold.update({{"schema", "scanner-reference-input-v6"},
+        cold.update({{"schema", reference.render ? "scanner-reference-render-gpu-v1" : "scanner-reference-input-v6"},
                      {"id", test.id},
                      {"shape", {test.height, test.width, test.components}},
                      {"route", state.route},
@@ -378,39 +287,48 @@ namespace {
                      {"exposure_bits", std::bit_cast<std::uint64_t>(held.view.captured.camera_exposure_compensation_ev)},
                      {"grain", state.grain.active},
                      {"glare", post.glare_active},
-                     {"glare_controls_bits", float_bits(glareControls)},
+                     {"glare_controls_bits", ofx_test::scan_float_words(glareControls)},
                      {"glare_blur_radius", post.glare_blur_radius},
                      {"unsharp_radius", post.unsharp_radius},
-                     {"unsharp_controls_bits", float_bits(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
-                     {"source_bits", source_bits(test, source)},
-                     {"dye_bits", {lane(scanner.dyes_cmy[0]), lane(scanner.dyes_cmy[1]), lane(scanner.dyes_cmy[2])}},
-                     {"weight_bits", {lane(scanner.weighted_xyz[0]), lane(scanner.weighted_xyz[1]), lane(scanner.weighted_xyz[2])}},
-                     {"base_bits", scanner.has_baseline ? lane(scanner.baseline_min) : nlohmann::json::array()},
-                     {"inverse_y_bits", std::bit_cast<std::uint32_t>(scanner.inv_yn)},
-                     {"white_bits", float_bits(color.illuminant_xyz)},
-                     {"cat02_bits", float_bits(color.cat02)},
-                     {"xyz_to_rgb_bits", float_bits(color.xyz_to_rgb)},
-                     {"gamut_hash", color.gamut_recipe_hash},
-                     {"gamut_table_hash", color.gamut_table_hash},
-                     {"gamut_cmax_bits", float_bits({boundary.data, boundary.count})},
-                     {"gamut_lightness_bits", float_bits(color.lightness_knee)},
-                     {"gamut_chroma_bits", float_bits(color.chroma_knee)},
-                     {"native_to_d65_bits", float_bits(color.native_rgb_to_d65_xyz)},
-                     {"d65_to_native_bits", float_bits(color.d65_xyz_to_native_rgb)},
-                     {"oklab_matrices_bits", {float_bits(Gamut::kOklabXyzToLms), float_bits(Gamut::kOklabLmsToXyz), float_bits(Gamut::kOklabLmsRootToLab), float_bits(Gamut::kOklabLabToLmsRoot)}},
-                     {"output_color_space", color.color_space},
-                     {"output_color_flags", color.flags},
-                     {"cctf_kind", encoding.cctf_kind},
-                     {"cctf_bits", float_bits(coefficients)},
-                     {"correction_active", correction.active},
-                     {"slope_bits", std::bit_cast<std::uint32_t>(correction.xyz_slope)},
-                     {"offset_bits", std::bit_cast<std::uint32_t>(correction.xyz_offset)},
-                     {"recipe_hash", state.recipe_hash},
-                     {"scanner_hash", state.scanner_hash}});
+                     {"unsharp_controls_bits", ofx_test::scan_float_words(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
+                     {"source_bits", source_bits(test, source)}});
+        cold.update(ofx_test::scan_reference_inputs(state));
         return cold;
     }
 
-    int run_reference_inputs(int argc, char** argv) {
+    int report_reference_inputs(std::string_view caller, std::span<const ScannerReferenceCase> cases, bool listing) {
+        if (listing) {
+            for (const auto& test : cases)
+                JuicerTests::list_case(caller, test.image.id);
+            return 0;
+        }
+        JuicerTests::CaseLog log;
+        std::vector<std::string> ids;
+        ids.reserve(cases.size());
+        for (const auto& test : cases)
+            ids.emplace_back(test.image.id);
+        JuicerTests::Cohort cohort(std::string(caller), ids);
+        std::puts("CTEST_FULL_OUTPUT");
+        for (const auto& test : cases) {
+            auto row = cohort.case_event(test.image.id);
+            const auto input = capture_reference_inputs(test);
+            std::puts(input.dump().c_str());
+            row.passed();
+        }
+        log.finish();
+        return 0;
+    }
+
+    int run_render_gpu_reference_inputs(bool listing) {
+        std::array<ScannerReferenceCase, ofx_test::kRenderReferenceCases.size()> cases{};
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            const auto& route = ofx_test::kRenderReferenceCases[index];
+            cases[index] = {{route.id, route.id, route.route, route.reconstruction, route.components}, route.film, route.resolvedRoute, nullptr, &route};
+        }
+        return report_reference_inputs("ofx.gpu.render_reference_inputs", cases, listing);
+    }
+
+    int run_reference_inputs(bool listing) {
         constexpr std::string_view caller = "ofx.gpu.scanner_reference_inputs";
         constexpr std::array cases{
             ScannerReferenceCase{{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_DIRECT},
@@ -441,28 +359,7 @@ namespace {
                                  kFixedGlareMinusZero.profile,
                                  FJ_ROUTE_NEGATIVE_PRINT,
                                  &kFixedGlareMinusZero}};
-        if (JuicerTests::list_requested(argc, argv)) {
-            for (const auto& test : cases) {
-                JuicerTests::list_case(caller, test.image.id);
-            }
-            return 0;
-        }
-        JuicerTests::CaseLog log;
-        std::vector<std::string> ids;
-        ids.reserve(cases.size());
-        for (const auto& test : cases) {
-            ids.emplace_back(test.image.id);
-        }
-        JuicerTests::Cohort cohort(std::string(caller), ids);
-        std::puts("CTEST_FULL_OUTPUT");
-        for (const auto& test : cases) {
-            auto row = cohort.case_event(test.image.id);
-            const auto input = capture_reference_inputs(test);
-            std::puts(input.dump().c_str());
-            row.passed();
-        }
-        log.finish();
-        return 0;
+        return report_reference_inputs(caller, cases, listing);
     }
 
     void check_highlight_carrier(std::size_t index) {
@@ -649,7 +546,7 @@ namespace {
             ofx_test::RenderHost fixture(OfxGetPlugin(0));
             configure_fixed_scan(fixture, images, scenario);
             fj_test_ofx_render_tokens(kSession, scenario.instance, kClip);
-            DensityCaptureScope witness(images.stream());
+            ofx_test::ScanReferenceCapture witness(images.stream());
             ofx_test::require_render(fixture.render() == kOfxStatOK, "frozen scenario render");
             const auto seen = render_observation(fixture.effect());
             ofx_test::require_render(seen.native_entry_count == 1 && seen.instance_token == scenario.instance &&
@@ -709,7 +606,7 @@ namespace {
             }
             {
                 const Observation observed(fixture.effect());
-                const auto glare = glare_field(witness.read());
+                const auto glare = ofx_test::scan_glare_field(witness.read());
                 const auto predicted = fixed_scan_pixels(scenario, observed.view, seen, glare);
                 RenderAssertions::compare_pixels(scenario.name, images.pixels(images.read()), predicted);
             }
@@ -820,7 +717,8 @@ namespace {
         std::uint64_t initial_build = 0;
         row(rows, "temporal/initial", [&] {
             original = render(fixture, images, 37.0);
-            RenderAssertions::compare_pixels("initial frozen pixels", original, ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
+            const auto expected = ofx_test::read_render_reference(JUICER_PROCESSOR_RUST_PATH, JUICER_SPECTRAL_TRACE_PRESET, false);
+            RenderAssertions::compare_pixels("initial spectral pixels", original, expected.at("route/negative-direct"));
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.pending_kind == 4 && state.view.build > 0 && state.view.backing_identity != 0, "initial publication");
             initial_build = state.view.build;
@@ -1155,7 +1053,10 @@ namespace {
 
 int main(int argc, char** argv) try {
     if (argc >= 2 && std::string_view(argv[1]) == "--scanner-reference-inputs") {
-        return run_reference_inputs(argc, argv);
+        return run_reference_inputs(JuicerTests::list_requested(argc, argv));
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "--render-gpu-reference-inputs") {
+        return run_render_gpu_reference_inputs(JuicerTests::list_requested(argc, argv));
     }
     if (JuicerTests::list_requested(argc, argv)) {
         for (const auto* id : kRows)

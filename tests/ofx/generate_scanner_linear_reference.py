@@ -16,6 +16,9 @@ import opt_einsum
 
 SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
 REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"
+RENDER_REGISTRATION = "Ofx.Gpu.RenderReferenceInputs"
+ACCEPTED_REGISTRATION = "Ofx.Gpu.AcceptedCleanReferenceInputs"
+ACCEPTED_SOURCE = Path(__file__).with_name("accepted_cuda_clean_samples.json")
 ROUTES = ("negative-direct", "negative-print", "positive-direct", "positive-print")
 NATURAL_GLARE_TRACE = "fixed/negative-print"
 FIXED_TRACES = {
@@ -25,6 +28,14 @@ FIXED_TRACES = {
     "fixed/combined-print": (1, 3, 0, (0, 0)),
     "fixed/glare-plus-zero": (1, 3, 0, (0, 0)),
     "fixed/glare-minus-zero": (1, 3, 0, (0, 0)),
+}
+RENDER_CASES = {
+    "route/negative-direct": (0, 3, 0, (0, 0)),
+    "route/negative-print": (1, 4, 1, (0, 0)),
+    "route/positive-direct": (2, 3, 2, (11, -3)),
+    "route/positive-print": (3, 4, 0, (0, 0)),
+    "format/rgba": (0, 4, 0, (0, 0)),
+    "geometry/bounds": (0, 3, 0, (11, -3)),
 }
 
 
@@ -56,16 +67,16 @@ def reference_primitives(repository):
     return namespace["compute_density_spectral"], namespace["density_to_light"], digests
 
 
-def read_capture(result_dir):
+def read_capture(result_dir, registration):
     result = json.loads((result_dir / "result.json").read_bytes())
     if (
         result.get("status") != "passed"
         or not result.get("candidate_unchanged")
-        or REGISTRATION not in result.get("selection", ())
+        or registration not in result.get("selection", ())
     ):
         raise ValueError("expected a completed, unchanged scanner input capture")
     test_log = (result_dir / "ctest.xml").read_bytes()
-    (test,) = [entry for entry in ET.fromstring(test_log).iter("testcase") if entry.get("name") == REGISTRATION]
+    (test,) = [entry for entry in ET.fromstring(test_log).iter("testcase") if entry.get("name") == registration]
     stdout = test.findtext("system-out", "")
     records = (json.loads(line) for line in stdout.splitlines() if line.startswith("{"))
     rows = [
@@ -79,6 +90,8 @@ def read_capture(result_dir):
             "scanner-reference-input-v4",
             "scanner-reference-input-v5",
             "scanner-reference-input-v6",
+            "scanner-reference-render-gpu-v1",
+            "scanner-reference-accepted-clean-v1",
         }
     ]
     schema = rows[0]["schema"] if rows else None
@@ -91,6 +104,16 @@ def read_capture(result_dir):
         fixed = (NATURAL_GLARE_TRACE,)
     ids = (*ROUTES, *fixed)
     routes = (0, 1, 2, 3, *(FIXED_TRACES[name][0] for name in fixed))
+    if registration == RENDER_REGISTRATION:
+        if schema != "scanner-reference-render-gpu-v1":
+            raise ValueError("unexpected OFX higher-level render input schema")
+        ids = tuple(RENDER_CASES)
+        routes = tuple(case[0] for case in RENDER_CASES.values())
+    if registration == ACCEPTED_REGISTRATION:
+        if schema != "scanner-reference-accepted-clean-v1":
+            raise ValueError("unexpected accepted clean capture input schema")
+        ids = tuple(f"{name}-clean" for name in ROUTES)
+        routes = (0, 1, 2, 3)
     if (
         tuple(row.get("id") for row in rows) != ids
         or tuple(row.get("route") for row in rows) != routes
@@ -194,10 +217,17 @@ def scanner_unsharp(row, linear):
 
 
 def delivered_reference(row, source, signed_rgb):
-    if (row["output_color_space"], row["output_color_flags"], row["cctf_kind"]) != (0, 7, 2):
+    output_flags = row["output_color_flags"]
+    if row["schema"] == "scanner-reference-accepted-clean-v1":
+        if row["output_color_space"] != 4 or output_flags not in (2, 6):
+            raise ValueError("expected already-linear Rec.2020 input to output encoding")
+    elif (row["output_color_space"], output_flags, row["cctf_kind"]) != (0, 7, 2):
         raise ValueError("expected prepared sRGB with gamut compression and encoding enabled")
-    linear = scanner_unsharp(row, output_gamut(row, signed_rgb))
-    encoded = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.maximum(linear, 0) ** (1 / 2.4) - 0.055)
+    mapped = output_gamut(row, signed_rgb) if output_flags & 4 else signed_rgb
+    linear = scanner_unsharp(row, mapped)
+    encoded = linear
+    if output_flags & 1:
+        encoded = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.maximum(linear, 0) ** (1 / 2.4) - 0.055)
     expected = np.empty_like(source, dtype="<f4")
     expected[:, :3] = np.clip(encoded, 0.0, 1.0)
     observed = promote(row["device_output_bits"], source.shape)
@@ -229,9 +259,12 @@ def delivered_reference(row, source, signed_rgb):
 def reference_row(row, density_spectral, density_to_light):
     height, width, components = row["shape"]
     trace = FIXED_TRACES.get(row["id"])
+    explicit = trace or RENDER_CASES.get(row["id"])
+    if row["schema"] == "scanner-reference-accepted-clean-v1":
+        explicit = (row["route"], 3, 0, (0, 0))
     natural_glare = trace is not None and row["route"] in (1, 3)
     combined = row["id"] == "fixed/combined-print"
-    expected_components = trace[1] if trace else 3 + row["route"] % 2
+    expected_components = explicit[1] if explicit else 3 + row["route"] % 2
     if (
         (height, width, components) != (5, 7, expected_components)
         or bool(row["glare"]) != natural_glare
@@ -239,8 +272,8 @@ def reference_row(row, density_spectral, density_to_light):
         or (row.get("unsharp_radius", 0) > 0) != combined
     ):
         raise ValueError(f"invalid deterministic scanner capture for {row['id']}")
-    if trace and (
-        row["reconstruction"] != trace[2] or tuple(row["source_origin"]) != trace[3] or row["frame_token"] != 37
+    if explicit and (
+        row["reconstruction"] != explicit[2] or tuple(row["source_origin"]) != explicit[3] or row["frame_token"] != 37
     ):
         raise ValueError(f"fixed trace controls changed for {row['id']}")
     pixels = height * width
@@ -318,6 +351,8 @@ def reference_row(row, density_spectral, density_to_light):
         "scanner-reference-input-v4",
         "scanner-reference-input-v5",
         "scanner-reference-input-v6",
+        "scanner-reference-render-gpu-v1",
+        "scanner-reference-accepted-clean-v1",
     }:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
     return reference
@@ -332,8 +367,16 @@ def main():
         "--trace-fixture", type=Path, action="append", default=[], help="freeze matched fixed trace pixels"
     )
     parser.add_argument("--ordinary-fixtures", type=Path, help="freeze the matching native ordinary smoke fixtures")
+    parser.add_argument("--render-fixtures", type=Path, help="freeze the matched OFX render fixture cohort")
+    parser.add_argument("--accepted-fixtures", type=Path, help="freeze the accepted clean capture fixture cohort")
     args = parser.parse_args()
-    preset, captures, provenance = read_capture(args.capture)
+    if args.accepted_fixtures:
+        registration = ACCEPTED_REGISTRATION
+    elif args.render_fixtures:
+        registration = RENDER_REGISTRATION
+    else:
+        registration = REGISTRATION
+    preset, captures, provenance = read_capture(args.capture, registration)
     density_spectral, density_to_light, source_hashes = reference_primitives(args.spektrafilm)
     report = {
         "schema": "scanner-numerical-reference-v3",
@@ -355,6 +398,10 @@ def main():
     if args.ordinary_fixtures and stages_passed and delivered_passed:
         write_ordinary_fixtures(report, sha256(args.output.read_bytes()), args.ordinary_fixtures)
     if stages_passed and delivered_passed:
+        if args.render_fixtures:
+            write_render_fixtures(report, sha256(args.output.read_bytes()), args.render_fixtures)
+        if args.accepted_fixtures:
+            write_accepted_fixtures(report, sha256(args.output.read_bytes()), args.accepted_fixtures)
         for path in args.trace_fixture:
             write_trace_fixture(report, sha256(args.output.read_bytes()), path)
     return int(not (stages_passed and delivered_passed))
@@ -448,6 +495,102 @@ def write_ordinary_fixtures(report, digest, directory):
         }
         path = directory / f"ordinary-{preset}.json"
         with path.open("x", encoding="utf-8", newline="\n") as output:
+            json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
+            output.write("\n")
+
+
+def write_render_fixtures(report, digest, directory):
+    reference_preset = report["preset"]
+    rows = []
+    for reference in report["rows"]:
+        capture = reference["input"]
+        row = {
+            key: capture[key]
+            for key in (
+                "id",
+                "shape",
+                "route",
+                "reconstruction",
+                "film",
+                "paper",
+                "source_origin",
+                "frame_token",
+                "frame_rate",
+                "grain",
+                "glare",
+                "unsharp_radius",
+                "output_color_flags",
+                "source_bits",
+            )
+        }
+        row["output_bits"] = reference["delivered"]["output_bits"]
+        rows.append(row)
+    if tuple(row["id"] for row in rows) != tuple(RENDER_CASES):
+        raise ValueError("unexpected OFX render fixture membership")
+    for preset in (reference_preset, reference_preset.removesuffix("-debug") + "-release"):
+        fixture = {
+            "schema": "spectral-render-gpu-v1",
+            "preset": preset,
+            "reference_preset": reference_preset,
+            "reference_sha256": digest,
+            "rows": rows,
+        }
+        with (directory / f"render-gpu-{preset}.json").open("x", encoding="utf-8", newline="\n") as output:
+            json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
+            output.write("\n")
+
+
+def write_accepted_fixtures(report, digest, directory):
+    archive_bytes = ACCEPTED_SOURCE.read_bytes()
+    archive = json.loads(archive_bytes)
+    original_fields = (
+        "capture_baseline",
+        "source_shape",
+        "layout",
+        "source_color_space",
+        "frame",
+        "fps",
+        "camera_format_long_edge_mm",
+        "coordinate_map",
+        "input_bits",
+        "input_sha256",
+        "pixel_bound",
+        "compaction",
+    )
+    reference_preset = report["preset"]
+    rows = []
+    for index, (reference, original) in enumerate(zip(report["rows"], archive["cases"], strict=True)):
+        capture = reference["input"]
+        if (
+            capture["id"] != original["name"]
+            or capture["settings"] != original["settings"]
+            or capture["route"] != index
+            or capture["frame"] != archive["frame"]
+            or capture["frame_rate"] != archive["fps"]
+            or capture["resolved_format_mm"] != archive["camera_format_long_edge_mm"]
+            or capture["source_shape"] != archive["source_shape"]
+            or capture["source_bits"] != archive["input_bits"]
+            or capture["coordinate_map"] != archive["coordinate_map"]
+        ):
+            raise ValueError(f"accepted input or control changed for {original['name']}")
+        rows.append(
+            {
+                "name": original["name"],
+                "settings": original["settings"],
+                "output_bits": reference["delivered"]["output_bits"],
+            }
+        )
+    for preset in (reference_preset, reference_preset.removesuffix("-debug") + "-release"):
+        fixture = {
+            "schema": "spectral-accepted-clean-v1",
+            "preset": preset,
+            "reference_preset": reference_preset,
+            "reference_sha256": digest,
+            "archive_sha256": sha256(archive_bytes),
+            **{key: archive[key] for key in original_fields},
+            "cases": rows,
+        }
+        with (directory / f"accepted-clean-{preset}.json").open("x", encoding="utf-8", newline="\n") as output:
             json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
             output.write("\n")
 

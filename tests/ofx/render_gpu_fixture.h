@@ -1,10 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <cstddef>
-#include <fstream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -14,7 +15,6 @@
 #include <cuda_runtime.h>
 
 #include "instance_host.h"
-#include "../ffi/print_illuminant_fixture.h"
 #include "juicer_ofx_api.h"
 #include "ofxImageEffectExt.h"
 
@@ -161,31 +161,6 @@ namespace ofx_test {
         cudaStream_t stream_ = nullptr;
     };
 
-    inline std::vector<float> reference_pixels(const std::string& path, std::string_view selected) {
-        std::ifstream input(path);
-        std::string name;
-        std::size_t count = 0;
-        while (input >> name >> count) {
-            std::vector<float> row(count);
-            for (auto& value : row)
-                input >> value;
-            require_render(static_cast<bool>(input), "incomplete reference pixel row");
-            if (name == selected) {
-                nlohmann::json words = nlohmann::json::array();
-                for (float value : row)
-                    words.push_back(std::bit_cast<std::uint32_t>(value));
-                auto selected_path = path;
-                selected_path += '.';
-                selected_path += name;
-                const auto selected_words = PrintIlluminantFixtures::apply(selected_path, words);
-                require_render(selected_words.size() == row.size(), "reference pixel supplement shape");
-                for (std::size_t i = 0; i < row.size(); ++i)
-                    row[i] = std::bit_cast<float>(selected_words.at(i).get<std::uint32_t>());
-                return row;
-            }
-        }
-        throw std::runtime_error("reference pixel row missing: " + std::string(selected));
-    }
     class RenderHost {
     public:
         explicit RenderHost(OfxPlugin* plugin = OfxGetPlugin(0)) : plugin_(plugin) {
@@ -282,4 +257,27 @@ namespace ofx_test {
         bool loaded_ = false;
         bool created_ = false;
     };
+
+    struct RenderReferenceCase {
+        const char* id;
+        const char* route;
+        const char* film;
+        unsigned resolvedRoute;
+        int reconstruction;
+        int components;
+        OfxPointI origin;
+    };
+
+    inline constexpr std::array kRenderReferenceCases{
+        RenderReferenceCase{"route/negative-direct", "NegativeDirectScan", "kodak_portra_400", 0, 0, 3, {0, 0}},
+        RenderReferenceCase{"route/negative-print", "NegativePrintScan", "kodak_portra_400", 1, 1, 4, {0, 0}},
+        RenderReferenceCase{"route/positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 2, 3, {11, -3}},
+        RenderReferenceCase{"route/positive-print", "NegativePrintScan", "fujifilm_provia_100f", 3, 0, 4, {0, 0}},
+        RenderReferenceCase{"format/rgba", "NegativeDirectScan", "kodak_portra_400", 0, 0, 4, {0, 0}},
+        RenderReferenceCase{"geometry/bounds", "NegativeDirectScan", "kodak_portra_400", 0, 0, 3, {11, -3}}};
+
+    using RenderPixels = std::map<std::string, std::vector<float>>;
+
+    void configure_reference_render(RenderHost& fixture, DeviceImages& images, const RenderReferenceCase& test);
+    RenderPixels read_render_reference(const char* path, const std::string& preset, bool check_controls);
 } // namespace ofx_test
