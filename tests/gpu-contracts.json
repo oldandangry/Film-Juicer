@@ -54,7 +54,7 @@
     },
     "JuicerProcessorReferenceProbe": {
       "protocol": "custom",
-      "registrations": 5
+      "registrations": 6
     },
     "JuicerPreparedBoundaryProbe": {
       "protocol": "custom",
@@ -62,7 +62,7 @@
     },
     "JuicerExecutorFailureOrderProbe": {
       "protocol": "custom",
-      "registrations": 9
+      "registrations": 10
     },
     "JuicerAdapterTraceProbe": {
       "protocol": "custom",
@@ -120,12 +120,14 @@
     "Ofx.Gpu.ScannerReferenceInputs": 1,
     "Ofx.Gpu.RenderReferenceInputs": 1,
     "Ofx.Gpu.ProcessorReference": 1,
+    "Ofx.Gpu.ProcessorReferenceInputs": 1,
     "Ofx.Gpu.SequentialOwners": 1,
     "Ofx.Gpu.CutoverContract": 8,
     "Ofx.Gpu.AcceptedCudaCaptures": 1,
     "Ofx.Gpu.AcceptedCleanReferenceInputs": 1,
     "Ofx.Gpu.NoiseSourceLifetime": 4,
     "Ofx.Gpu.WorkspaceTransitions": 2,
+    "Ofx.Gpu.WorkspaceReferenceInputs": 2,
     "Ofx.Gpu.ExecutorFailureOrder": 1,
     "Ofx.Gpu.ResourceFailure.ScannerLut": 1,
     "Ofx.Gpu.ResourceFailure.DefectFence": 1,

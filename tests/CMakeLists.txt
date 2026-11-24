@@ -975,6 +975,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()
 
+set(juicer_processor_reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/processor-${JUICER_TEST_PRESET_NAME}.json")
 add_executable(JuicerProcessorReferenceProbe ofx/processor_reference_test.cpp ofx/render_assertions.cpp
     ofx/instance_host.cpp ../native/ofx_exports.cpp)
 target_sources(JuicerProcessorReferenceProbe PRIVATE ffi/spatial_optics_fixture.cpp ffi/prepared_frame_fixture.cpp)
@@ -986,12 +987,15 @@ target_compile_definitions(JuicerProcessorReferenceProbe PRIVATE
     JUICER_ACCEPTED_CAPTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/accepted-clean-${JUICER_TEST_PRESET_NAME}.json"
     JUICER_ACCEPTED_CAPTURE_PRESET="${JUICER_TEST_PRESET_NAME}"
     JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/accepted_cuda_clean_samples.json"
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
+    JUICER_PROCESSOR_REFERENCE_PATH="${juicer_processor_reference}"
+    JUICER_PROCESSOR_REFERENCE_PRESET="${JUICER_TEST_PRESET_NAME}")
 set_target_properties(JuicerProcessorReferenceProbe PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerProcessorReferenceProbe juicer_test_resources)
 add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
+add_test(NAME Ofx.Gpu.ProcessorReferenceInputs COMMAND JuicerProcessorReferenceProbe --processor-reference-inputs)
+set_tests_properties(Ofx.Gpu.ProcessorReferenceInputs PROPERTIES LABELS "gpu;reference" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
@@ -1053,7 +1057,8 @@ target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
     JUICER_CUDA_RENDER_TEST_HOOK=1
     JUICER_PREPARED_BOUNDARY_TEST=1
     JUICER_TEST_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}"
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
+    JUICER_PROCESSOR_REFERENCE_PATH="${juicer_processor_reference}"
+    JUICER_PROCESSOR_REFERENCE_PRESET="${JUICER_TEST_PRESET_NAME}")
 set_target_properties(JuicerPreparedBoundaryProbe PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -1090,12 +1095,16 @@ target_compile_definitions(juicer_executor_failure_test_objects PRIVATE
     JUICER_EXECUTOR_FAILURE_TEST_HOOK=1)
 add_executable(JuicerExecutorFailureOrderProbe ofx/processor_reference_test.cpp ofx/processor_test_hooks.cpp ofx/render_assertions.cpp
     ofx/instance_host.cpp ../native/ofx_exports.cpp
+    ofx/scanner_reference_capture.cpp ../src/Cuda/Scan/JuicerCudaScanPipeline.cu
     $<TARGET_OBJECTS:juicer_executor_failure_test_objects> ffi/spatial_optics_fixture.cpp ffi/prepared_frame_fixture.cpp)
 target_link_libraries(JuicerExecutorFailureOrderProbe PRIVATE
     juicer_test_core film_juicer_rust_test_support CUDA::cuda_driver)
 target_compile_definitions(JuicerExecutorFailureOrderProbe PRIVATE
     JUICER_EXECUTOR_FAILURE_TEST_HOOK=1
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
+    JUICER_SCAN_DENSITY_CAPTURE_TEST=1
+    JUICER_PROCESSOR_REFERENCE_PATH="${juicer_processor_reference}"
+    JUICER_PROCESSOR_REFERENCE_PRESET="${JUICER_TEST_PRESET_NAME}"
+    JUICER_WORKSPACE_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/workspace-${JUICER_TEST_PRESET_NAME}.json")
 set_target_properties(JuicerExecutorFailureOrderProbe PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -1107,6 +1116,8 @@ set_tests_properties(Ofx.Gpu.NoiseSourceLifetime PROPERTIES
     RESOURCE_LOCK juicer_gpu
     ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/noise-source-lifetime")
 add_test(NAME Ofx.Gpu.WorkspaceTransitions COMMAND JuicerExecutorFailureOrderProbe --workspace-transitions)
+add_test(NAME Ofx.Gpu.WorkspaceReferenceInputs COMMAND JuicerExecutorFailureOrderProbe --workspace-reference-inputs)
+set_tests_properties(Ofx.Gpu.WorkspaceReferenceInputs PROPERTIES LABELS "gpu;reference" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 set_tests_properties(Ofx.Gpu.WorkspaceTransitions PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Ofx.Gpu.GrainFrame COMMAND JuicerExecutorFailureOrderProbe --grain-frame
     "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")

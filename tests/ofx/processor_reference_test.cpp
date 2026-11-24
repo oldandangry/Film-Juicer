@@ -1,5 +1,4 @@
 #include "../ffi/spatial_optics_fixture.h"
-#include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/prepared_boundary.h"
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
@@ -130,6 +129,89 @@ namespace {
         int fullHeight = 0;
     };
 
+    constexpr std::array kProcessorCases{
+        Case{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+        Case{"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
+        Case{"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
+        Case{"positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0},
+        Case{"combined-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, true},
+        Case{"glare-plus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, false},
+        Case{"glare-minus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, true}};
+
+    float procedural_source_sample(const Case& test, int x, int y, int channel) {
+        if (channel == 3)
+            return 0.125F + static_cast<float>((x + y) % 4) * 0.25F;
+        return static_cast<float>(((test.uniform ? 0 : x + 3 * y) + 7 * channel) % 19) / 19.0F;
+    }
+
+    nlohmann::json processor_source_words(const Case& test) {
+        auto words = nlohmann::json::array();
+        words.get_ref<nlohmann::json::array_t&>().reserve(static_cast<std::size_t>(test.width) *
+                                                          static_cast<std::size_t>(test.height) *
+                                                          static_cast<std::size_t>(test.components));
+        for (int y = 0; y < test.height; ++y)
+            for (int x = 0; x < test.width; ++x)
+                for (int c = 0; c < test.components; ++c)
+                    words.push_back(std::bit_cast<std::uint32_t>(procedural_source_sample(test, x, y, c)));
+        return words;
+    }
+
+    std::vector<float> decode_reference_words(const nlohmann::json& words, std::size_t count, const char* label) {
+        if (!words.is_array() || words.size() != count)
+            throw std::runtime_error(std::string(label) + ": unexpected sample count");
+        std::vector<float> values;
+        values.reserve(words.size());
+        for (const auto& word : words) {
+            if (!word.is_number_unsigned() || word.get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max())
+                throw std::runtime_error(std::string(label) + ": invalid Float32 word");
+            const auto sample = std::bit_cast<float>(word.get<std::uint32_t>());
+            if (!std::isfinite(sample))
+                throw std::runtime_error(std::string(label) + ": nonfinite Float32 sample");
+            values.push_back(sample);
+        }
+        return values;
+    }
+
+    enum class ReferenceSchedule : std::uint8_t {
+        Processor,
+        Workspace,
+    };
+
+    const char* reference_schedule_name(ReferenceSchedule schedule) {
+        return schedule == ReferenceSchedule::Workspace ? "workspace" : "processor";
+    }
+
+    nlohmann::json read_processor_reference(const char* path, ReferenceSchedule schedule) {
+        std::ifstream stream(path);
+        if (!stream)
+            throw std::runtime_error("spectral processor fixture unavailable");
+        auto fixture = nlohmann::json::parse(stream);
+        const std::string preset = JUICER_PROCESSOR_REFERENCE_PRESET;
+        const auto referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
+        if (fixture.at("schema") != "spectral-processor-v1" || fixture.at("preset") != preset ||
+            fixture.at("reference_preset") != referencePreset || fixture.at("schedule") != reference_schedule_name(schedule))
+            throw std::runtime_error("spectral processor fixture identity");
+        const auto cases = std::span(kProcessorCases).first(schedule == ReferenceSchedule::Workspace ? 4U : kProcessorCases.size());
+        const auto& rows = fixture.at("rows");
+        if (!rows.is_array() || rows.size() != cases.size())
+            throw std::runtime_error("spectral processor fixture membership");
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            const auto& test = cases[index];
+            const auto& row = rows.at(index);
+            if (row.at("id") != test.name || row.at("shape") != nlohmann::json::array({test.height, test.width, test.components}) ||
+                row.at("route") != static_cast<unsigned>(test.route) || row.at("reconstruction") != test.reconstruction ||
+                row.at("film") != (index == 2 || index == 3 ? "fujifilm_provia_100f" : "kodak_portra_400") ||
+                row.at("paper") != (index == 0 || index == 2 ? "" : "kodak_portra_endura") ||
+                row.at("source_origin") != nlohmann::json::array({test.originX, test.originY}) ||
+                row.at("frame") != test.time || row.at("frame_rate") != 24.0 ||
+                row.at("glare") != (index != 0 && index != 2) || row.at("grain") != test.combined ||
+                row.at("exposure_bits") != std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0) ||
+                row.at("source_bits") != processor_source_words(test))
+                throw std::runtime_error(std::string("spectral processor fixture inputs differ for ") + test.name);
+        }
+        return fixture.at("rows");
+    }
+
     struct DeviceFrame {
         float* source = nullptr;
         float* destination = nullptr;
@@ -155,39 +237,9 @@ namespace {
 
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
     std::array<std::vector<float>, 2> production_pixels() {
-        std::ifstream fixture(JUICER_PROCESSOR_REFERENCE_PATH);
-        if (!fixture)
-            throw std::runtime_error("production state pixel fixture unavailable");
-        constexpr std::array names{"negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print", "glare-plus-zero", "glare-minus-zero"};
-        std::array<std::vector<float>, 2> result;
-        for (std::size_t index = 0; index < names.size(); ++index) {
-            std::string name;
-            std::size_t count = 0;
-            fixture >> name >> count;
-            if (!fixture || name != names[index] || count == 0)
-                throw std::runtime_error("production state pixel fixture membership");
-            std::vector<float> pixels(count);
-            for (float& pixel : pixels)
-                fixture >> pixel;
-            if (!fixture)
-                throw std::runtime_error("production state pixel fixture truncated");
-            if (index < result.size()) {
-                nlohmann::json words = nlohmann::json::array();
-                for (float pixel : pixels)
-                    words.push_back(std::bit_cast<std::uint32_t>(pixel));
-                const auto selected = PrintIlluminantFixtures::apply(
-                    std::string(JUICER_PROCESSOR_REFERENCE_PATH) + "." + name, words);
-                if (selected.size() != pixels.size())
-                    throw std::runtime_error("production state pixel fixture supplement shape");
-                for (std::size_t sample = 0; sample < pixels.size(); ++sample)
-                    pixels[sample] = std::bit_cast<float>(selected.at(sample).get<std::uint32_t>());
-                result[index] = std::move(pixels);
-            }
-        }
-        std::string extra;
-        if (fixture >> extra)
-            throw std::runtime_error("production state pixel fixture extra row");
-        return result;
+        const auto rows = read_processor_reference(JUICER_PROCESSOR_REFERENCE_PATH, ReferenceSchedule::Processor);
+        return {decode_reference_words(rows.at(0).at("output_bits"), 105, "Negative Direct"),
+                decode_reference_words(rows.at(1).at("output_bits"), 140, "Negative Print")};
     }
 #endif
 
@@ -709,10 +761,47 @@ namespace {
     };
     thread_local DirSubmissionWitness* dirSubmissionWitness = nullptr;
 
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    nlohmann::json processor_scanner_inputs(const FjPreparedStateView& state) {
+        auto input = ofx_test::scan_reference_inputs(state);
+        const auto& post = state.scanner_post_effects;
+        const std::array controls{post.unsharp_sigma_px, post.unsharp_amount};
+        const auto key = [](FjStringView value) {
+            return value.count ? std::string_view(value.data, value.count) : std::string_view{};
+        };
+        input.update({{"film", key(state.film_profile_key)},
+                      {"paper", key(state.print_profile_key)},
+                      {"grain", state.grain.active != 0},
+                      {"glare", post.glare_active != 0},
+                      {"unsharp_radius", post.unsharp_radius},
+                      {"unsharp_controls_bits", ofx_test::scan_float_words(controls)}});
+        return input;
+    }
+
+    void report_processor_scan(const Case& test, const std::vector<float>& pixels, const ofx_test::ScanReferenceCapture::Samples& samples, nlohmann::json inputs, ReferenceSchedule schedule) {
+        inputs.update(ofx_test::scan_reference_stages(samples));
+        inputs.update({{"schema", "scanner-reference-processor-v1"},
+                       {"schedule", reference_schedule_name(schedule)},
+                       {"id", test.name},
+                       {"shape", {test.height, test.width, test.components}},
+                       {"route", static_cast<unsigned>(test.route)},
+                       {"reconstruction", test.reconstruction},
+                       {"source_origin", {test.originX, test.originY}},
+                       {"frame", test.time},
+                       {"frame_rate", 24.0},
+                       {"frame_token", 37},
+                       {"exposure_bits", std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0)},
+                       {"source_bits", processor_source_words(test)},
+                       {"device_output_bits", ofx_test::scan_float_words(pixels)}});
+        std::puts(inputs.dump().c_str());
+    }
+#endif
+
     std::vector<float> render_case(CallbackSession& runtime, const Case& test, const JuicerTestSupport::PreparationInput& parameters, JuicerTestSupport::InstanceFixture& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold"
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                                    ,
-                                   ofx_test::ScanReferenceCapture::Samples* scanCapture = nullptr
+                                   ofx_test::ScanReferenceCapture::Samples* scanCapture = nullptr,
+                                   nlohmann::json* scanInputs = nullptr
 #endif
     ) {
         std::array<char, 512> identityText{};
@@ -747,9 +836,7 @@ namespace {
                 const std::size_t pixelOffset = rowOffset +
                                                 static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components);
                 for (int c = 0; c < test.components; ++c) {
-                    input[pixelOffset + static_cast<std::size_t>(c)] =
-                        c == 3 ? 0.125f + static_cast<float>((x + y) % 4) * 0.25f
-                               : static_cast<float>(((test.uniform ? 0 : x + 3 * y) + 7 * c) % 19) / 19.0f;
+                    input[pixelOffset + static_cast<std::size_t>(c)] = procedural_source_sample(test, x, y, c);
                 }
             }
         }
@@ -818,6 +905,10 @@ namespace {
             FjPreparedStateView stateView{};
             if (held->view(stateView, stateError).category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error(std::string(test.name) + ": state view failed");
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+            if (scanInputs)
+                *scanInputs = processor_scanner_inputs(stateView);
+#endif
             const FjRect bounds{test.originX, test.originY, test.originX + width, test.originY + height};
             const FjRect destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
             const FjRect full = test.fullWidth > 0 && test.fullHeight > 0
@@ -1856,7 +1947,7 @@ namespace {
         return ids;
     }
 
-    void run_workspace_transitions(CallbackSession& runtime) {
+    void run_workspace_transitions(CallbackSession& runtime, bool referenceInputs) {
         using Frame = JuicerProcess::Root::PreparedCudaFrame;
         using namespace JuicerCuda::ResourceManager;
         const auto require = [](bool ok, const std::string& message) {
@@ -2028,36 +2119,28 @@ namespace {
                 row.passed();
             }
         }
-        const std::array cases{Case{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
-                               Case{"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
-                               Case{"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
-                               Case{"positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0}};
-        std::ifstream fixture(JUICER_PROCESSOR_REFERENCE_PATH);
-        require(static_cast<bool>(fixture), "workspace processor fixture unavailable");
+        const auto cases = std::span(kProcessorCases).first<4>();
+        const auto expectedRows = referenceInputs ? nlohmann::json{} : read_processor_reference(JUICER_WORKSPACE_REFERENCE_PATH, ReferenceSchedule::Workspace);
         unsigned pixels = 0;
-        for (const auto& test : cases) {
+        if (referenceInputs)
+            std::puts("CTEST_FULL_OUTPUT");
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            const auto& test = cases[index];
             auto case_event = candidate_rows.case_event(std::string(test.name) + "/actual-schedule");
-            std::string name;
-            std::size_t count = 0;
-            fixture >> name >> count;
-            require(fixture && name == test.name && count > 0, "workspace fixture membership");
-            std::vector<float> expected(count);
-            for (float& value : expected) {
-                fixture >> value;
-            }
-            require(static_cast<bool>(fixture), "workspace fixture truncated");
-            nlohmann::json words = nlohmann::json::array();
-            for (float value : expected) {
-                words.push_back(std::bit_cast<std::uint32_t>(value));
-            }
-            words = PrintIlluminantFixtures::apply(std::string(JUICER_PROCESSOR_REFERENCE_PATH) + "." + test.name, words);
-            for (std::size_t i = 0; i < expected.size(); ++i) {
-                expected[i] = std::bit_cast<float>(words.at(i).get<std::uint32_t>());
-            }
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
             JuicerCuda::ExecutorTest::reset_workspace_transitions();
-            compare_pixels(test.name, render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++), expected);
+            const auto parameters = parameters_for(test);
+            if (referenceInputs) {
+                ofx_test::ScanReferenceCapture::Samples samples{};
+                nlohmann::json inputs;
+                const auto rendered = render_case(runtime, test, parameters, state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "workspace", &samples, &inputs);
+                report_processor_scan(test, rendered, samples, std::move(inputs), ReferenceSchedule::Workspace);
+            } else {
+                const auto rendered = render_case(runtime, test, parameters, state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++);
+                const auto expected = decode_reference_words(expectedRows.at(index).at("output_bits"), rendered.size(), test.name);
+                compare_pixels(test.name, rendered, expected);
+            }
             require(JuicerCuda::ExecutorTest::workspaceHandoff.has_value(), "actual schedule handoff not observed");
             ++pixels;
             std::cout << "workspace actual schedule route=" << Spektrafilm::scan_route_key(test.route)
@@ -4572,6 +4655,40 @@ namespace {
             row.passed();
         }
     }
+
+    void run_processor_reference_inputs(CallbackSession& runtime) {
+        std::vector<std::string> names;
+        names.reserve(kProcessorCases.size());
+        for (const auto& test : kProcessorCases)
+            names.emplace_back(test.name);
+        JuicerTests::Cohort rows("processor_reference_inputs", names);
+        std::puts("CTEST_FULL_OUTPUT");
+        for (const auto& test : kProcessorCases) {
+            auto row = rows.case_event(test.name);
+            JuicerTestSupport::InstanceFixture state;
+            MembershipRetirement stateRetirement{runtime, state};
+            ofx_test::ScanReferenceCapture::Samples observed{};
+            const auto rendered = render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "processor", &observed);
+            FjInstanceObservation* raw = nullptr;
+            auto* const effect = runtime.find(state);
+            if (!effect || fj_test_ofx_instance_observe(effect, &raw, nullptr).category != FJ_STATUS_SUCCESS || !raw)
+                throw std::runtime_error("processor scanner fixture did not publish a state");
+            const auto release = [](FjInstanceObservation* owner) {
+                (void)fj_test_instance_observation_release(owner, nullptr);
+            };
+            const std::unique_ptr<FjInstanceObservation, decltype(release)> hold(raw, release);
+            FjInstanceObservationView view{};
+            FjOfxRenderObservation seen{};
+            if (fj_test_instance_observation_view(hold.get(), &view, nullptr).category != FJ_STATUS_SUCCESS ||
+                fj_test_ofx_render_observe(effect, &seen) != 1 || view.published.route != static_cast<unsigned>(test.route) ||
+                view.captured.spectral_upsampling_mode != test.reconstruction || seen.native_entry_count != 1 ||
+                std::bit_cast<std::uint64_t>(view.captured.camera_exposure_compensation_ev) != std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0) ||
+                seen.frame_token != 37 || seen.frame_rate != 24.0 || seen.render_bounds[0] != test.originX || seen.render_bounds[1] != test.originY)
+                throw std::runtime_error("processor scanner fixture captured the wrong controls or frame");
+            report_processor_scan(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
+            row.passed();
+        }
+    }
 } // namespace
 #endif
 
@@ -4626,8 +4743,8 @@ int main(int argc, char** argv) try {
         }
 #else
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (argc == 3 && std::string_view(argv[1]) == "--workspace-transitions") {
-            JuicerTests::list_case("processor_operation", "workspace_transitions");
+        if (argc == 3 && (std::string_view(argv[1]) == "--workspace-transitions" || std::string_view(argv[1]) == "--workspace-reference-inputs")) {
+            JuicerTests::list_case("processor_operation", std::string_view(argv[1]) == "--workspace-transitions" ? "workspace_transitions" : "workspace_reference_inputs");
             for (const char* route : {"negative-direct", "negative-print"}) {
                 for (const char* mode : {"competing", "malformed"})
                     JuicerTests::list_case("workspace_transition", std::string(route) + "/" + mode);
@@ -4766,6 +4883,12 @@ int main(int argc, char** argv) try {
             return 0;
         }
 #if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+        if (argc == 3 && std::string_view(argv[1]) == "--processor-reference-inputs") {
+            JuicerTests::list_case("processor_operation", "processor_reference_inputs");
+            for (const auto& test : kProcessorCases)
+                JuicerTests::list_case("processor_reference_inputs", test.name);
+            return 0;
+        }
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
         if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-reference-inputs") {
             JuicerTests::list_case("processor_operation", "accepted_clean_reference_inputs");
@@ -4807,8 +4930,12 @@ int main(int argc, char** argv) try {
             operation_id = "accepted_clean_captures";
         else if (mode == "--accepted-clean-reference-inputs")
             operation_id = "accepted_clean_reference_inputs";
+        else if (mode == "--processor-reference-inputs")
+            operation_id = "processor_reference_inputs";
         else if (mode == "--workspace-transitions")
             operation_id = "workspace_transitions";
+        else if (mode == "--workspace-reference-inputs")
+            operation_id = "workspace_reference_inputs";
         else if (mode == "--noise-lifetime")
             operation_id = "noise_lifetime";
         else if (mode == "--failure-order")
@@ -4829,6 +4956,14 @@ int main(int argc, char** argv) try {
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
 #if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+        if (argc == 2 && std::string_view(argv[1]) == "--processor-reference-inputs") {
+            run_processor_reference_inputs(runtime);
+            if (runtime.close().category != FJ_STATUS_SUCCESS)
+                throw std::runtime_error("processor reference capture owner cleanup failed");
+            operation_event.passed();
+            case_log.finish();
+            return 0;
+        }
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
         if (argc == 2 && std::string(argv[1]) == "--accepted-clean-reference-inputs") {
             run_accepted_clean_captures(runtime, true);
@@ -4850,8 +4985,8 @@ int main(int argc, char** argv) try {
         }
 #endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (argc == 2 && std::string(argv[1]) == "--workspace-transitions") {
-            run_workspace_transitions(runtime);
+        if (argc == 2 && (std::string_view(argv[1]) == "--workspace-transitions" || std::string_view(argv[1]) == "--workspace-reference-inputs")) {
+            run_workspace_transitions(runtime, std::string_view(argv[1]) == "--workspace-reference-inputs");
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("workspace transitions owner cleanup failed");
             }
@@ -4964,17 +5099,11 @@ int main(int argc, char** argv) try {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");
         }
 #endif
-        const Case cases[]{{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
-                           {"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
-                           {"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
-                           {"positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0},
-                           {"combined-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, true},
-                           {"glare-plus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, false},
-                           {"glare-minus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, true}
+        const std::array cases{kProcessorCases[0], kProcessorCases[1], kProcessorCases[2], kProcessorCases[3], kProcessorCases[4], kProcessorCases[5], kProcessorCases[6]
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-                           ,
-                           {"mallett-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 1, 4, 0, 0},
-                           {"arctic-print", Spektrafilm::ScanRoute::NegativePrintScan, 2, 4, 0, 0}
+                               ,
+                               Case{"mallett-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 1, 4, 0, 0},
+                               Case{"arctic-print", Spektrafilm::ScanRoute::NegativePrintScan, 2, 4, 0, 0}
 #endif
         };
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
@@ -5027,13 +5156,7 @@ int main(int argc, char** argv) try {
 #else
         const bool numericalFixture = !emit && !sequentialOwners && !cutoverContract;
 #endif
-        std::ifstream fixture;
-        if (numericalFixture) {
-            fixture.open(JUICER_PROCESSOR_REFERENCE_PATH);
-            if (!fixture) {
-                throw std::runtime_error("processor reference fixture unavailable");
-            }
-        }
+        const auto referenceRows = numericalFixture ? read_processor_reference(JUICER_PROCESSOR_REFERENCE_PATH, ReferenceSchedule::Processor) : nlohmann::json{};
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
         void* initialContext = nullptr;
         std::uint64_t previousEpoch = 0;
@@ -5076,14 +5199,11 @@ int main(int argc, char** argv) try {
         JuicerTests::Cohort cases_cohort(std::string(case_caller), intended_cases);
         std::vector<std::unique_ptr<JuicerTests::CaseEvent>> case_events;
         case_events.reserve(intended_cases.size());
-        for (const Case& test : cases) {
+        for (std::size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+            const auto& test = cases[caseIndex];
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-            if (preparedCase != test.name) {
-                if (numericalFixture) {
-                    fixture.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                }
+            if (preparedCase != test.name)
                 continue;
-            }
 #endif
             case_events.push_back(std::make_unique<JuicerTests::CaseEvent>(case_caller, test.name));
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
@@ -5143,28 +5263,7 @@ int main(int argc, char** argv) try {
             } else {
                 std::vector<float> expected = pixels;
                 if (numericalFixture) {
-                    std::string name;
-                    std::size_t count = 0;
-                    fixture >> name >> count;
-                    if (!fixture || name != test.name || count != pixels.size()) {
-                        throw std::runtime_error(std::string(test.name) + ": fixture row mismatch");
-                    }
-                    expected.resize(count);
-                    for (float& pixel : expected) {
-                        fixture >> pixel;
-                    }
-                    if (!fixture) {
-                        throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
-                    }
-                    nlohmann::json originalWords = nlohmann::json::array();
-                    for (float value : expected)
-                        originalWords.push_back(std::bit_cast<std::uint32_t>(value));
-                    const auto selectedWords = PrintIlluminantFixtures::apply(
-                        std::string(JUICER_PROCESSOR_REFERENCE_PATH) + "." + test.name, originalWords);
-                    if (selectedWords.size() != expected.size())
-                        throw std::runtime_error(std::string(test.name) + ": selected fixture shape mismatch");
-                    for (std::size_t i = 0; i < expected.size(); ++i)
-                        expected[i] = std::bit_cast<float>(selectedWords.at(i).get<std::uint32_t>());
+                    expected = decode_reference_words(referenceRows.at(caseIndex).at("output_bits"), pixels.size(), test.name);
                     compare_pixels(test.name, pixels, expected);
                 }
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)

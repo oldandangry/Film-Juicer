@@ -18,6 +18,8 @@ SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
 REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"
 RENDER_REGISTRATION = "Ofx.Gpu.RenderReferenceInputs"
 ACCEPTED_REGISTRATION = "Ofx.Gpu.AcceptedCleanReferenceInputs"
+PROCESSOR_REGISTRATION = "Ofx.Gpu.ProcessorReferenceInputs"
+WORKSPACE_REGISTRATION = "Ofx.Gpu.WorkspaceReferenceInputs"
 ACCEPTED_SOURCE = Path(__file__).with_name("accepted_cuda_clean_samples.json")
 ROUTES = ("negative-direct", "negative-print", "positive-direct", "positive-print")
 NATURAL_GLARE_TRACE = "fixed/negative-print"
@@ -37,6 +39,10 @@ RENDER_CASES = {
     "format/rgba": (0, 4, 0, (0, 0)),
     "geometry/bounds": (0, 3, 0, (11, -3)),
 }
+PROCESSOR_CASES = {name: RENDER_CASES[f"route/{name}"] for name in ROUTES}
+PROCESSOR_CASES.update(
+    {name: FIXED_TRACES[f"fixed/{name}"] for name in ("combined-print", "glare-plus-zero", "glare-minus-zero")}
+)
 
 
 def sha256(data):
@@ -92,6 +98,7 @@ def read_capture(result_dir, registration):
             "scanner-reference-input-v6",
             "scanner-reference-render-gpu-v1",
             "scanner-reference-accepted-clean-v1",
+            "scanner-reference-processor-v1",
         }
     ]
     schema = rows[0]["schema"] if rows else None
@@ -114,6 +121,12 @@ def read_capture(result_dir, registration):
             raise ValueError("unexpected accepted clean capture input schema")
         ids = tuple(f"{name}-clean" for name in ROUTES)
         routes = (0, 1, 2, 3)
+    if registration in {PROCESSOR_REGISTRATION, WORKSPACE_REGISTRATION}:
+        schedule = "processor" if registration == PROCESSOR_REGISTRATION else "workspace"
+        if schema != "scanner-reference-processor-v1" or any(row.get("schedule") != schedule for row in rows):
+            raise ValueError("unexpected processor scan input schema or schedule")
+        ids = tuple(PROCESSOR_CASES) if schedule == "processor" else ROUTES
+        routes = tuple(PROCESSOR_CASES[name][0] for name in ids)
     if (
         tuple(row.get("id") for row in rows) != ids
         or tuple(row.get("route") for row in rows) != routes
@@ -260,10 +273,13 @@ def reference_row(row, density_spectral, density_to_light):
     height, width, components = row["shape"]
     trace = FIXED_TRACES.get(row["id"])
     explicit = trace or RENDER_CASES.get(row["id"])
+    processor = row["schema"] == "scanner-reference-processor-v1"
+    if processor:
+        explicit = PROCESSOR_CASES[row["id"]]
     if row["schema"] == "scanner-reference-accepted-clean-v1":
         explicit = (row["route"], 3, 0, (0, 0))
-    natural_glare = trace is not None and row["route"] in (1, 3)
-    combined = row["id"] == "fixed/combined-print"
+    natural_glare = (trace is not None or processor) and row["route"] in (1, 3)
+    combined = row["id"] in {"fixed/combined-print", "combined-print"}
     expected_components = explicit[1] if explicit else 3 + row["route"] % 2
     if (
         (height, width, components) != (5, 7, expected_components)
@@ -318,6 +334,8 @@ def reference_row(row, density_spectral, density_to_light):
         glare_xyz = 0.01 * percent[:, None] * white[None, :]
         scalar_corrected += glare_xyz
         primitive_corrected += glare_xyz
+    elif "glare_field_bits" in row and list(row["glare_field_bits"]) != [0] * pixels:
+        raise ValueError(f"inactive scanner glare field changed for {row['id']}")
     adapted = scalar_corrected @ cat02.T
     rgb_terms = adapted[:, None, :] * xyz_to_rgb[None, :, :]
     signed_rgb = np.asarray([[math.fsum(lane) for lane in pixel] for pixel in rgb_terms])
@@ -353,6 +371,7 @@ def reference_row(row, density_spectral, density_to_light):
         "scanner-reference-input-v6",
         "scanner-reference-render-gpu-v1",
         "scanner-reference-accepted-clean-v1",
+        "scanner-reference-processor-v1",
     }:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
     return reference
@@ -369,11 +388,17 @@ def main():
     parser.add_argument("--ordinary-fixtures", type=Path, help="freeze the matching native ordinary smoke fixtures")
     parser.add_argument("--render-fixtures", type=Path, help="freeze the matched OFX render fixture cohort")
     parser.add_argument("--accepted-fixtures", type=Path, help="freeze the accepted clean capture fixture cohort")
+    parser.add_argument("--processor-fixtures", type=Path, help="freeze the processor callback fixture cohort")
+    parser.add_argument("--workspace-fixtures", type=Path, help="freeze the workspace actual-schedule fixture cohort")
     args = parser.parse_args()
     if args.accepted_fixtures:
         registration = ACCEPTED_REGISTRATION
     elif args.render_fixtures:
         registration = RENDER_REGISTRATION
+    elif args.processor_fixtures:
+        registration = PROCESSOR_REGISTRATION
+    elif args.workspace_fixtures:
+        registration = WORKSPACE_REGISTRATION
     else:
         registration = REGISTRATION
     preset, captures, provenance = read_capture(args.capture, registration)
@@ -402,6 +427,10 @@ def main():
             write_render_fixtures(report, sha256(args.output.read_bytes()), args.render_fixtures)
         if args.accepted_fixtures:
             write_accepted_fixtures(report, sha256(args.output.read_bytes()), args.accepted_fixtures)
+        if args.processor_fixtures:
+            write_processor_fixtures(report, sha256(args.output.read_bytes()), args.processor_fixtures, "processor")
+        if args.workspace_fixtures:
+            write_processor_fixtures(report, sha256(args.output.read_bytes()), args.workspace_fixtures, "workspace")
         for path in args.trace_fixture:
             write_trace_fixture(report, sha256(args.output.read_bytes()), path)
     return int(not (stages_passed and delivered_passed))
@@ -591,6 +620,47 @@ def write_accepted_fixtures(report, digest, directory):
             "cases": rows,
         }
         with (directory / f"accepted-clean-{preset}.json").open("x", encoding="utf-8", newline="\n") as output:
+            json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
+            output.write("\n")
+
+
+def write_processor_fixtures(report, digest, directory, schedule):
+    reference_preset = report["preset"]
+    rows = []
+    for reference in report["rows"]:
+        capture = reference["input"]
+        row = {
+            key: capture[key]
+            for key in (
+                "id",
+                "shape",
+                "route",
+                "reconstruction",
+                "film",
+                "paper",
+                "source_origin",
+                "frame",
+                "frame_rate",
+                "grain",
+                "glare",
+                "exposure_bits",
+                "source_bits",
+            )
+        }
+        row["output_bits"] = reference["delivered"]["output_bits"]
+        rows.append(row)
+    if tuple(row["id"] for row in rows) != (tuple(PROCESSOR_CASES) if schedule == "processor" else ROUTES):
+        raise ValueError("unexpected processor fixture membership")
+    for preset in (reference_preset, reference_preset.removesuffix("-debug") + "-release"):
+        fixture = {
+            "schema": "spectral-processor-v1",
+            "preset": preset,
+            "reference_preset": reference_preset,
+            "reference_sha256": digest,
+            "schedule": schedule,
+            "rows": rows,
+        }
+        with (directory / f"{schedule}-{preset}.json").open("x", encoding="utf-8", newline="\n") as output:
             json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
             output.write("\n")
 
