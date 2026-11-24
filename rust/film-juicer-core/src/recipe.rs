@@ -2497,6 +2497,88 @@ mod tests {
     use crate::test_cases::RowCases;
 
     #[test]
+    fn scanner_recipe_binds_the_raw_digest_after_the_profile_label() {
+        let stock = assets();
+        for (route, tags) in [
+            (ScanRoute::NegativeDirect, [0_u8, 0, 0]),
+            (ScanRoute::NegativePrint, [1_u8, 1, 0]),
+            (ScanRoute::PositiveDirect, [2_u8, 0, 1]),
+            (ScanRoute::PositivePrint, [3_u8, 1, 1]),
+        ] {
+            let state = prepare(&stock, &params(route, 1)).unwrap();
+            let scanner = state.scanner();
+            let (key, token, viewing) = match state.route() {
+                PreparedRoute::Direct(_) => (
+                    state.film_key(),
+                    state.film_profile().asset_token(),
+                    state.film_profile().info().viewing_illuminant(),
+                ),
+                PreparedRoute::Print(paper) => (
+                    paper.key(),
+                    paper.profile().asset_token(),
+                    paper.profile().info().viewing_illuminant(),
+                ),
+            };
+            let raw = scanner.color().spectral_binding_digest(
+                tags[0],
+                key,
+                token,
+                scanner.tables(),
+                true,
+            );
+            let gamut = scanner.gamut().hash;
+            assert_ne!(gamut, 0);
+            let mut combined_stream = [0_u8; 16];
+            combined_stream[..8].copy_from_slice(&raw.to_le_bytes());
+            combined_stream[8..].copy_from_slice(&gamut.to_le_bytes());
+            let combined = hash::bytes(&combined_stream);
+            assert_eq!(state.scanner_hash(), combined);
+            assert_ne!(combined, raw);
+
+            let controls = scanner.params();
+            let mut suffix = Vec::new();
+            suffix.extend((controls.output_space as i32).to_le_bytes());
+            suffix.extend([
+                u8::from(controls.encode_cctf),
+                u8::from(controls.black_correction),
+                u8::from(controls.white_correction),
+            ]);
+            suffix.extend(controls.black_level.to_le_bytes());
+            suffix.extend(controls.white_level.to_le_bytes());
+            suffix.push(u8::from(controls.glare_active));
+            for word in [
+                controls.glare_percent,
+                controls.glare_roughness,
+                controls.glare_blur_sigma_px,
+                controls.lens_blur_sigma_px,
+                controls.unsharp_sigma_px,
+                controls.unsharp_amount,
+            ] {
+                suffix.extend(word.to_le_bytes());
+            }
+            suffix.extend(state.reference().hash().to_le_bytes());
+            suffix.extend(gamut.to_le_bytes());
+            let label = viewing.as_bytes();
+            let raw_bytes = raw.to_le_bytes();
+            let recipe_bytes = [tags.as_slice(), label, &raw_bytes, &suffix].concat();
+            let matches = |bytes: &[u8]| hash::bytes(bytes) == scanner.hash();
+            assert!(matches(&recipe_bytes));
+
+            let swapped = [tags.as_slice(), &raw_bytes, label, &suffix].concat();
+            assert!(!matches(&swapped));
+            let substituted = [tags.as_slice(), label, &combined.to_le_bytes(), &suffix].concat();
+            assert!(!matches(&substituted));
+            let mut mutated = recipe_bytes.clone();
+            for index in [tags.len(), tags.len() + label.len()] {
+                mutated[index] ^= 1;
+                assert!(!matches(&mutated));
+                mutated[index] ^= 1;
+                assert!(matches(&mutated));
+            }
+        }
+    }
+
+    #[test]
     fn all_routes_and_methods_complete_with_active_spatial_dir() {
         let assets = assets();
         let mut count = 0;

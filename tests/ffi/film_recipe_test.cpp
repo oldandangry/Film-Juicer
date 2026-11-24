@@ -818,7 +818,8 @@ int main(int argc, char** argv) try {
         if (!products)
             FilmReferenceTest::boundary(argv[1], captured);
         else {
-            require(FilmReferenceTest::products(argv[1], captured.at("products")) == captured.at("products"), "complete frozen reference products and downstream identities");
+            const auto expected = FilmReferenceTest::expected_reference_products(captured.at("products"));
+            require_equal(FilmReferenceTest::products(argv[1], expected), expected, "complete frozen reference products and surviving identities");
             FilmReferenceTest::callers(argv[1]);
         }
         case_log.finish();

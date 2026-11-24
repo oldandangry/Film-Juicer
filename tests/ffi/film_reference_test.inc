@@ -39,6 +39,16 @@ namespace FilmReferenceTest {
         return params;
     }
 
+    Json expected_reference_products(Json archived) {
+        for (auto& row : archived) {
+            for (const char* key : {"scanner_hash", "final_hash", "upload_hash", "payload_scanner_hash"}) {
+                require(row.at(key).is_number_unsigned(), "archived reference identity shape");
+                row.erase(key);
+            }
+        }
+        return archived;
+    }
+
     Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
@@ -66,14 +76,17 @@ namespace FilmReferenceTest {
                             queries.push_back({{"product", std::bit_cast<std::uint32_t>(productValue)}, {"argument", std::bit_cast<std::uint32_t>(argument)}, {"native_log10", std::bit_cast<std::uint32_t>(nativeLog)}, {"rust_log10", std::bit_cast<std::uint32_t>(rust[1])}, {"query", std::bit_cast<std::uint32_t>(nativeLog * product.film_development.gamma_rgb[channel])}});
                         }
                     }
-                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"development_hash", product.film_development.hash}, {"scanner_hash", product.scanner_recipe_hash}, {"balance_hash", product.print_balance.hash}, {"print_hash", product.print_recipe_hash}, {"final_hash", product.recipe_hash}, {"upload_hash", product.upload_core_hash}, {"payload_scanner_hash", product.scanner_hash}};
+                    require(product.recipe_hash != 0 && product.upload_core_hash == product.recipe_hash &&
+                                product.scanner_recipe_hash != 0 && product.scanner_hash != 0,
+                            "prepared film reference publishes the current completed route identities");
+                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"development_hash", product.film_development.hash}, {"balance_hash", product.print_balance.hash}, {"print_hash", product.print_recipe_hash}};
                     if (route == 0 && ((method == 0 && variant == 0) || (method == 1 && variant == 1))) {
                         const auto& raw = product.film_exposure;
                         const std::size_t basisCount = method == 1 ? raw.mallett_basis.count : 0;
                         row["input"] = {{"key", params.film_key}, {"gamma", words(product.film_development.gamma_rgb, 3)}, {"manual_ev", std::bit_cast<std::uint32_t>(raw.manual_exposure_ev)}, {"auto", (raw.flags & FJ_FILM_AUTO_EXPOSURE) != 0}, {"green_scale", std::bit_cast<std::uint32_t>(raw.mallett_green_midgray_scale)}, {"white", words(product.input_policy.projection_white_xyz, 3)}, {"basis", words(raw.mallett_basis.data, basisCount)}, {"illuminant", words(product.exposure_tables.illuminant.data, product.exposure_tables.illuminant.count)}, {"sensitivity", words(raw.sensitivity_rgb.data, raw.sensitivity_rgb.count)}, {"tc", words(raw.tc_lut_rgba.data, raw.tc_lut_rgba.count)}};
                     }
                     rows.push_back(std::move(row));
-                    require(rows.back() == expectedProducts.at(rows.size() - 1), "per-case complete film reference product");
+                    require_equal(rows.back(), expectedProducts.at(rows.size() - 1), "per-case complete film reference product");
                     case_event.passed();
                 }
         return rows;

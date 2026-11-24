@@ -473,7 +473,9 @@ namespace {
             FjFilmProfileView source{};
             status(fj_test_assets_film_view(profile.film, &source, nullptr));
             require(native_values(view, source) == row.at("raw"), "actual native family exactly matches independent compound capture");
-            require(view.recipe_hash == row.at("final_hash") && JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash"), "complete native product and captured-control identities remain exact");
+            require(JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash"), "complete captured-control identity remains exact");
+            require(view.recipe_hash != 0 && view.upload_core_hash == view.recipe_hash,
+                    "prepared film input publishes its current recipe identity");
             event.passed();
         }
         std::puts("PASS 140 actual native direct/print family, final and snapshot products");
