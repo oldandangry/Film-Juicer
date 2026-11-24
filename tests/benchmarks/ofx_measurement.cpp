@@ -44,6 +44,8 @@ namespace {
     using Clock = std::chrono::steady_clock;
     using ofx_test::InstanceHost;
     constexpr float kDestinationCanary = -8.0f;
+    thread_local std::vector<std::uint32_t> observedDensity;
+    thread_local std::vector<std::uint32_t> heldDensity;
 
     void require(bool condition, std::string_view message) {
         if (!condition)
@@ -472,8 +474,9 @@ namespace {
         }
     }
     struct Arguments {
-        std::filesystem::path module, resources, output;
+        std::filesystem::path module, resources, output, previewMaterial;
         std::string mode, lane, workload, campaign;
+        std::string benchmarkScanner, density;
         std::string tailRun, tailArm;
         std::filesystem::path tailReady, tailRelease;
     };
@@ -481,7 +484,7 @@ namespace {
         return !args.tailRun.empty();
     }
     Arguments arguments(int argc, char** argv) {
-        require(argc == 13 || argc == 15 || argc == 21 || argc == 23, "expected measurement arguments and optional campaign/tail settings");
+        require(argc >= 13 && argc <= 29 && argc % 2 == 1, "expected measurement arguments and optional campaign/tail settings");
         Arguments args;
         for (int i = 1; i < argc; i += 2) {
             const std::string_view key(argv[i]);
@@ -500,6 +503,12 @@ namespace {
                 args.resources = std::filesystem::absolute(value);
             else if (key == "--output")
                 args.output = value;
+            else if (key == "--preview-material")
+                args.previewMaterial = std::filesystem::absolute(value);
+            else if (key == "--benchmark-scanner")
+                args.benchmarkScanner = value;
+            else if (key == "--observe-density")
+                args.density = value;
             else if (key == "--tail-run")
                 args.tailRun = value;
             else if (key == "--tail-arm")
@@ -516,6 +525,14 @@ namespace {
         require(args.campaign.empty() || args.campaign == "scanner-paired", "unknown measurement campaign");
         if (args.campaign == "scanner-paired")
             require(std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) != kScannerPairedRows.end(), "unknown scanner-paired workload row");
+        if (!args.previewMaterial.empty() || !args.benchmarkScanner.empty() || !args.density.empty()) {
+            require(args.campaign == "scanner-paired" && args.workload == "preview-negative-direct-film-v1-full-36",
+                    "archived comparison requires the Full 36 mm Direct Preview row");
+            require(args.previewMaterial.empty() || std::filesystem::is_regular_file(args.previewMaterial), "missing Preview raster");
+            require(args.benchmarkScanner.empty() || args.benchmarkScanner == "cubic" || args.benchmarkScanner == "spectral",
+                    "unknown archived scanner backend");
+            require(args.density.empty() || args.mode == "check", "live density observation requires check mode");
+        }
         const bool anyTail = !args.tailRun.empty() || !args.tailArm.empty() || !args.tailReady.empty() || !args.tailRelease.empty();
         require(!anyTail || (tail_enabled(args) && !args.tailArm.empty() && !args.tailReady.empty() && !args.tailRelease.empty()),
                 "tail settings must be supplied as run, arm, ready and release together");
@@ -659,9 +676,32 @@ namespace {
         cuda_check(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create supplied stream");
         cuda_check(cudaEventCreate(&device.start), "create start event");
         cuda_check(cudaEventCreate(&device.stop), "create stop event");
-        const auto source = ofx_test::initial_source(test);
+        auto source = ofx_test::initial_source(test);
+        if (!args.previewMaterial.empty()) {
+            const auto rowWords = static_cast<std::size_t>(test.width) * test.components;
+            const auto rowBytes = static_cast<std::streamsize>(rowWords * sizeof(float));
+            require(std::filesystem::file_size(args.previewMaterial) == static_cast<std::uintmax_t>(rowBytes) * test.height,
+                    "Preview raster length differs from the active image");
+            std::ifstream raster(args.previewMaterial, std::ios::binary);
+            for (int y = 0; y < test.height; ++y) {
+                auto* row = source.data() + static_cast<std::size_t>(y) * (rowWords + ofx_test::kProductionPitchPadding);
+                require(static_cast<bool>(raster.read(reinterpret_cast<char*>(row), rowBytes)), "cannot read complete Preview row");
+            }
+            report["scanner_paired"]["fixture"] = "archived-preview";
+        }
         if (scannerPaired)
             report["source_digest"] = output_digest(source);
+        if (!args.density.empty()) {
+            const auto words = static_cast<std::size_t>(test.width) * test.height * 3;
+            observedDensity.resize(1 + words);
+            if (args.density != "capture") {
+                const auto bytes = static_cast<std::streamsize>(words * sizeof(std::uint32_t));
+                require(std::filesystem::file_size(args.density) == static_cast<std::uintmax_t>(bytes), "held density raster length differs");
+                heldDensity.resize(words);
+                std::ifstream carrier(args.density, std::ios::binary);
+                require(static_cast<bool>(carrier.read(reinterpret_cast<char*>(heldDensity.data()), bytes)), "cannot read held density raster");
+            }
+        }
         const std::vector<float> initial(source.size(), kDestinationCanary);
         std::vector<float> output(source.size());
         const auto bytes = source.size() * sizeof(float);
@@ -683,6 +723,12 @@ namespace {
         const auto openStart = Clock::now();
         Module module(args.module);
         timings["module_open_ns"] = nanoseconds(openStart, Clock::now());
+        if (!args.benchmarkScanner.empty()) {
+            using ConfigureScanner = int (*)(int, int);
+            require(module.symbol<ConfigureScanner>("fj_preview_benchmark_configure_scanner")(args.benchmarkScanner == "spectral", 0) == 1,
+                    "archived benchmark scanner configuration failed");
+            report["scanner_paired"]["benchmark_scanner"] = args.benchmarkScanner;
+        }
         Observation observation(module, observed);
         using Count = int (*)();
         using Get = OfxPlugin* (*)(int);
@@ -966,6 +1012,12 @@ namespace {
                     host.set_value(effect, "ScannerUnsharpMask", {unsharp, unsharp});
                     if (print)
                         host.set_value(effect, "GlareActive", {0});
+                    if (!args.previewMaterial.empty()) {
+                        host.set_value(effect, "InputColorSpace", {1});
+                        host.set_value(effect, "CouplersActive", {0});
+                        host.set_value(effect, "GlareActive", {0});
+                        host.set_value(effect, "OutputGamutCompression", {0});
+                    }
                 }
                 if (pairedHalation) {
                     host.set_value(effect, "HalationActive", {halation->spatial ? 1 : 0});
@@ -1005,6 +1057,8 @@ namespace {
             else
                 require(controls == report.at("controls"), "effective controls changed across owners");
             ofx_test::configure(host, effect, test, device);
+            if (!args.previewMaterial.empty())
+                host.set_effect_property(effect, kOfxImageEffectPropFrameRate, {24'000.0 / 1001.0});
             if (scannerPaired && scannerRow->width == 1208) {
                 host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {0.25, 0.25});
                 for (const auto* clip : {"Source", "Output"}) {
@@ -1084,6 +1138,38 @@ namespace {
         report["status"] = "passed";
     }
 } // namespace
+
+#if defined(_WIN32)
+#define FJ_DENSITY_OBSERVER_EXPORT __declspec(dllexport)
+#else
+#define FJ_DENSITY_OBSERVER_EXPORT __attribute__((used, retain, visibility("default")))
+#endif
+
+// The late-attached debugger calls this on the reporter thread before scan launch.
+extern "C" FJ_DENSITY_OBSERVER_EXPORT const std::uint32_t* fj_observe_scanner_density(
+    float* cyan, float* magenta, float* yellow, std::size_t count, cudaStream_t stream, CUcontext expectedContext) noexcept {
+    CUcontext context = nullptr;
+    if (!cyan || !magenta || !yellow || !stream || observedDensity.empty() || count != (observedDensity.size() - 1) / 3 ||
+        cuCtxGetCurrent(&context) != CUDA_SUCCESS || context != expectedContext) {
+        return nullptr;
+    }
+    const std::array planes{cyan, magenta, yellow};
+    constexpr auto wordBytes = sizeof(std::uint32_t);
+    auto status = cudaSuccess;
+    if (!heldDensity.empty()) {
+        for (std::size_t channel = 0; channel < planes.size() && status == cudaSuccess; ++channel) {
+            status = cudaMemcpyAsync(planes[channel], heldDensity.data() + channel * count, count * wordBytes, cudaMemcpyHostToDevice, stream);
+        }
+    }
+    for (std::size_t channel = 0; channel < planes.size() && status == cudaSuccess; ++channel) {
+        status = cudaMemcpyAsync(observedDensity.data() + 1 + channel * count, planes[channel], count * wordBytes, cudaMemcpyDeviceToHost, stream);
+    }
+    const auto completed = cudaStreamSynchronize(stream);
+    observedDensity[0] = static_cast<std::uint32_t>(status == cudaSuccess ? completed : status);
+    return observedDensity.data();
+}
+
+#undef FJ_DENSITY_OBSERVER_EXPORT
 
 namespace {
     int measurement_main(int argc, char** argv) {

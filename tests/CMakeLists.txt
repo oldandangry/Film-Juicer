@@ -1145,6 +1145,15 @@ if(WIN32)
     target_link_libraries(JuicerOfxMeasurement PRIVATE Psapi)
 endif()
 
+add_executable(JuicerScannerCostBenchmark benchmarks/scanner_cost.cpp
+    ../src/Cuda/Film/JuicerCudaFilmPipeline.cu
+    ../src/Cuda/Scan/JuicerCudaScanPipeline.cu)
+target_include_directories(JuicerScannerCostBenchmark PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
+target_compile_definitions(JuicerScannerCostBenchmark PRIVATE JUICER_SCANNER_COST_TEST=1)
+target_link_libraries(JuicerScannerCostBenchmark PRIVATE juicer_settings CUDA::cudart)
+set_target_properties(JuicerScannerCostBenchmark PROPERTIES
+    JUICER_RUST_VARIANT none RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+
 add_library(juicer_measurement_objects OBJECT
     ../src/Cuda/JuicerCudaDeviceLedger.cpp ../src/Cuda/JuicerCudaResources.cpp)
 target_link_libraries(juicer_measurement_objects PRIVATE juicer_settings)
@@ -1723,7 +1732,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(juicer_without_cufft_targets
         JuicerHashContractTests JuicerScratchRequestTests JuicerProfileCudaSafetyTests
         JuicerGrainDeltaTests JuicerRenderAssertionTests JuicerProductionPreparedRenderProbe
-        JuicerOfxMeasurement JuicerOfxMeasurementTests JuicerHighlightBoostPrecisionTests)
+        JuicerOfxMeasurement JuicerOfxMeasurementTests JuicerScannerCostBenchmark JuicerHighlightBoostPrecisionTests)
     set(juicer_shared_cufft_targets)
     get_property(juicer_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS juicer_test_targets)

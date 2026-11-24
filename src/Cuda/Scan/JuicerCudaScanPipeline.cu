@@ -15,6 +15,10 @@
 #include "GamutCompression.h"
 #include "openrand/philox.h"
 
+#if defined(JUICER_SCANNER_COST_TEST)
+#include "scanner_cost.h"
+#endif
+
 namespace {
 
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
@@ -1729,6 +1733,9 @@ namespace {
         return true;
     }
 
+#if defined(JUICER_SCANNER_COST_TEST)
+    template <typename Dot = double, bool CheckResults = true, bool Preclassified = false>
+#endif
     __device__ bool spectral_xyz(
         const JuicerCuda::ScannerSpectra& spectra,
         const float (&density)[3],
@@ -1737,7 +1744,15 @@ namespace {
         ,
         JuicerCuda::ScanDensityCaptureTest::ScanSample* observed
 #endif
+#if defined(JUICER_SCANNER_COST_TEST)
+        ,
+        const JuicerTests::ScannerCostWavelengths& wavelengths = {}
+#endif
     ) {
+#if !defined(JUICER_SCANNER_COST_TEST)
+        using Dot = double;
+        constexpr bool CheckResults = true;
+#endif
         if (!isfinite(density[0]) || !isfinite(density[1]) || !isfinite(density[2])) {
             return false;
         }
@@ -1745,31 +1760,51 @@ namespace {
         float y = 0.0F;
         float z = 0.0F;
         for (const auto& sample : spectra.wavelengths) {
-            const bool activeX = isfinite(sample.weightX);
-            const bool activeY = isfinite(sample.weightY);
-            const bool activeZ = isfinite(sample.weightZ);
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
             auto* const step = observed ? observed->wavelengths + (&sample - spectra.wavelengths) : nullptr;
 #endif
-            if ((!activeX && !activeY && !activeZ) ||
-                isnan(sample.dyeC) || isnan(sample.dyeM) || isnan(sample.dyeY) || isnan(sample.baseDensity)) {
-#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
-                if (step)
-                    step->activeWeights = 0;
+            bool activeX;
+            bool activeY;
+            bool activeZ;
+#if defined(JUICER_SCANNER_COST_TEST)
+            if constexpr (Preclassified) {
+                const auto mask = wavelengths.activeWeights[&sample - spectra.wavelengths];
+                if (!mask)
+                    continue;
+                activeX = (mask & 1U) != 0;
+                activeY = (mask & 2U) != 0;
+                activeZ = (mask & 4U) != 0;
+            } else
 #endif
-                continue;
+            {
+                activeX = isfinite(sample.weightX);
+                activeY = isfinite(sample.weightY);
+                activeZ = isfinite(sample.weightZ);
+                if ((!activeX && !activeY && !activeZ) ||
+                    isnan(sample.dyeC) || isnan(sample.dyeM) || isnan(sample.dyeY) || isnan(sample.baseDensity)) {
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+                    if (step)
+                        step->activeWeights = 0;
+#endif
+                    continue;
+                }
             }
-            const double spectralDensity = static_cast<double>(density[0]) * sample.dyeC +
-                                           static_cast<double>(density[1]) * sample.dyeM +
-                                           static_cast<double>(density[2]) * sample.dyeY +
-                                           sample.baseDensity;
-            constexpr double maxFloat = FLT_MAX;
-            if (!isfinite(spectralDensity) || spectralDensity < -maxFloat) {
-                return false;
-            }
-            const float transmission = spectralDensity > maxFloat ? 0.0F : __exp10f(static_cast<float>(-spectralDensity));
-            if (!isfinite(transmission)) {
-                return false;
+            const Dot spectralDensity = static_cast<Dot>(density[0]) * sample.dyeC +
+                                        static_cast<Dot>(density[1]) * sample.dyeM +
+                                        static_cast<Dot>(density[2]) * sample.dyeY +
+                                        sample.baseDensity;
+            float transmission;
+            if constexpr (CheckResults) {
+                constexpr double maxFloat = FLT_MAX;
+                if (!isfinite(spectralDensity) || spectralDensity < -maxFloat) {
+                    return false;
+                }
+                transmission = spectralDensity > maxFloat ? 0.0F : __exp10f(static_cast<float>(-spectralDensity));
+                if (!isfinite(transmission)) {
+                    return false;
+                }
+            } else {
+                transmission = __exp10f(static_cast<float>(-spectralDensity));
             }
             if (activeX) {
                 x += transmission * sample.weightX;
@@ -1797,8 +1832,10 @@ namespace {
         const float scaledX = x * spectra.inverseYNormalization;
         const float scaledY = y * spectra.inverseYNormalization;
         const float scaledZ = z * spectra.inverseYNormalization;
-        if (!isfinite(scaledX) || !isfinite(scaledY) || !isfinite(scaledZ)) {
-            return false;
+        if constexpr (CheckResults) {
+            if (!isfinite(scaledX) || !isfinite(scaledY) || !isfinite(scaledZ)) {
+                return false;
+            }
         }
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         if (observed) {
@@ -2105,6 +2142,9 @@ namespace {
 
     static_assert(scan_parameter_bytes<JuicerCuda::ScanStagePayload, int, int, ScanLinearDensityPlanes, JuicerCuda::ScannerSpectra>() <= 4096);
 
+#if defined(JUICER_SCANNER_COST_TEST)
+    template <typename Dot = double, bool CheckResults = true, bool Preclassified = false>
+#endif
     __global__ void scan_linear_density_rgb_kernel(
         JuicerCuda::ScanStagePayload scan,
         int widthPixels,
@@ -2114,6 +2154,10 @@ namespace {
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         ,
         JuicerCuda::ScanDensityCaptureTest::DensityCapture capture
+#endif
+#if defined(JUICER_SCANNER_COST_TEST)
+        ,
+        const __grid_constant__ JuicerTests::ScannerCostWavelengths wavelengths
 #endif
     ) {
         const float* inC = planes.densityC;
@@ -2139,12 +2183,16 @@ namespace {
 #endif
 
                 double xyz[3];
+#if defined(JUICER_SCANNER_COST_TEST)
+                const bool success = spectral_xyz<Dot, CheckResults, Preclassified>(spectra, D_cmy, xyz, wavelengths);
+#else
                 const bool success = spectral_xyz(spectra, D_cmy, xyz
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                                                   ,
                                                   observed
 #endif
                 );
+#endif
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                 if (observed && success) {
                     copy_sample_device(observed->density, D_cmy);
@@ -2726,6 +2774,37 @@ cudaError_t launch_focused_print_develop_from_enlarger_linear(
     return cudaGetLastError();
 }
 
+#if defined(JUICER_SCANNER_COST_TEST)
+namespace JuicerTests {
+    template <typename Dot, bool CheckResults, bool Preclassified>
+    cudaError_t launch_scanner_cost(const ScannerCostFrame& frame, cudaStream_t stream) {
+        const auto count = static_cast<std::size_t>(frame.width) * frame.height;
+        float* const cyan = frame.pixels;
+        float* const magenta = cyan + count;
+        float* const yellow = magenta + count;
+        ScanLinearDensityPlanes planes{cyan, magenta, yellow, nullptr, nullptr, cyan, magenta, yellow};
+        const dim3 threads(32, 8);
+        const dim3 blocks((frame.width + threads.x - 1) / threads.x, (frame.height + threads.y - 1) / threads.y);
+        scan_linear_density_rgb_kernel<Dot, CheckResults, Preclassified><<<blocks, threads, 0, stream>>>(
+            frame.scan, frame.width, frame.height, planes, frame.spectra, frame.wavelengths);
+        return cudaGetLastError();
+    }
+
+    std::array<ScannerCostVariant, 8> scanner_cost_variants() {
+        return {{
+            {launch_scanner_cost<double, true, false>, true, true, false},
+            {launch_scanner_cost<float, true, false>, false, true, false},
+            {launch_scanner_cost<double, false, false>, true, false, false},
+            {launch_scanner_cost<float, false, false>, false, false, false},
+            {launch_scanner_cost<double, true, true>, true, true, true},
+            {launch_scanner_cost<float, true, true>, false, true, true},
+            {launch_scanner_cost<double, false, true>, true, false, true},
+            {launch_scanner_cost<float, false, true>, false, false, true},
+        }};
+    }
+} // namespace JuicerTests
+#endif
+
 template <typename Params>
 cudaError_t launch_focused_scan_linear_density_rgb(
     const Params* hParams,
@@ -2782,6 +2861,10 @@ cudaError_t launch_focused_scan_linear_density_rgb(
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         ,
         densityCapture
+#endif
+#if defined(JUICER_SCANNER_COST_TEST)
+        ,
+        {}
 #endif
     );
     const auto status = cudaGetLastError();

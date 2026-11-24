@@ -2179,7 +2179,7 @@ def spectral_seed_pilot(args):
             execution.write_json(directory / "result.json", report)
 
 
-def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry):
+def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry, benchmark=False):
     ready = tail["ready"]
     predecessor = tail["predecessor"]
     [reporter] = tail["frames"]
@@ -2208,7 +2208,8 @@ def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry):
         or row["expected_schedule"] != schedule
         or row["geometry"] != list(geometry)
         or row["natural_grain"] != (schedule == "materialized")
-        or row.get("authored_grid") != (17 if arm == "cubic" else None)
+        or row.get("authored_grid") != (17 if arm == "cubic" or benchmark else None)
+        or row.get("benchmark_scanner") != (arm if benchmark else None)
         or controls["ScanRoute"] != [witnessed_route]
         or controls["GrainActive"] != [int(row["natural_grain"])]
         or (route == "print" and controls["GlareActive"] != [0])
@@ -2288,11 +2289,29 @@ def scanner_paired(args):
         raise ValueError("scanner paired timing requires prior check-mode evidence")
     if args.check_arm and args.mode != "check":
         raise ValueError("single-arm observation only applies in check mode")
+    if args.nsys and args.mode != "check":
+        raise ValueError("CUDA profiling requires check mode")
+    if args.read_cubic_grid and any(
+        SCANNER_PAIRED_ROWS[row][1:3] != ("direct", "materialized") for row in args.workloads
+    ):
+        raise ValueError("cubic grid readback requires a materialized Direct row")
+    if (args.capture_density or args.held_density) and (
+        args.mode != "check" or args.workloads != ["preview-negative-direct-film-v1-full-36"]
+    ):
+        raise ValueError("density observation requires check mode on the Full 36 mm Direct Preview row")
+    if args.held_density and not args.nsys:
+        raise ValueError("held density requires a CUDA attribution trace")
+    carrier = args.held_density.resolve(strict=True) if args.held_density else None
+    carrier_sha256 = execution.digest(carrier) if carrier else None
     scope = "single-arm-tail" if args.check_arm else "paired"
     build = ROOT / "out/build" / args.preset
     directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
     inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
     inputs_sha = execution.digest(args.inputs)
+    material = inputs.get("preview_material")
+    material_path = Path(material["path"]).resolve(strict=True) if material else None
+    if material and execution.digest(material_path) != material["sha256"]:
+        raise ValueError("archived Preview raster identity differs")
     driver = (
         build / "tests/bin" / ("JuicerOfxMeasurement.exe" if os.name == "nt" else "JuicerOfxMeasurement")
     ).resolve(strict=True)
@@ -2321,6 +2340,12 @@ def scanner_paired(args):
         "workloads": {},
         "commands": run.commands,
     }
+    if args.nsys:
+        profiler = args.nsys.resolve(strict=True)
+        report["profiler_sha256"] = execution.digest(profiler)
+        report["scope"] = "profiled"
+    if carrier:
+        report["held_density_sha256"] = carrier_sha256
     with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
         if (
             execution.digest(driver) != inputs["driver_sha256"]
@@ -2418,6 +2443,13 @@ def scanner_paired(args):
                             "--tail-release",
                             release,
                         ]
+                        if material_path is not None:
+                            command.extend(("--preview-material", material_path))
+                        benchmark = declaration.get("benchmark_scanner", False)
+                        if benchmark:
+                            command.extend(("--benchmark-scanner", arm))
+                        if carrier or args.capture_density:
+                            command.extend(("--observe-density", carrier or "capture"))
                         execution.write_json(
                             settings_path,
                             {
@@ -2436,6 +2468,9 @@ def scanner_paired(args):
                                 "points": points,
                                 "scanner_schedule": scanner_entry,
                                 "layout": declaration["layout"],
+                                "cubic_grid": args.read_cubic_grid and arm == "cubic",
+                                "observe_density": bool(carrier or args.capture_density),
+                                "spectral_payload": arm == "spectral" and not benchmark,
                             },
                         )
                         command = [
@@ -2448,10 +2483,40 @@ def scanner_paired(args):
                         ]
                         environment = {**os.environ, "FJ_SCANNER_OBSERVER": str(settings_path)}
                         command, environment = scanner_debugger_environment(command, environment, inputs)
+                        if args.nsys:
+                            command = [
+                                profiler,
+                                "profile",
+                                "--trace=cuda",
+                                "--sample=none",
+                                "--cpuctxsw=none",
+                                "--wait=all",
+                                "--export=sqlite",
+                                "--output",
+                                arm_dir / "cuda",
+                                *command,
+                            ]
                         run.command(f"{workload}-{name}", command, env=environment)
                         host = json.loads(native_receipt.read_text(encoding="utf-8"))
                         tail = json.loads(tail_receipt.read_text(encoding="utf-8"))
-                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm, scanner_entry)
+                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm, scanner_entry, benchmark)
+                        if host["scanner_paired"].get("fixture") != ("archived-preview" if material else None):
+                            raise ValueError("driver did not bind the requested Preview fixture")
+                        if args.read_cubic_grid and arm == "cubic":
+                            item["cubic_grid"] = tail["frames"][0]["cubic_grid"]
+                        if carrier or args.capture_density:
+                            reporter = tail["frames"][0]
+                            density = reporter["density"]
+                            captured_sha256 = execution.digest(arm_dir / density["file"])
+                            if captured_sha256 != density["sha256"] or (carrier and captured_sha256 != carrier_sha256):
+                                raise ValueError("actual scanner density words differ from the declared carrier")
+                            item["density"] = density
+                            item["scan_color"] = reporter["scan_color"]
+                        if args.nsys:
+                            item["cuda_trace"] = {
+                                path.name: execution.digest(path)
+                                for path in (arm_dir / "cuda.nsys-rep", arm_dir / "cuda.sqlite")
+                            }
                         same_inputs = {key: item[key] for key in ("source_digest", "device", "controls")}
                         if binding is not None and same_inputs != binding:
                             raise ValueError(f"{workload} natural timing pair changed common workload inputs")
@@ -2492,6 +2557,71 @@ def scanner_paired(args):
                 all_gates = all_gates and passed
             if not all_gates:
                 raise ValueError("ordinary small-grid timing exceeds the 5% median or p90 limit")
+            if material and execution.digest(material_path) != material["sha256"]:
+                raise ValueError("archived Preview raster changed during the run")
+            report["status"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
+        finally:
+            execution.write_json(directory / "result.json", report)
+
+
+def scanner_cost(args):
+    if args.preset.startswith("windows-") != (os.name == "nt"):
+        raise ValueError("run scanner cost on its native platform")
+    build = ROOT / "out/build" / args.preset
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    run = execution.NativeRun(ROOT, directory)
+    executable = (
+        build / "tests/bin" / ("JuicerScannerCostBenchmark.exe" if os.name == "nt" else "JuicerScannerCostBenchmark")
+    )
+    paths = {"driver": executable, "density": args.density, "packet": args.packet}
+    paths = {name: path.resolve(strict=True) for name, path in paths.items()}
+    with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
+        hashes = {name: execution.digest(path) for name, path in paths.items()}
+        directory.mkdir(exist_ok=False)
+        samples = directory / "scan.json"
+        report = {
+            "schema": "juicer-scanner-cost-run-v1",
+            "status": "failed",
+            "preset": args.preset,
+            "gpu_lease": str(gpu.path),
+            "inputs": {name: {"path": str(path), "sha256": hashes[name]} for name, path in paths.items()},
+            "commands": run.commands,
+        }
+        try:
+            run.command("scanner-cost", [paths["driver"], paths["density"], paths["packet"], samples])
+            raw = json.loads(samples.read_bytes())
+            if (
+                raw["schema"] != "juicer-scanner-cost-v1"
+                or (raw["width"], raw["height"], raw["warmups"], raw["timed_samples"]) != (4832, 2016, 4, 32)
+                or len(raw["variants"]) != 8
+            ):
+                raise ValueError("scanner cost receipt has the wrong workload")
+            expected = {
+                (dot, checks, classified)
+                for dot in (False, True)
+                for checks in (False, True)
+                for classified in (False, True)
+            }
+            for row in raw["variants"]:
+                identity = tuple(row[key] for key in ("double_dot", "check_results", "preclassified"))
+                timings = row["milliseconds"]
+                if (
+                    any(type(value) is not bool for value in identity)
+                    or identity not in expected
+                    or len(timings) != raw["timed_samples"]
+                    or any(not nonnegative(value) or value == 0 for value in timings)
+                ):
+                    raise ValueError("scanner cost receipt has invalid or missing samples")
+                expected.remove(identity)
+                row["median_ms"] = statistics.median(timings)
+                row["p90_ms"] = statistics.quantiles(timings, n=10, method="inclusive")[-1]
+            if {name: execution.digest(path) for name, path in paths.items()} != hashes:
+                raise ValueError("scanner cost inputs changed during the run")
+            report["samples_sha256"] = execution.digest(samples)
+            report["measurement"] = raw
             report["status"] = "passed"
         except Exception as error:
             report["error"] = str(error)
@@ -2539,6 +2669,20 @@ def main():
     command.add_argument("--workloads", required=True, nargs="+", choices=SCANNER_PAIRED_ROWS)
     command.add_argument("--check-result", type=Path)
     command.add_argument("--check-arm", choices=("spectral", "cubic"), help="qualify one held tail in check mode")
+    command.add_argument("--nsys", type=Path, help="retain a separate Nsight Systems CUDA attribution trace")
+    command.add_argument(
+        "--read-cubic-grid", action="store_true", help="read the Direct materialized cube at reporter launch"
+    )
+    density = command.add_mutually_exclusive_group()
+    density.add_argument("--capture-density", action="store_true", help="capture the reporter's unmodified density")
+    density.add_argument(
+        "--held-density", type=Path, help="use this exact planar Float32 C/M/Y in the profiled reporter"
+    )
+    command = sub.add_parser("scanner-cost")
+    command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
+    command.add_argument("--run-id", required=True)
+    command.add_argument("--density", required=True, type=Path)
+    command.add_argument("--packet", required=True, type=Path)
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)
@@ -2555,6 +2699,8 @@ def main():
         spectral_seed_pilot(args)
     elif args.operation == "scanner-paired":
         scanner_paired(args)
+    elif args.operation == "scanner-cost":
+        scanner_cost(args)
     elif args.operation == "report":
         execution.write_json(Path(args.output), offline_report(args.runs))
     elif args.operation == "prepare-reference":

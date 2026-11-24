@@ -38,6 +38,31 @@ In paired runs, each arm's `schedule_points` maps its compiled scanner entry
 names to the exact offset and symbol. The reporter must reach the entry for
 the admitted route and schedule once. The breakpoint is armed after timing.
 
+For a Full 36 mm Direct Preview comparison with the archived fixture, bind the
+tightly packed RGB raster with `preview_material.path` and
+`preview_material.sha256` in the paired manifest. Declare
+`benchmark_scanner: true` only for an archived benchmark arm that exports the
+backend selector. The driver leaves both arms' OFX tokens natural.
+
+`--read-cubic-grid` reads the six buffer bindings and effective grid at the
+materialized Direct reporter launch. For the Full 36 mm Direct Preview row,
+`--capture-density` saves the reporter's exact planar Float32 C/M/Y, and
+`--held-density <raster>` stages and verifies those words on each arm's supplied
+stream before its reporter reaches the real scanner kernel. The held comparison
+requires `--nsys <executable>` and check mode. Read the CUDA kernel interval
+from the retained SQLite trace for the reporter. The three preceding check
+renders keep their natural inputs. Profiled receipts cannot admit measure mode.
+
+For this row with correction, glare and gamut compression off, the spectral
+reporter also saves `scanner-packet.f32` with the live spectra and the two
+color matrices. To separate the arithmetic and check costs, prepare
+`JuicerScannerCostBenchmark` with the native Release verifier and run
+`ofx.py scanner-cost --preset <preset> --run-id <id> --density <raster> --packet <packet>`.
+The benchmark interleaves both precisions, with and without intermediate
+result checks, and with wavelength validity determined per pixel or once
+before timing. The supported input is the held Full 36 mm raster. It records
+per-launch CUDA event times and differences in the pre-encoding output.
+
 ### Scatter and halation
 
 For the retained scatter/halation measurement on Linux:

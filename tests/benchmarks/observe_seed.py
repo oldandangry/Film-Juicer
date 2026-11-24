@@ -252,10 +252,14 @@ def replay_density(frame, draw):
     if (width, height) != (64, 32) or not planes or read(frame, planes + 24) or read(frame, planes + 32):
         raise RuntimeError("replay scanner is not using the admitted clear materialized density image")
     addresses = [read(frame, planes + offset) for offset in (0, 8, 16)]
+    copy_density(frame, draw, addresses, width, height, "fj_observe_replay_density")
+
+
+def copy_density(frame, draw, addresses, width, height, driver_symbol):
     thread = frame.GetThread()
     process = thread.GetProcess()
     target = process.GetTarget()
-    entry = target.FindSymbols("fj_observe_replay_density", lldb.eSymbolTypeCode)
+    entry = target.FindSymbols(driver_symbol, lldb.eSymbolTypeCode)
     driver = str(target.GetExecutable())
     locations = {
         item.GetSymbol().GetStartAddress().GetLoadAddress(target)
@@ -296,6 +300,80 @@ def replay_density(frame, draw):
     record("live_scanner_density", index=draw["index"], **draw["density"])
 
 
+def typed_field(value_type, name):
+    fields = [field for field in value_type.fields if field.GetName() == name]
+    if len(fields) != 1:
+        raise RuntimeError(f"cannot bind {value_type.GetName()}::{name}")
+    return fields[0]
+
+
+def direct_scan_payload(frame):
+    params_type = frame.GetModule().FindFirstType("JuicerCuda::DirectPipelineRunParams")
+    scan = typed_field(params_type, "scanStage")
+    return argument(frame, 0) + scan.GetOffsetInBytes(), scan.GetType()
+
+
+def read_cubic_grid(frame):
+    payload, payload_type = direct_scan_payload(frame)
+    grid = read(frame, payload + typed_field(payload_type, "scanLutRes").GetOffsetInBytes(), 4)
+    nodes = ("Log2PchipXYZ", "PchipSlopeC", "PchipSlopeM", "PchipSlopeY")
+    cells = ("PchipCellMin", "PchipCellMax")
+    pointers = {
+        name: read(frame, payload + typed_field(payload_type, f"scanLut{name}").GetOffsetInBytes())
+        for name in (*nodes, *cells)
+    }
+    if grid < 2 or not all(pointers.values()) or len(set(pointers.values())) != len(pointers):
+        raise RuntimeError("materialized cubic scanner did not bind six distinct buffers and a valid grid")
+    return {
+        "grid": grid,
+        "node_dimensions": [grid] * 3,
+        "cell_dimensions": [grid - 1] * 3,
+        "pointers": pointers,
+        "payload_bytes": 3 * 4 * (len(nodes) * grid**3 + len(cells) * (grid - 1) ** 3),
+    }
+
+
+def observe_direct_density(frame, draw):
+    params = argument(frame, 0)
+    params_type = frame.GetModule().FindFirstType("JuicerCuda::DirectPipelineRunParams")
+    width, height = (
+        read(frame, params + typed_field(params_type, name).GetOffsetInBytes(), 4) for name in ("width", "height")
+    )
+    first_plane = 2 if settings["spectral_payload"] else 1
+    addresses = [argument(frame, first_plane + lane) for lane in range(3)]
+    if (width, height) != (4832, 2016) or argument(frame, first_plane + 6) or len(set(addresses)) != 3:
+        raise RuntimeError("Direct scanner density observer requires a clear Full image with three distinct planes")
+    payload, payload_type = direct_scan_payload(frame)
+    correction = read(frame, payload + typed_field(payload_type, "correctionActive").GetOffsetInBytes(), 4)
+    glare = read(frame, payload + typed_field(payload_type, "glarePercent").GetOffsetInBytes())
+    if correction or glare:
+        raise RuntimeError("held Direct comparison requires correction and glare off")
+    color = typed_field(payload_type, "scanColor")
+    color_address = payload + color.GetOffsetInBytes()
+    color_type = color.GetType()
+    names = ("cat02", "xyzToRgb", "outputGamutActive", "encoding")
+    draw["scan_color"] = {}
+    for name in names:
+        field = typed_field(color_type, name)
+        size = field.GetType().GetByteSize()
+        draw["scan_color"][name] = [
+            read(frame, color_address + field.GetOffsetInBytes() + offset, 4) for offset in range(0, size, 4)
+        ]
+    if settings["spectral_payload"] and not draw["scan_color"]["outputGamutActive"][0]:
+        size = frame.GetModule().FindFirstType("JuicerCuda::ScannerSpectra").GetByteSize()
+        error = lldb.SBError()
+        spectra = frame.GetThread().GetProcess().ReadMemory(argument(frame, 1), size, error)
+        if size != 2272 or error.Fail() or len(spectra) != size:
+            raise RuntimeError("cannot capture the live spectral scanner packet")
+        matrices = draw["scan_color"]["cat02"] + draw["scan_color"]["xyzToRgb"]
+        packet = spectra + struct.pack("<18I", *matrices)
+        filename = Path(settings["receipt"]).with_name("scanner-packet.f32")
+        with filename.open("xb") as output:
+            output.write(packet)
+        draw["scanner_packet"] = {"file": filename.name, "sha256": hashlib.sha256(packet).hexdigest()}
+    copy_density(frame, draw, addresses, width, height, "fj_observe_scanner_density")
+
+
 def on_entry(frame, location, _):
     try:
         operation = entries[location.GetBreakpoint().GetID()]
@@ -309,6 +387,11 @@ def on_entry(frame, location, _):
         if operation == "scanner_schedule":
             draw["launches"].append(settings["scanner_schedule"])
             record(operation, index=draw["index"], entry=settings["scanner_schedule"])
+            if settings.get("cubic_grid"):
+                draw["cubic_grid"] = read_cubic_grid(frame)
+                record("cubic_grid", index=draw["index"], **draw["cubic_grid"])
+            if settings.get("observe_density"):
+                observe_direct_density(frame, draw)
         elif operation == "spectral_launch":
             draw["launches"].append(operation)
             record(operation, index=draw["index"])
