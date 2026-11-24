@@ -598,7 +598,10 @@ mod tests {
                 );
                 assert_eq!(table.mean_density, expected.table().mean_density);
                 assert_eq!(table.correlation, expected.table().correlation);
-                assert_eq!(state.film_bounds().hash(), oracle.film_bounds().hash());
+                assert_eq!(
+                    state.film_v1_bounds().unwrap().hash(),
+                    oracle.film_v1_bounds().unwrap().hash()
+                );
             }
         }
     }

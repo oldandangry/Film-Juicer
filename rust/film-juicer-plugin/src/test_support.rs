@@ -2838,6 +2838,10 @@ unsafe extern "C" fn fj_test_film_reference_density_lookup(
         )
     }
 }
+/// # Safety
+/// Present inputs and backing storage must be live, aligned and readable.
+/// Output and diagnostic storage must be live, aligned and exclusive, with
+/// every region disjoint through the synchronous return.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_scanner_color_prepare(
     input: *const scanner_bridge::FjScannerColorInput,
@@ -2855,6 +2859,10 @@ const _: unsafe extern "C" fn(
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_color_prepare;
 
+/// # Safety
+/// The input must be initialized, aligned and readable. Both outputs and any
+/// diagnostic storage must be live, aligned, exclusive and disjoint from each
+/// other and the input through the synchronous return.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_scanner_post_describe(
     input: *const scanner_bridge::FjScannerPostEffectsInput,

@@ -1403,7 +1403,7 @@ typedef struct FjPreparedStateView {
     FjFilmDevelopment film_development;
     FjFilmDirView dir_recipe;
     FjFilmDensityMinimum grain_minimum;
-    FjFilmDensityBounds scanner_bounds, enlarger_film_bounds;
+    float grain_authored_max_cmy[3];
     FjFilmReference film_reference;
     FjSpatialOpticsRecipe optics;
     FjVisualGrainRecipe grain;

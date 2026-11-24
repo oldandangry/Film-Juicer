@@ -391,8 +391,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         std::copy_n(grain.particle_scale_cmy, 3, grainInput.particle_scale_cmy);
         std::copy_n(grain.particle_scale_layers, 3, grainInput.particle_scale_layers);
         std::copy_n(grain.particle_density_min_cmy, 3, grainInput.particle_density_min_cmy);
-        const auto& selectedBounds = (view.route & 1u) ? view.enlarger_film_bounds : view.scanner_bounds;
-        std::copy_n(selectedBounds.maximum_cmy, 3, grainInput.authored_max_cmy);
+        std::copy_n(view.grain_authored_max_cmy, 3, grainInput.authored_max_cmy);
         grainInput.correlation_sigma_px = grain.correlation_sigma_px;
         grainInput.dye_cloud_blur_um = grain.dye_cloud_blur_um;
         grainInput.size_mix_scale = grain.size_mix_scale;

@@ -1056,8 +1056,8 @@ mod tests {
                 1.2132651_f32.to_bits()
             );
             assert_ne!(
-                landscape.film_bounds().hash(),
-                portrait.film_bounds().hash()
+                landscape.film_v1_bounds().unwrap().hash(),
+                portrait.film_v1_bounds().unwrap().hash()
             );
             assert_eq!(landscape.scanner_hash(), portrait.scanner_hash());
             assert_ne!(landscape.hash(), portrait.hash());
@@ -1072,7 +1072,10 @@ mod tests {
                 current.film_grain().unwrap().table().footprint,
                 (f64::from(11.66_f32) * 1000.0 / 4832.0 / 4.0) as f32
             );
-            assert_ne!(landscape.film_bounds().hash(), current.film_bounds().hash());
+            assert_ne!(
+                landscape.film_v1_bounds().unwrap().hash(),
+                current.film_v1_bounds().unwrap().hash()
+            );
             assert_eq!(landscape_grain.table().footprint, 1.8625828);
             assert_eq!(landscape_grain.raster().long_edge_px, 4832);
         }
@@ -1132,8 +1135,8 @@ mod tests {
             let off = recipe::prepare(&assets, &params(route, 1)).unwrap();
             assert_eq!(clean.development().route(), route);
             assert!(clean.film_grain().is_none() && !clean.grain().active());
-            assert_eq!(clean.film_bounds().hash(), off.film_bounds().hash());
-            assert_ne!(clean.film_bounds().hash(), held.film_bounds().hash());
+            assert!(clean.film_v1_bounds().is_none() && off.film_v1_bounds().is_none());
+            assert!(held.film_v1_bounds().is_some());
             assert_timeline_published();
             assert!(Arc::ptr_eq(&held, &admit(timeline).unwrap()));
 
@@ -1266,7 +1269,10 @@ mod tests {
                 full.film_grain().unwrap().table(),
                 eighth.film_grain().unwrap().table(),
             ));
-            assert_eq!(full.film_bounds().hash(), eighth.film_bounds().hash());
+            assert_eq!(
+                full.film_v1_bounds().unwrap().hash(),
+                eighth.film_v1_bounds().unwrap().hash()
+            );
             assert_eq!(full.scanner_hash(), eighth.scanner_hash());
             assert!(Arc::ptr_eq(&eighth, &admit(604, Some(grid))));
             let other = admit(
@@ -1321,7 +1327,10 @@ mod tests {
                 native_grain.table().footprint,
                 proxy_grain.table().footprint * 2.0
             );
-            assert_ne!(native.film_bounds().hash(), same_pitch.film_bounds().hash());
+            assert_ne!(
+                native.film_v1_bounds().unwrap().hash(),
+                same_pitch.film_v1_bounds().unwrap().hash()
+            );
             assert_eq!(admit(4832, None).hash(), native.hash());
         }
     }

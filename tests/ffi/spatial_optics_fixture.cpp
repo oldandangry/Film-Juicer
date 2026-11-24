@@ -537,8 +537,7 @@ namespace JuicerTestSupport {
         std::copy_n(recipe.particle_scale_cmy, 3, input.particle_scale_cmy);
         std::copy_n(recipe.particle_scale_layers, 3, input.particle_scale_layers);
         std::copy_n(recipe.particle_density_min_cmy, 3, input.particle_density_min_cmy);
-        const auto& bounds = (view.route & 1u) ? view.enlarger_film_bounds : view.scanner_bounds;
-        std::copy_n(bounds.maximum_cmy, 3, input.authored_max_cmy);
+        std::copy_n(view.grain_authored_max_cmy, 3, input.authored_max_cmy);
         input.correlation_sigma_px = recipe.correlation_sigma_px;
         input.dye_cloud_blur_um = recipe.dye_cloud_blur_um;
         input.size_mix_scale = recipe.size_mix_scale;

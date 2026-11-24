@@ -635,7 +635,8 @@ struct Contents {
     film_grain: Option<grain::preview::Recipe>,
     effects: effects::Recipe,
     dir: dir::Recipe,
-    film_bounds: density::Bounds,
+    #[cfg(all(test, feature = "grain-preview"))]
+    film_v1_bounds: Option<density::Bounds>,
     exposure_tables: spectral::Tables,
     s_inverse: [f32; 9],
     reconstruction: FilmReconstruction,
@@ -664,7 +665,6 @@ pub struct PrintState {
     profile: Arc<PrintProfile>,
     gamma: f64,
     curves: PrintDensityCurves,
-    bounds: print::Bounds,
     calibration: Calibration,
     neutral_cmy_cc: [f32; 3],
     filters: print::Filters,
@@ -770,8 +770,9 @@ impl RenderState {
     pub fn dir(&self) -> &dir::Recipe {
         &self.contents[0].dir
     }
-    pub fn film_bounds(&self) -> &density::Bounds {
-        &self.contents[0].film_bounds
+    #[cfg(all(test, feature = "grain-preview"))]
+    pub(crate) fn film_v1_bounds(&self) -> Option<&density::Bounds> {
+        self.contents[0].film_v1_bounds.as_ref()
     }
     pub fn exposure_tables(&self) -> &spectral::Tables {
         &self.contents[0].exposure_tables
@@ -827,9 +828,6 @@ impl PrintState {
     }
     pub fn curves(&self) -> &PrintDensityCurves {
         &self.curves
-    }
-    pub fn bounds(&self) -> &print::Bounds {
-        &self.bounds
     }
     pub fn calibration(&self) -> Calibration {
         self.calibration
@@ -1471,15 +1469,19 @@ fn output_policy(params: &Params) -> Result<(gamut::OutputTransform, u64), Prepa
     hash::update_bytes(&mut hash, &transform.contract_hash().to_le_bytes());
     Ok((transform, hash))
 }
-fn scanner_params(params: &Params, space: color::OutputSpace) -> ScannerParams {
+fn scanner_params(
+    params: &Params,
+    space: color::OutputSpace,
+    correction: scanner::Params,
+) -> ScannerParams {
     let print = print_route(params.scan_route);
     ScannerParams {
         output_space: space,
         encode_cctf: params.output_cctf_encoding != 0,
-        black_correction: params.scanner_black_correction != 0,
-        white_correction: params.scanner_white_correction != 0,
-        black_level: params.scanner_black_level as f32,
-        white_level: params.scanner_white_level as f32,
+        black_correction: correction.black_correction,
+        white_correction: correction.white_correction,
+        black_level: correction.black_level,
+        white_level: correction.white_level,
         glare_active: print && params.glare_active,
         glare_percent: if print {
             params.glare_percent as f32
@@ -1595,7 +1597,6 @@ fn correction_tables(tables: &spectral::Tables) -> scanner::ReferenceTables<'_> 
 
 struct PrintAssembly {
     profile: Arc<PrintProfile>,
-    bounds: print::Bounds,
     curves: PrintDensityCurves,
     filters: print::Filters,
     exposure: print::Exposure,
@@ -1780,23 +1781,45 @@ fn prepare_state(
         }
     })?;
     #[cfg(feature = "grain-preview")]
-    let film_bounds = match &film_grain {
-        Some(grain) => grain.density_bounds(&acquired.development),
-        None => density::Bounds::new(&acquired.development, &minimum),
-    };
+    let film_v1_bounds = film_grain
+        .as_ref()
+        .map(|grain| grain.density_bounds(&acquired.development))
+        .transpose()
+        .map_err(PrepareError::Bounds)?;
     #[cfg(not(feature = "grain-preview"))]
-    let film_bounds = density::Bounds::new(&acquired.development, &minimum);
-    let film_bounds = film_bounds.map_err(PrepareError::Bounds)?;
+    let film_v1_bounds: Option<density::Bounds> = None;
     let profile_route_hash = profile_route_hash(params, film, selected_print.as_deref());
 
     // Route composition follows foundation, before focused payload construction.
-    let print_bounds = selected_print
-        .as_ref()
-        .map(|profile| print::Bounds::new(profile, params.scan_route, film.info().polarity()))
+    let correction_params = scanner::Params {
+        route: route_tag(params.scan_route),
+        black_correction: params.scanner_black_correction != 0,
+        white_correction: params.scanner_white_correction != 0,
+        black_level: params.scanner_black_level as f32,
+        white_level: params.scanner_white_level as f32,
+    };
+    let correction_required = if selected_print.is_some() {
+        correction_params.print_inputs_required()
+    } else {
+        correction_params.direct_inputs_required()
+    }
+    .map_err(PrepareError::ScannerCorrection)?;
+    let correction_film_bounds = (correction_required && film_v1_bounds.is_none())
+        .then(|| density::Bounds::new(&acquired.development, &minimum))
         .transpose()
-        .map_err(PrepareError::PrintComposition)?;
+        .map_err(PrepareError::Bounds)?;
+    let film_bounds = film_v1_bounds.as_ref().or(correction_film_bounds.as_ref());
+    let print_bounds = if correction_required {
+        selected_print
+            .as_deref()
+            .map(print::Bounds::new)
+            .transpose()
+            .map_err(PrepareError::PrintComposition)?
+    } else {
+        None
+    };
     let (transform, gamut_hash) = output_policy(params)?;
-    let scanner_params = scanner_params(params, transform.space());
+    let scanner_params = scanner_params(params, transform.space(), correction_params);
     let print = match selected_print {
         Some(profile) => {
             let curves = profile
@@ -1826,7 +1849,6 @@ fn prepare_state(
             let illuminant_key = enlarger_illuminant(params.enl_ill);
             Some(PrintAssembly {
                 profile,
-                bounds: print_bounds.expect("print bounds composed"),
                 curves,
                 filters,
                 exposure,
@@ -2021,13 +2043,6 @@ fn prepare_state(
     })
     .map_err(PrepareError::ScannerPostEffects)?;
 
-    let correction_params = scanner::Params {
-        route: route_tag(params.scan_route),
-        black_correction: scanner_params.black_correction,
-        white_correction: scanner_params.white_correction,
-        black_level: scanner_params.black_level,
-        white_level: scanner_params.white_level,
-    };
     let route = match (print, print_main, print_balance) {
         (Some(print), Some((source_illuminant, main_illuminant)), Some(balance)) => {
             let resource_descriptors =
@@ -2058,30 +2073,30 @@ fn prepare_state(
                 None
             };
             trace_stage!(ScannerCorrection);
-            let correction_required = correction_params
-                .print_inputs_required()
-                .map_err(PrepareError::ScannerCorrection)?;
             let correction = scanner::Correction::print(
                 correction_params,
-                correction_required.then(|| scanner::PrintInput {
-                    tables: correction_tables(&scanner_tables),
-                    film_base_density: film.tables().base_density(),
-                    film_channel_density_cmy: film.tables().channel_density(),
-                    print_sensitivity_cmy: print.profile.tables().linear_sensitivity(),
-                    filtered_main_illuminant: main_illuminant.samples(),
-                    print_base_density: print.profile.tables().base_density(),
-                    print_log_exposure: print.profile.tables().interpolation_log_exposure(),
-                    print_density_curves: print.profile.tables().density_curves(),
-                    minimum_density_cmy: *print.bounds.minimum_cmy(),
-                    inverse_span_cmy: *print.bounds.inv_span_cmy(),
-                    film_minimum_density_cmy: *film_bounds.minimum_cmy(),
-                    film_maximum_density_cmy: *film_bounds.maximum_cmy(),
-                    preflash_raw_cmy: preflash
-                        .as_ref()
-                        .map_or([0.0; 3], |preflash| *preflash.raw.cmy()),
-                    normalizer: balance.normalizer(),
-                    preflash_exposure: print.exposure.params().preflash_exposure,
-                    medium: 1,
+                print_bounds.as_ref().map(|paper_bounds| {
+                    let film_bounds = film_bounds.expect("active Print correction has film bounds");
+                    scanner::PrintInput {
+                        tables: correction_tables(&scanner_tables),
+                        film_base_density: film.tables().base_density(),
+                        film_channel_density_cmy: film.tables().channel_density(),
+                        print_sensitivity_cmy: print.profile.tables().linear_sensitivity(),
+                        filtered_main_illuminant: main_illuminant.samples(),
+                        print_base_density: print.profile.tables().base_density(),
+                        print_log_exposure: print.profile.tables().interpolation_log_exposure(),
+                        print_density_curves: print.profile.tables().density_curves(),
+                        minimum_density_cmy: *paper_bounds.minimum_cmy(),
+                        inverse_span_cmy: *paper_bounds.inv_span_cmy(),
+                        film_minimum_density_cmy: *film_bounds.minimum_cmy(),
+                        film_maximum_density_cmy: *film_bounds.maximum_cmy(),
+                        preflash_raw_cmy: preflash
+                            .as_ref()
+                            .map_or([0.0; 3], |preflash| *preflash.raw.cmy()),
+                        normalizer: balance.normalizer(),
+                        preflash_exposure: print.exposure.params().preflash_exposure,
+                        medium: 1,
+                    }
                 }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
@@ -2106,7 +2121,6 @@ fn prepare_state(
                 profile: print.profile,
                 gamma: params.print_gamma_factor,
                 curves: print.curves,
-                bounds: print.bounds,
                 calibration: print.calibration,
                 neutral_cmy_cc: print.neutral_cmy_cc,
                 filters: print.filters,
@@ -2125,23 +2139,22 @@ fn prepare_state(
         }
         (None, None, None) => {
             trace_stage!(ScannerCorrection);
-            let correction_required = correction_params
-                .direct_inputs_required()
-                .map_err(PrepareError::ScannerCorrection)?;
             let correction = scanner::Correction::direct(
                 correction_params,
-                correction_required.then(|| scanner::DirectInput {
-                    tables: correction_tables(&scanner_tables),
-                    film_base_density: film.tables().base_density(),
-                    film_log_exposure: acquired.development.log_exposure(),
-                    film_authored_density_curves: acquired.development.authored_curves_cmy(),
-                    minimum_density_cmy: *film_bounds.minimum_cmy(),
-                    maximum_density_cmy: *film_bounds.maximum_cmy(),
-                    inverse_span_cmy: *film_bounds.inv_span_cmy(),
-                    baseline_density_cmy: *reference.baseline_density_cmy(),
-                    reference_hash: reference.hash(),
-                    medium: 0,
-                }),
+                film_bounds
+                    .filter(|_| correction_required)
+                    .map(|film_bounds| scanner::DirectInput {
+                        tables: correction_tables(&scanner_tables),
+                        film_base_density: film.tables().base_density(),
+                        film_log_exposure: acquired.development.log_exposure(),
+                        film_authored_density_curves: acquired.development.authored_curves_cmy(),
+                        minimum_density_cmy: *film_bounds.minimum_cmy(),
+                        maximum_density_cmy: *film_bounds.maximum_cmy(),
+                        inverse_span_cmy: *film_bounds.inv_span_cmy(),
+                        baseline_density_cmy: *reference.baseline_density_cmy(),
+                        reference_hash: reference.hash(),
+                        medium: 0,
+                    }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
             PreparedRoute::Direct(DirectState { correction })
@@ -2228,7 +2241,8 @@ fn prepare_state(
         film_grain,
         effects,
         dir,
-        film_bounds,
+        #[cfg(all(test, feature = "grain-preview"))]
+        film_v1_bounds,
         exposure_tables,
         s_inverse,
         reconstruction,

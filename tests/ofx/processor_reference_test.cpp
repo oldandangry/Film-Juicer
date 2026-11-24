@@ -2231,11 +2231,15 @@ namespace {
             auto no_work_row = candidate_rows.case_event(routeName + "/no-work");
             const auto noWork = run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
             require(!noWork.requested && !noWork.admitted && noWork.candidateCount == 0, "no-family schedule requested scratch");
+            require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic,
+                    routeName + ": grain-off route must complete through the monolithic scanner");
             no_work_row.passed();
             params.values.dir_couplers.active = true;
             params.values.scanner_unsharp_mask[0] = params.values.scanner_unsharp_mask[1] = 0.5;
             auto dir_unsharp_row = candidate_rows.case_event(routeName + "/dir-unsharp");
             run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+            require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner,
+                    routeName + ": DIR with unsharp must complete through the fused scanner");
             dir_unsharp_row.passed();
             params.values.grain.active = true;
             params.values.grain.sublayers_active = true;
@@ -2320,6 +2324,8 @@ namespace {
             params.values.gate_weave_amount = 1.0;
             auto physical_row = candidate_rows.case_event(routeName + "/physical-effects");
             run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+            require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity,
+                    routeName + ": physical effects must complete through the materialized scanner");
             physical_row.passed();
         }
         for (bool camera : {false, true}) {
@@ -4755,6 +4761,8 @@ int main(int argc, char** argv) try {
                 JuicerTests::list_case("processor_render_path", std::string(argv[2]) + "/" + path);
             for (const auto id : JuicerCudaTest::kGrainDispatchCases)
                 JuicerTests::list_case(JuicerCudaTest::kGrainDispatchCaller, id);
+            for (const auto id : JuicerCudaTest::kScanReadbackCases)
+                JuicerTests::list_case(JuicerCudaTest::kScanReadbackCaller, id);
             return 0;
         }
         if (argc == 4 && std::string_view(argv[1]) == "--state-lifetime") {

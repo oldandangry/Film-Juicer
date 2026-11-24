@@ -821,6 +821,52 @@ namespace {
         EXPECT_EQ(print_inputs(restoredView), printA);
     }
 
+    TEST(ProductionProfileConsumer, ConstantPaperRequiresBoundsOnlyForActiveCorrection) {
+        const auto root = consumer_resources("constant-print-density");
+        auto paper = read_json(root / "profiles/kodak_portra_endura.json");
+        auto& amplitudes = paper.at("data").at("density_curves_model").at("amplitudes");
+        ASSERT_EQ(amplitudes.size(), 3u);
+        for (auto& row : amplitudes) {
+            ASSERT_EQ(row.size(), 3u);
+            for (auto& value : row)
+                value = 0.0;
+        }
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        const auto* assets = owner.borrow().assets;
+        save_print(assets, root, paper);
+
+        auto controls = direct_controls();
+        controls.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
+        controls.values.scanner_black_correction = 0;
+        controls.values.scanner_white_correction = 0;
+        std::optional<JuicerTestSupport::PreparedStateHold> admitted;
+        FjPreparedStateView view{};
+        std::string diagnostic;
+        ASSERT_TRUE(prepared_view(assets, controls, admitted, view, diagnostic)) << diagnostic;
+        ASSERT_EQ(view.route, FJ_ROUTE_NEGATIVE_PRINT);
+        ASSERT_EQ(view.scanner_correction.active, 0u);
+        ASSERT_EQ(view.scanner_tables.weighted_xyz[1].count, 81u);
+        ASSERT_NE(view.scanner_hash, 0u);
+        ASSERT_NE(view.print.density_cmy.count, 0u);
+        for (std::size_t index = 0; index < view.print.density_cmy.count; ++index)
+            EXPECT_EQ(view.print.density_cmy.data[index], 0.0f);
+
+        controls.values.scanner_white_correction = 1;
+        std::optional<JuicerTestSupport::PreparedStateHold> rejected;
+        FjPreparedStateView rejected_view{};
+        ASSERT_FALSE(prepared_view(assets, controls, rejected, rejected_view, diagnostic));
+        EXPECT_FALSE(rejected);
+        EXPECT_EQ(diagnostic, "MalformedRequiredProfileData phase=4C field=print_density_bounds");
+
+        controls.values.scanner_white_correction = 0;
+        std::optional<JuicerTestSupport::PreparedStateHold> restored;
+        FjPreparedStateView restored_view{};
+        ASSERT_TRUE(prepared_view(assets, controls, restored, restored_view, diagnostic)) << diagnostic;
+        EXPECT_EQ(restored_view.scanner_hash, view.scanner_hash);
+        EXPECT_EQ(restored_view.recipe_hash, view.recipe_hash);
+    }
+
     TEST(ProductionProfileConsumer, CanonicalAxesIgnoreAuthoredLabelsWhileIdentityRetainsThem) {
         const auto root = consumer_resources("canonical-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");

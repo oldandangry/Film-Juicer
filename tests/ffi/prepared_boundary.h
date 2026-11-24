@@ -57,6 +57,9 @@ namespace JuicerCudaTest {
     void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext);
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext);
+    inline constexpr char kScanReadbackCaller[] = "shipping-scan-readback";
+    inline constexpr std::array<std::string_view, 3> kScanReadbackCases{"producer", "reporter", "retry"};
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared);
 
     inline constexpr char kGrainDispatchCaller[] = "grain-dispatch";
     inline constexpr std::array<std::string_view, 6> kGrainDispatchCases{"conflicting-models", "malformed-film-frame", "invalid-film-fraction", "missing-film-bank", "film-launch", "current-launch"};

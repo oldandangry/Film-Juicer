@@ -27,9 +27,11 @@
 #include "prepared_descriptors.h"
 #include "case_results.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_cuda_prepared.h"
 #include "juicer_test_api.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Cuda/JuicerCudaFilmGrain.h"
+#include "Hash.h"
 #include "ScanRoute.h"
 
 namespace JuicerProcess::TestSupport {
@@ -769,6 +771,103 @@ namespace JuicerCudaTest {
             JuicerCuda::RenderTest::nullGrainPlane = true;
             check_runtime_failure(current, submission, route + " visual grain launch failed");
             require(!JuicerCuda::RenderTest::nullGrainPlane, "Current launch fault reached developed density dispatch");
+            row.passed();
+        }
+    }
+
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared) {
+        JuicerTests::Cohort rows(kScanReadbackCaller, std::vector<std::string>(kScanReadbackCases.begin(), kScanReadbackCases.end()));
+        constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+        auto& root = JuicerCuda::borrow_root(cuda);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
+        auto* const stream = reinterpret_cast<cudaStream_t>(frame.stream);
+        const auto* const destination = reinterpret_cast<const void*>(frame.destination.address);
+        const auto& bounds = frame.destination.bounds;
+        require(frame.destination.row_bytes > 0 && bounds.y2 > bounds.y1, "scan readback fixture uses a positive pitch and extent");
+        const auto bytes = static_cast<std::size_t>(frame.destination.row_bytes) * static_cast<std::size_t>(bounds.y2 - bounds.y1);
+        const auto read_image = [&](std::vector<std::byte>& image) {
+            require(cudaStreamSynchronize(stream) == cudaSuccess &&
+                        cudaMemcpy(image.data(), destination, image.size(), cudaMemcpyDeviceToHost) == cudaSuccess,
+                    "scan readback fixture completed pitched output");
+        };
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        auto baseline = submission;
+        baseline.instance_token ^= UINT64_C(0x4000000000000000);
+        require(baseline.instance_token != 0, "scan readback fixture instance token");
+        require_status(render_raw_prepared(cuda, frame, baseline, prepared, {}, &error), success, "healthy scan before nonfinite injection");
+        std::vector<std::byte> healthy(bytes), produced(bytes), compared(bytes);
+        read_image(healthy);
+
+        auto nonfinite = prepared;
+        nonfinite.scanner_spectra.inverse_y_normalization = std::numeric_limits<float>::infinity();
+        auto producer = baseline;
+        ++producer.submission_id;
+        const auto& color = nonfinite.output_color;
+        const auto gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
+        const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(nonfinite), gamut});
+        producer.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(nonfinite.recipe_hash, nonfinite.dir_couplers.hash, binding, nonfinite.auto_exposure.hash).scannerHash;
+        require(producer.scanner_hash != submission.scanner_hash, "nonfinite scan changes the admitted binding");
+        const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
+        const bool paper = Spektrafilm::scan_route_is_print(route);
+        const auto profile = paper ? prepared.print_profile_key : prepared.film_profile_key;
+        const auto version = paper ? prepared.print_profile_asset_version : prepared.film_profile_asset_version;
+        std::shared_ptr<JuicerCuda::Resources> owner;
+        {
+            auto row = rows.case_event("producer");
+            require_status(render_raw_prepared(cuda, frame, producer, nonfinite, {}, &error), success, "nonfinite producer finishes asynchronous submission");
+            read_image(produced);
+            require(produced != healthy, "nonfinite producer reaches the optical output");
+            owner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
+            require(static_cast<bool>(owner), "nonfinite producer retains its exact context owner");
+            const std::lock_guard<std::mutex> lock(owner->m);
+            require(owner->pendingScanErrorReadbacks.size() == 1, "one completed predecessor readback");
+            const auto& held = owner->pendingScanErrorReadbacks.front();
+            require(held.host && held.eventOpaque && cudaEventQuery(static_cast<cudaEvent_t>(held.eventOpaque)) == cudaSuccess &&
+                        *held.host == 1 && held.identity.submissionId == producer.submission_id &&
+                        held.identity.frameToken == producer.frame_token && held.identity.scannerHash == producer.scanner_hash &&
+                        held.identity.scannedProfileAssetVersion == version && held.identity.contextEpoch == owner->contextEpoch,
+                    "actual scanner result sets only bit zero on the producing submission");
+            row.passed();
+        }
+        auto reportingFrame = frame;
+        reportingFrame.time_frames += 1.0;
+        auto reporter = baseline;
+        reporter.submission_id = producer.submission_id + 1;
+        ++reporter.frame_token;
+        {
+            auto row = rows.case_event("reporter");
+            const auto outcome = render_raw_prepared(cuda, reportingFrame, reporter, prepared, {}, &error);
+            require_status(outcome, preparationFailure, "distinct raw reporter consumes the earlier scan failure");
+            const std::string expected = "earlier CUDA scan produced non-finite RGB route=" +
+                                         std::string(Spektrafilm::scan_route_key(route)) +
+                                         (paper ? " medium=paper profile=" : " medium=film profile=") +
+                                         std::string(profile.data, profile.count) +
+                                         " profile_asset_version=" + std::to_string(version) +
+                                         " submission_id=" + std::to_string(producer.submission_id) +
+                                         " frame_token=" + std::to_string(producer.frame_token) +
+                                         " scanner_hash=" + std::to_string(producer.scanner_hash) +
+                                         " context_epoch=" + std::to_string(owner->contextEpoch);
+            require(outcome.flags == 0 && std::string_view(message.data(), error.length) == expected,
+                    "raw reporter uses producer provenance and leaves DIR flags clear");
+            read_image(compared);
+            require(compared == produced, "failed reporter preserves the entire pitched destination");
+            const std::lock_guard<std::mutex> lock(owner->m);
+            require(owner->pendingScanErrorReadbacks.empty(), "failed reporter retires the sole readback");
+            row.passed();
+        }
+        {
+            auto row = rows.case_event("retry");
+            auto retry = baseline;
+            retry.submission_id = reporter.submission_id + 1;
+            const auto outcome = render_raw_prepared(cuda, frame, retry, prepared, {}, &error);
+            const auto retryDetail = "scan retry: " + std::string(message.data(), error.length);
+            require_status(outcome, success, retryDetail.c_str());
+            read_image(compared);
+            require(compared == healthy && JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key) == owner,
+                    "retry restores the guarded pitched image on the same context owner");
+            require_status(fj_cuda_retire_instance(cuda, baseline.instance_token, &error), success, "retire scanner readback fixture instance");
             row.passed();
         }
     }

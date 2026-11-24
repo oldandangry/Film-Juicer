@@ -29,18 +29,12 @@ impl std::fmt::Display for CompositionError {
 }
 impl std::error::Error for CompositionError {}
 
-pub struct Bounds {
+pub(crate) struct Bounds {
     minimum_cmy: [f32; 3],
-    maximum_cmy: [f32; 3],
     inv_span_cmy: [f32; 3],
-    hash: u64,
 }
 impl Bounds {
-    pub fn new(
-        profile: &crate::profile::PrintProfile,
-        route: crate::route::ScanRoute,
-        polarity: crate::profile::Polarity,
-    ) -> Result<Self, CompositionError> {
+    pub(crate) fn new(profile: &crate::profile::PrintProfile) -> Result<Self, CompositionError> {
         let curves = profile.tables().density_curves();
         let mut minimum_cmy = curves[0];
         let mut maximum_cmy = curves[0];
@@ -63,50 +57,16 @@ impl Bounds {
             }
             inv_span_cmy[c] = 1.0 / span;
         }
-        let route = match route {
-            crate::route::ScanRoute::NegativeDirect => 0,
-            crate::route::ScanRoute::NegativePrint => 1,
-            crate::route::ScanRoute::PositiveDirect => 2,
-            crate::route::ScanRoute::PositivePrint => 3,
-        };
-        let polarity = match polarity {
-            crate::profile::Polarity::Negative => 0,
-            crate::profile::Polarity::Positive => 1,
-        };
-        let mut hash = hash::FNV_OFFSET;
-        hash::update_bytes(&mut hash, &[route, 1, polarity, 2]);
-        for values in [
-            &minimum_cmy,
-            &maximum_cmy,
-            &inv_span_cmy,
-            &minimum_cmy,
-            &maximum_cmy,
-        ] {
-            for value in values {
-                hash::update_bytes(&mut hash, &value.to_bits().to_le_bytes());
-            }
-        }
-        if hash == 0 {
-            return Err(CompositionError::DensityBounds);
-        }
         Ok(Self {
             minimum_cmy,
-            maximum_cmy,
             inv_span_cmy,
-            hash,
         })
     }
     pub fn minimum_cmy(&self) -> &[f32; 3] {
         &self.minimum_cmy
     }
-    pub fn maximum_cmy(&self) -> &[f32; 3] {
-        &self.maximum_cmy
-    }
     pub fn inv_span_cmy(&self) -> &[f32; 3] {
         &self.inv_span_cmy
-    }
-    pub fn hash(&self) -> u64 {
-        self.hash
     }
 }
 

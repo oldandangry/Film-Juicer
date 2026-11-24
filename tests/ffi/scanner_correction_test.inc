@@ -94,13 +94,36 @@ namespace ScannerCorrectionTest {
                     const auto lightWords = printRoute
                                                 ? words(state.print.main_illuminant.data, state.print.main_illuminant.count)
                                                 : words(emptyLight.data(), emptyLight.size());
+                    std::array<float, 3> filmMinimum{}, filmMaximum{}, scanMinimum{}, scanMaximum{}, inverse{};
+                    for (std::size_t channel = 0; channel < filmMinimum.size(); ++channel)
+                        filmMinimum[channel] = -state.grain_minimum.cmy[channel];
+                    std::copy_n(state.grain_authored_max_cmy, filmMaximum.size(), filmMaximum.begin());
+                    if (printRoute) {
+                        const auto curves = paper.tables.density_curves_cmy;
+                        require(curves.count >= 3 && curves.count % 3 == 0, "authored paper density curve extents");
+                        std::copy_n(curves.data, scanMinimum.size(), scanMinimum.begin());
+                        scanMaximum = scanMinimum;
+                        for (std::size_t offset = 3; offset < curves.count; offset += 3) {
+                            for (std::size_t channel = 0; channel < scanMinimum.size(); ++channel) {
+                                scanMinimum[channel] = std::min(scanMinimum[channel], curves.data[offset + channel]);
+                                scanMaximum[channel] = std::max(scanMaximum[channel], curves.data[offset + channel]);
+                            }
+                        }
+                    } else {
+                        scanMinimum = filmMinimum;
+                        scanMaximum = filmMaximum;
+                        filmMinimum = {};
+                        filmMaximum = {};
+                    }
+                    for (std::size_t channel = 0; channel < inverse.size(); ++channel)
+                        inverse[channel] = 1.0f / (scanMaximum[channel] - scanMinimum[channel]);
                     Json input{{"route", state.route},
                                {"flags", unsigned(state.scanner_policy.black_correction) + 2u * unsigned(state.scanner_policy.white_correction)},
                                {"levels", words(std::array{state.scanner_policy.black_level, state.scanner_policy.white_level}.data(), 2)},
-                               {"medium", state.scanner_bounds.medium},
-                               {"minimum", words(state.scanner_bounds.minimum_cmy, 3)},
-                               {"maximum", words(state.scanner_bounds.maximum_cmy, 3)},
-                               {"inverse", words(state.scanner_bounds.inv_span_cmy, 3)},
+                               {"medium", static_cast<unsigned>(printRoute)},
+                               {"minimum", words(scanMinimum.data(), scanMinimum.size())},
+                               {"maximum", words(scanMaximum.data(), scanMaximum.size())},
+                               {"inverse", words(inverse.data(), inverse.size())},
                                {"tables", std::move(tableInput)},
                                {"film_base", words(film.tables.base_density.data, film.tables.base_density.count)},
                                {"film_axis", words(film.tables.log_exposure.data, film.tables.log_exposure.count)},
@@ -112,8 +135,8 @@ namespace ScannerCorrectionTest {
                                {"preflash", words(state.print.preflash_raw_cmy, 3)},
                                {"normalizer", std::bit_cast<std::uint32_t>(printRoute ? state.print.normalizer : 1.0f)},
                                {"preflash_exposure", std::bit_cast<std::uint32_t>(printRoute ? state.print.preflash_exposure : 0.0f)},
-                               {"film_minimum", words(state.enlarger_film_bounds.minimum_cmy, 3)},
-                               {"film_maximum", words(state.enlarger_film_bounds.maximum_cmy, 3)}};
+                               {"film_minimum", words(filmMinimum.data(), filmMinimum.size())},
+                               {"film_maximum", words(filmMaximum.data(), filmMaximum.size())}};
                     if (printRoute) {
                         input["print_base"] = words(paper.tables.base_density.data, paper.tables.base_density.count);
                         input["print_axis"] = words(paper.tables.log_exposure.data, paper.tables.log_exposure.count);

@@ -395,14 +395,16 @@ namespace {
                 continue;
             }
             const auto originalGrainHash = view.grain.hash;
-            const auto originalBoundsHash = view.scanner_bounds.hash;
             auto* const originalMinimum = view.grain_minimum.cmy;
             auto changed = params;
             changed.values.grain.particle_density_min_cmy[0] = 0.5f;
             auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, changed);
             FjPreparedStateView changedView{};
             status(changedProduct.view(changedView, error));
-            require(changedView.grain.hash != originalGrainHash && changedView.scanner_bounds.hash == originalBoundsHash && std::equal(changedView.grain_minimum.cmy, changedView.grain_minimum.cmy + 3, originalMinimum), "visual particle minimum remains distinct from scanner GrainContract");
+            require(changedView.grain.hash != originalGrainHash &&
+                        std::equal(std::begin(changedView.grain_minimum.cmy), std::end(changedView.grain_minimum.cmy), originalMinimum) &&
+                        std::equal(std::begin(changedView.grain_authored_max_cmy), std::end(changedView.grain_authored_max_cmy), view.grain_authored_max_cmy),
+                    "visual particle minimum is independent of the film density extrema used by grain");
             changed = params;
             changed.values.grain.chroma_mix = 0.5f;
             require(JuicerTestSupport::hash_input_identity(changed) == JuicerTestSupport::hash_input_identity(params), "synthetic chroma-only change retains intentional snapshot omission");

@@ -92,7 +92,6 @@ namespace {
             controls.values.input_compression_enabled = 0;
             controls.values.output_gamut_compression_enabled = 0;
             controls.values.grain.active = false;
-            const bool print = Spektrafilm::scan_route_is_print(static_cast<Spektrafilm::ScanRoute>(controls.values.scan_route));
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
@@ -105,8 +104,16 @@ namespace {
             require(dir.hash == row.at("dir").at("hash") && dir.compensated_axes_hash == row.at("dir").at("axes_hash"), "actual DIR family identities");
             for (std::size_t i = 0; i < 3; ++i)
                 require(words(dir.compensated_axes_rgb[i].data, dir.compensated_axes_rgb[i].count) == row.at("dir").at("axes")[i], "all actual adopted axes");
-            const auto& bounds = print ? view.enlarger_film_bounds : view.scanner_bounds;
-            require(bounds.hash == row.at("bounds").at("hash") && words(bounds.minimum_cmy, 3) == row.at("bounds").at("minimum") && words(bounds.inv_span_cmy, 3) == row.at("bounds").at("inverse"), "actual scanner/enlarger bounds");
+            std::array<float, 3> minimum{}, inverse{};
+            for (std::size_t channel = 0; channel < minimum.size(); ++channel) {
+                minimum[channel] = -view.grain_minimum.cmy[channel];
+                inverse[channel] = 1.0f / (view.grain_authored_max_cmy[channel] - minimum[channel]);
+            }
+            const auto& bounds = row.at("bounds");
+            require(bounds.at("hash").is_number_unsigned() &&
+                        words(minimum.data(), minimum.size()) == bounds.at("minimum") &&
+                        words(inverse.data(), inverse.size()) == bounds.at("inverse"),
+                    "film development and grain preserve the exact former film extent");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "no foreign temporary hold in published native products");
             case_event.passed();
         }

@@ -345,6 +345,8 @@ namespace JuicerCudaTest {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
+        if (contract)
+            check_scan_readback(runtime.cuda, context, frame, submission, prepared);
         if (lifetime)
             check_prepared_state_lifetime(owner, runtime.assets, runtime.cuda, context, frame, submission, prepared, &error, lifetimeCase);
         else if (!render_held_state(runtime.assets, runtime.cuda, *owner, state, frame, submission, state.recipe_hash, error, diagnostic))
