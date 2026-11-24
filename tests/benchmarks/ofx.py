@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib
 import hashlib
 import json
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 execution = importlib.import_module("execution")
 verify = importlib.import_module("verify")
+qualification = importlib.import_module("qualification")
 
 ROWS = ("negative-direct", "negative-print", "negative-direct-grain", "negative-print-grain")
 HALATION_EXTENTS = {
@@ -1620,6 +1622,232 @@ def g3_route(args):
             raise ValueError(result.get("error", "G3 route witness failed"))
 
 
+def scanner_capacity_receipt(output, observer, module, resources):
+    driver = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    observed = json.loads(observer.read_text(encoding="utf-8"))
+    if (
+        driver["schema"] != "juicer-scanner-capacity-driver-v1"
+        or Path(driver["module"]) != module
+        or Path(driver["resources"]) != resources
+        or driver["bounds"] != [0, 0, 12800, 96]
+        or driver["row_bytes"] != (12800 * 3 + 5) * 4
+        or driver["frame_rate"] != 24.0
+        or driver["context_restored"] is not True
+        or driver["unloaded"] is not True
+    ):
+        raise ValueError("capacity driver identity, geometry or lifecycle differs")
+    controls = {
+        "CameraFilmFormatPreset": [0],
+        "CameraFilmFormatMm": [8.0],
+        "FilmGrainAmountEv": [3.0],
+        "FilmGrainChromaFraction": [1.0],
+        "FilmGrainTexelPitchUm": [0.5],
+        "GrainModel": ["film_v1"],
+        "GrainActive": [1],
+        "InputColorSpace": [0],
+        "InputCctfDecoding": [0],
+        "OutputCctfEncoding": [1],
+        "OutputGamutCompression": [0],
+        "CouplersActive": [0],
+        "HalationActive": [0],
+        "GlareActive": [0],
+    }
+    if driver["controls"] != controls:
+        raise ValueError("capacity control readbacks differ")
+    frames = observed["frames"]
+    if (
+        observed["schema"] != "juicer-scanner-capacity-observation-v1"
+        or observed["exited"] is not True
+        or observed["inferior_exit"] != 0
+        or observed["errors"]
+        or observed["pending_returns"] != 0
+        or len(frames) != 2
+        or len(driver["rows"]) != 2
+    ):
+        raise ValueError("capacity child did not complete both native renders")
+    guards = (
+        "finite_output",
+        "alpha_preserved",
+        "padding_preserved",
+        "source_preserved",
+        "stream_completed",
+        "readback_complete",
+        "context_preserved",
+    )
+    source = output / "source-pitched.f32"
+    if source.stat().st_size != driver["row_bytes"] * 96:
+        raise ValueError("capacity pitched source size differs")
+    rasters = {source.name: execution.digest(source)}
+    owner_fields = ("resources", "device", "context", "epoch")
+    for index, (row, draw, phase, time_bits) in enumerate(
+        zip(driver["rows"], frames, ("measured", "reporting"), (0, 0x3FF0000000000000), strict=True)
+    ):
+        retained, poll = draw["retained"], draw["poll"]
+        if (
+            row["pass"] != phase
+            or row["output_file"] != phase + ".f32"
+            or row["ofx_status"] != 0
+            or any(row[key] is not True for key in guards)
+            or row["source_image_releases"] != 1
+            or row["output_image_releases"] != 1
+            or row["time_bits"] != time_bits
+            or draw["time_bits"] != time_bits
+            or draw["index"] != index
+            or draw["token"] != index
+            or draw["route"] != 0
+            or draw["outcome"] != [0, 0, 0, 0]
+            or draw["launches"] != ["spectral_launch"]
+            or not all(draw[key] for key in ("instance", "submission", "context", "stream", "thread"))
+            or not all(retained[key] for key in ("host", "event", "resources", "epoch", "success", "handoff"))
+            or any(retained[key] != poll[key] for key in owner_fields)
+            or retained["epoch"] != retained["epoch_at_production"]
+            or retained["device"] != draw["device"]
+            or retained["context"] != draw["context"]
+            or poll["stream"] != draw["stream"]
+            or poll["success"] is not True
+            or poll["status"] != 0
+        ):
+            raise ValueError(f"capacity {phase} guards, spectral launch or readback ownership differs")
+        for operation in ("allocations", "uploads"):
+            if any(
+                not isinstance(item["label"], str)
+                or item["bytes"] <= 0
+                or re.search(r"pchip|scanner lut|scanner cube", item["label"], re.IGNORECASE)
+                for item in draw[operation]
+            ):
+                raise ValueError(f"capacity {phase} {operation} includes retired scanner traffic")
+        raster = output / row["output_file"]
+        if raster.stat().st_size != 12800 * 96 * 3 * 4:
+            raise ValueError(f"capacity {phase} raster size differs")
+        rasters[raster.name] = execution.digest(raster)
+    measured, reporter = frames
+    surviving = {"film TC LUT", "focused film tablesIllum", "film Mallett basis"}
+    allocations = {(item["label"], item["bytes"]) for item in measured["allocations"] if item["success"]}
+    uploads = {(item["label"], item["bytes"]) for item in measured["uploads"] if item["success"]}
+    if not any(label in surviving for label, _ in allocations & uploads):
+        raise ValueError("capacity lacks a matching successful surviving labeled allocation and upload")
+    retained = measured["retained"]
+    terminal = reporter["poll"]
+    if (
+        any(measured[key] != reporter[key] for key in ("instance", "device", "context", "stream", "thread"))
+        or reporter["submission"] != measured["submission"] + 1
+        or any(retained[key] != terminal[key] for key in owner_fields)
+        or measured["poll"]["queries"] != []
+        or measured["poll"]["destroyed"] != []
+        or terminal["queries"] != [{"event": retained["event"], "status": 0, "completed_flag": 0}]
+        or terminal["destroyed"] != [retained["event"]]
+        or rasters["measured.f32"] == rasters["reporting.f32"]
+    ):
+        raise ValueError("capacity terminal reporter did not consume the exact predecessor's completed zero flag")
+    return {"rasters": rasters, "frames": frames, "controls": controls}
+
+
+def scanner_capacity(args):
+    if args.preset.startswith("windows-") != (os.name == "nt"):
+        raise ValueError("run scanner capacity on its native platform")
+    build = ROOT / "out/build" / args.preset
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
+    observer = Path(__file__).with_name("observe_seed.py").resolve(strict=True)
+    run = execution.NativeRun(ROOT, directory)
+    with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
+        configuration = verify.cache_values(build)
+        if (
+            not qualification.read_preview_and_replay_configuration(configuration)[0]
+            or configuration["BUILD_TESTING"] != "ON"
+        ):
+            raise ValueError("capacity requires the native testing-ON Preview configuration")
+        _, built, staged = qualification.production_module_paths(args.preset, configuration)
+        module = Path(staged).resolve(strict=True)
+        resources = (module.parent.parent / "Resources").resolve(strict=True)
+        driver = qualification.prepared_render_probe_path(args.preset, built)
+        debugger = Path(inputs["debugger"]).resolve(strict=True)
+        symbols = Path(inputs["symbols"]).resolve(strict=True) if os.name == "nt" else module
+        files = {"module": module, "symbols": symbols, "driver": driver, "debugger": debugger, "observer": observer}
+        hashes = {name: execution.digest(path) for name, path in files.items()}
+        resource_hashes = inventory(resources)
+        if (
+            hashes["module"] != execution.digest(Path(built))
+            or hashes["module"] != inputs["module_sha256"]
+            or hashes["symbols"] != inputs["symbols_sha256"]
+        ):
+            raise ValueError("capacity stage, build or symbols differ from the admitted instrumentation layout")
+        report = {
+            "schema": "juicer-scanner-capacity-v1",
+            "status": "failed",
+            "preset": args.preset,
+            "inputs": {name: {"path": str(path), "sha256": hashes[name]} for name, path in files.items()},
+            "resources": resource_hashes,
+            "gpu_lease": str(gpu.path),
+            "commands": run.commands,
+        }
+        directory.mkdir(parents=False, exist_ok=False)
+        try:
+            output = directory / "product"
+            output.mkdir()
+            settings = directory / "observer.json"
+            receipt = directory / "observations.json"
+            execution.write_json(
+                settings,
+                {
+                    "module": str(module),
+                    "symbols": str(symbols) if os.name == "nt" else None,
+                    "uuid": inputs["uuid"],
+                    "points": inputs["points"],
+                    "trace": str(directory / "observations.jsonl"),
+                    "receipt": str(receipt),
+                },
+            )
+            command = [debugger, "--batch"]
+            if os.name != "nt":
+                command.extend(("-o", "settings set target.disable-aslr false"))
+            command.extend(
+                (
+                    "-o",
+                    f'command script import "{observer.as_posix()}"',
+                    "-o",
+                    "script observe_seed.install(lldb.debugger)",
+                    "-o",
+                    "run",
+                    "-o",
+                    "script observe_seed.finish(lldb.debugger)",
+                    "--",
+                    driver,
+                    "--scanner-capacity",
+                    module,
+                    output,
+                )
+            )
+            environment = {**os.environ, "FJ_SCANNER_OBSERVER": str(settings)}
+            debugger_environment = inputs.get("debugger_environment", {})
+            if set(debugger_environment) - {"PATH", "PYTHONHOME"}:
+                raise ValueError("unsupported scanner debugger environment")
+            if os.name == "nt" and debugger_environment:
+                # The Python version embedded in LLDB does not own the process supervisor.
+                def quote(value):
+                    return "'" + str(value).replace("'", "''") + "'"
+
+                script = [f"$env:{key} = {quote(value)}" for key, value in debugger_environment.items()]
+                script.extend(("& " + " ".join(map(quote, command)), "exit $LASTEXITCODE"))
+                encoded = base64.b64encode("\n".join(script).encode("utf-16-le")).decode("ascii")
+                shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+                command = [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+            else:
+                environment.update(debugger_environment)
+            run.command("capacity", command, env=environment)
+            report["capacity"] = scanner_capacity_receipt(output, receipt, module, resources)
+            if {name: execution.digest(path) for name, path in files.items()} != hashes or inventory(
+                resources
+            ) != resource_hashes:
+                raise ValueError("scanner capacity inputs changed during the run")
+            report["status"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
+        finally:
+            execution.write_json(directory / "result.json", report)
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="operation", required=True)
@@ -1641,6 +1869,10 @@ def main():
     selection = command.add_mutually_exclusive_group(required=True)
     selection.add_argument("--workload")
     selection.add_argument("--g3-manifest")
+    command = sub.add_parser("scanner-capacity")
+    command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
+    command.add_argument("--run-id", required=True)
+    command.add_argument("--inputs", required=True, type=Path)
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)
@@ -1651,6 +1883,8 @@ def main():
     args = parser.parse_args()
     if args.operation == "g3-route":
         g3_route(args)
+    elif args.operation == "scanner-capacity":
+        scanner_capacity(args)
     elif args.operation == "report":
         execution.write_json(Path(args.output), offline_report(args.runs))
     elif args.operation == "prepare-reference":

@@ -169,14 +169,19 @@ namespace {
                 close_unchecked();
         }
         template <class T>
-        T symbol(const char* name) const {
+        T find_symbol(const char* name) const {
 #ifdef _WIN32
             auto* address = GetProcAddress(handle_, name);
 #else
             auto* address = dlsym(handle_, name);
 #endif
-            require(address != nullptr, std::string("missing module export: ") + name);
             return reinterpret_cast<T>(address);
+        }
+        template <class T>
+        T symbol(const char* name) const {
+            const auto address = find_symbol<T>(name);
+            require(address != nullptr, std::string("missing module export: ") + name);
+            return address;
         }
         bool loaded_from(const std::filesystem::path& path) const {
 #ifdef _WIN32
@@ -525,6 +530,116 @@ namespace {
                     std::string_view(plugin->pluginIdentifier) == expected && plugin->setHost && plugin->mainEntry,
                 std::string("discovery identity or entry points: ") + expected);
         return plugin;
+    }
+
+    int scanner_capacity(const std::filesystem::path& path, const std::filesystem::path& output) {
+        constexpr Case test{"capacity", "negative-direct", "NegativeDirectScan", 0, 3, 12800, 96, 0, 0.0};
+        constexpr GrainGeometry geometry{{0, 0, test.width, test.height}, {0, 0, test.width, test.height}};
+        require(path.is_absolute() && path.filename() == "juicer-grain-preview.ofx" &&
+                    std::filesystem::is_directory(output) && std::filesystem::is_empty(output),
+                "capacity requires the absolute Preview module and an empty output directory");
+        const auto resources = std::filesystem::canonical(path.parent_path().parent_path() / "Resources");
+        require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json"), "capacity grain bank unavailable");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA driver");
+        CUcontext original = nullptr;
+        driver.check(driver.get_current(&original), "read initial CUDA context");
+        ContextRestore restore(driver, original);
+        require_cuda(cudaSetDevice(0), "select capacity CUDA device");
+        Module module(path);
+        auto* plugin = const_cast<OfxPlugin*>(check_discovery(module, path, "com.juicer.Juicer.GrainPreview"));
+        using TokenSetter = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
+        require(!module.find_symbol<TokenSetter>("fj_preview_replay_set_tokens") &&
+                    !module.find_symbol<TokenSetter>("fj_preview_benchmark_set_tokens"),
+                "capacity requires natural product seeds");
+        InstanceHost host;
+        DeviceBuffers device;
+        Lifecycle lifecycle(plugin, host);
+        require(lifecycle.load() == kOfxStatOK, "capacity Load failed");
+        require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
+                "capacity DescribeInContext failed");
+        auto* effect = host.create_effect();
+        author_parameters(host, effect, test);
+        host.set_value(effect, "GlareActive", {0});
+        host.set_value(effect, "CameraFilmFormatPreset", {2});
+        host.set_value(effect, "CameraFilmFormatMm", {36.0});
+        require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "capacity CreateInstance failed");
+        lifecycle.created(effect);
+
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create capacity CUDA stream");
+        const auto source = flat_grain_source(test);
+        const auto bytes = source.size() * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, bytes), "allocate capacity source");
+        require_cuda(cudaMalloc(&device.destination, bytes), "allocate capacity output");
+        configure(host, effect, test, device);
+        host.set_effect_property(effect, kOfxImageEffectPropFrameRate, {24.0});
+        set_grain_geometry(host, effect, geometry);
+        std::vector<std::string> controls{"InputCctfDecoding", "HalationActive", "GlareActive"};
+        const auto change = [&](const char* name, const std::vector<InstanceValue>& value) {
+            host.set_value(effect, name, value);
+            require(lifecycle.call(kOfxActionInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name})) == kOfxStatReplyDefault &&
+                        host.value(effect, name) == value,
+                    std::string("capacity control readback differs: ") + name);
+            controls.emplace_back(name);
+        };
+        change("CouplersActive", {0});
+        change("GrainModel", {std::string("film_v1")});
+        change("FilmGrainAmountEv", {3.0});
+        change("FilmGrainChromaFraction", {1.0});
+        change("FilmGrainTexelPitchUm", {0.5});
+        change("CameraFilmFormatPreset", {0});
+        change("CameraFilmFormatMm", {8.0});
+        change("InputColorSpace", {0});
+        change("OutputCctfEncoding", {1});
+        change("OutputGamutCompression", {0});
+        change("GrainActive", {1});
+
+        const auto activeControls = parameter_values(host, effect, controls);
+        write_pixels(output / "source-pitched.f32", source);
+        Json rows = Json::array();
+        const auto render = [&](std::string_view phase, double time) {
+            host.set_property(host.action_args(), kOfxPropTime, {time});
+            std::vector<std::uint32_t> result;
+            auto row = run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, result, true);
+            std::vector<float> pixels;
+            pixels.reserve(result.size());
+            for (const auto word : result) {
+                const auto pixel = std::bit_cast<float>(word);
+                require(pixel != kDestinationCanary, "capacity output has an unwritten RGB word");
+                pixels.push_back(pixel);
+            }
+            const auto filename = std::string(phase) + ".f32";
+            write_pixels(output / filename, pixels);
+            row["pass"] = phase;
+            row["time_bits"] = std::bit_cast<std::uint64_t>(time);
+            row["output_file"] = filename;
+            rows.push_back(std::move(row));
+            return result;
+        };
+        const auto measured = render("measured", 0.0);
+        const auto reporter = render("reporting", 1.0);
+        require(reporter != measured, "capacity Film v1 temporal frames match");
+        require(lifecycle.destroy(effect) == kOfxStatOK, "capacity DestroyInstance failed");
+        device.release_images();
+        device.close();
+        require(lifecycle.unload() == kOfxStatOK && !host.callback_error(), "capacity Unload failed");
+        module.close();
+        restore.restore();
+        const Json report{{"schema", "juicer-scanner-capacity-driver-v1"},
+                          {"module", path.string()},
+                          {"resources", resources.string()},
+                          {"controls", activeControls},
+                          {"frame_rate", 24.0},
+                          {"row_bytes", (test.width * test.components + kPitchPadding) * sizeof(float)},
+                          {"bounds", {0, 0, test.width, test.height}},
+                          {"context_restored", restore.restored},
+                          {"unloaded", true},
+                          {"rows", rows}};
+        std::ofstream receipt(output / "receipt.json");
+        receipt << report.dump(2) << '\n';
+        receipt.close();
+        require(static_cast<bool>(receipt), "capacity receipt write failed");
+        return 0;
     }
 
     int grain_preview_discovery(const std::filesystem::path& previewPath, const std::filesystem::path& ordinaryPath) {
@@ -1533,6 +1648,10 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        if (argc >= 2 && std::string_view(argv[1]) == "--scanner-capacity") {
+            require(argc == 4, "expected --scanner-capacity preview-module output-directory");
+            return scanner_capacity(argv[2], argv[3]);
+        }
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
         if (argc >= 2 && std::string_view(argv[1]) == "--grain-preview-apertures") {
             if (JuicerTests::list_requested(argc, argv)) {

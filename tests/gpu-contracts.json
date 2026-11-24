@@ -200,11 +200,10 @@
     "ScannerRoutes.NonfiniteSpectralOutputIsReportedByBothScannerCallers": 3,
     "ScannerRoutes.SpectralPlaneMatchesIndependentFloat64Reference": 1,
     "ScannerRoutes.DeferredDirFailureComesFromReadbackBits": 1,
-    "ScannerRoutes.ResolutionTransitionRestoresLutContentAndOutput": 1,
+    "ScannerRoutes.HeldOutputEncodingsRestoreSpectralBindingAndPixels": 1,
     "ScannerRoutes.PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges": 1,
-    "ScannerRoutes.LutConstructionFailuresPreserveCategoryAndCache": 1,
-    "ScannerRoutes.LutIdentityTracksSelectedProfileBoundsAndIlluminant": 1,
-    "ScannerRoutes.WholeNativeLutProductsSurviveActualPreparedUpload": 1
+    "ScannerRoutes.SpectralBindingTracksTheSelectedMedium": 1,
+    "ScannerRoutes.WholeSpectralPacketMatchesTheHeldPreparedMedium": 1
   },
   "excluded_gtest": {
     "ExposureCache.DISABLED_SixKTiming": "Explicit CUDA-event timing benchmark; never part of ordinary CTest.",

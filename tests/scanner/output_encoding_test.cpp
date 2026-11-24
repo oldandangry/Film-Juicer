@@ -4,10 +4,6 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
-#include <filesystem>
-#include <fstream>
-
-#include "nlohmann/json.hpp"
 #include <limits>
 #include <stdexcept>
 #include <span>
@@ -460,7 +456,6 @@ namespace {
         JuicerTestSupport::RuntimeFixture& runtime;
         std::optional<JuicerTestSupport::PreparedStateHold> state;
         JuicerTestSupport::PreparationInput controls;
-        Scanner::ScannerSpectralLutDescriptor scanner;
         Scanner::ColorRuntime scannerColor;
         Scanner::ScannerColorCorrectionDescriptor correction;
         OutputGamutRecipe outputGamut;
@@ -518,7 +513,6 @@ namespace {
                                      const FrameFixture::Inputs& prepared,
                                      std::string&) {
             auto& out = *static_cast<RouteInputs*>(user);
-            out.scanner = prepared.descriptors.scanner;
             out.scannerColor = prepared.descriptors.color;
             out.correction = prepared.descriptors.correction;
             out.outputGamut = prepared.descriptors.outputGamut;
@@ -613,53 +607,10 @@ namespace {
         return params;
     }
 
-    struct LutCapture {
-        std::uint32_t resolution = 0;
-        std::uint64_t hash = 0;
-        std::array<std::uintptr_t, 6> addresses{};
-        std::vector<std::uint32_t> content;
-        std::size_t bytes = 0;
-    };
+    using SpectralWords = std::array<std::uint32_t, 7 * Spectral::kNumSamples + 1>;
 
-    LutCapture capture_lut(const JuicerCuda::Resources::DeviceSpectralLut& lut) {
-        require(lut.canonical_ready(), "Scanner LUT is not ready");
-        LutCapture result;
-        result.resolution = lut.res;
-        result.hash = lut.hash;
-        result.addresses = {
-            reinterpret_cast<std::uintptr_t>(lut.log2PchipXYZ),
-            reinterpret_cast<std::uintptr_t>(lut.slopeC),
-            reinterpret_cast<std::uintptr_t>(lut.slopeM),
-            reinterpret_cast<std::uintptr_t>(lut.slopeY),
-            reinterpret_cast<std::uintptr_t>(lut.cellMin),
-            reinterpret_cast<std::uintptr_t>(lut.cellMax)};
-        const std::size_t voxelValues =
-            static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u;
-        const std::size_t cellResolution = static_cast<std::size_t>(lut.res - 1u);
-        const std::size_t cellValues =
-            cellResolution * cellResolution * cellResolution * 3u;
-        result.bytes = (4u * voxelValues + 2u * cellValues) * sizeof(float);
-        result.content.reserve(4u * voxelValues + 2u * cellValues);
-        auto append = [&](const float* source, std::size_t count) {
-            std::vector<float> values(count);
-            check_cuda(cudaMemcpy(
-                values.data(),
-                source,
-                count * sizeof(float),
-                cudaMemcpyDeviceToHost));
-            const std::vector<std::uint32_t> patterns = bit_patterns(values);
-            result.content.insert(
-                result.content.end(),
-                patterns.begin(),
-                patterns.end());
-        };
-        append(lut.log2PchipXYZ, voxelValues);
-        append(lut.slopeC, voxelValues);
-        append(lut.slopeM, voxelValues);
-        append(lut.slopeY, voxelValues);
-        append(lut.cellMin, cellValues);
-        append(lut.cellMax, cellValues);
-        return result;
+    SpectralWords capture_spectra(const JuicerCuda::ScannerSpectra& spectra) {
+        return std::bit_cast<SpectralWords>(spectra);
     }
 
     bool scan_color_matches(
@@ -1050,7 +1001,7 @@ namespace {
             require(frame.finish(nullptr, error), error.diagnostic);
         }
         struct RouteCapture {
-            LutCapture lut;
+            SpectralWords spectra{};
             std::vector<std::uint32_t> output;
         };
         template <typename Params>
@@ -1069,7 +1020,7 @@ namespace {
             RouteCapture result;
             result.output = bit_patterns(image.output.download());
             EXPECT_EQ(read_device_flag(params.scanStage.scanErrorFlag), 0);
-            result.lut = capture_lut(*frame.focused_resources().scanLut);
+            result.spectra = capture_spectra(*frame.focused_resources().scannerSpectra);
             require(
                 frame.finalize_scan_error_stage(
                     params.scanStage.scanErrorFlag,
@@ -1080,7 +1031,7 @@ namespace {
             return result;
         }
         struct CorrectionCapture {
-            LutCapture lut;
+            SpectralWords spectra{};
             Scanner::ScannerColorCorrectionDescriptor correction;
             std::array<std::uint64_t, 4> printHashes{};
             std::array<std::uintptr_t, 15> printAddresses{};
@@ -1089,7 +1040,7 @@ namespace {
         CorrectionCapture correction_resources(const RouteInputs& inputs, const Image& image, bool derive = true) {
             auto frame = prepare_route(inputs, image);
             CorrectionCapture result;
-            result.lut = capture_lut(*frame.focused_resources().scanLut);
+            result.spectra = capture_spectra(*frame.focused_resources().scannerSpectra);
             if (Spektrafilm::scan_route_is_print(
                     static_cast<Spektrafilm::ScanRoute>(inputs.route))) {
                 const auto print = frame.print_resources();
@@ -1255,7 +1206,6 @@ namespace {
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.glare_active = false;
-            controls.values.scanner_lut_resolution = 17;
             RouteInputs off(runtime, controls, 0, true);
             controls.values.scanner_black_correction = controls.values.scanner_white_correction = 1;
             RouteInputs held(runtime, controls, 0, true);
@@ -1264,9 +1214,8 @@ namespace {
             Image image({31, 19}, 4);
             const auto before = correction_resources(off, image);
             const auto active = correction_resources(held, image);
-            EXPECT_EQ(before.lut.hash, active.lut.hash);
-            EXPECT_EQ(before.lut.addresses, active.lut.addresses);
-            EXPECT_EQ(before.lut.content, active.lut.content);
+            EXPECT_EQ(off.scannerHash, held.scannerHash);
+            EXPECT_EQ(before.spectra, active.spectra);
             EXPECT_EQ(before.printHashes, active.printHashes);
             EXPECT_EQ(before.printAddresses, active.printAddresses);
             EXPECT_EQ(before.printValues, active.printValues);
@@ -1315,8 +1264,7 @@ namespace {
             EXPECT_EQ(bit_patterns(corrected), bit_patterns(image.output.download()));
             const auto restored = correction_resources(held, image);
             EXPECT_EQ(restored.correction.hash, active.correction.hash);
-            EXPECT_EQ(restored.lut.addresses, active.lut.addresses);
-            EXPECT_EQ(restored.lut.content, active.lut.content);
+            EXPECT_EQ(restored.spectra, active.spectra);
             EXPECT_EQ(restored.printHashes, active.printHashes);
             EXPECT_EQ(restored.printAddresses, active.printAddresses);
             EXPECT_EQ(restored.printValues, active.printValues);
@@ -1344,7 +1292,6 @@ namespace {
         for (const auto route : routes) {
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.glare_active = false;
-            controls.values.scanner_lut_resolution = 17;
             controls.values.scanner_black_correction = controls.values.scanner_white_correction = 1;
             RouteInputs disabled(runtime, controls, 0, false);
             RouteInputs enabled(runtime, controls, 0, true);
@@ -1389,9 +1336,7 @@ namespace {
                 }
                 const auto reused = correction_resources(*inputs, image);
                 EXPECT_EQ(reused.correction.hash, initial.correction.hash);
-                EXPECT_EQ(reused.lut.hash, initial.lut.hash);
-                EXPECT_EQ(reused.lut.addresses, initial.lut.addresses);
-                EXPECT_EQ(reused.lut.content, initial.lut.content);
+                EXPECT_EQ(reused.spectra, initial.spectra);
                 EXPECT_EQ(reused.printHashes, initial.printHashes);
                 EXPECT_EQ(reused.printAddresses, initial.printAddresses);
                 EXPECT_EQ(reused.printValues, initial.printValues);
@@ -1453,7 +1398,7 @@ namespace {
             check(view.lensBlur);
             check(view.unsharp);
             check(view.glare);
-            const auto lut = capture_lut(*first.focused_resources().scanLut);
+            const auto spectra = capture_spectra(*first.focused_resources().scannerSpectra);
             const auto* retained = view.lensBlur.weights;
             JuicerCuda::Failure failure;
             require(first.finish(nullptr, failure), failure.diagnostic);
@@ -1475,8 +1420,8 @@ namespace {
             check(view.lensBlur);
             EXPECT_NE(view.lensBlur.weights, retained);
             EXPECT_EQ(view.unsharp.weights, retained);
-            EXPECT_EQ(capture_lut(*changed.focused_resources().scanLut).addresses, lut.addresses);
-            EXPECT_EQ(capture_lut(*changed.focused_resources().scanLut).content, lut.content);
+            EXPECT_EQ(capture_spectra(*changed.focused_resources().scannerSpectra), spectra);
+            EXPECT_EQ(changedInputs.scannerHash, inputs.scannerHash);
             // A failed descriptor cannot replace resources bound by a live frame.
             ASSERT_EQ(fj_test_scanner_post_fault(1).category, FJ_STATUS_SUCCESS);
             const FjScannerPostEffectsInput raw{
@@ -1664,55 +1609,40 @@ namespace {
         }
     }
 
-    TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {
-        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
-                                Spektrafilm::ScanRoute::NegativePrintScan,
-                                Spektrafilm::ScanRoute::PositiveDirectScan,
-                                Spektrafilm::ScanRoute::PositivePrintScan};
+    TEST_F(ScannerRoutes, HeldOutputEncodingsRestoreSpectralBindingAndPixels) {
+        constexpr std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                    Spektrafilm::ScanRoute::NegativePrintScan,
+                                    Spektrafilm::ScanRoute::PositiveDirectScan,
+                                    Spektrafilm::ScanRoute::PositivePrintScan};
         std::vector<std::string> ids;
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
+        JuicerTests::GtestCohort cases("encoding-pair", ids);
         for (const auto route : routes) {
             auto row = cases.case_event(route_case_key(route));
-            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            JuicerTestSupport::PreparationInput controls17 = RouteInputs::controls_for_route(route);
-            controls17.values.scanner_lut_resolution = 17;
-            JuicerTestSupport::PreparationInput controls33 = controls17;
-            controls33.values.scanner_lut_resolution = 33;
-            RouteInputs inputs17(runtime, controls17, 0, false);
-            RouteInputs inputs33(runtime, controls33, 0, false);
-
-            ASSERT_EQ(inputs17.scanner.lutResolution, 17u);
-            ASSERT_EQ(inputs33.scanner.lutResolution, 33u);
-            ASSERT_NE(inputs17.scanner.hash, 0u);
-            ASSERT_NE(inputs33.scanner.hash, 0u);
-            EXPECT_NE(inputs17.scanner.hash, inputs33.scanner.hash);
-
-            const RouteCapture initial =
-                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
-            const RouteCapture retained =
-                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
-            const RouteCapture changed =
-                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs33) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs33));
-            const RouteCapture restored =
-                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
-
-            EXPECT_EQ(initial.lut.resolution, 17u);
-            EXPECT_EQ(changed.lut.resolution, 33u);
-            EXPECT_EQ(restored.lut.resolution, 17u);
-            EXPECT_EQ(initial.lut.hash, inputs17.scanner.hash);
-            EXPECT_EQ(changed.lut.hash, inputs33.scanner.hash);
-            EXPECT_EQ(restored.lut.hash, inputs17.scanner.hash);
-            EXPECT_EQ(initial.lut.addresses, retained.lut.addresses);
-            EXPECT_EQ(initial.lut.content, retained.lut.content);
-            EXPECT_GT(changed.lut.bytes, initial.lut.bytes);
-            EXPECT_EQ(initial.lut.bytes, restored.lut.bytes);
-            EXPECT_EQ(initial.lut.content, restored.lut.content);
-            EXPECT_EQ(initial.output, retained.output);
-            EXPECT_EQ(initial.output, restored.output);
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.values.output_cctf_encoding = 1;
+            RouteInputs encoded(runtime, controls, 0, false);
+            controls.values.output_cctf_encoding = 0;
+            RouteInputs linear(runtime, controls, 0, false);
+            ASSERT_NE(encoded.scannerHash, linear.scannerHash);
+            ASSERT_NE(encoded.scannerRecipeHash, linear.scannerRecipeHash);
+            const auto render = [&](const RouteInputs& inputs) {
+                return Spektrafilm::scan_route_is_print(route)
+                           ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs)
+                           : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
+            };
+            const auto encodedBefore = render(encoded);
+            const auto linearBefore = render(linear);
+            const auto encodedAfter = render(encoded);
+            const auto linearAfter = render(linear);
+            EXPECT_EQ(encodedBefore.spectra, linearBefore.spectra);
+            EXPECT_EQ(encodedAfter.spectra, encodedBefore.spectra);
+            EXPECT_EQ(linearAfter.spectra, linearBefore.spectra);
+            EXPECT_NE(encodedBefore.output, linearBefore.output);
+            EXPECT_EQ(encodedAfter.output, encodedBefore.output);
+            EXPECT_EQ(linearAfter.output, linearBefore.output);
             row.passed();
         }
     }
@@ -1776,74 +1706,7 @@ namespace {
         profileControls.print_key = "kodak_supra_endura";
         check_print("print-profile-change", profileControls);
     }
-    TEST_F(ScannerRoutes, LutConstructionFailuresPreserveCategoryAndCache) {
-        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
-                                Spektrafilm::ScanRoute::NegativePrintScan,
-                                Spektrafilm::ScanRoute::PositiveDirectScan,
-                                Spektrafilm::ScanRoute::PositivePrintScan};
-        std::vector<std::string> ids;
-        ids.reserve(routes.size() * 13);
-        for (const auto route : routes) {
-            for (unsigned buffer = 1; buffer <= 10; ++buffer)
-                ids.push_back(route_case_key(route) + "/buffer-" + std::to_string(buffer));
-            ids.push_back(route_case_key(route) + "/cache-hit-armed-fault");
-            for (const unsigned operation : {0u, 1u})
-                ids.push_back(route_case_key(route) + "/operation-" + std::to_string(operation));
-        }
-        JuicerTests::GtestCohort cases("route-fault", ids);
-        for (const auto route : routes) {
-            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
-            auto controls = RouteInputs::controls_for_route(route);
-            controls.values.scanner_lut_resolution = 17;
-            RouteInputs inputs(runtime, controls, 0, false);
-            Image image({31, 19}, 4);
-            std::string diagnostic;
-            const auto reject = [&](const RouteInputs& selected, std::uint32_t category, const char* message) {
-                const auto result = execute_correction(selected, image, diagnostic);
-                EXPECT_EQ(result.category, category);
-                EXPECT_EQ(result.api, FJ_API_NONE);
-                EXPECT_EQ(result.native_code, 0);
-                EXPECT_EQ(diagnostic, std::string(message) + " route=" + Spektrafilm::scan_route_metadata(route).key);
-                EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
-                for (const auto word : bit_patterns(image.output.download()))
-                    EXPECT_EQ(word, kPadding);
-            };
-            for (unsigned buffer = 1; buffer <= 10; ++buffer) {
-                auto row = cases.case_event(route_case_key(route) + "/buffer-" + std::to_string(buffer));
-                SCOPED_TRACE(testing::Message() << "buffer=" << buffer);
-                ASSERT_EQ(fj_test_scanner_lut_fault(0, buffer + 1).category, FJ_STATUS_SUCCESS);
-                reject(inputs, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
-                row.passed();
-            }
-            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            const auto original = bit_patterns(image.output.download());
-            controls.values.scanner_lut_resolution = 33;
-            RouteInputs replacement(runtime, controls, 0, false);
-            {
-                auto row = cases.case_event(route_case_key(route) + "/cache-hit-armed-fault");
-                ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
-                require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                EXPECT_EQ(bit_patterns(image.output.download()), original);
-                // A cache hit must leave the armed constructor fault for this miss.
-                reject(replacement, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
-                row.passed();
-            }
-            for (const unsigned operation : {0u, 1u}) {
-                auto row = cases.case_event(route_case_key(route) + "/operation-" + std::to_string(operation));
-                ASSERT_EQ(fj_test_scanner_lut_fault(operation, 1).category, FJ_STATUS_SUCCESS);
-                reject(replacement, FJ_STATUS_INTERNAL_FAILURE, "scanner LUT preparation panicked");
-                row.passed();
-            }
-            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(image.output.download()), original);
-            require(execute_correction(replacement, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(image.output.download()), original);
-            EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
-        }
-    }
-
-    TEST_F(ScannerRoutes, LutIdentityTracksSelectedProfileBoundsAndIlluminant) {
+    TEST_F(ScannerRoutes, SpectralBindingTracksTheSelectedMedium) {
         const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
                                 Spektrafilm::ScanRoute::NegativePrintScan,
                                 Spektrafilm::ScanRoute::PositivePrintScan};
@@ -1858,7 +1721,6 @@ namespace {
             auto controls = RouteInputs::controls_for_route(route);
             controls.film_key = "kodak_portra_400";
             controls.print_key = "kodak_portra_endura";
-            controls.values.scanner_lut_resolution = 17;
             RouteInputs original(runtime, controls, 0, false);
             const bool print = Spektrafilm::scan_route_is_print(route);
             if (print)
@@ -1866,71 +1728,61 @@ namespace {
             else
                 controls.film_key = "kodak_portra_800";
             RouteInputs changed(runtime, controls, 0, false);
-            EXPECT_NE(original.scanner.channelDensityHash, changed.scanner.channelDensityHash);
-            EXPECT_NE(original.scanner.densityBoundsHash, changed.scanner.densityBoundsHash);
-            if (print) {
-                EXPECT_NE(original.scanner.scanIlluminantHash, changed.scanner.scanIlluminantHash);
-            }
-            EXPECT_NE(original.scanner.hash, changed.scanner.hash);
+            EXPECT_NE(original.scannerHash, changed.scannerHash);
             const auto before = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(original) : capture_route<JuicerCuda::DirectPipelineRunParams>(original);
             const auto after = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(changed) : capture_route<JuicerCuda::DirectPipelineRunParams>(changed);
             const auto restored = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(original) : capture_route<JuicerCuda::DirectPipelineRunParams>(original);
-            EXPECT_EQ(before.lut.hash, original.scanner.hash);
-            EXPECT_EQ(after.lut.hash, changed.scanner.hash);
-            EXPECT_NE(before.lut.content, after.lut.content);
-            EXPECT_EQ(restored.lut.hash, before.lut.hash);
-            EXPECT_EQ(restored.lut.content, before.lut.content);
+            EXPECT_NE(before.spectra, after.spectra);
+            EXPECT_NE(before.output, after.output);
+            EXPECT_EQ(restored.spectra, before.spectra);
             EXPECT_EQ(restored.output, before.output);
             row.passed();
         }
     }
 
-    TEST_F(ScannerRoutes, WholeNativeLutProductsSurviveActualPreparedUpload) {
-#if defined(_WIN32)
-        const std::string platform = "windows-clang-";
-#else
-        const std::string platform = "linux-";
-#endif
-#if defined(NDEBUG)
-        const auto preset = platform + "release";
-#else
-        const auto preset = platform + "debug";
-#endif
-        const auto directory = std::filesystem::path(__FILE__).parent_path() / "lut-fixtures";
-        const auto frozen = load_shared_fixture(directory / (preset + ".json"), "manifest.json");
-        ASSERT_EQ(frozen.at("preset"), preset);
+    TEST_F(ScannerRoutes, WholeSpectralPacketMatchesTheHeldPreparedMedium) {
+        constexpr std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                    Spektrafilm::ScanRoute::NegativePrintScan,
+                                    Spektrafilm::ScanRoute::PositiveDirectScan,
+                                    Spektrafilm::ScanRoute::PositivePrintScan};
         std::vector<std::string> ids;
-        ids.reserve(frozen.at("products").size());
-        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
-            const auto& row = frozen.at("products").at(index);
-            ids.push_back("product-" + std::to_string(index) + "/route-" +
-                          std::to_string(row.at("route").get<unsigned>()));
-        }
-        JuicerTests::GtestCohort products("native-lut-product", ids);
-        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
-            const auto& row = frozen.at("products").at(index);
-            auto product = products.case_event(ids[index]);
-            const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
-            JuicerTestSupport::PreparationInput controls;
-            controls.values.scan_route = static_cast<std::uint32_t>(route);
-            controls.film_key = row.at("route").get<unsigned>() < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            controls.print_key = "kodak_portra_endura";
-            controls.values.camera_auto_exposure_enabled = 0;
-            controls.values.input_compression_enabled = 0;
-            controls.values.output_gamut_compression_enabled = 0;
-            controls.values.print_preflash_exposure = 0.125;
-            controls.values.scanner_lut_resolution = 17;
-            RouteInputs inputs(runtime, controls, 0, false);
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            ASSERT_EQ(inputs.scanner.hash, row.at("descriptor_hash").get<std::uint64_t>());
-            const auto capture = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
-            std::vector<std::uint32_t> expected;
-            for (const auto* name : {"log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max"})
-                for (const auto& word : row.at("native").at(name))
-                    expected.push_back(word.get<std::uint32_t>());
-            EXPECT_EQ(capture.lut.content, expected);
-            EXPECT_EQ(capture.lut.bytes, expected.size() * sizeof(float));
-            product.passed();
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("spectral-packet", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
+            const RouteInputs inputs(runtime, route, 0, false);
+            FjPreparedStateView held{};
+            std::array<char, 256> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            ASSERT_EQ(inputs.state->view(held, error).category, FJ_STATUS_SUCCESS);
+            const auto& tables = held.scanner_tables;
+            for (const auto& lane : tables.dyes_cmy)
+                ASSERT_EQ(lane.count, Spectral::kNumSamples);
+            for (const auto& lane : tables.weighted_xyz)
+                ASSERT_EQ(lane.count, Spectral::kNumSamples);
+            ASSERT_EQ(tables.baseline_min.count, tables.has_baseline ? Spectral::kNumSamples : 0);
+            SpectralWords expected{};
+            const auto word = [](float value) {
+                return std::bit_cast<std::uint32_t>(value);
+            };
+            for (std::size_t sample = 0; sample < Spectral::kNumSamples; ++sample) {
+                const std::size_t first = 7 * sample;
+                expected[first] = word(tables.dyes_cmy[0].data[sample]);
+                expected[first + 1] = word(tables.dyes_cmy[1].data[sample]);
+                expected[first + 2] = word(tables.dyes_cmy[2].data[sample]);
+                expected[first + 3] = tables.has_baseline ? word(tables.baseline_min.data[sample]) : 0;
+                expected[first + 4] = word(tables.weighted_xyz[0].data[sample]);
+                expected[first + 5] = word(tables.weighted_xyz[1].data[sample]);
+                expected[first + 6] = word(tables.weighted_xyz[2].data[sample]);
+            }
+            expected.back() = word(tables.inv_yn);
+            const auto actual = Spektrafilm::scan_route_is_print(route)
+                                    ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs)
+                                    : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
+            EXPECT_EQ(actual.spectra, expected);
+            row.passed();
         }
     }
 } // namespace

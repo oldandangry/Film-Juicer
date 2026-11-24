@@ -580,6 +580,13 @@ namespace {
         }
         expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
     }
+    void save_print(const FjAssets* assets, const fs::path& root, const Json& document) {
+        {
+            std::ofstream file(root / "profiles/kodak_portra_endura.json");
+            file << document;
+        }
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+    }
     JuicerTestSupport::PreparationInput direct_controls() {
         JuicerTestSupport::PreparationInput controls;
         controls.values.scan_route = FJ_ROUTE_NEGATIVE_DIRECT;
@@ -739,6 +746,79 @@ namespace {
 
             invalid_blackbody_case.passed();
         }
+    }
+
+    TEST(ProductionProfileConsumer, ViewingOnlyPaperRefetchPreservesPrintExposureAndGlare) {
+        const auto root = consumer_resources("paper-viewing-refetch");
+        const auto original = read_json(root / "profiles/kodak_portra_endura.json");
+        ASSERT_EQ(original.at("info").at("viewing_illuminant"), "D50");
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        auto controls = direct_controls();
+        controls.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
+        controls.values.print_preflash_exposure = 0.125;
+        controls.values.preflash_m_filter_cc = 5.0;
+        controls.values.glare_active = 1;
+        controls.values.glare_percent = 0.25;
+        controls.values.glare_roughness = 0.5;
+        controls.values.glare_blur_sigma_px = 1.0;
+        const auto words = [](FjFloatSpan span) {
+            std::vector<std::uint32_t> result;
+            result.reserve(span.count);
+            for (std::size_t i = 0; i < span.count; ++i)
+                result.push_back(std::bit_cast<std::uint32_t>(span.data[i]));
+            return result;
+        };
+        const auto print_inputs = [&words](const FjPreparedStateView& view) {
+            const auto& print = view.print;
+            const std::array scalars{print.exposure, print.preflash_exposure, print.normalizer};
+            return Json{{"keys", {print.film_density_hash, print.profile_tables_hash, print.main_illuminant_hash, print.preflash_illuminant_hash}},
+                        {"source", words(view.print_source_illuminant)},
+                        {"lights", {words(print.main_illuminant), words(print.preflash_illuminant)}},
+                        {"exposure", words({scalars.data(), scalars.size()})},
+                        {"main_cmy", words({print.main_cc_cmy, 3})},
+                        {"preflash_cmy", words({view.print_effective_preflash_cmy_cc, 3})},
+                        {"preflash_raw", words({print.preflash_raw_cmy, 3})},
+                        {"glare_hash", print.glare_hash}};
+        };
+        const auto scanner_identities = [](const FjPreparedStateView& view) {
+            return std::array{view.print_profile_asset_version, view.scanner_color.hash, view.scanner_hash, view.recipe_hash};
+        };
+        std::string diagnostic;
+        std::optional<JuicerTestSupport::PreparedStateHold> heldA;
+        FjPreparedStateView viewA{};
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, heldA, viewA, diagnostic)) << diagnostic;
+        ASSERT_EQ(viewA.print.main_illuminant.count, 81u);
+        ASSERT_EQ(viewA.print.preflash_illuminant.count, 81u);
+        ASSERT_NE(viewA.print.glare_hash, 0u);
+        const auto printA = print_inputs(viewA);
+        const auto scannerA = scanner_identities(viewA);
+        for (const auto& key : printA.at("keys"))
+            ASSERT_NE(key, 0u);
+
+        auto changed = original;
+        changed.at("info").at("viewing_illuminant") = "D65";
+        save_print(owner.borrow().assets, root, changed);
+        std::optional<JuicerTestSupport::PreparedStateHold> heldB;
+        FjPreparedStateView viewB{};
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, heldB, viewB, diagnostic)) << diagnostic;
+        const auto scannerB = scanner_identities(viewB);
+        for (std::size_t i = 0; i < scannerA.size(); ++i)
+            EXPECT_NE(scannerB[i], scannerA[i]);
+        EXPECT_NE(words({viewB.scanner_color.illuminant_xyz, 3}), words({viewA.scanner_color.illuminant_xyz, 3}));
+        EXPECT_EQ(print_inputs(viewB), printA);
+        FjPreparedStateView heldAAfterB{};
+        FjErrorBuffer error{};
+        ASSERT_EQ(heldA->view(heldAAfterB, error).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(scanner_identities(heldAAfterB), scannerA);
+        EXPECT_EQ(print_inputs(heldAAfterB), printA);
+
+        save_print(owner.borrow().assets, root, original);
+        std::optional<JuicerTestSupport::PreparedStateHold> restoredA;
+        FjPreparedStateView restoredView{};
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, restoredA, restoredView, diagnostic)) << diagnostic;
+        EXPECT_EQ(scanner_identities(restoredView), scannerA);
+        EXPECT_EQ(print_inputs(restoredView), printA);
     }
 
     TEST(ProductionProfileConsumer, CanonicalAxesIgnoreAuthoredLabelsWhileIdentityRetainsThem) {

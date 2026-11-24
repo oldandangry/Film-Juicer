@@ -6,15 +6,19 @@ namespace ScannerLutTest {
         std::array<std::vector<float>, 7> spectra;
         Scanner::MediumView medium;
         std::uint32_t resolution;
+        int sampleCount;
+        bool hasBaseline;
 
         explicit Literal(const Json& input)
-            : resolution(input.at("resolution")) {
+            : resolution(input.at("resolution")),
+              sampleCount(input.at("sample_count")),
+              hasBaseline(input.at("has_baseline")) {
             constexpr std::array names{"eps_c", "eps_m", "eps_y", "weighted_x", "weighted_y", "weighted_z", "baseline"};
             for (std::size_t i = 0; i < spectra.size(); ++i)
                 for (const auto& word : input.at(names[i]))
                     spectra[i].push_back(std::bit_cast<float>(word.get<std::uint32_t>()));
             medium.medium = static_cast<Scanner::ScannerMedium>(input.at("medium").get<std::uint8_t>());
-            medium.tables = {spectra[0], spectra[1], spectra[2], spectra[3], spectra[4], spectra[5], spectra[6], input.at("sample_count").get<int>(), std::bit_cast<float>(input.at("inv_yn").get<std::uint32_t>()), input.at("has_baseline").get<bool>()};
+            medium.tables = {spectra[0], spectra[1], spectra[2], spectra[3], spectra[4], spectra[5], spectra[6], std::bit_cast<float>(input.at("inv_yn").get<std::uint32_t>())};
             copy_words(input.at("range_min_cmy"), medium.range.min_cmy);
             copy_words(input.at("inverse_span_cmy"), medium.range.inv_max_cmy);
         }
@@ -34,7 +38,7 @@ namespace ScannerLutTest {
 
     Json input(const Scanner::MediumView& medium, std::uint32_t resolution) {
         const auto& t = medium.tables;
-        return {{"resolution", resolution}, {"medium", static_cast<unsigned>(medium.medium)}, {"sample_count", t.K}, {"inv_yn", std::bit_cast<std::uint32_t>(t.invYn)}, {"has_baseline", t.hasBaseline}, {"range_min_cmy", words(medium.range.min_cmy, 3)}, {"inverse_span_cmy", words(medium.range.inv_max_cmy, 3)}, {"eps_c", words(t.epsC.data(), t.epsC.size())}, {"eps_m", words(t.epsM.data(), t.epsM.size())}, {"eps_y", words(t.epsY.data(), t.epsY.size())}, {"weighted_x", words(t.Ax.data(), t.Ax.size())}, {"weighted_y", words(t.Ay.data(), t.Ay.size())}, {"weighted_z", words(t.Az.data(), t.Az.size())}, {"baseline", words(t.baseDensityMin.data(), t.baseDensityMin.size())}};
+        return {{"resolution", resolution}, {"medium", static_cast<unsigned>(medium.medium)}, {"sample_count", t.epsC.size()}, {"inv_yn", std::bit_cast<std::uint32_t>(t.invYn)}, {"has_baseline", !t.baseDensityMin.empty()}, {"range_min_cmy", words(medium.range.min_cmy, 3)}, {"inverse_span_cmy", words(medium.range.inv_max_cmy, 3)}, {"eps_c", words(t.epsC.data(), t.epsC.size())}, {"eps_m", words(t.epsM.data(), t.epsM.size())}, {"eps_y", words(t.epsY.data(), t.epsY.size())}, {"weighted_x", words(t.Ax.data(), t.Ax.size())}, {"weighted_y", words(t.Ay.data(), t.Ay.size())}, {"weighted_z", words(t.Az.data(), t.Az.size())}, {"baseline", words(t.baseDensityMin.data(), t.baseDensityMin.size())}};
     }
 
     FjScannerLutInput wire(const Literal& literal) {
@@ -43,7 +47,7 @@ namespace ScannerLutTest {
             return {v.empty() ? nullptr : v.data(), v.size()};
         };
         const auto& t = m.tables;
-        FjScannerLutInput out{span(t.epsC), span(t.epsM), span(t.epsY), span(t.Ax), span(t.Ay), span(t.Az), span(t.baseDensityMin), {}, {}, t.K, t.invYn, t.hasBaseline ? 1u : 0u, static_cast<std::uint32_t>(m.medium), literal.resolution};
+        FjScannerLutInput out{span(t.epsC), span(t.epsM), span(t.epsY), span(t.Ax), span(t.Ay), span(t.Az), span(t.baseDensityMin), {}, {}, literal.sampleCount, t.invYn, literal.hasBaseline ? 1u : 0u, static_cast<std::uint32_t>(m.medium), literal.resolution};
         std::copy_n(m.range.min_cmy, 3, out.range_min_cmy);
         std::copy_n(m.range.inv_max_cmy, 3, out.inverse_span_cmy);
         return out;
@@ -404,7 +408,7 @@ namespace ScannerLutTest {
             const auto as_span = [](FjFloatSpan values) {
                 return std::span<const float>(values.data, values.count);
             };
-            medium.tables = {as_span(tables.dyes_cmy[0]), as_span(tables.dyes_cmy[1]), as_span(tables.dyes_cmy[2]), as_span(tables.weighted_xyz[0]), as_span(tables.weighted_xyz[1]), as_span(tables.weighted_xyz[2]), as_span(tables.baseline_min), 81, tables.inv_yn, tables.has_baseline != 0};
+            medium.tables = {as_span(tables.dyes_cmy[0]), as_span(tables.dyes_cmy[1]), as_span(tables.dyes_cmy[2]), as_span(tables.weighted_xyz[0]), as_span(tables.weighted_xyz[1]), as_span(tables.weighted_xyz[2]), as_span(tables.baseline_min), tables.inv_yn};
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 medium.range.min_cmy[channel] = print ? view.scanner_bounds.minimum_cmy[channel] : -view.scanner_bounds.minimum_cmy[channel];
                 medium.range.inv_max_cmy[channel] = view.scanner_bounds.inv_span_cmy[channel];

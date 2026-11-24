@@ -211,14 +211,22 @@ namespace ScannerPostTest {
             auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView changed{};
             status(changedProduct.view(changed, error));
-            require(changed.scanner_post_effects.hash != initial.hash && changed.scanner_lut.hash == view.scanner_lut.hash, "post-only change preserves actual LUT descriptor dependency");
+            const auto spectral_words = [](const FjPreparedSpectralView& spectral) {
+                Json arrays = Json::array();
+                for (const auto span : {spectral.lambda_nm, spectral.illuminant, spectral.observer_xyz[0], spectral.observer_xyz[1], spectral.observer_xyz[2], spectral.weighted_xyz[0], spectral.weighted_xyz[1], spectral.weighted_xyz[2], spectral.dyes_cmy[0], spectral.dyes_cmy[1], spectral.dyes_cmy[2], spectral.baseline_min, spectral.baseline_mid}) {
+                    arrays.push_back(words(span.data, span.count));
+                }
+                return Json::array({std::bit_cast<std::uint32_t>(spectral.inv_yn), words(spectral.white_xyz, 3), spectral.has_baseline, spectral.illuminant_hash, spectral.hash, arrays});
+            };
+            require(changed.scanner_post_effects.hash != initial.hash && changed.scanner_hash == view.scanner_hash &&
+                        spectral_words(changed.scanner_tables) == spectral_words(view.scanner_tables),
+                    "post-only edit changes the post identity and preserves exact scanner spectral words and binding");
             controls.values.scanner_lens_blur_sigma_px = source.lens_blur_sigma_px;
             auto warmProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView warm{};
             status(warmProduct.view(warm, error));
             require(project(warm.scanner_post_effects) == project(initial), "warm route constructor preserves complete post identity");
             status(fj_test_scanner_post_fault(2));
-            status(fj_test_scanner_lut_descriptor_fault(1));
             const auto prepare = [&](std::optional<JuicerTestSupport::PreparedStateHold>& out, std::array<char, 2048>& text) {
                 FjErrorBuffer prepareError{text.data(), text.size(), 0};
                 return JuicerTestSupport::prepare_state(
@@ -227,19 +235,12 @@ namespace ScannerPostTest {
                     out,
                     prepareError);
             };
-            bool early = false;
             std::optional<JuicerTestSupport::PreparedStateHold> failedProduct;
             std::array<char, 2048> failureText{};
-            const FjStatus lutFailure = prepare(failedProduct, failureText);
-            early = lutFailure.category != FJ_STATUS_SUCCESS && !failedProduct;
-            require(early && std::string_view(failureText.data()).find("scanner") != std::string_view::npos, "early LUT failure reaches route");
-            require(early, "earlier route LUT failure preempts post constructor");
-            bool post = false;
-            failureText.fill('\0');
             const FjStatus postFailure = prepare(failedProduct, failureText);
-            post = postFailure.category == FJ_STATUS_INTERNAL_FAILURE && !failedProduct;
-            require(post && std::string_view(failureText.data()) == "asset boundary panic", "actual post failure retains typed timing and leaves later frame stages unbuilt");
-            require(post, "every warm route invocation visits post constructor");
+            require(postFailure.category == FJ_STATUS_INTERNAL_FAILURE && !failedProduct &&
+                        std::string_view(failureText.data()) == "asset boundary panic",
+                    "actual post failure retains typed timing and leaves later frame stages unbuilt");
             auto recoveredProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView recovered{};
             status(recoveredProduct.view(recovered, error));

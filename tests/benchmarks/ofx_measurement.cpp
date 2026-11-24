@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <type_traits>
 #include <vector>
@@ -26,6 +27,7 @@
 #include <psapi.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include "ofxCore.h"
@@ -353,6 +355,7 @@ namespace {
         int index = 0;
         OfxStatus status = kOfxStatFailed;
         std::uint64_t cpuNs = 0;
+        std::uint64_t completedNs = 0;
         float streamMs = 0.0f;
         double frameTime = 0.0;
         bool streamTimed = false;
@@ -398,7 +401,10 @@ namespace {
                     break;
             }
         }
-        return {{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"frame_time", sample.frameTime}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
+        Json record{{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"frame_time", sample.frameTime}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
+        if (sample.completedNs != 0)
+            record["completed_render_ns"] = sample.completedNs;
+        return record;
     }
     bool output_valid(const std::vector<float>& source, const std::vector<float>& initial, const std::vector<float>& output, const ofx_test::Case& test) {
         if (!ofx_test::canaries_preserved(initial, output, test) || !ofx_test::alpha_preserved(source, output, test))
@@ -439,9 +445,14 @@ namespace {
     struct Arguments {
         std::filesystem::path module, resources, output;
         std::string mode, lane, workload;
+        std::string tailRun, tailArm;
+        std::filesystem::path tailReady, tailRelease;
     };
+    bool tail_enabled(const Arguments& args) {
+        return !args.tailRun.empty();
+    }
     Arguments arguments(int argc, char** argv) {
-        require(argc == 13, "expected --mode --module --resources --lane --workload --output");
+        require(argc == 13 || argc == 21, "expected --mode --module --resources --lane --workload --output, optionally with the four tail settings");
         Arguments args;
         for (int i = 1; i < argc; i += 2) {
             const std::string_view key(argv[i]);
@@ -458,12 +469,86 @@ namespace {
                 args.resources = std::filesystem::absolute(value);
             else if (key == "--output")
                 args.output = value;
+            else if (key == "--tail-run")
+                args.tailRun = value;
+            else if (key == "--tail-arm")
+                args.tailArm = value;
+            else if (key == "--tail-ready")
+                args.tailReady = std::filesystem::absolute(value);
+            else if (key == "--tail-release")
+                args.tailRelease = std::filesystem::absolute(value);
             else
                 throw std::runtime_error("unknown measurement argument");
         }
         require((args.mode == "check" || args.mode == "measure") && (args.lane == "shipping" || args.lane == "observed"), "invalid mode or lane");
         require(std::filesystem::is_regular_file(args.module) && std::filesystem::is_directory(args.resources) && !args.output.empty(), "missing measurement input/output");
+        const bool anyTail = !args.tailRun.empty() || !args.tailArm.empty() || !args.tailReady.empty() || !args.tailRelease.empty();
+        require(!anyTail || (tail_enabled(args) && !args.tailArm.empty() && !args.tailReady.empty() && !args.tailRelease.empty()),
+                "tail settings must be supplied as run, arm, ready and release together");
+        if (anyTail) {
+            require(args.lane == "shipping", "tail rendezvous requires the shipping lane");
+            require(args.tailReady != args.tailRelease && args.tailReady != std::filesystem::absolute(args.output) &&
+                        args.tailRelease != std::filesystem::absolute(args.output),
+                    "tail rendezvous files must be distinct from each other and the measurement result");
+            require(!std::filesystem::exists(args.tailReady) && !std::filesystem::exists(args.tailRelease), "tail rendezvous path already exists");
+            require(!args.tailReady.parent_path().empty() && std::filesystem::is_directory(args.tailReady.parent_path()), "tail ready parent is missing");
+            require(!args.tailRelease.parent_path().empty() && std::filesystem::is_directory(args.tailRelease.parent_path()), "tail release parent is missing");
+        }
         return args;
+    }
+    std::uint64_t output_digest(const std::vector<float>& output) {
+        constexpr std::uint64_t offset = 0xcbf29ce484222325ULL;
+        constexpr std::uint64_t prime = 1099511628211ULL;
+        std::uint64_t digest = offset;
+        for (const float value : output) {
+            const auto bits = std::bit_cast<std::uint32_t>(value);
+            for (int shift = 0; shift < 32; shift += 8) {
+                digest ^= static_cast<std::uint8_t>(bits >> shift);
+                digest *= prime;
+            }
+        }
+        return digest;
+    }
+    std::uint64_t process_id() {
+#ifdef _WIN32
+        return static_cast<std::uint64_t>(GetCurrentProcessId());
+#else
+        return static_cast<std::uint64_t>(getpid());
+#endif
+    }
+    std::uint64_t render_thread_id() {
+#ifdef _WIN32
+        return static_cast<std::uint64_t>(GetCurrentThreadId());
+#else
+        return static_cast<std::uint64_t>(gettid());
+#endif
+    }
+    void write_ready_record(const std::filesystem::path& path, const Json& record) {
+        auto temporary = path;
+        temporary += ".tmp-" + std::to_string(process_id());
+        require(!std::filesystem::exists(temporary), "tail ready temporary already exists");
+        {
+            std::ofstream stream(temporary, std::ios::trunc);
+            require(static_cast<bool>(stream), "cannot open tail ready temporary");
+            stream << record.dump(2) << '\n';
+            stream.close();
+            require(static_cast<bool>(stream), "cannot write tail ready temporary");
+        }
+        std::filesystem::rename(temporary, path);
+    }
+    Json wait_for_release(const Arguments& args, std::uint64_t token) {
+        for (;;) {
+            std::ifstream stream(args.tailRelease);
+            if (stream) {
+                auto release = Json::parse(stream);
+                require(release.is_object() && release.at("run") == args.tailRun && release.at("arm") == args.tailArm &&
+                            release.at("pid") == process_id() && release.at("token") == token,
+                        "tail release refers to a different measured render");
+                require(release.at("action") == "release", "tail observer did not release the reporter");
+                return release;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
     void run(const Arguments& args, Json& report) {
         verify_output_guard();
@@ -623,7 +708,11 @@ namespace {
             host.clear_calls();
             require(sampleCount < samples.size(), "unexpected render beyond fixed sample storage");
             auto& sample = samples[sampleCount++];
-            if (g3) {
+            if (tail_enabled(args)) {
+                const double frame = static_cast<double>(sampleCount - 1);
+                host.set_property(host.action_args(), kOfxPropTime, {frame});
+                sample.frameTime = frame;
+            } else if (g3) {
                 const double offset = parts[7] == "half" ? 0.5 : 0.0;
                 const double frame = parts[6] == "unchanged" ? offset : (std::string_view(step.phase) == "warmup" || std::string_view(step.phase) == "cycle-warmup") ? step.index - 10.0 + offset
                                                                     : std::string_view(step.phase) == "warm"                                                         ? step.index + offset
@@ -650,8 +739,10 @@ namespace {
             sample.checked = step.readback;
             try {
                 cuda_check(streamStopStatus, "record stream stop");
-                driver_check(cuCtxGetCurrent(&after), "read context after Render");
                 cuda_check(cudaEventSynchronize(device.stop), "complete measured stream interval");
+                if (tail_enabled(args))
+                    sample.completedNs = nanoseconds(start, Clock::now());
+                driver_check(cuCtxGetCurrent(&after), "read context after Render");
                 cuda_check(cudaEventElapsedTime(&sample.streamMs, device.start, device.stop), "read stream interval");
                 sample.streamTimed = true;
                 sample.releasesValid = host.image_release_count(effect, "Source") == sourceReleases + 1 && host.image_release_count(effect, "Output") == destinationReleases + 1;
@@ -672,6 +763,83 @@ namespace {
                 const auto& outcome = report["renders"].back().at("construction").at("outcome");
                 require(outcome == (step.expect_construction ? "success" : "reused"), "missing, unexpected or unpaired construction span");
             }
+        };
+        auto run_tail = [&](OfxImageEffectHandle effect) {
+            const std::uint64_t ordinal = sampleCount - 1;
+            const double frame = static_cast<double>(ordinal);
+            const auto& last = samples[ordinal];
+            require(std::string_view(last.phase) == "warm" && last.cycle == 0 && last.frameTime == frame &&
+                        last.status == kOfxStatOK && last.checked && last.outputValid && last.releasesValid &&
+                        last.contextPreserved && last.completedNs != 0 && !host.callback_error(),
+                    "tail requires the valid final timed render");
+            CUcontext context = nullptr;
+            driver_check(cuCtxGetCurrent(&context), "read tail context");
+            const auto stopQuery = cudaEventQuery(device.stop);
+            cuda_check(stopQuery, "query completed tail event");
+            const auto* instanceData = host.instance_data(effect);
+            require(instanceData != nullptr && context != nullptr, "tail render owner or context is missing");
+            int deviceOrdinal = -1;
+            cuda_check(cudaGetDevice(&deviceOrdinal), "read tail device ordinal");
+            const Json ready{{"schema", 1},
+                             {"run", args.tailRun},
+                             {"arm", args.tailArm},
+                             {"pid", process_id()},
+                             {"render_thread", render_thread_id()},
+                             {"effect", reinterpret_cast<std::uintptr_t>(effect)},
+                             {"instance_data", reinterpret_cast<std::uintptr_t>(instanceData)},
+                             {"ordinal", ordinal},
+                             {"time", frame},
+                             {"time_bits", std::bit_cast<std::uint64_t>(frame)},
+                             {"token", ordinal},
+                             {"device_ordinal", deviceOrdinal},
+                             {"context", reinterpret_cast<std::uintptr_t>(context)},
+                             {"stream", reinterpret_cast<std::uintptr_t>(device.stream)},
+                             {"stop_event", reinterpret_cast<std::uintptr_t>(device.stop)},
+                             {"stop_status", stopQuery},
+                             {"render_status", last.status},
+                             {"callback_error", host.callback_error()},
+                             {"output_guard_valid", last.outputValid},
+                             {"releases_valid", last.releasesValid},
+                             {"source_releases", host.image_release_count(effect, "Source")},
+                             {"destination_releases", host.image_release_count(effect, "Output")},
+                             {"output_digest", output_digest(output)}};
+            write_ready_record(args.tailReady, ready);
+            const auto release = wait_for_release(args, ordinal);
+            report["tail_ready"] = ready;
+            CUcontext reporterContext = nullptr;
+            driver_check(cuCtxGetCurrent(&reporterContext), "read reporter context");
+            require(reporterContext == context && host.instance_data(effect) == instanceData, "tail reporter lost its owner or CUDA context");
+
+            cuda_check(cudaMemcpyAsync(device.destination, initial.data(), bytes, cudaMemcpyHostToDevice, device.stream), "reset reporter destination");
+            cuda_check(cudaStreamSynchronize(device.stream), "finish reporter destination reset");
+            const auto sourceReleases = host.image_release_count(effect, "Source");
+            const auto destinationReleases = host.image_release_count(effect, "Output");
+            host.clear_calls();
+            const auto reporterToken = ordinal + 1;
+            host.set_property(host.action_args(), kOfxPropTime, {static_cast<double>(reporterToken)});
+            const auto reporterStatus = lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args());
+            cuda_check(cudaEventRecord(device.stop, device.stream), "record reporter stop");
+            cuda_check(cudaEventSynchronize(device.stop), "complete reporter stream interval");
+            cuda_check(cudaMemcpy(output.data(), device.destination, bytes, cudaMemcpyDeviceToHost), "read reporter output");
+            const bool reporterOutputValid = output_valid(source, initial, output, test);
+            const bool reporterReleasesValid = host.image_release_count(effect, "Source") == sourceReleases + 1 &&
+                                               host.image_release_count(effect, "Output") == destinationReleases + 1;
+            CUcontext reporterAfter = nullptr;
+            driver_check(cuCtxGetCurrent(&reporterAfter), "read CUDA context after reporter");
+            require(reporterStatus == kOfxStatOK && !host.callback_error() && reporterOutputValid && reporterReleasesValid &&
+                        reporterAfter == context && host.instance_data(effect) == instanceData,
+                    "tail reporter failed");
+            report["tail_reporter"] = {{"release", release},
+                                       {"token", reporterToken},
+                                       {"time", static_cast<double>(reporterToken)},
+                                       {"status", reporterStatus},
+                                       {"output_guard_valid", reporterOutputValid},
+                                       {"releases_valid", reporterReleasesValid},
+                                       {"output_digest", output_digest(output)},
+                                       {"stream", reinterpret_cast<std::uintptr_t>(device.stream)},
+                                       {"context", reinterpret_cast<std::uintptr_t>(reporterContext)},
+                                       {"effect", reinterpret_cast<std::uintptr_t>(effect)},
+                                       {"instance_data", reinterpret_cast<std::uintptr_t>(instanceData)}};
         };
         const int warmups = check ? 1 : 10, measured = check ? 1 : 30;
         for (int cycle = 0; cycle < (g3 ? 1 : 3); ++cycle) {
@@ -755,6 +923,8 @@ namespace {
             if (cycle == 0) {
                 for (int i = 0; i < measured; ++i)
                     render(effect, {.phase = "warm", .cycle = cycle, .index = i, .readback = i == measured - 1});
+                if (tail_enabled(args))
+                    run_tail(effect);
                 endpoint("after-sample", cycle, measured);
                 if (!g3) {
                     constexpr std::array<double, 3> gamma{1.1, 1.0, 1.1};
