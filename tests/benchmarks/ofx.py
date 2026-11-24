@@ -2294,10 +2294,6 @@ def scanner_paired(args):
         raise ValueError("single-arm observation only applies in check mode")
     if args.nsys and args.mode != "check":
         raise ValueError("CUDA profiling requires check mode")
-    if args.read_cubic_grid and any(
-        SCANNER_PAIRED_ROWS[row][1:3] != ("direct", "materialized") for row in args.workloads
-    ):
-        raise ValueError("cubic grid readback requires a materialized Direct row")
     if (args.capture_density or args.held_density) and (
         args.mode != "check" or args.workloads != ["preview-negative-direct-film-v1-full-36"]
     ):
@@ -2507,6 +2503,11 @@ def scanner_paired(args):
                             raise ValueError("driver did not bind the requested Preview fixture")
                         if args.read_cubic_grid and arm == "cubic":
                             item["cubic_grid"] = tail["frames"][0]["cubic_grid"]
+                            if (
+                                variant == "ordinary"
+                                and item["cubic_grid"]["grid"] != host["scanner_paired"]["authored_grid"]
+                            ):
+                                raise ValueError("ordinary cubic launched with a different grid from the authored grid")
                         if carrier or args.capture_density:
                             reporter = tail["frames"][0]
                             density = reporter["density"]
@@ -2674,7 +2675,7 @@ def main():
     command.add_argument("--check-arm", choices=("spectral", "cubic"), help="qualify one held tail in check mode")
     command.add_argument("--nsys", type=Path, help="retain a separate Nsight Systems CUDA attribution trace")
     command.add_argument(
-        "--read-cubic-grid", action="store_true", help="read the Direct materialized cube at reporter launch"
+        "--read-cubic-grid", action="store_true", help="read the actual cubic grid and buffers at reporter launch"
     )
     density = command.add_mutually_exclusive_group()
     density.add_argument("--capture-density", action="store_true", help="capture the reporter's unmodified density")

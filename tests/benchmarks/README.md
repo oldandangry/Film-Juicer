@@ -45,7 +45,10 @@ tightly packed RGB raster with `preview_material.path` and
 backend selector. The driver leaves both arms' OFX tokens natural.
 
 `--read-cubic-grid` reads the six buffer bindings and effective grid at the
-materialized Direct reporter launch. For the Full 36 mm Direct Preview row,
+reporter launch. For an archived module without native payload type information,
+the matching-symbol manifest can provide each route's compiled `cubic_scan_stage`
+offset under the arm's `layout`. The ordinary reader also requires the effective
+grid to equal the authored grid. For the Full 36 mm Direct Preview row,
 `--capture-density` saves the reporter's exact planar Float32 C/M/Y, and
 `--held-density <raster>` stages and verifies those words on each arm's supplied
 stream before its reporter reaches the real scanner kernel. The held comparison

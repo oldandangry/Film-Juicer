@@ -307,23 +307,33 @@ def typed_field(value_type, name):
     return fields[0]
 
 
-def direct_scan_payload(frame):
-    params_type = frame.GetModule().FindFirstType("JuicerCuda::DirectPipelineRunParams")
+def scan_payload(frame, params_name):
+    params_type = frame.GetModule().FindFirstType(f"JuicerCuda::{params_name}PipelineRunParams")
     scan = typed_field(params_type, "scanStage")
     return argument(frame, 0) + scan.GetOffsetInBytes(), scan.GetType()
 
 
-def read_cubic_grid(frame):
-    payload, payload_type = direct_scan_payload(frame)
-    grid = read(frame, payload + typed_field(payload_type, "scanLutRes").GetOffsetInBytes(), 4)
+def read_cubic_grid(frame, params_name):
     nodes = ("Log2PchipXYZ", "PchipSlopeC", "PchipSlopeM", "PchipSlopeY")
     cells = ("PchipCellMin", "PchipCellMax")
-    pointers = {
-        name: read(frame, payload + typed_field(payload_type, f"scanLut{name}").GetOffsetInBytes())
-        for name in (*nodes, *cells)
-    }
+    names = (*nodes, *cells)
+    archived_offsets = settings["layout"].get("cubic_scan_stage")
+    if archived_offsets is None:
+        payload, payload_type = scan_payload(frame, params_name)
+        grid_offset = typed_field(payload_type, "scanLutRes").GetOffsetInBytes()
+        buffer_offsets = [typed_field(payload_type, f"scanLut{name}").GetOffsetInBytes() for name in names]
+    else:
+        stage_offset = archived_offsets[params_name.lower()]
+        if type(stage_offset) is not int or stage_offset < 0 or stage_offset % 8 != 0:
+            raise RuntimeError("archived scan stage offset must be an aligned byte offset")
+        payload = argument(frame, 0) + stage_offset
+        # The archived x64 ScanStagePayload starts with six pointers and the grid.
+        grid_offset = 8 * len(names)
+        buffer_offsets = range(0, grid_offset, 8)
+    grid = read(frame, payload + grid_offset, 4)
+    pointers = {name: read(frame, payload + offset) for name, offset in zip(names, buffer_offsets, strict=True)}
     if grid < 2 or not all(pointers.values()) or len(set(pointers.values())) != len(pointers):
-        raise RuntimeError("materialized cubic scanner did not bind six distinct buffers and a valid grid")
+        raise RuntimeError("cubic scanner did not bind six distinct buffers and a valid grid")
     return {
         "grid": grid,
         "node_dimensions": [grid] * 3,
@@ -343,7 +353,7 @@ def observe_direct_density(frame, draw):
     addresses = [argument(frame, first_plane + lane) for lane in range(3)]
     if (width, height) != (4832, 2016) or argument(frame, first_plane + 6) or len(set(addresses)) != 3:
         raise RuntimeError("Direct scanner density observer requires a clear Full image with three distinct planes")
-    payload, payload_type = direct_scan_payload(frame)
+    payload, payload_type = scan_payload(frame, "Direct")
     correction = read(frame, payload + typed_field(payload_type, "correctionActive").GetOffsetInBytes(), 4)
     glare = read(frame, payload + typed_field(payload_type, "glarePercent").GetOffsetInBytes())
     if correction or glare:
@@ -388,7 +398,7 @@ def on_entry(frame, location, _):
             draw["launches"].append(settings["scanner_schedule"])
             record(operation, index=draw["index"], entry=settings["scanner_schedule"])
             if settings.get("cubic_grid"):
-                draw["cubic_grid"] = read_cubic_grid(frame)
+                draw["cubic_grid"] = read_cubic_grid(frame, "Print" if draw["route"] == 1 else "Direct")
                 record("cubic_grid", index=draw["index"], **draw["cubic_grid"])
             if settings.get("observe_density"):
                 observe_direct_density(frame, draw)
