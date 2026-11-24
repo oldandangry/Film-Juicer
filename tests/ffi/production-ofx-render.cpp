@@ -878,6 +878,7 @@ namespace {
         DeviceBuffers device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create preview stream");
         Json routes = Json::array();
+        bool allPassed = true;
         for (const auto& test : kGrainPreviewCases) {
             JuicerTests::CaseEvent event("grain-preview-render", test.id);
             auto* effect = host.create_effect();
@@ -1582,7 +1583,7 @@ namespace {
         // Keep the verified subcases of both routes in the staged CTest receipt.
         std::cout << "CTEST_FULL_OUTPUT\n";
         std::cout << Json{{"schema", "grain-preview-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
-        return std::cout ? 0 : 1;
+        return allPassed && std::cout ? 0 : 1;
     }
 
     const char* replay_type(ofx_test::InstanceParamKind kind) {
