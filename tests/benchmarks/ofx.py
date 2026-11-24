@@ -1867,8 +1867,11 @@ def scanner_debugger_environment(command, environment, inputs):
     debugger_environment = inputs.get("debugger_environment", {})
     if set(debugger_environment) - {"PATH", "PYTHONHOME"}:
         raise ValueError("unsupported scanner debugger environment")
-    if os.name != "nt" or not debugger_environment:
-        return command, {**environment, **debugger_environment}
+    if os.name != "nt":
+        # The manifest pins local symbols. Distribution init files can enable remote lookup.
+        return [command[0], "--no-lldbinit", *command[1:]], {**environment, **debugger_environment}
+    if not debugger_environment:
+        return command, environment
 
     # The Python version embedded in LLDB does not own the process supervisor.
     def quote(value):
