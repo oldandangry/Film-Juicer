@@ -1780,7 +1780,7 @@ def scanner_capacity(args):
         _, built, staged = qualification.production_module_paths(args.preset, configuration)
         module = Path(staged).resolve(strict=True)
         resources = (module.parent.parent / "Resources").resolve(strict=True)
-        driver = qualification.prepared_render_probe_path(args.preset, built)
+        driver = Path(qualification.prepared_render_probe_path(args.preset, built)).resolve(strict=True)
         debugger = Path(inputs["debugger"]).resolve(strict=True)
         symbols = Path(inputs["symbols"]).resolve(strict=True) if os.name == "nt" else module
         files = {"module": module, "symbols": symbols, "driver": driver, "debugger": debugger, "observer": observer}

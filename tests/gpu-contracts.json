@@ -295,9 +295,10 @@
       ]
     },
     "Ffi.Gpu.PreparedStateLifetime": {
-      "listed": 31,
-      "terminal": 333,
+      "listed": 32,
+      "terminal": 334,
       "required": [
+        ["state_lifetime", "negative-print/spectral-packet-overlap"],
         [
           "production-state-contract",
           "negative-direct/cold"

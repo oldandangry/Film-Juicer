@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare supplied production OFX modules with active legacy halation defaults."""
+"""Compare supplied production OFX modules in the native host without installing."""
 
 from __future__ import annotations
 
@@ -201,15 +201,74 @@ def compare_frame(directory, frame):
     }
 
 
+def scanner_frame_input(path):
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    require(manifest["schema"] == "juicer-native-scanner-frame-v1", "native scanner frame schema")
+    name = manifest["source_file"]
+    require(Path(name).name == name, "native scanner source must accompany the manifest")
+    source = path.parent / name
+    require(execution.digest(source) == manifest["source_sha256"], "native scanner frame source identity")
+    return {"path": str(path), "sha256": execution.digest(path), "source_sha256": manifest["source_sha256"]}
+
+
+def compare_scanner_frame(directory, frame):
+    manifest = json.loads(frame.read_text(encoding="utf-8"))
+    image = manifest["output"]
+    x1, y1, x2, y2 = image["bounds"]
+    require(manifest["action"]["render_window"] == image["bounds"], "native scanner comparison requires a full frame")
+    require(image["components"] == "OfxImageComponentRGB", "native scanner frame requires RGB")
+    shape = (y2 - y1, x2 - x1, 3)
+    reports = {side: json.loads((directory / side / "replay.json").read_text()) for side in SIDES}
+    for side, report in reports.items():
+        require(report["context_restored"] and report["schema"] == "juicer-ofx-replay-v1", "native replay completion")
+        require(report["cubic_grid"] == (17 if side == "reference" else None), "native scanner method identity")
+        require([row["pass"] for row in report["rows"]] == ["cold", "warm"], "native replay membership")
+        require(
+            all(row["status"] == 0 and row["source_preserved"] and row["stream_completed"] for row in report["rows"]),
+            "native scanner replay terminal status",
+        )
+        require(
+            compare_pixels(directory / side / "cold.f32", directory / side / "warm.f32", shape)["bit_identical"],
+            f"{side} grain-off native replay output changed on warm render",
+        )
+    require(reports["reference"]["parameters"] == reports["candidate"]["parameters"], "native scanner controls differ")
+    files = {side: directory / side / "cold.f32" for side in SIDES}
+    pixels = {side: np.memmap(path, dtype="<f4", mode="r", shape=shape) for side, path in files.items()}
+    channels = []
+    for channel in range(3):
+        cubic, spectral = (pixels[side][..., channel] for side in SIDES)
+        delta = np.abs(spectral.astype(np.float64) - cubic)
+        flat = int(delta.argmax())
+        y, x = divmod(flat, shape[1])
+        rank = (999 * delta.size + 999) // 1000 - 1
+        channels.append(
+            {
+                "channel": channel,
+                "mae": float(delta.mean()),
+                "p999": float(np.partition(delta.ravel(), rank)[rank]),
+                "max": float(delta[y, x]),
+                "worst_xy": [x + x1, y + y1],
+                "cubic": float(cubic[y, x]),
+                "spectral": float(spectral[y, x]),
+            }
+        )
+    return {
+        "status": "passed",
+        "measurement_only": True,
+        "shape": list(shape),
+        "channels": channels,
+        "parameters": reports,
+    }
+
+
 def run(args):
     preset = "windows-clang-release" if os.name == "nt" else "linux-release"
     build = ROOT / "out/build" / preset
     directory = ROOT / "out/validation" / preset / "results" / execution.name_component(args.run_id)
     with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT):
         cache = verify.cache_values(build)
-        require(
-            cache["BUILD_TESTING"] == "OFF" and cache["CMAKE_BUILD_TYPE"] == "Release", "probe requires Release OFF"
-        )
+        require(cache["CMAKE_BUILD_TYPE"] == "Release", "probe requires Release")
+        require(args.scanner_frame or cache["BUILD_TESTING"] == "OFF", "legacy probe requires testing OFF")
         probe = (
             build
             / "tests/bin"
@@ -248,8 +307,11 @@ def run(args):
             "build_type": cache["CMAKE_BUILD_TYPE"],
         }
         frame = args.frame.resolve(strict=True) if args.frame else None
+        scanner_frame = args.scanner_frame.resolve(strict=True) if args.scanner_frame else None
         if frame:
             inputs["frame"] = {"path": str(frame), "members": inventory(frame)}
+        if scanner_frame:
+            inputs["scanner_frame"] = scanner_frame_input(scanner_frame)
         overrides = args.parameter_overrides.resolve(strict=True) if args.parameter_overrides else None
         require(overrides is None or frame is not None, "parameter overrides require a frame capture")
         if overrides:
@@ -286,10 +348,21 @@ def run(args):
                 command = [str(probe), "--halation-capture", str(modules[side]), str(directory / side)]
                 if frame:
                     command = [str(probe), "--frame-replay", str(modules[side]), str(frame), str(directory / side)]
+                if scanner_frame:
+                    command = [
+                        str(probe),
+                        "--native-scanner-frame",
+                        str(modules[side]),
+                        str(scanner_frame),
+                        str(directory / side),
+                    ]
                 if overrides:
                     command.extend(["--parameters", str(overrides)])
                 owner.command(side, command, env=environment)
-            comparison = compare_frame(directory, frame) if frame else compare_captures(directory)
+            if scanner_frame:
+                comparison = compare_scanner_frame(directory, scanner_frame)
+            else:
+                comparison = compare_frame(directory, frame) if frame else compare_captures(directory)
             execution.write_json(directory / "comparison.json", comparison)
             require(comparison["status"] == "passed", "module output differs; see comparison.json")
             result["status"] = "passed"
@@ -304,12 +377,21 @@ def run(args):
                 inventory(module.parent.parent) == before[side] for side, module in modules.items()
             )
             result["frame_unchanged"] = frame is None or inventory(frame) == inputs["frame"]["members"]
+            result["scanner_frame_unchanged"] = (
+                scanner_frame is None or scanner_frame_input(scanner_frame) == inputs["scanner_frame"]
+            )
             result["overrides_unchanged"] = (
                 overrides is None or execution.digest(overrides) == inputs["parameter_overrides"]["sha256"]
             )
             if not all(
                 result[key]
-                for key in ("harness_unchanged", "bundles_unchanged", "frame_unchanged", "overrides_unchanged")
+                for key in (
+                    "harness_unchanged",
+                    "bundles_unchanged",
+                    "frame_unchanged",
+                    "scanner_frame_unchanged",
+                    "overrides_unchanged",
+                )
             ):
                 result.update(status="failed", error="consumed inputs changed")
             result["members"] = inventory(directory)
@@ -348,6 +430,13 @@ def collect(directory):
         frame = Path(inputs["frame"]["path"])
         require(inventory(frame) == inputs["frame"]["members"] and result["frame_unchanged"], "frame identity")
         comparison = compare_frame(directory, frame)
+    elif "scanner_frame" in inputs:
+        scanner_frame = Path(inputs["scanner_frame"]["path"])
+        require(
+            scanner_frame_input(scanner_frame) == inputs["scanner_frame"] and result["scanner_frame_unchanged"],
+            "native scanner frame identity",
+        )
+        comparison = compare_scanner_frame(directory, scanner_frame)
     else:
         comparison = compare_captures(directory)
     require(comparison == json.loads((directory / "comparison.json").read_text()), "comparison changed")
@@ -361,7 +450,9 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     capture = modes.add_parser("run", help="GPU: compare two supplied module identities without installing")
     capture.add_argument("--run-id", required=True)
-    capture.add_argument("--frame", type=Path, help="replay a retained actual OFX frame capture")
+    frames = capture.add_mutually_exclusive_group()
+    frames.add_argument("--frame", type=Path, help="replay a retained actual OFX frame capture")
+    frames.add_argument("--scanner-frame", type=Path, help="compare an explicitly authored grain-off native OFX frame")
     capture.add_argument(
         "--parameter-overrides", type=Path, help="explicit counterfactual values; capture remains immutable"
     )

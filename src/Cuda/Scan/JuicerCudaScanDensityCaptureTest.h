@@ -44,3 +44,9 @@ namespace JuicerCuda::ScanDensityCaptureTest {
 } // namespace JuicerCuda::ScanDensityCaptureTest
 
 #endif
+
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+namespace JuicerCuda::RenderTest {
+    void hold_scan_consumer(void* stream);
+}
+#endif

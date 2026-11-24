@@ -6,6 +6,9 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+#include <vector>
+#endif
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -99,6 +102,10 @@ namespace JuicerCuda {
         void before_abort_query();
         void observe_film_proxy_reservation() noexcept;
         struct PrintLaunchObservation {
+            struct PaperLane {
+                std::uintptr_t address = 0;
+                std::vector<std::uint32_t> words;
+            };
             bool valid = false;
             std::uintptr_t filmDensityC = 0;
             std::uintptr_t filmDensityM = 0;
@@ -121,6 +128,10 @@ namespace JuicerCuda {
             std::array<float, 81> preflashLight{};
             std::array<float, 81> filmBaseWords{};
             std::array<float, 243> filmDyes{};
+            std::array<PaperLane, 7> paperTables;
+            std::uint64_t glareSeed = 0;
+            unsigned glareLaunchCount = 0;
+            std::vector<float> glareField;
         };
         void set_print_launch_observer(PrintLaunchObservation* observation) noexcept;
         void observe_print_launch(const PrintPreparedView& prepared, const PrintExposePayload& expose);

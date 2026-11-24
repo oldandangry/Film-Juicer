@@ -1987,6 +1987,9 @@ namespace {
         dim3 blocks,
         dim3 threads,
         cudaStream_t stream) {
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        JuicerCuda::RenderTest::hold_scan_consumer(stream);
+#endif
         if (carrier.redSensitive || carrier.greenSensitive || carrier.blueSensitive) {
             if (!carrier.redSensitive || !carrier.greenSensitive || !carrier.blueSensitive ||
                 carrier.rowStrideFloats < static_cast<std::size_t>(params.width)) {

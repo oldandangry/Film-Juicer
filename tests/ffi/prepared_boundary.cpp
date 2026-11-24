@@ -341,6 +341,33 @@ namespace JuicerCudaTest {
         }
         const auto submissionDigests = JuicerCuda::ResourceManager::make_key_digests(state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash);
         const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, submissionDigests.uploadCoreHash, submissionDigests.dirHash, submissionDigests.scannerHash, submissionDigests.autoExposureHash};
+        if (lifetime && lifetimeCase == StateLifetimeCase::SpectralPacketOverlap) {
+            auto alternate = params;
+            alternate.print_key = "fujifilm_crystal_archive_typeii";
+            const auto alternateOwner = prepare_state(runtime.assets, alternate, status, diagnostic);
+            if (status.category != FJ_STATUS_SUCCESS)
+                return false;
+            FjPreparedStateView other{};
+            if (alternateOwner->view(other, error).category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(message.data(), error.length);
+                return false;
+            }
+            if (state.route != static_cast<unsigned>(Spektrafilm::ScanRoute::NegativePrintScan) ||
+                other.route != state.route || other.dir_recipe.hash != dir.hash || other.film_profile_asset_version != state.film_profile_asset_version ||
+                other.print_profile_asset_version == state.print_profile_asset_version) {
+                diagnostic = "overlapping scanner packets require a distinct paper on the same capture film";
+                return false;
+            }
+            FjPreparedHostData otherPrepared{};
+            bind_state(other, otherPrepared);
+            otherPrepared.spatial_dir = prepared.spatial_dir;
+            otherPrepared.auto_exposure = prepared.auto_exposure;
+            const auto otherDigests = JuicerCuda::ResourceManager::make_key_digests(other.upload_core_hash, other.dir_recipe.hash, other.scanner_hash, meter.hash);
+            const FjSubmission otherSubmission{instanceToken, submission.frame_token + 1, 1, otherDigests.uploadCoreHash, otherDigests.dirHash, otherDigests.scannerHash, otherDigests.autoExposureHash};
+            const std::array packets{BoundScannerPacket{prepared, submission}, BoundScannerPacket{otherPrepared, otherSubmission}};
+            check_spectral_packet_overlap(runtime.cuda, context, frame, packets);
+            return true;
+        }
         const auto invocationContext = std::string("held-route-") + std::to_string(state.route) + "-instance-" + std::to_string(instanceToken) +
                                        "-frame-" + std::to_string(submission.frame_token) + "-contract-" + (contract ? "yes" : "no") +
                                        "-lifetime-" + (lifetime ? "yes" : "no") + "-case-" + std::to_string(static_cast<unsigned>(lifetimeCase));
@@ -379,7 +406,27 @@ namespace JuicerCudaTest {
             const auto alternateDigests = JuicerCuda::ResourceManager::make_key_digests(
                 alternateState.upload_core_hash, alternateState.dir_recipe.hash, alternateState.scanner_hash, meter.hash);
             const FjSubmission alternateSubmission{instanceToken, submission.frame_token, submission.submission_id, alternateDigests.uploadCoreHash, alternateDigests.dirHash, alternateDigests.scannerHash, alternateDigests.autoExposureHash};
-            check_scan_readback(runtime.cuda, context, frame, alternateSubmission, alternate, receiver ? ReadbackProbe::FusedDir : ReadbackProbe::Plane);
+
+            auto reporterParams = alternateParams;
+            reporterParams.values.dir_couplers.active = false;
+            reporterParams.film_key = receiver ? "fujifilm_velvia_100" : "kodak_ektar_100";
+            if (Spektrafilm::scan_route_is_print(route))
+                reporterParams.print_key = "fujifilm_crystal_archive_typeii";
+            const auto reporterOwner = prepare_state(runtime.assets, reporterParams, status, diagnostic);
+            if (status.category != FJ_STATUS_SUCCESS)
+                return false;
+            FjPreparedStateView reporterState{};
+            if (reporterOwner->view(reporterState, error).category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(message.data(), error.length);
+                return false;
+            }
+            BoundScannerPacket reporter{};
+            bind_state(reporterState, reporter.prepared);
+            reporter.prepared.auto_exposure = prepared.auto_exposure;
+            const auto reporterDigests = JuicerCuda::ResourceManager::make_key_digests(
+                reporterState.upload_core_hash, reporterState.dir_recipe.hash, reporterState.scanner_hash, meter.hash);
+            reporter.submission = {instanceToken, submission.frame_token + 1, 1, reporterDigests.uploadCoreHash, reporterDigests.dirHash, reporterDigests.scannerHash, reporterDigests.autoExposureHash};
+            check_scan_readback(runtime.cuda, context, frame, alternateSubmission, alternate, receiver ? ReadbackProbe::FusedDir : ReadbackProbe::Plane, &reporter);
         }
         if (lifetime)
             check_prepared_state_lifetime(owner, runtime.assets, runtime.cuda, context, frame, submission, prepared, &error, lifetimeCase);
@@ -521,6 +568,13 @@ namespace JuicerCudaTest {
                 if (observePrint) {
                     JuicerCuda::RenderTest::complete_print_launch_observation(printLaunch, frame.stream);
                     printLaunch.printCyanTap = printCapture->print_cyan();
+                    const auto& glare = printCapture->glare_launch();
+                    printLaunch.glareSeed = glare.seed;
+                    printLaunch.glareLaunchCount = glare.count;
+                    if (glare.count) {
+                        const auto field = ofx_test::scan_glare_field(printCapture->read());
+                        printLaunch.glareField.assign(field.begin(), field.end());
+                    }
                     const auto& print = state.print;
                     if (!printLaunch.valid || printLaunch.spectralSampleCount != 81 || printLaunch.filmDensityHash == 0 ||
                         printLaunch.profileTablesHash == 0 || printLaunch.mainIlluminantHash == 0 ||
@@ -795,12 +849,12 @@ namespace JuicerCudaTest {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const auto runtime = owner.borrow();
-        const auto reload = [&](const std::string& document) {
-            std::ofstream output(profile, std::ios::binary | std::ios::trunc);
+        const auto reload = [&](const std::filesystem::path& path, const std::string& document) {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
             output.write(document.data(), static_cast<std::streamsize>(document.size()));
             output.close();
             require(static_cast<bool>(output) && fj_test_assets_release_cached_payloads(runtime.assets, nullptr).category == FJ_STATUS_SUCCESS,
-                    "refresh actual Assets after the disposable film edit");
+                    "refresh actual Assets after the disposable profile edit");
         };
         auto controls = sourceParams;
         controls.values.spectral_upsampling_mode = 0;
@@ -835,6 +889,9 @@ namespace JuicerCudaTest {
         struct Sample {
             Observation launch;
             std::array<float, stride * height> output{};
+            std::uint64_t paperVersion = 0;
+            std::uint64_t scannerBinding = 0;
+            std::uint64_t glareHash = 0;
         };
         const auto render = [&](const JuicerTestSupport::PreparedStateHold& product) {
             FjPreparedStateView state{};
@@ -855,6 +912,22 @@ namespace JuicerCudaTest {
             std::string detail;
             const bool rendered = execute_boundary(runtime, product, frame, snapshot, detail, "negative-print/shipping-preflash", false, nullptr, &sample.launch);
             require(rendered, detail);
+            const auto require_paper_lane = [&](std::size_t lane, FjFloatSpan span, std::size_t stride, std::size_t channel) {
+                const auto& device = sample.launch.paperTables[lane];
+                require(device.address != 0 && device.words.size() == span.count / stride, "prepared Print paper lane shape differs on device");
+                for (std::size_t index = 0; index < device.words.size(); ++index) {
+                    require(device.words[index] == std::bit_cast<std::uint32_t>(span.data[index * stride + channel]),
+                            "prepared Print paper lane differs from the held Float32 words");
+                }
+            };
+            require_paper_lane(0, state.print.log_exposure, 1, 0);
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                require_paper_lane(1 + channel, state.print.density_cmy, 3, channel);
+                require_paper_lane(4 + channel, state.print.sensitivity_cmy, 3, channel);
+            }
+            sample.paperVersion = state.print_profile_asset_version;
+            sample.scannerBinding = snapshot.keyDigests.scannerHash;
+            sample.glareHash = state.print.glare_hash;
             require(cudaMemcpy(sample.output.data(), buffers.destination, sizeof(sample.output), cudaMemcpyDeviceToHost) == cudaSuccess,
                     "read completed shipping preflash output");
             for (std::size_t word = 0; word < sample.output.size(); ++word) {
@@ -874,9 +947,9 @@ namespace JuicerCudaTest {
         {
             const auto heldA = prepare();
             const auto a = render(heldA);
-            reload(edited.dump());
+            reload(profile, edited.dump());
             const auto b = render(prepare());
-            reload(original);
+            reload(profile, original);
             const auto restored = render(prepare());
             const auto raw_words = [](const Observation& launch) {
                 std::array<std::uint32_t, 3> words{};
@@ -909,6 +982,80 @@ namespace JuicerCudaTest {
                         same_words(a.launch.filmDyes, b.launch.filmDyes) && same_words(a.launch.filmDyes, restored.launch.filmDyes) &&
                         std::memcmp(a.output.data(), restored.output.data(), sizeof(a.output)) == 0,
                     "shipping preflash did not restore the exact film base and guarded A output");
+            const auto paperProfile = root / "profiles/kodak_portra_endura.json";
+            std::ifstream paperInput(paperProfile, std::ios::binary);
+            require(static_cast<bool>(paperInput), "open disposable Portra Endura paper profile");
+            const std::string originalPaper{std::istreambuf_iterator<char>(paperInput), {}};
+            paperInput.close();
+            auto viewedPaper = json::parse(originalPaper);
+            auto& illuminant = viewedPaper.at("info").at("viewing_illuminant");
+            require(illuminant == "D50", "the held paper viewing control starts at D50");
+            illuminant = "D65";
+            controls.values.glare_active = true;
+            const auto heldViewingA = prepare();
+            const auto viewingA = render(heldViewingA);
+            reload(paperProfile, viewedPaper.dump());
+            const auto viewingB = render(prepare());
+            reload(paperProfile, originalPaper);
+            const auto viewingRestored = render(prepare());
+            require(viewingA.paperVersion != viewingB.paperVersion && viewingRestored.paperVersion == viewingA.paperVersion &&
+                        viewingA.scannerBinding != viewingB.scannerBinding && viewingRestored.scannerBinding == viewingA.scannerBinding &&
+                        viewingA.output != viewingB.output && viewingRestored.output == viewingA.output,
+                    "viewing-only profile edit changes the admitted scan and restores the guarded A pixels");
+            for (const auto* changed : {&viewingB, &viewingRestored}) {
+                const auto& before = viewingA.launch;
+                const auto& after = changed->launch;
+                require(before.profileTablesHash == after.profileTablesHash && before.filmDensityHash == after.filmDensityHash &&
+                            before.filmDensityC == after.filmDensityC && before.filmDensityM == after.filmDensityM &&
+                            before.filmDensityY == after.filmDensityY && before.filmBase == after.filmBase &&
+                            same_words(before.filmDyes, after.filmDyes) && same_words(before.filmBaseWords, after.filmBaseWords) &&
+                            same_lights(before, after) && after.uploads.print == TransferCount{},
+                        "viewing-only edit retains the native Print keys and device words with zero calls and bytes");
+                for (std::size_t lane = 0; lane < before.paperTables.size(); ++lane) {
+                    require(before.paperTables[lane].address == after.paperTables[lane].address &&
+                                before.paperTables[lane].words == after.paperTables[lane].words,
+                            "viewing-only edit reuses the paper axis and all six device sample lanes");
+                }
+                require(viewingA.glareHash != 0 && viewingA.glareHash == changed->glareHash && before.glareLaunchCount == 1 &&
+                            after.glareLaunchCount == 1 && before.glareSeed == after.glareSeed && !before.glareField.empty() &&
+                            before.glareField.size() == after.glareField.size() &&
+                            std::memcmp(before.glareField.data(), after.glareField.data(), before.glareField.size() * sizeof(float)) == 0,
+                        "viewing-only edit retains the same natural Print seed and pre-white glare realization");
+            }
+            std::puts("shipping Print D50/D65/restored-D50 retained all seven paper lanes, four film lanes, both lights and the glare field with zero Print transfers");
+            controls.values.glare_active = false;
+            const auto paperA = render(prepare());
+            const auto edited_paper = [&](std::string_view field, const json::json_pointer& sample, std::size_t changedLane) {
+                auto document = json::parse(originalPaper);
+                auto& authored = document.at(sample);
+                authored = authored.get<double>() + 0.01;
+                reload(paperProfile, document.dump());
+                const auto paperB = render(prepare());
+                reload(paperProfile, originalPaper);
+                const auto paperRestored = render(prepare());
+                const auto paperWarm = render(prepare());
+                const auto& before = paperA.launch;
+                require(paperB.launch.profileTablesHash != before.profileTablesHash && paperB.paperVersion != paperA.paperVersion &&
+                            paperRestored.launch.profileTablesHash == before.profileTablesHash && paperRestored.paperVersion == paperA.paperVersion &&
+                            paperRestored.output == paperA.output && paperWarm.output == paperA.output,
+                        "paper-only edit did not change its residency key and restore the exact guarded image");
+                const auto expectedTransferBytes = (4 * before.paperTables[0].words.size() + 3 * before.paperTables[4].words.size()) * sizeof(float);
+                for (const auto* after : {&paperB.launch, &paperRestored.launch, &paperWarm.launch}) {
+                    const TransferCount expected = after == &paperWarm.launch ? TransferCount{} : TransferCount{7, expectedTransferBytes};
+                    require(after->uploads.print == expected && before.filmDensityHash == after->filmDensityHash && same_lights(before, *after),
+                            "paper-only edit did not refill precisely the seven paper lanes and retain the other Print slots");
+                    for (std::size_t lane = 0; lane < before.paperTables.size(); ++lane) {
+                        const bool differs = before.paperTables[lane].words != after->paperTables[lane].words;
+                        require(differs == (after == &paperB.launch && lane == changedLane), "paper-only edit changed the wrong device lane");
+                    }
+                }
+                std::printf("shipping Print %.*s edit/restored/warm: seven calls and %zu bytes on each miss, zero on warm\n",
+                            static_cast<int>(field.size()),
+                            field.data(),
+                            expectedTransferBytes);
+            };
+            edited_paper("curve", json::json_pointer("/data/density_curves_model/amplitudes/0/0"), 1);
+            edited_paper("sensitivity", json::json_pointer("/data/log_sensitivity/45/0"), 4);
             controls.values.print_preflash_exposure = 0.0;
             for (const auto* phase : {"disabled", "disabled warm"}) {
                 const auto disabled = render(prepare()).launch;

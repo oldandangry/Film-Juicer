@@ -1725,15 +1725,17 @@ namespace {
         std::filesystem::path capture;
         std::filesystem::path output;
         std::filesystem::path parameters;
+        bool nativeScannerFrame = false;
     };
 
     int frame_replay(const ReplayPaths& paths) {
         require(std::filesystem::is_directory(paths.output) && std::filesystem::is_empty(paths.output), "replay output directory must exist and be empty");
-        std::ifstream input(paths.capture / "capture.json");
+        const auto manifestPath = paths.nativeScannerFrame ? paths.capture : paths.capture / "capture.json";
+        std::ifstream input(manifestPath);
         require(static_cast<bool>(input), "replay capture manifest unavailable");
         const Json capture = Json::parse(input);
-        require(capture.at("schema") == "juicer-ofx-capture-v1" && capture.at("complete") == true &&
-                    capture.at("status") == kOfxStatOK,
+        require(paths.nativeScannerFrame ? capture.at("schema") == "juicer-native-scanner-frame-v1"
+                                         : capture.at("schema") == "juicer-ofx-capture-v1" && capture.at("complete") == true && capture.at("status") == kOfxStatOK,
                 "unsupported or incomplete replay capture");
         require(std::filesystem::is_directory(paths.module.parent_path().parent_path() / "Resources"), "module Resources directory unavailable");
         const auto sourceName = capture.at("source_file").get<std::string>();
@@ -1757,12 +1759,16 @@ namespace {
                         (std::filesystem::path(paths.module).filename() == "juicer-grain-preview.ofx" ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
                 "unexpected replay plugin");
         InstanceHost host;
+        DeviceBuffers device;
         Lifecycle lifecycle(plugin, host);
         require(lifecycle.load() == kOfxStatOK, "replay module load failed");
         require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
                 "replay context description failed");
         std::set<std::string> declared;
+        bool cubicScanner = false;
         for (const auto& call : host.calls()) {
+            if (paths.nativeScannerFrame && call.operation == "param_define" && call.property == "ScannerLutResolution")
+                cubicScanner = true;
             if (call.operation == "param_define" && std::any_of(ofx_test::kInstanceParameters.begin(), ofx_test::kInstanceParameters.end(), [&](const auto& definition) {
                     return definition.name == call.property;
                 }))
@@ -1771,6 +1777,15 @@ namespace {
         auto* effect = host.create_effect();
         Json parameters = capture.at("parameters");
         require(parameters.is_object(), "replay parameters must be an object");
+        if (paths.nativeScannerFrame) {
+            require(parameters.at("GrainActive").at("values") == Json::array({0}) &&
+                        parameters.at("GlareActive").at("values") == Json::array({0}),
+                    "native scanner frame requires grain and glare disabled");
+            for (const auto& parameter : parameters.items())
+                require(declared.contains(parameter.key()), "native scanner frame requests an undeclared parameter");
+            if (cubicScanner)
+                require(host.value(effect, "ScannerLutResolution") == std::vector<InstanceValue>{17}, "unexpected native cubic scanner grid");
+        }
         Json overrides = Json::object();
         Json originalValues = Json::object();
         Json ignoredOverrides = Json::array();
@@ -1829,8 +1844,7 @@ namespace {
         }
         const auto sourceImage = replay_image(host, effect, "Source", capture.at("source"));
         const auto outputImage = replay_image(host, effect, "Output", capture.at("output"));
-        const auto source = read_replay_source(paths.capture / sourceName, sourceImage);
-        DeviceBuffers device;
+        const auto source = read_replay_source(manifestPath.parent_path() / sourceName, sourceImage);
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create replay stream");
         require_cuda(cudaMalloc(&device.source, sourceImage.storageSize), "allocate replay source");
         require_cuda(cudaMalloc(&device.destination, outputImage.storageSize), "allocate replay output");
@@ -1842,9 +1856,10 @@ namespace {
         require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "replay instance creation failed");
         lifecycle.created(effect);
         Json rows = Json::array();
+        constexpr std::array<unsigned char, sizeof(float)> scannerCanary{0xa5, 0xa5, 0xa5, 0xa5};
         for (const auto* pass : {"cold", "warm"}) {
             require_cuda(cudaMemcpyAsync(device.source, source.data(), source.size(), cudaMemcpyHostToDevice, device.stream), "upload replay source");
-            require_cuda(cudaMemsetAsync(device.destination, 0, outputImage.storageSize, device.stream), "clear replay output");
+            require_cuda(cudaMemsetAsync(device.destination, paths.nativeScannerFrame ? 0xa5 : 0, outputImage.storageSize, device.stream), "clear replay output");
             require_cuda(cudaStreamSynchronize(device.stream), "complete replay upload");
             const auto sourceBefore = host.image_release_count(effect, "Source");
             const auto outputBefore = host.image_release_count(effect, "Output");
@@ -1852,7 +1867,13 @@ namespace {
             driver.check(driver.get_current(&before), "inspect context before replay");
             const auto status = lifecycle.call(kOfxImageEffectActionRender, effect, args);
             driver.check(driver.get_current(&after), "inspect context after replay");
-            require(status == kOfxStatOK && !host.callback_error(), "replay render failed");
+            if (status != kOfxStatOK || host.callback_error()) {
+                for (const auto& call : host.calls()) {
+                    if (call.operation == "message" || call.status != kOfxStatOK)
+                        std::cerr << call.operation << ' ' << call.target << ' ' << call.property << " status=" << call.status << '\n';
+                }
+                throw std::runtime_error("replay render status " + std::to_string(status));
+            }
             require(before == after, "replay changed current CUDA context");
             const auto sourceReleases = host.image_release_count(effect, "Source") - sourceBefore;
             const auto outputReleases = host.image_release_count(effect, "Output") - outputBefore;
@@ -1860,6 +1881,19 @@ namespace {
             require_cuda(cudaStreamSynchronize(streamPresent ? device.stream : nullptr), "complete replay render");
             std::vector<unsigned char> output(outputImage.storageSize);
             require_cuda(cudaMemcpy(output.data(), device.destination, output.size(), cudaMemcpyDeviceToHost), "read replay output");
+            if (paths.nativeScannerFrame) {
+                const auto pitch = static_cast<std::size_t>(std::abs(outputImage.rowBytes));
+                const auto height = static_cast<std::size_t>(outputImage.bounds[3] - outputImage.bounds[1]);
+                for (std::size_t y = 0; y < height; ++y) {
+                    const auto* row = output.data() + y * pitch;
+                    require(std::all_of(row + outputImage.rowSize, row + pitch, [](unsigned char byte) {
+                                return byte == 0xa5;
+                            }),
+                            "native scanner frame modified destination padding");
+                    for (std::size_t x = 0; x < outputImage.rowSize; x += sizeof(float))
+                        require(std::memcmp(row + x, scannerCanary.data(), scannerCanary.size()) != 0, "native scanner frame left active output unwritten");
+                }
+            }
             std::vector<unsigned char> sourceAfter(source.size());
             require_cuda(cudaMemcpy(sourceAfter.data(), device.source, sourceAfter.size(), cudaMemcpyDeviceToHost), "read replay source");
             require(sourceAfter == source, "replay modified source image or padding");
@@ -1872,7 +1906,7 @@ namespace {
                     "uncaptured required source canonical region");
             if (call.operation != "param_get" && call.operation != "param_get_time")
                 continue;
-            require(call.status == kOfxStatOK && (supplied.contains(call.target) || advanced_default(call.target)),
+            require(call.status == kOfxStatOK && (paths.nativeScannerFrame || supplied.contains(call.target) || advanced_default(call.target)),
                     std::string("uncaptured required replay parameter: ") + call.target);
             if (supplied.contains(call.target)) {
                 const auto* const definition = std::find_if(ofx_test::kInstanceParameters.data(), ofx_test::kInstanceParameters.data() + ofx_test::kInstanceParameters.size(), [&](const auto& item) {
@@ -1892,6 +1926,8 @@ namespace {
         module.close();
         restore.restore();
         Json report{{"schema", "juicer-ofx-replay-v1"}, {"rows", std::move(rows)}, {"reads", std::move(reads)}, {"advanced_defaults", std::move(defaults)}, {"parameters", resolved}, {"context_restored", restore.restored}};
+        if (paths.nativeScannerFrame)
+            report["cubic_grid"] = cubicScanner ? Json(17) : Json(nullptr);
         if (!paths.parameters.empty())
             report["parameter_overrides"] = {{"path", paths.parameters.string()}, {"values", std::move(overrides)}, {"original_values", std::move(originalValues)}, {"ignored_absent_advanced", std::move(ignoredOverrides)}};
         std::ofstream manifest(paths.output / "replay.json");
@@ -1993,6 +2029,9 @@ int main(int argc, char** argv) {
         if ((argc == 5 || argc == 7) && std::string_view(argv[1]) == "--frame-replay") {
             require(argc == 5 || std::string_view(argv[5]) == "--parameters", "invalid frame replay option");
             return frame_replay({.module = argv[2], .capture = argv[3], .output = argv[4], .parameters = argc == 7 ? argv[6] : ""});
+        }
+        if (argc == 5 && std::string_view(argv[1]) == "--native-scanner-frame") {
+            return frame_replay({.module = argv[2], .capture = argv[3], .output = argv[4], .parameters = {}, .nativeScannerFrame = true});
         }
         if (JuicerTests::list_requested(argc, argv)) {
             for (const auto id : kCaseIds)

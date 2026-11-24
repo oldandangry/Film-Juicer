@@ -157,6 +157,19 @@ namespace JuicerCuda::RenderTest {
         out.printPreflashExposure = expose.printPreflashExposure;
         out.printMidgrayFactor = expose.printMidgrayFactor;
         std::copy(std::begin(expose.printPreflashRaw), std::end(expose.printPreflashRaw), std::begin(out.printPreflashRaw));
+        const auto& cyan = prepared.printDcC;
+        if (prepared.printDcM.x != cyan.x || prepared.printDcY.x != cyan.x)
+            throw std::runtime_error("prepared Print curves did not share the cyan-owned axis");
+        const auto bind = [](PrintLaunchObservation::PaperLane& lane, const float* device, int count) {
+            if (!device || count <= 0)
+                throw std::runtime_error("prepared Print table lane is absent");
+            lane.address = reinterpret_cast<std::uintptr_t>(device);
+            lane.words.resize(static_cast<std::size_t>(count));
+        };
+        bind(out.paperTables[0], cyan.x, cyan.n);
+        const std::array channels{cyan, prepared.printDcM, prepared.printDcY, prepared.printSensC, prepared.printSensM, prepared.printSensY};
+        for (std::size_t lane = 0; lane < channels.size(); ++lane)
+            bind(out.paperTables[lane + 1], channels[lane].y, channels[lane].n);
         out.valid = true;
     }
     void complete_print_launch_observation(PrintLaunchObservation& out, std::uintptr_t stream) {
@@ -179,6 +192,10 @@ namespace JuicerCuda::RenderTest {
         copy(out.filmDyes.data(), out.filmDensityC, 81);
         copy(out.filmDyes.data() + 81, out.filmDensityM, 81);
         copy(out.filmDyes.data() + 162, out.filmDensityY, 81);
+        for (auto& lane : out.paperTables) {
+            if (cudaMemcpy(lane.words.data(), reinterpret_cast<const void*>(lane.address), lane.words.size() * sizeof(lane.words[0]), cudaMemcpyDeviceToHost) != cudaSuccess)
+                throw std::runtime_error("Print paper table readback failed");
+        }
     }
     void observe_film_proxy_reservation() noexcept {
         ++filmProxyReservations;
@@ -203,9 +220,10 @@ namespace JuicerCuda::RenderTest {
         unsigned checkpoint = 0;
         std::atomic<bool> released{false};
         bool observedPending = false;
+        std::chrono::milliseconds maximumHold;
 
-        explicit PendingWork(cudaStream_t inputStream, unsigned inputCheckpoint)
-            : stream(inputStream), checkpoint(inputCheckpoint) {
+        explicit PendingWork(cudaStream_t inputStream, unsigned inputCheckpoint, std::chrono::milliseconds hold = std::chrono::milliseconds(250))
+            : stream(inputStream), checkpoint(inputCheckpoint), maximumHold(hold) {
             if (cudaEventCreateWithFlags(&event, cudaEventDisableTiming) != cudaSuccess) {
                 throw std::runtime_error("create pending-work event");
             }
@@ -217,7 +235,7 @@ namespace JuicerCuda::RenderTest {
         }
         static void CUDART_CB wait(void* user) {
             auto& work = *static_cast<PendingWork*>(user);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+            const auto deadline = std::chrono::steady_clock::now() + work.maximumHold;
             while (!work.released.load()) {
                 if (std::chrono::steady_clock::now() >= deadline) {
                     break;
@@ -227,6 +245,16 @@ namespace JuicerCuda::RenderTest {
         }
     };
     thread_local PendingWork* pendingWork = nullptr;
+    thread_local PendingWork* scanConsumerHold = nullptr;
+
+    void hold_scan_consumer(void* stream) {
+        auto* const hold = std::exchange(scanConsumerHold, nullptr);
+        if (!hold)
+            return;
+        if (stream != hold->stream || cudaLaunchHostFunc(hold->stream, PendingWork::wait, hold) != cudaSuccess ||
+            cudaEventRecord(hold->event, hold->stream) != cudaSuccess)
+            throw std::runtime_error("hold the actual scanner launch on the fixture stream");
+    }
 
     // Finite device copies keep the upload event outstanding without a host
     // gate or GPU wait. Enqueue only after the renderer's synchronous paths.
@@ -858,7 +886,172 @@ namespace JuicerCudaTest {
         }
     }
 
-    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe) {
+    void check_spectral_packet_overlap(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const std::array<BoundScannerPacket, 2>& packets) {
+        constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        constexpr FjStatus cancelled{FJ_STATUS_CANCELLED, FJ_API_NONE, 0};
+        constexpr auto maximumHold = std::chrono::seconds(5);
+        auto& root = JuicerCuda::borrow_root(cuda);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
+        const auto instance = packets[0].submission.instance_token ^ UINT64_C(0x2900000000000000);
+        require(instance && frame.stream && frame.destination.row_bytes > 0 &&
+                    frame.destination.bounds.y2 > frame.destination.bounds.y1 &&
+                    packets[0].submission.scanner_hash != packets[1].submission.scanner_hash &&
+                    packets[0].prepared.print_profile_asset_version != packets[1].prepared.print_profile_asset_version,
+                "packet overlap needs distinct paper bindings and pitched destinations");
+        const auto bytes = static_cast<std::size_t>(frame.destination.row_bytes) *
+                           static_cast<std::size_t>(frame.destination.bounds.y2 - frame.destination.bounds.y1);
+        struct OtherFrameStorage {
+            cudaStream_t stream = nullptr;
+            void* destination = nullptr;
+            ~OtherFrameStorage() {
+                if (stream)
+                    (void)cudaStreamSynchronize(stream);
+                (void)cudaFree(destination);
+                if (stream)
+                    (void)cudaStreamDestroy(stream);
+            }
+        } other;
+        require(cudaStreamCreateWithFlags(&other.stream, cudaStreamNonBlocking) == cudaSuccess &&
+                    cudaMalloc(&other.destination, bytes) == cudaSuccess,
+                "allocate the second guarded destination on the same CUDA context");
+        std::array frames{frame, frame};
+        frames[1].stream = reinterpret_cast<std::uintptr_t>(other.stream);
+        frames[1].destination.address = reinterpret_cast<std::uintptr_t>(other.destination);
+        frames[1].time_frames += 1.0;
+        const std::array streams{reinterpret_cast<cudaStream_t>(frame.stream), other.stream};
+        std::vector<std::byte> guards(bytes);
+        const auto download = [&](std::size_t lane, std::vector<std::byte>& raster) {
+            require(cudaStreamSynchronize(streams[lane]) == cudaSuccess &&
+                        cudaMemcpy(raster.data(), reinterpret_cast<const void*>(frames[lane].destination.address), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+                    "read the completed guarded scanner packet destination");
+        };
+        download(0, guards);
+        const auto reset = [&](std::size_t lane) {
+            require(cudaMemcpyAsync(reinterpret_cast<void*>(frames[lane].destination.address), guards.data(), bytes, cudaMemcpyHostToDevice, streams[lane]) == cudaSuccess &&
+                        cudaStreamSynchronize(streams[lane]) == cudaSuccess,
+                    "initialize scanner packet canaries before submission");
+        };
+
+        std::uint64_t next = 1;
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto render = [&](std::size_t lane, FjStatus expected, JuicerCuda::RenderTest::PendingWork* hold = nullptr, FjAbortCallback abort = FjAbortCallback{}) {
+            auto submitted = packets[lane].submission;
+            submitted.instance_token = instance;
+            submitted.submission_id = next++;
+            JuicerCuda::RenderTest::scanConsumerHold = hold;
+            const auto outcome = render_raw_prepared(cuda, frames[lane], submitted, packets[lane].prepared, abort, &error);
+            const auto* const unused = std::exchange(JuicerCuda::RenderTest::scanConsumerHold, nullptr);
+            const std::string detail = "spectral packet lifetime: " + std::string(message.data(), error.length);
+            require_status(outcome, expected, detail.c_str());
+            require(!unused, "the hold reached the actual final scanner launcher");
+            return submitted.submission_id;
+        };
+        std::array reference{std::vector<std::byte>(bytes), std::vector<std::byte>(bytes)};
+        for (std::size_t lane = 0; lane < frames.size(); ++lane) {
+            reset(lane);
+            (void)render(lane, success);
+            download(lane, reference[lane]);
+        }
+        require(reference[0] != reference[1], "the independent paper requests have distinct delivered outputs");
+
+        auto owner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
+        require(static_cast<bool>(owner), "the isolated packet requests share a live frame owner");
+        const auto epoch = owner->contextEpoch;
+        const auto use_event = [&] {
+            const std::lock_guard<std::mutex> lock(owner->m);
+            require(!owner->pendingFrameUseEvents.empty(), "scanner packet has its original last-use fence");
+            return static_cast<cudaEvent_t>(owner->pendingFrameUseEvents.back().eventOpaque);
+        };
+        struct PacketReadback {
+            cudaEvent_t event = nullptr;
+            const int* flag = nullptr;
+        };
+        const auto readback = [&](std::uint64_t id, const BoundScannerPacket& packet) {
+            const std::lock_guard<std::mutex> lock(owner->m);
+            const auto entry = std::find_if(owner->pendingScanErrorReadbacks.begin(), owner->pendingScanErrorReadbacks.end(), [id](const auto& holding) {
+                return holding.identity.submissionId == id;
+            });
+            require(entry != owner->pendingScanErrorReadbacks.end() && entry->host && entry->eventOpaque &&
+                        entry->identity.contextEpoch == epoch && entry->identity.scannerHash == packet.submission.scanner_hash &&
+                        entry->identity.scannedProfileAssetVersion == packet.prepared.print_profile_asset_version,
+                    "scanner packet retained the exact producing identity and flag");
+            return PacketReadback{static_cast<cudaEvent_t>(entry->eventOpaque), entry->host};
+        };
+        reset(0);
+        reset(1);
+        std::vector<std::byte> actual(bytes);
+        {
+            JuicerCuda::RenderTest::PendingWork gate(streams[0], 0, maximumHold);
+            const auto a = render(0, success, &gate);
+            auto* const aUse = use_event();
+            const auto aReadback = readback(a, packets[0]);
+            require(cudaEventQuery(gate.event) == cudaErrorNotReady && cudaEventQuery(aUse) == cudaErrorNotReady &&
+                        cudaEventQuery(aReadback.event) == cudaErrorNotReady,
+                    "A scanner consumer and its retained events are still pending before B");
+            const auto b = render(1, success);
+            auto* const bUse = use_event();
+            const auto bReadback = readback(b, packets[1]);
+            const bool sameOwner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key) == owner;
+            {
+                const std::lock_guard<std::mutex> lock(owner->m);
+                const bool retainedA = std::any_of(owner->pendingScanErrorReadbacks.begin(), owner->pendingScanErrorReadbacks.end(), [a](const auto& entry) {
+                    return entry.identity.submissionId == a;
+                });
+                const bool retainedUse = aUse != bUse && std::any_of(owner->pendingFrameUseEvents.begin(), owner->pendingFrameUseEvents.end(), [aUse](const auto& entry) {
+                                             return entry.eventOpaque == aUse;
+                                         });
+                std::cerr << "spectral packet B queued: same owner=" << sameOwner << " A use retained=" << retainedUse
+                          << " A readback retained=" << retainedA << '\n';
+                require(sameOwner && retainedUse && retainedA && aReadback.event != bReadback.event && aReadback.flag != bReadback.flag &&
+                            cudaEventQuery(aUse) == cudaErrorNotReady && cudaEventQuery(aReadback.event) == cudaErrorNotReady,
+                        "B queued its distinct paper packet before A's original use completed");
+            }
+            gate.released.store(true);
+            for (std::size_t lane = 0; lane < frames.size(); ++lane) {
+                download(lane, actual);
+                require(actual == reference[lane], "the overlapped packet exactly matches its isolated raster and guards");
+            }
+            require(cudaEventQuery(aUse) == cudaSuccess && cudaEventQuery(bUse) == cudaSuccess &&
+                        cudaEventQuery(aReadback.event) == cudaSuccess && cudaEventQuery(bReadback.event) == cudaSuccess &&
+                        *aReadback.flag == 0 && *bReadback.flag == 0,
+                    "both frame-use and producing scan events completed with zero flags");
+            std::cout << "spectral packet overlap epoch=" << epoch << " A=" << a << " event=" << aReadback.event
+                      << " B=" << b << " event=" << bReadback.event << " flags=0,0\n";
+        }
+        const auto reporter = render(0, success);
+        download(0, actual);
+        require(actual == reference[0], "same-owner reporter preserves A's completed output");
+        {
+            const std::lock_guard<std::mutex> lock(owner->m);
+            require(owner->pendingScanErrorReadbacks.size() == 1 &&
+                        owner->pendingScanErrorReadbacks.front().identity.submissionId == reporter,
+                    "the reporter consumed both completed predecessors");
+        }
+        {
+            JuicerCuda::RenderTest::PendingWork gate(streams[0], 0, maximumHold);
+            AbortQuery abort;
+            abort.cancelAt = 3;
+            (void)render(0, cancelled, &gate, {AbortQuery::query, &abort});
+            auto* const fence = use_event();
+            require(abort.calls == 3 && abort.sameThread && cudaEventQuery(fence) == cudaErrorNotReady,
+                    "post-enqueue abort retained the original stream's pending last-use event");
+            gate.released.store(true);
+            require(cudaStreamSynchronize(streams[0]) == cudaSuccess && cudaEventQuery(fence) == cudaSuccess,
+                    "drain the original abort stream before retirement");
+        }
+        std::string retirement;
+        require(root.retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), retirement), "retire the drained packet owner");
+        owner.reset();
+        (void)render(0, success);
+        download(0, actual);
+        const auto replacement = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
+        require(replacement && replacement->contextEpoch > epoch && actual == reference[0],
+                "the newer exact-context epoch delivers the isolated reference again");
+        require_status(fj_cuda_retire_instance(cuda, instance, &error), success, "retire scanner packet overlap fixture instance");
+    }
+
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe, const BoundScannerPacket* switchedReporter) {
         const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
         const bool receiver = probe == ReadbackProbe::FusedDir;
         JuicerTests::Cohort rows(receiver ? kDirScanReadbackCaller : probe == ReadbackProbe::Plane ? kPlaneScanReadbackCaller
@@ -937,12 +1130,19 @@ namespace JuicerCudaTest {
         }
         auto reportingFrame = frame;
         reportingFrame.time_frames += 1.0;
-        auto reporter = baseline;
+        const auto& reporterPrepared = switchedReporter ? switchedReporter->prepared : prepared;
+        auto reporter = switchedReporter ? switchedReporter->submission : baseline;
+        reporter.instance_token = baseline.instance_token;
         reporter.submission_id = producer.submission_id + 1;
-        ++reporter.frame_token;
+        reporter.frame_token = producer.frame_token + 1;
+        if (switchedReporter) {
+            require(reporter.scanner_hash != baseline.scanner_hash && reporterPrepared.film_profile_asset_version != prepared.film_profile_asset_version &&
+                        (!paper || reporterPrepared.print_profile_asset_version != prepared.print_profile_asset_version),
+                    "reporter holds a different bound capture film and scanned medium");
+        }
         {
             auto row = rows.case_event("reporter");
-            const auto outcome = render_raw_prepared(cuda, reportingFrame, reporter, prepared, {}, &error);
+            const auto outcome = render_raw_prepared(cuda, reportingFrame, reporter, reporterPrepared, {}, &error);
             require_status(outcome.status, preparationFailure, "distinct raw reporter consumes the earlier scan failure");
             const std::string expected = receiver ? "earlier CUDA DIR submission failed component=dir route=" +
                                                         std::string(Spektrafilm::scan_route_key(route)) +

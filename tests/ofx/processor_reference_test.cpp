@@ -4812,6 +4812,7 @@ namespace {
 int main(int argc, char** argv) try {
     const bool listing = JuicerTests::list_requested(argc, argv);
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
+    constexpr char packetOverlapCase[] = "negative-print/spectral-packet-overlap";
     constexpr std::array<std::pair<const char*, JuicerCudaTest::StateLifetimeCase>, 12> lifetime_cases{{{"supplied-stream", JuicerCudaTest::StateLifetimeCase::SuppliedStream},
                                                                                                         {"present-null-stream", JuicerCudaTest::StateLifetimeCase::PresentNullStream},
                                                                                                         {"absent-stream", JuicerCudaTest::StateLifetimeCase::AbsentStream},
@@ -4857,6 +4858,7 @@ int main(int argc, char** argv) try {
                     (void)lifetime_case;
                     JuicerTests::list_case("state_lifetime", std::string(route) + "/" + name);
                 }
+            JuicerTests::list_case("state_lifetime", packetOverlapCase);
             for (const char* route : {"negative-direct", "negative-print"})
                 for (const char* pass : {"cold", "warm"})
                     JuicerTests::list_case("production-state-contract", std::string(route) + "/" + pass);
@@ -5246,12 +5248,13 @@ int main(int argc, char** argv) try {
             const std::array<std::string, 2> route_ids{{"negative-direct", "negative-print"}};
             JuicerTests::Cohort route_rows("state_lifetime_route", std::vector<std::string>(route_ids.begin(), route_ids.end()));
             std::vector<std::string> intended;
-            intended.reserve(2 * lifetime_cases.size());
+            intended.reserve(2 * lifetime_cases.size() + 1);
             for (const char* route : {"negative-direct", "negative-print"})
                 for (const auto& [name, lifetime_case] : lifetime_cases) {
                     (void)lifetime_case;
                     intended.push_back(std::string(route) + "/" + name);
                 }
+            intended.emplace_back(packetOverlapCase);
             JuicerTests::Cohort lifetime_rows("state_lifetime", intended);
             for (std::size_t index = 0; index < 2; ++index) {
                 auto route_row = route_rows.case_event(cases[index].name);
@@ -5260,6 +5263,13 @@ int main(int argc, char** argv) try {
                 for (const auto& [name, lifetimeCase] : lifetime_cases) {
                     auto row = lifetime_rows.case_event(std::string(cases[index].name) + "/" + name);
                     (void)render_case(runtime, cases[index], parameters_for(cases[index]), unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, lifetimeCase);
+                    row.passed();
+                }
+                if (cases[index].route == Spektrafilm::ScanRoute::NegativePrintScan) {
+                    auto row = lifetime_rows.case_event(packetOverlapCase);
+                    auto parameters = parameters_for(cases[index]);
+                    parameters.values.glare_active = false;
+                    (void)render_case(runtime, cases[index], parameters, unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SpectralPacketOverlap);
                     row.passed();
                 }
                 if (!unusedRetirement.close())
