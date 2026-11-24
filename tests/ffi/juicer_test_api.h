@@ -134,6 +134,7 @@ FjStatus fj_test_instance_begin_host_write(FjInstance*, uint64_t capture, FjHost
 FjStatus fj_test_host_write_finish(FjHostWrite*, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_refresh, FjErrorBuffer* error);
 FjStatus fj_test_instance_begin_snapshot(FjInstance*, uint64_t capture, FjSnapshotStart* out, FjErrorBuffer* error);
 FjStatus fj_test_instance_install(FjInstance*, uint64_t capture, uint64_t write_revision, const FjPreparationParams*, uint64_t input_identity, uint32_t* out_update, FjErrorBuffer* error);
+FjStatus fj_test_instance_install_rust_capture(FjInstance*, uint64_t capture, uint64_t write_revision, const FjPreparationParams*, uint32_t* out_update, FjErrorBuffer* error);
 FjStatus fj_test_instance_invalidate(FjInstance*, uint64_t capture, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_update, FjErrorBuffer* error);
 FjStatus fj_test_instance_admit(FjInstance*, const FjAssets*, FjAdmission* out, FjErrorBuffer* error);
 FjStatus fj_test_instance_destroy(FjInstance*, FjErrorBuffer* error);

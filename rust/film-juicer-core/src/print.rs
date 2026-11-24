@@ -231,22 +231,14 @@ pub struct ResourceDescriptorInput<'a> {
     pub curves: &'a PrintDensityCurves,
     pub filters: &'a Filters,
     pub exposure: &'a Exposure,
-    pub balance: &'a Balance,
-    pub film_input_hash: u64,
-    pub film_development_hash: u64,
     pub illuminant_hash: u64,
 }
 
 pub struct ResourceDescriptors {
-    sensitivities_hash: u64,
-    density_tables_hash: u64,
     profile_tables_hash: u64,
     film_density_hash: u64,
     main_illuminant_hash: u64,
     preflash_illuminant_hash: u64,
-    preflash_raw_hash: u64,
-    balance_hash: u64,
-    hash: u64,
 }
 impl ResourceDescriptors {
     pub fn new(input: ResourceDescriptorInput<'_>) -> Result<Self, CompositionError> {
@@ -295,49 +287,8 @@ impl ResourceDescriptors {
             identity
         };
         let main_illuminant_hash = filtered(false);
-        let (preflash_illuminant_hash, preflash_raw_hash) =
-            if input.exposure.params().preflash_exposure > 0.0 {
-                let illuminant = filtered(true);
-                let mut raw = hash::FNV_OFFSET;
-                hash::update_bytes(&mut raw, &2_u32.to_le_bytes());
-                for word in [
-                    input.film.asset_token(),
-                    input.profile.asset_token(),
-                    illuminant,
-                ] {
-                    hash::update_bytes(&mut raw, &word.to_le_bytes());
-                }
-                (illuminant, raw)
-            } else {
-                (0, 0)
-            };
-        let mut balance_hash = hash::FNV_OFFSET;
-        hash::update_bytes(&mut balance_hash, &3_u32.to_le_bytes());
-        for word in [
-            input.film.asset_token(),
-            input.film_input_hash,
-            input.film_development_hash,
-            input.profile.asset_token(),
-            main_illuminant_hash,
-        ] {
-            hash::update_bytes(&mut balance_hash, &word.to_le_bytes());
-        }
-        hash::update_bytes(&mut balance_hash, &[input.exposure.normalization_mode()]);
-        let camera_ev = if input.exposure.params().compensate {
-            input.exposure.params().camera_exposure_ev
-        } else {
-            0.0
-        };
-        hash::update_bytes(&mut balance_hash, &camera_ev.to_bits().to_le_bytes());
-        hash::update_bytes(&mut balance_hash, &input.balance.hash().to_le_bytes());
-        let hash = hash::u64s(&[
-            profile_tables_hash,
-            film_density_hash,
-            main_illuminant_hash,
-            preflash_illuminant_hash,
-            preflash_raw_hash,
-            balance_hash,
-        ]);
+        let preflash_active = input.exposure.params().preflash_exposure > 0.0;
+        let preflash_illuminant_hash = if preflash_active { filtered(true) } else { 0 };
         if [
             input.curves.hash(),
             sensitivities_hash,
@@ -346,36 +297,19 @@ impl ResourceDescriptors {
             density_tables_hash,
             film_density_hash,
             main_illuminant_hash,
-            balance_hash,
-            input.film_input_hash,
-            input.film_development_hash,
-            input.balance.hash(),
-            hash,
         ]
         .contains(&0)
             || input.curves.totals().is_empty()
-            || (input.exposure.params().preflash_exposure > 0.0
-                && (preflash_illuminant_hash == 0 || preflash_raw_hash == 0))
+            || (preflash_active && preflash_illuminant_hash == 0)
         {
             return Err(CompositionError::ResourceDescriptors);
         }
         Ok(Self {
-            sensitivities_hash,
-            density_tables_hash,
             profile_tables_hash,
             film_density_hash,
             main_illuminant_hash,
             preflash_illuminant_hash,
-            preflash_raw_hash,
-            balance_hash,
-            hash,
         })
-    }
-    pub fn sensitivities_hash(&self) -> u64 {
-        self.sensitivities_hash
-    }
-    pub fn density_tables_hash(&self) -> u64 {
-        self.density_tables_hash
     }
     pub fn profile_tables_hash(&self) -> u64 {
         self.profile_tables_hash
@@ -388,15 +322,6 @@ impl ResourceDescriptors {
     }
     pub fn preflash_illuminant_hash(&self) -> u64 {
         self.preflash_illuminant_hash
-    }
-    pub fn preflash_raw_hash(&self) -> u64 {
-        self.preflash_raw_hash
-    }
-    pub fn balance_hash(&self) -> u64 {
-        self.balance_hash
-    }
-    pub fn hash(&self) -> u64 {
-        self.hash
     }
 }
 

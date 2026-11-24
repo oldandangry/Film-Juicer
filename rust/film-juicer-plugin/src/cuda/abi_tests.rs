@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 642);
+        assert_eq!(FACTS.len(), 639);
     }
 
     #[test]

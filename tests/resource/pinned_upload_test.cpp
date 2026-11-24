@@ -527,6 +527,10 @@ namespace {
         for (auto& values : changed.sensitivities) {
             values = {0.125F, 0.25F, 0.5F};
         }
+        const std::array<float, Spectral::kNumSamples> originalFilmCyan{};
+        auto changedFilmCyan = originalFilmCyan;
+        changedFilmCyan.fill(changed.spectra[0][0]);
+        ASSERT_NE(originalFilmCyan, changedFilmCyan);
 
         const auto expect_words = [](const float* device, std::span<const float> expected) {
             std::vector<float> words(expected.size());
@@ -559,26 +563,37 @@ namespace {
             ASSERT_TRUE(JuicerCuda::prepare_print_resources(*resources, original.input, stream, failure)) << failure.diagnostic;
             require_cuda(cudaStreamSynchronize(stream));
             const auto& key = paper ? resources->printProfileTablesDescriptorHash : resources->printFilmDensityTablesDescriptorHash;
+            const float* const originalCyan = paper ? resources->printDcC.y : resources->printFilmDensityTables.epsC;
+            const float* const originalAxis = paper ? resources->printDcC.x : nullptr;
+            if (paper)
+                expect_words(originalCyan, original.cyan_samples());
+            else
+                expect_words(originalCyan, originalFilmCyan);
             const std::size_t failAt = paper ? 3 : 2;
             std::size_t copies = 0;
             ASSERT_FALSE(prepare_print_observing(next, [&](Operation operation) {
                 if (operation == Operation::Copy && ++copies == failAt) {
+                    require_cuda(cudaStreamSynchronize(stream));
+                    EXPECT_EQ(key, 0u);
+                    if (paper) {
+                        EXPECT_EQ(resources->printDcC.x, originalAxis);
+                        EXPECT_EQ(resources->printDcM.x, nullptr);
+                        EXPECT_EQ(resources->printDcY.x, nullptr);
+                        EXPECT_EQ(resources->printDcC.y, originalCyan);
+                        EXPECT_NE(changed.cyan_samples(), original.cyan_samples());
+                        expect_words(originalAxis, changed.axis);
+                        expect_words(resources->printDcC.y, changed.cyan_samples());
+                    } else {
+                        EXPECT_EQ(resources->printFilmDensityTables.epsC, originalCyan);
+                        expect_words(originalCyan, changedFilmCyan);
+                    }
                     inject(operation, cudaErrorInvalidValue);
                 }
             }));
             expect_status({FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, cudaErrorInvalidValue});
             EXPECT_EQ(key, 0u);
-            require_cuda(cudaStreamSynchronize(stream));
-            if (paper) {
-                expect_words(resources->printDcC.x, changed.axis);
-                expect_words(resources->printDcC.y, changed.cyan_samples());
-                EXPECT_EQ(resources->printDcM.x, nullptr);
-                EXPECT_EQ(resources->printDcY.x, nullptr);
-            } else {
-                std::array<float, Spectral::kNumSamples> changedCyan{};
-                changedCyan.fill(0.25F);
-                expect_words(resources->printFilmDensityTables.epsC, changedCyan);
-            }
+            EXPECT_EQ(paper ? resources->printFilmDensityTablesDescriptorHash : resources->printProfileTablesDescriptorHash, 1u);
+            EXPECT_EQ(resources->printMainIlluminantDescriptorHash, 1u);
 
             const auto check = [&](const JuicerCuda::PrintResourceInput& input, std::size_t expectedCopies) {
                 std::size_t copyCalls = 0;

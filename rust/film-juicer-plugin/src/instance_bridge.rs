@@ -588,6 +588,56 @@ pub(crate) unsafe fn install(
     out_update: *mut u32,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
+    // SAFETY: The caller meets install_snapshot's record and output contract.
+    unsafe {
+        install_snapshot(
+            owner,
+            capture,
+            write_revision,
+            params,
+            Some(input_identity),
+            out_update,
+            error,
+        )
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance and initialized preparation record through return.
+/// Writable output and diagnostic storage is aligned, exclusive, and disjoint.
+pub(crate) unsafe fn install_rust_capture(
+    owner: *mut FjInstance,
+    capture: u64,
+    write_revision: u64,
+    params: *const FjPreparationParams,
+    out_update: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The caller meets install_snapshot's record and output contract.
+    unsafe {
+        install_snapshot(
+            owner,
+            capture,
+            write_revision,
+            params,
+            None,
+            out_update,
+            error,
+        )
+    }
+}
+
+/// # Safety
+/// Same synchronous borrow and output contract as `install`.
+unsafe fn install_snapshot(
+    owner: *mut FjInstance,
+    capture: u64,
+    write_revision: u64,
+    params: *const FjPreparationParams,
+    supplied_identity: Option<u64>,
+    out_update: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
     // SAFETY: This function owns the checked C operation's raw boundary.
     unsafe {
         let valid = clear(out_update);
@@ -604,12 +654,21 @@ pub(crate) unsafe fn install(
                 return Ok(());
             }
             match preparation::params(&*params) {
-                Ok(params) => out_update.write(update_tag(instance.install(
-                    capture,
-                    write_revision,
-                    params,
-                    input_identity,
-                )?)),
+                Ok(params) => {
+                    let input_identity = supplied_identity.unwrap_or_else(|| {
+                        film_juicer_core::capture::hash_params(
+                            &params,
+                            params.film_profile_key.as_bytes(),
+                            params.print_profile_key.as_bytes(),
+                        )
+                    });
+                    out_update.write(update_tag(instance.install(
+                        capture,
+                        write_revision,
+                        params,
+                        input_identity,
+                    )?));
+                }
                 Err(error) => {
                     let kind = if error.category() == FJ_STATUS_ALLOCATION_FAILURE {
                         CaptureFailureKind::Allocation

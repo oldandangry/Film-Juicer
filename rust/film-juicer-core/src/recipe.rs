@@ -2113,9 +2113,6 @@ fn prepare_state(
                     curves: &print.curves,
                     filters: &print.filters,
                     exposure: &print.exposure,
-                    balance: &balance,
-                    film_input_hash: input.hash(),
-                    film_development_hash: acquired.development.hash(),
                     illuminant_hash: print.illuminant_hash,
                 })
                 .map_err(PrepareError::PrintComposition)?;

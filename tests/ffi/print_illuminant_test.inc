@@ -280,6 +280,7 @@ namespace PrintIlluminantTest {
         JuicerTests::Cohort product_rows("print_illuminant.recipe_tuple", product_ids);
         for (auto expected : captured.at("products")) {
             PrintIlluminantFixtures::select_frozen_light_hashes(expected, "descriptors");
+            require(expected.erase("final_hash") == 1, "archived Print illuminant route recipe field");
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
             const unsigned variant = expected.at("variant");
@@ -313,7 +314,8 @@ namespace PrintIlluminantTest {
             FjPreparedStateView view{};
             status(product->view(view, error));
             const auto& print = view.print;
-            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
+            require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash, "complete Print illuminant route recipe");
+            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
             if (route % 2) {
                 actual["main"] = words(print.main_illuminant.data, print.main_illuminant.count);
                 const auto& mainCmy = print.main_cc_cmy;

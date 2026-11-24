@@ -39,6 +39,7 @@
 #include "Hash.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_call_scope.h"
+#include "juicer_cuda_prepared.h"
 #include "gtest_cases.h"
 
 extern "C" const std::size_t* fj_test_prepared_state_c_facts(std::size_t*);
@@ -256,6 +257,76 @@ namespace {
         return digest;
     }
 
+    std::uint64_t expected_profile_tables_hash(const FjPreparedStateView& actual) {
+        if (actual.route != FJ_ROUTE_NEGATIVE_PRINT && actual.route != FJ_ROUTE_POSITIVE_PRINT)
+            return 0;
+        const auto sensitivity = actual.print.sensitivity_cmy;
+        const auto words = Hash::hash_float_span_with_nan_mask(sensitivity.data, sensitivity.count);
+        const auto sensitivityHash = Hash::hash_uint64_values({words.valueHash, words.nanMaskHash});
+        std::uint64_t result = Hash::kFnvOffset;
+        const std::uint32_t schema = 2;
+        const std::uint32_t curveCount = static_cast<std::uint32_t>(actual.print.log_exposure.count);
+        const std::uint32_t sampleCount = 81;
+        Hash::hash_bytes_update(result, &schema, sizeof(schema));
+        Hash::hash_bytes_update(result, &actual.print_curves_hash, sizeof(actual.print_curves_hash));
+        Hash::hash_bytes_update(result, &sensitivityHash, sizeof(sensitivityHash));
+        Hash::hash_bytes_update(result, &curveCount, sizeof(curveCount));
+        Hash::hash_bytes_update(result, &sampleCount, sizeof(sampleCount));
+        return result;
+    }
+
+    std::uint64_t expected_scanner_binding(const FjPreparedStateView& actual) {
+        FjPreparedHostData source{};
+        source.route = actual.route;
+        source.film_profile_key = actual.film_profile_key;
+        source.print_profile_key = actual.print_profile_key;
+        source.film_profile_asset_version = actual.film_profile_asset_version;
+        source.print_profile_asset_version = actual.print_profile_asset_version;
+        const auto& scanner = actual.scanner_tables;
+        source.scanner_spectra = {scanner.dyes_cmy[2], scanner.dyes_cmy[1], scanner.dyes_cmy[0], scanner.weighted_xyz[0], scanner.weighted_xyz[1], scanner.weighted_xyz[2], scanner.has_baseline ? scanner.baseline_min : FjFloatSpan{}, scanner.inv_yn};
+        source.output_color = actual.output_color;
+        const std::uint64_t gamut = (source.output_color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? source.output_color.gamut_recipe_hash : 0;
+        return Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(source), gamut});
+    }
+
+    void compare_live_identity(const Json& live, const char* key, std::uint64_t expected) {
+        SCOPED_TRACE(key);
+        PreparedStateOracle::compare({{"type", "u64"}, {"value", expected}}, live.at(key));
+    }
+
+    void prepare_live_comparison(Json& expected, Json& live, const FjPreparedStateView& actual) {
+        ASSERT_NE(actual.recipe_hash, 0u);
+        ASSERT_NE(actual.scanner_recipe_hash, 0u);
+        ASSERT_NE(actual.scanner_hash, 0u);
+        compare_live_identity(live, "recipe_hash", actual.recipe_hash);
+        compare_live_identity(live, "upload_core_hash", actual.recipe_hash);
+        compare_live_identity(live, "scanner_recipe_hash", actual.scanner_recipe_hash);
+        compare_live_identity(live, "scanner_hash", expected_scanner_binding(actual));
+        const bool printActive = actual.route == FJ_ROUTE_NEGATIVE_PRINT || actual.route == FJ_ROUTE_POSITIVE_PRINT;
+        const auto profileHash = expected_profile_tables_hash(actual);
+        ASSERT_EQ(profileHash != 0, printActive);
+        compare_live_identity(live.at("print"), "profile_tables_hash", profileHash);
+        compare_live_identity(live.at("print"), "glare_hash", expected_print_glare_hash(actual));
+        ASSERT_EQ(live.at("print").erase("glare_hash"), 1U);
+        for (const char* key : {"recipe_hash", "upload_core_hash", "scanner_recipe_hash", "scanner_hash"}) {
+            ASSERT_EQ(expected.erase(key), 1U);
+            ASSERT_EQ(live.erase(key), 1U);
+        }
+        ASSERT_EQ(expected.at("print").erase("profile_tables_hash"), 1U);
+        ASSERT_EQ(live.at("print").erase("profile_tables_hash"), 1U);
+        for (const char* key : {"preflash_raw_hash", "balance_hash", "hash"})
+            ASSERT_EQ(expected.at("print").erase(key), 1U);
+    }
+
+    void expect_projection_difference(const Json& expected, const Json& live, std::string_view path) {
+        try {
+            PreparedStateOracle::compare(expected, live);
+            ADD_FAILURE() << "comparison accepted the changed word at " << path;
+        } catch (const std::runtime_error& error) {
+            EXPECT_TRUE(std::string_view(error.what()).starts_with(path)) << error.what();
+        }
+    }
+
     void record_projection(const JuicerTestSupport::PreparationInput& params, const FjAssets* resourceOwner, const FjPreparedStateView& actual) {
         const auto name = projection_case(params);
         if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
@@ -266,12 +337,18 @@ namespace {
         const auto wire = params.record();
         PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(wire));
         auto expected = row.at("expected");
-        for (const char* key : {"preflash_raw_hash", "balance_hash", "hash"})
-            ASSERT_EQ(expected.at("print").erase(key), 1U);
         auto live = PreparedStateOracle::view(actual);
-        ASSERT_EQ(actual.print.glare_hash, expected_print_glare_hash(actual));
-        ASSERT_EQ(live.at("print").erase("glare_hash"), 1U);
+        ASSERT_NO_FATAL_FAILURE(prepare_live_comparison(expected, live, actual));
         PreparedStateOracle::compare(expected, live);
+        if (name == "PreflashAndNormalizationModes[norm=0,compensate=0]") {
+            auto damaged = live;
+            auto& magenta = damaged.at("print").at("preflash_cc_cmy").at("words").at(1);
+            ASSERT_EQ(magenta, "42870000");
+            magenta = "42870001";
+            expect_projection_difference(expected, damaged, "record.print.preflash_cc_cmy.words[1]");
+            magenta = "42870000";
+            PreparedStateOracle::compare(expected, damaged);
+        }
         Json relations = Json::array();
         // Frozen native.* labels now identify raw consumers of the same Rust cache entry.
         if (actual.input_hull.xy.count != 0) {
@@ -525,14 +602,15 @@ namespace {
 
     TEST_F(PreparedStateProducts, OracleReaderRejectsFieldShapeWidthTagAndBackingMutations) {
         const auto params = print_params();
-        const auto expected = oracle_row("NegativePrintMallett").at("expected");
+        auto expected = oracle_row("NegativePrintMallett").at("expected");
         std::string diagnostic;
         FjStatus status{};
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView actual{};
         ASSERT_EQ(state_view(owner, actual).category, FJ_STATUS_SUCCESS);
-        const auto current = PreparedStateOracle::view(actual);
+        auto current = PreparedStateOracle::view(actual);
+        ASSERT_NO_FATAL_FAILURE(prepare_live_comparison(expected, current, actual));
         ASSERT_NO_THROW(PreparedStateOracle::compare(expected, current));
         auto damaged = expected;
         damaged.at("grain").erase("amplitude");
@@ -544,7 +622,13 @@ namespace {
         damaged.at("film_exposure").at("sensitivity_rgb")["shape"] = Json::array({81});
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         damaged = expected;
-        damaged.at("print_gamma")["bits"] = "00000000";
+        auto& gamma = damaged.at("print_gamma").at("bits");
+        ASSERT_EQ(gamma, "3ff0000000000000");
+        gamma = "3ff0000000000001";
+        expect_projection_difference(damaged, current, "record.print_gamma.bits");
+        gamma = "3ff0000000000000";
+        EXPECT_NO_THROW(PreparedStateOracle::compare(damaged, current));
+        gamma = "00000000";
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         damaged = expected;
         damaged.at("route")["value"] = 4;
