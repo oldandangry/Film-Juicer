@@ -32,6 +32,10 @@ Both modes require the pinned products, symbol layouts and qualified workload
 bindings. The product driver leaves the final measured render's owner live
 until the observer admits the single untimed reporter.
 
+In paired runs, each arm's `schedule_points` maps its compiled scanner entry
+names to the exact offset and symbol. The reporter must reach the entry for
+the admitted route and schedule once. The breakpoint is armed after timing.
+
 ### Scatter and halation
 
 For the retained scatter/halation measurement on Linux:

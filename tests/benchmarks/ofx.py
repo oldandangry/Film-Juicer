@@ -44,6 +44,14 @@ SCANNER_PAIRED_ROWS = {
     "preview-negative-direct-film-v1-full-11-66-high": ("preview", "direct", "materialized", (4832, 2016)),
     "preview-negative-direct-film-v1-quarter-8-high": ("preview", "direct", "materialized", (1208, 504)),
 }
+SCANNER_SCHEDULE_ENTRIES = {
+    ("direct", "monolithic"): "juicer_cuda_negative_direct_pipeline",
+    ("print", "monolithic"): "juicer_cuda_print_focused_pipeline",
+    ("direct", "fused-dir"): "juicer_cuda_direct_focused_scan_linear_rgb",
+    ("print", "fused-dir"): "juicer_cuda_print_focused_scan_linear_rgb",
+    ("direct", "materialized"): "juicer_cuda_direct_focused_scan_linear_density_rgb",
+    ("print", "materialized"): "juicer_cuda_print_focused_scan_linear_density_rgb",
+}
 HALATION_EXTENTS = {
     f"halation-{size}-{route}{spatial}": extent
     for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))
@@ -1814,6 +1822,7 @@ def scanner_capacity(args):
                     "symbols": str(symbols) if os.name == "nt" else None,
                     "uuid": inputs["uuid"],
                     "points": inputs["points"],
+                    "layout": inputs.get("layout", {}),
                     "trace": str(directory / "observations.jsonl"),
                     "receipt": str(receipt),
                 },
@@ -2170,7 +2179,7 @@ def spectral_seed_pilot(args):
             execution.write_json(directory / "result.json", report)
 
 
-def read_scanner_timing_arm(host, tail, workload, mode, arm):
+def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry):
     ready = tail["ready"]
     predecessor = tail["predecessor"]
     [reporter] = tail["frames"]
@@ -2228,6 +2237,7 @@ def read_scanner_timing_arm(host, tail, workload, mode, arm):
         or reporter["token"] != result["token"]
         or reporter["route"] != predecessor["route"]
         or reporter["outcome"] != [0, 0, 0, 0]
+        or reporter["launches"] != ([] if scanner_entry is None else [scanner_entry])
     ):
         raise ValueError(f"{arm} {workload} reporter does not match measured owner and latch")
     held = {**predecessor, "success": True, "handoff": True}
@@ -2258,6 +2268,8 @@ def read_scanner_timing_arm(host, tail, workload, mode, arm):
             raise ValueError(f"{arm} {workload} incomplete measured render {index}")
     return {
         "terminal": terminal,
+        "scanner_entry": scanner_entry,
+        "observed_schedule": schedule if scanner_entry is not None else None,
         "source_digest": host["source_digest"],
         "device": {k: host["device"][k] for k in ("name", "ordinal", "driver_version")},
         "controls": controls,
@@ -2323,7 +2335,7 @@ def scanner_paired(args):
         try:
             all_gates = True
             for workload in args.workloads:
-                variant, _, schedule, _ = SCANNER_PAIRED_ROWS[workload]
+                variant, route, schedule, _ = SCANNER_PAIRED_ROWS[workload]
                 arms = inputs["variants"][variant]
                 if not args.check_arm:
                     qualification_row = inputs["row_bindings"][workload]
@@ -2356,6 +2368,14 @@ def scanner_paired(args):
                     runs = []
                     for ordinal, arm in enumerate(pair):
                         declaration = arms[arm]
+                        points = declaration["points"].copy()
+                        scanner_entry = None
+                        if "schedule_points" in declaration or not args.check_arm:
+                            scanner_entry = SCANNER_SCHEDULE_ENTRIES[route, schedule]
+                            point = declaration.get("schedule_points", {}).get(scanner_entry)
+                            if not point or point["symbol"] != scanner_entry:
+                                raise ValueError(f"{arm} {workload} lacks the compiled scanner entry for {schedule}")
+                            points["scanner_schedule"] = point
                         module = Path(declaration["module"]).resolve(strict=True)
                         resources = (module.parent.parent / "Resources").resolve(strict=True)
                         symbols = Path(declaration["symbols"]).resolve(strict=True) if os.name == "nt" else module
@@ -2413,7 +2433,8 @@ def scanner_paired(args):
                                 "module": str(module),
                                 "symbols": str(symbols) if os.name == "nt" else None,
                                 "uuid": declaration["uuid"],
-                                "points": declaration["points"],
+                                "points": points,
+                                "scanner_schedule": scanner_entry,
                                 "layout": declaration["layout"],
                             },
                         )
@@ -2430,7 +2451,7 @@ def scanner_paired(args):
                         run.command(f"{workload}-{name}", command, env=environment)
                         host = json.loads(native_receipt.read_text(encoding="utf-8"))
                         tail = json.loads(tail_receipt.read_text(encoding="utf-8"))
-                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm)
+                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm, scanner_entry)
                         same_inputs = {key: item[key] for key in ("source_digest", "device", "controls")}
                         if binding is not None and same_inputs != binding:
                             raise ValueError(f"{workload} natural timing pair changed common workload inputs")

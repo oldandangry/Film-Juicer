@@ -435,6 +435,12 @@ namespace JuicerCudaTest {
         return true;
     }
 
+    struct PrintGlareObservation {
+        JuicerCuda::ScanDensityCaptureTest::GlareLaunch launch;
+        unsigned fusedScannerLaunches = 0;
+        unsigned planeScannerLaunches = 0;
+    };
+
     static bool execute_boundary(
         FjRuntimeView runtime,
         const JuicerTestSupport::PreparedStateHold& owner,
@@ -444,7 +450,8 @@ namespace JuicerCudaTest {
         const std::string& invocationPhase,
         bool grainDispatchContract,
         const JuicerTestSupport::PreparationInput* sourceParams,
-        JuicerCuda::RenderTest::PrintLaunchObservation* printObservation) {
+        JuicerCuda::RenderTest::PrintLaunchObservation* printObservation,
+        PrintGlareObservation* glareObservation = nullptr) {
         diagnostic.clear();
         if (!runtime.assets || !runtime.cuda) {
             diagnostic = "held-state boundary requires a live Runtime view";
@@ -485,7 +492,8 @@ namespace JuicerCudaTest {
             const std::string& phase;
             bool grainDispatchContract;
             JuicerCuda::RenderTest::PrintLaunchObservation* printObservation;
-        } invocation{owner, runtime, frame, snapshot, invocationPhase, grainDispatchContract, printObservation};
+            PrintGlareObservation* glareObservation;
+        } invocation{owner, runtime, frame, snapshot, invocationPhase, grainDispatchContract, printObservation, glareObservation};
         const auto baseline = fj_test_noise_acquisition_count();
         const bool success = PreparedFrameFixture::with_prepared_frame_inputs(
             runtime.assets, owner, facts, &invocation, [](void* user, const PreparedFrameFixture::Inputs& inputs, std::string& diagnostic) {
@@ -550,6 +558,8 @@ namespace JuicerCudaTest {
                 JuicerCuda::RenderTest::PrintLaunchObservation printLaunch;
                 const bool observePrint = invocation.printObservation != nullptr;
                 std::optional<ofx_test::ScanReferenceCapture> printCapture;
+                const auto inlineLaunches = invocation.glareObservation ? JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() : 0;
+                const auto planeLaunches = invocation.glareObservation ? JuicerCuda::ScanDensityCaptureTest::plane_scan_launches() : 0;
                 if (observePrint)
                     printCapture.emplace(reinterpret_cast<cudaStream_t>(frame.stream), true);
                 if (observePrint)
@@ -571,6 +581,11 @@ namespace JuicerCudaTest {
                     const auto& glare = printCapture->glare_launch();
                     printLaunch.glareSeed = glare.seed;
                     printLaunch.glareLaunchCount = glare.count;
+                    if (invocation.glareObservation) {
+                        *invocation.glareObservation = {glare,
+                                                        JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() - inlineLaunches,
+                                                        JuicerCuda::ScanDensityCaptureTest::plane_scan_launches() - planeLaunches};
+                    }
                     if (glare.count) {
                         const auto field = ofx_test::scan_glare_field(printCapture->read());
                         printLaunch.glareField.assign(field.begin(), field.end());
@@ -797,7 +812,7 @@ namespace JuicerCudaTest {
         const char* const artifacts = std::getenv("JUICER_TEST_ARTIFACT_DIR");
         require(artifacts && *artifacts, "shipping Print preflash requires the native test artifact directory");
         const auto root = JuicerTestSupport::test_asset_workspaces.create(std::filesystem::path(artifacts) / "print-preflash");
-        JuicerTestSupport::copy_print_preparation_assets(resources, root);
+        JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
         const auto profile = root / "profiles/kodak_portra_400.json";
         std::ifstream input(profile, std::ios::binary);
         require(static_cast<bool>(input), "open disposable Portra film profile");
@@ -888,6 +903,7 @@ namespace JuicerCudaTest {
         using Observation = JuicerCuda::RenderTest::PrintLaunchObservation;
         struct Sample {
             Observation launch;
+            PrintGlareObservation glare;
             std::array<float, stride * height> output{};
             std::uint64_t paperVersion = 0;
             std::uint64_t scannerBinding = 0;
@@ -897,20 +913,21 @@ namespace JuicerCudaTest {
             FjPreparedStateView state{};
             FjPreparedFramePolicy policy{};
             FjErrorBuffer error{};
-            require(product.view(state, error).category == FJ_STATUS_SUCCESS && product.frame_policy(full, policy, error).category == FJ_STATUS_SUCCESS,
+            require(product.view(state, error).category == FJ_STATUS_SUCCESS && product.frame_policy(frame.effects_geometry.pixel_definition, policy, error).category == FJ_STATUS_SUCCESS,
                     "read held shipping Print preflash frame values");
             frame.pixel_size_um = policy.geometry.pixel_size_um;
             require(fj_cuda_inspect(runtime.cuda, &frame, &context, nullptr).category == FJ_STATUS_SUCCESS, "inspect shipping preflash CUDA owner");
             snapshot.deviceContextKey = {context.device_id, reinterpret_cast<void*>(context.context)};
             ++snapshot.snapshotId;
-            const JuicerCuda::FrameRect extent{0, 0, width, height};
+            const auto& window = frame.render_window;
+            const JuicerCuda::FrameRect extent{window.x1, window.y1, window.x2, window.y2};
             const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(extent, extent, static_cast<Spektrafilm::AutoExposureMethod>(state.input_policy.meter));
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(state.upload_core_hash, state.dir_recipe.hash, state.scanner_hash, meter.hash);
             require(cudaMemcpyAsync(buffers.destination, initial.data(), sizeof(initial), cudaMemcpyHostToDevice, buffers.stream) == cudaSuccess,
                     "reset shipping preflash output canaries");
             Sample sample;
             std::string detail;
-            const bool rendered = execute_boundary(runtime, product, frame, snapshot, detail, "negative-print/shipping-preflash", false, nullptr, &sample.launch);
+            const bool rendered = execute_boundary(runtime, product, frame, snapshot, detail, "shipping-print/residency", false, nullptr, &sample.launch, &sample.glare);
             require(rendered, detail);
             const auto require_paper_lane = [&](std::size_t lane, FjFloatSpan span, std::size_t stride, std::size_t channel) {
                 const auto& device = sample.launch.paperTables[lane];
@@ -960,10 +977,18 @@ namespace JuicerCudaTest {
             };
             const auto aRaw = raw_words(a.launch);
             const auto bRaw = raw_words(b.launch);
-            require(aRaw[0] == 0x40ecdb2fu && aRaw == raw_words(restored.launch) &&
+            // The Windows and WSL Release preflash fixtures agree on all three A words.
+            constexpr std::array<std::uint32_t, 3> referenceRaw{1089264431u, 1090889810u, 1091592225u};
+            require(aRaw == referenceRaw && aRaw == raw_words(restored.launch) &&
                         bRaw[0] != bRaw[1] && bRaw[1] != bRaw[2] && bRaw[0] != bRaw[2] &&
                         bRaw[0] != aRaw[0] && bRaw[1] != aRaw[1] && bRaw[2] != aRaw[2] && b.launch.printPreflashExposure == 0.125f,
                     "shipping preflash C/M/Y words or amount do not match the A/B/A controls");
+            const double baseTransmission = std::pow(10.0, -0.125);
+            for (std::size_t channel = 0; channel < referenceRaw.size(); ++channel) {
+                const double expected = static_cast<double>(std::bit_cast<float>(referenceRaw[channel])) * baseTransmission;
+                require(std::abs(b.launch.printPreflashRaw[channel] - expected) <= 1e-8 + 0.01 * expected,
+                        "shipping preflash differs from the independent uniform-base transmission prediction");
+            }
             require(same_lights(a.launch, b.launch) && same_lights(a.launch, restored.launch), "shipping preflash changed the resident light slots");
             constexpr TransferCount oneLane{1, 81 * sizeof(float)};
             for (const auto* changed : {&b.launch, &restored.launch}) {
@@ -1063,6 +1088,66 @@ namespace JuicerCudaTest {
                             disabled.printPreflashExposure == 0.0f && raw_words(disabled) == std::array<std::uint32_t, 3>{} &&
                             disabled.uploads.print == TransferCount{},
                         phase);
+            }
+
+            constexpr int originX = -13;
+            constexpr int originY = 17;
+            const FjRect glareBounds{originX, originY, originX + width, originY + height};
+            frame.source.bounds = glareBounds;
+            frame.destination.bounds = glareBounds;
+            frame.render_window = glareBounds;
+            frame.full_frame_extent = glareBounds;
+            frame.effects_geometry = {{originX, originY, width, height}, originX, originY, width, height, 1.0, 1.0, 1.0};
+            frame.time_frames = 37.0;
+            snapshot.frameToken.value = 37;
+            controls.values.glare_active = true;
+            controls.values.dir_couplers.active = true;
+            const auto glare_matches = [](const Observation& first, const Observation& second) {
+                return first.glareSeed == second.glareSeed && first.glareField.size() == second.glareField.size() &&
+                       std::memcmp(first.glareField.data(), second.glareField.data(), first.glareField.size() * sizeof(float)) == 0;
+            };
+            const auto schedules = [&] {
+                controls.values.film_dust_amount = 0.0;
+                auto fused = render(prepare());
+                controls.values.film_dust_amount = 1.0;
+                auto planes = render(prepare());
+                require(fused.glare.fusedScannerLaunches == 1 && fused.glare.planeScannerLaunches == 0 &&
+                            planes.glare.fusedScannerLaunches == 0 && planes.glare.planeScannerLaunches == 1,
+                        "active Print glare did not reach both real scanner schedules");
+                for (const auto* sample : {&fused, &planes}) {
+                    const auto& launch = sample->launch;
+                    const auto& glare = sample->glare.launch;
+                    require(glare.count == 1 && glare.medium == 1 && glare.blurRadius > 0 &&
+                                glare.originX == originX && glare.originY == originY &&
+                                launch.glareField.size() == ofx_test::ScanReferenceCapture::kPixels &&
+                                std::ranges::any_of(launch.glareField, [](float word) {
+                                    return word > 0.0f;
+                                }),
+                            "the scanner did not consume an active blurred paper glare field at the fixed signed origin");
+                }
+                require(fused.glareHash != 0 && fused.glareHash == planes.glareHash && glare_matches(fused.launch, planes.launch),
+                        "the fused and plane Print scanners received different pre-white glare words");
+                return fused;
+            };
+            for (const auto route : {Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+                controls.values.scan_route = static_cast<std::uint32_t>(route);
+                controls.film_key = Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive
+                                        ? "fujifilm_provia_100f"
+                                        : sourceParams.film_key;
+                const auto d50 = schedules();
+                reload(paperProfile, viewedPaper.dump());
+                const auto d65 = schedules();
+                reload(paperProfile, originalPaper);
+                const auto restored = schedules();
+                require(d65.paperVersion != d50.paperVersion && d65.scannerBinding != d50.scannerBinding &&
+                            restored.paperVersion == d50.paperVersion && restored.scannerBinding == d50.scannerBinding &&
+                            d50.glareHash == d65.glareHash && d50.glareHash == restored.glareHash &&
+                            glare_matches(d50.launch, d65.launch) && glare_matches(d50.launch, restored.launch),
+                        "viewing-only Print edit changed the pre-white glare field or failed to change the scanner binding");
+                std::printf("%s D50/D65/restored-D50 retained exact blurred paper glare in both scanner schedules at (%d,%d) frame 37\n",
+                            Spektrafilm::scan_route_key(route),
+                            originX,
+                            originY);
             }
         }
         require(fj_cuda_retire_instance(runtime.cuda, snapshot.instanceToken.value, nullptr).category == FJ_STATUS_SUCCESS &&

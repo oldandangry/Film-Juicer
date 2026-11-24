@@ -195,9 +195,10 @@ def poll(frame, draw):
     if "poll" in draw:
         raise RuntimeError("more than one scan poll for a capacity render")
     # The archived cubic poll takes the reporter stream. The spectral poll
-    # only queries events and gets the reporter stream from the enclosing prepare.
-    takes_stream = settings["layout"].get("poll_takes_stream", True)
-    stream = argument(frame, 1) if takes_stream else draw["prepare"]["stream"]
+    # only queries events. The bound render supplies its stream, and replay
+    # and tail independently check it at scan preparation.
+    takes_stream = settings.get("layout", {}).get("poll_takes_stream", True)
+    stream = argument(frame, 1) if takes_stream else draw["stream"]
     polled = {**owner(frame, argument(frame, 0)), "stream": stream, "queries": [], "destroyed": []}
     draw["poll"] = polled
     result = argument(frame, 2 if takes_stream else 1)
@@ -305,7 +306,10 @@ def on_entry(frame, location, _):
         draw = active.get(thread)
         if draw is None:
             return False
-        if operation == "spectral_launch":
+        if operation == "scanner_schedule":
+            draw["launches"].append(settings["scanner_schedule"])
+            record(operation, index=draw["index"], entry=settings["scanner_schedule"])
+        elif operation == "spectral_launch":
             draw["launches"].append(operation)
             record(operation, index=draw["index"])
             if settings.get("mode") == "replay":
@@ -546,7 +550,10 @@ def tail(debugger):
         module = loaded[0]
         if settings.get("symbols"):
             debugger.HandleCommand(f'target symbols add "{Path(settings["symbols"]).as_posix()}"')
-        bind_points(target, module, TAIL_POINTS)
+        required = TAIL_POINTS
+        if settings.get("scanner_schedule"):
+            required = {**required, "scanner_schedule": settings["scanner_schedule"]}
+        bind_points(target, module, required)
         tail_predecessor = stopped_predecessor(thread.GetFrameAtIndex(0), ready)
         record("measured_predecessor", **tail_predecessor)
         release_reporter(ready, "release")
