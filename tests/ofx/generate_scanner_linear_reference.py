@@ -299,13 +299,24 @@ def delivered_reference(row, source, signed_rgb):
     }
 
 
+def float32_fma(left, right, addend):
+    wide = math.fma(left, right, addend)
+    spacing = math.ldexp(1.0, max(math.frexp(wide)[1] - 24, -149))
+    if abs(wide) % spacing == 0.5 * spacing:
+        # Float32 products fit in Float64. Recover the discarded tail at a Float32 midpoint.
+        tail = math.fsum((left * right, addend, -wide))
+        if tail:
+            wide = math.nextafter(wide, math.copysign(math.inf, tail))
+    return float(np.float32(wide))
+
+
 def float32_dye_dot(cmy, dye, base):
     cyan, magenta, yellow = map(float, cmy)
     dye_c, dye_m, dye_y = map(float, dye)
     # The compiled scanner rounds the M product before contracting C and Y in that order.
     magenta_product = float(np.float32(magenta * dye_m))
-    cyan_magenta = float(np.float32(math.fma(cyan, dye_c, magenta_product)))
-    cyan_magenta_yellow = float(np.float32(math.fma(yellow, dye_y, cyan_magenta)))
+    cyan_magenta = float32_fma(cyan, dye_c, magenta_product)
+    cyan_magenta_yellow = float32_fma(yellow, dye_y, cyan_magenta)
     return float(np.float32(cyan_magenta_yellow + float(base)))
 
 
