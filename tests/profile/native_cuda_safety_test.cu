@@ -128,50 +128,34 @@ namespace {
             int base = 0;
             float fraction = 0.0f;
             film_tc_cubic_coordinate_device(normalized[index], 192, base, fraction);
-            const auto offset = static_cast<std::size_t>(index) * 4u;
+            const auto offset = static_cast<std::size_t>(index) * 2u;
             out[offset] = static_cast<float>(base);
             out[offset + 1] = fraction;
-            pchip_coordinate_float_device(normalized[index], 17, base, fraction);
-            out[offset + 2] = static_cast<float>(base);
-            out[offset + 3] = fraction;
         }
     }
 
     TEST(ProfileCudaSafety, ClampsBeforeFloatToIndexConversion) {
         require_cuda(cudaSetDevice(0));
         const std::array normalized{std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), -1.0f, 0.0f, 0.5f, 1.0f};
-        DeviceFloats input(normalized.size()), output(normalized.size() * 4u);
+        DeviceFloats input(normalized.size()), output(normalized.size() * 2u);
         input.upload(normalized);
         coordinate_kernel<<<1, 32>>>(input.data(), output.data());
         require_cuda(cudaGetLastError());
         const auto actual = output.download();
         constexpr std::array<float, 9> kFilmBase{0, 0, 190, 0, 190, 0, 0, 95, 190};
-        constexpr std::array<float, 9> kScanBase{0, 0, 15, 0, 15, 0, 0, 8, 15};
         constexpr std::array<float, 9> kFilmFraction{0, 0, 1, 0, 1, 0, 0, 0.5f, 1};
-        constexpr std::array<float, 9> kScanFraction{0, 0, 1, 0, 1, 0, 0, 0, 1};
         JuicerTests::GtestCohort cases("coordinate", 9);
         for (std::size_t sample = 0; sample < normalized.size(); ++sample) {
             auto row = cases.case_event(std::to_string(sample));
-            EXPECT_EQ(actual[sample * 4], kFilmBase[sample]);
-            EXPECT_EQ(actual[sample * 4 + 1], kFilmFraction[sample]);
-            EXPECT_EQ(actual[sample * 4 + 2], kScanBase[sample]);
-            EXPECT_EQ(actual[sample * 4 + 3], kScanFraction[sample]);
+            EXPECT_EQ(actual[sample * 2], kFilmBase[sample]);
+            EXPECT_EQ(actual[sample * 2 + 1], kFilmFraction[sample]);
             row.passed();
         }
     }
 
-    struct ScanCoordinates {
-        double extreme;
-        double nan;
-    };
-
-    __global__ void lut_kernel(const float* filmLut, JuicerCuda::ScanStagePayload scan, ScanCoordinates coordinates, float* out) {
+    __global__ void lut_kernel(const float* filmLut, float* out) {
         const float xyz[3] = {1.0f, 1.0f, 1.0f};
         film_tc_layer_exposures_device(xyz, filmLut, 192, out);
-        const double extreme[3] = {coordinates.extreme, 0.5, -coordinates.extreme};
-        out[6] = sample_pchip_float_log2_scan_lut_device(scan, extreme, out + 3) ? 1.0f : 0.0f;
-        const double invalid[3] = {coordinates.nan, 0.5, 0.5};
-        out[7] = sample_pchip_float_log2_scan_lut_device(scan, invalid, out + 3) ? 1.0f : 0.0f;
     }
 
     TEST(ProfileCudaSafety, NonfiniteLutContentsAndNarrowingCoordinatesUseRealConsumers) {
@@ -180,31 +164,18 @@ namespace {
         for (std::size_t sample = 0; sample < filmLut.size(); sample += 8) {
             filmLut[sample] = std::numeric_limits<float>::quiet_NaN();
         }
-        DeviceFloats film(filmLut.size()), nodes(24), cells(3), output(8);
+        DeviceFloats film(filmLut.size()), output(3);
         film.upload(filmLut);
-        nodes.upload(std::array<float, 24>{});
-        cells.upload(std::array<float, 3>{});
-        JuicerCuda::ScanStagePayload scan{};
-        scan.scanLutRes = 2;
-        scan.scanLutLog2PchipXYZ = scan.scanLutPchipSlopeC = scan.scanLutPchipSlopeM = scan.scanLutPchipSlopeY = nodes.data();
-        scan.scanLutPchipCellMin = scan.scanLutPchipCellMax = cells.data();
-        lut_kernel<<<1, 1>>>(film.data(), scan, ScanCoordinates{std::numeric_limits<double>::max(), std::numeric_limits<double>::quiet_NaN()}, output.data());
+        lut_kernel<<<1, 1>>>(film.data(), output.data());
         require_cuda(cudaGetLastError());
         const auto actual = output.download();
-        // Film's existing computed-sample sanitation returns zero. A constant
-        // zero log2 scanner LUT interpolates to zero at any clamped coordinate.
-        JuicerTests::GtestCohort cases("lut-output", std::vector<std::string>{"film-c", "film-m", "film-y", "scan-c", "scan-m", "scan-y", "extreme-coordinate", "nan-coordinate"});
-        for (std::size_t channel = 0; channel < 6; ++channel) {
-            auto row = cases.case_event(std::string(channel < 3 ? "film-" : "scan-") + "cmy"[channel % 3]);
+        // Film's existing computed-sample sanitation returns zero.
+        JuicerTests::GtestCohort cases("lut-output", std::vector<std::string>{"film-c", "film-m", "film-y"});
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            auto row = cases.case_event(std::string("film-") + "cmy"[channel]);
             EXPECT_EQ(actual[channel], 0.0f);
             row.passed();
         }
-        auto extreme = cases.case_event("extreme-coordinate");
-        EXPECT_EQ(actual[6], 1.0f);
-        extreme.passed();
-        auto nanCoordinate = cases.case_event("nan-coordinate");
-        EXPECT_EQ(actual[7], 0.0f);
-        nanCoordinate.passed();
     }
 
     TEST(ProfileCudaSafety, DirectAndPrintDevelopmentUseVariableAndDuplicateAxes) {

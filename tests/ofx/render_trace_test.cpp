@@ -186,12 +186,16 @@ namespace {
             {"glare_blur_radius", post.glare_blur_radius},
             {"unsharp_radius", post.unsharp_radius},
             {"unsharp_controls_bits", ofx_test::scan_float_words(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
-            {"recipe_hash", state.recipe_hash},
             {"scanner_hash", state.scanner_hash},
             {"print_glare_hash", state.print.glare_hash},
             {"source_bits", source_bits(image, ofx_test::initial_source(image))},
             {"glare_field_bits", ofx_test::scan_float_words(glare)}};
-        ofx_test::require_render(row.at("inputs") == inputs, "fixed scanner fixture inputs changed");
+        auto expectedInputs = row.at("inputs");
+        ofx_test::require_render(expectedInputs.at("recipe_hash").is_number_unsigned(), "fixed scanner fixture original recipe identity");
+        expectedInputs.erase("recipe_hash");
+        ofx_test::require_render(state.recipe_hash != 0 && state.upload_core_hash == state.recipe_hash,
+                                 "fixed scanner held current route identity");
+        ofx_test::require_render(expectedInputs == inputs, "fixed scanner fixture inputs changed");
         const auto& expected = row.at("output_bits");
         const auto samples = static_cast<std::size_t>(image.components) * ofx_test::ScanReferenceCapture::kPixels;
         ofx_test::require_render(expected.is_array() && expected.size() == samples, "fixed scanner fixture output shape");

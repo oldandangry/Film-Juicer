@@ -567,18 +567,6 @@ namespace {
     }
 
     void bind_scanner(JuicerCuda::ScanStagePayload& scan, const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared, const OutputGamutRecipe& gamut) {
-        const auto& range = *prepared.scanRange;
-        scan.densityRange.mediumIsNegative = range.mediumIsNegative;
-        std::copy_n(range.min_cmy, 3, scan.densityRange.min_cmy);
-        std::copy_n(range.inv_max_cmy, 3, scan.densityRange.inv_max_cmy);
-        const auto& lut = *prepared.scanLut;
-        scan.scanLutLog2PchipXYZ = lut.log2PchipXYZ;
-        scan.scanLutPchipSlopeC = lut.slopeC;
-        scan.scanLutPchipSlopeM = lut.slopeM;
-        scan.scanLutPchipSlopeY = lut.slopeY;
-        scan.scanLutPchipCellMin = lut.cellMin;
-        scan.scanLutPchipCellMax = lut.cellMax;
-        scan.scanLutRes = static_cast<int>(lut.res);
         require(JuicerCuda::pack_scan_color(scan.scanColor, prepared, gamut), "Missing scanner colour resources");
     }
 

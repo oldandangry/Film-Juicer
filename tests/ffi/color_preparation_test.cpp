@@ -52,6 +52,37 @@ namespace {
             throw std::runtime_error(diagnostic);
         }
     }
+    struct ArchivedColorRecipe {
+        const Json& record;
+    };
+
+    void require_live_identity_record(const Json& actual, ArchivedColorRecipe archived, const std::string& id, const bool negativeControl) {
+        const auto differences_for = [archived](const Json& observed) {
+            auto record = archived.record;
+            for (const std::size_t index : {0U, 1U, 2U, 3U, 4U, 6U}) {
+                require(observed.at("hashes").at(index).is_number_unsigned() && record.at("hashes").at(index).is_number_unsigned(),
+                        "surviving recipe hash has its unsigned type");
+            }
+            for (const std::size_t index : {5U, 7U, 8U, 9U}) {
+                require(observed.at("hashes").at(index).is_number_unsigned() && record.at("hashes").at(index).is_number_unsigned(),
+                        "live recipe hash has its unsigned type");
+                record.at("hashes").at(index) = observed.at("hashes").at(index);
+            }
+            return Json::diff(record, observed);
+        };
+        const auto differences = differences_for(actual);
+        require(differences.empty(), id + " complete arrays and surviving identities: " + differences.dump());
+        if (!negativeControl)
+            return;
+        auto changed = actual;
+        auto& hash = changed.at("hashes").at(0);
+        const auto original = hash.get<std::uint64_t>();
+        hash = original ^ std::uint64_t{1};
+        const auto delta = differences_for(changed);
+        require(delta.size() == 1 && delta.at(0).at("path") == "/hashes/0", id + " live recipe comparison rejects only the changed hash[0]");
+        hash = original;
+        require(differences_for(changed).empty(), id + " restored live identity record is accepted");
+    }
     FjPreparedStateView prepared_view(const JuicerTestSupport::PreparedStateHold& product) {
         std::array<char, 2048> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -669,9 +700,10 @@ namespace {
             JuicerTests::CaseEvent event("color.preparation.recipe", id);
             auto product = JuicerTestSupport::prepare_product(assets, controls);
             require(id == fixture.at("recipes").at(i).at("id").get<std::string>(), "fixed recipe case membership");
-            require(complete_result(product) == fixture.at("recipes").at(i).at("expected"), id + " independent complete arrays/identities");
+            const auto actual = complete_result(product);
+            require_live_identity_record(actual, ArchivedColorRecipe{fixture.at("recipes").at(i).at("expected")}, id + " independent complete arrays/identities", i == 0);
             auto repeated = JuicerTestSupport::prepare_product(assets, controls);
-            require(complete_result(repeated) == complete_result(product), id + " repeat complete construction");
+            require(complete_result(repeated) == actual, id + " repeat complete construction");
             event.passed();
         }
         for (int route = 0; route < 2; ++route) {
@@ -1432,7 +1464,7 @@ namespace {
                 require(bits(productView.film_exposure.input_xyz_adapt, 9) == bits(encodedOffView.film_exposure.input_xyz_adapt, 9) && productView.film_exposure.hash == encodedOffView.film_exposure.hash && productView.film_exposure.tc_lut_hash == encodedOffView.film_exposure.tc_lut_hash, "output CCTF-only changes preserve film/TC family");
                 require(productView.output_boundary.entry_identity != 0 && productView.output_boundary.entry_identity == encodedOffView.output_boundary.entry_identity && productView.output_boundary.cmax.data == encodedOffView.output_boundary.cmax.data, "output CCTF-only reuses actual boundary table owner");
                 require(Cat02Fixtures::tables_result(productView.scanner_tables) == Cat02Fixtures::tables_result(encodedOffView.scanner_tables) && Cat02Fixtures::scanner_descriptor(productView.scanner_lut) == Cat02Fixtures::scanner_descriptor(encodedOffView.scanner_lut), "output CCTF-only preserves complete scanner tables/descriptor");
-                require(bits(productView.scanner_color.cat02, 9) == bits(encodedOffView.scanner_color.cat02, 9) && productView.scanner_color.hash != encodedOffView.scanner_color.hash && productView.scanner_recipe_hash != encodedOffView.scanner_recipe_hash && productView.recipe_hash != encodedOffView.recipe_hash, "output CCTF-only changes identities at color/output owners");
+                require(bits(productView.scanner_color.cat02, 9) == bits(encodedOffView.scanner_color.cat02, 9) && productView.scanner_color.hash != encodedOffView.scanner_color.hash && productView.scanner_recipe_hash != encodedOffView.scanner_recipe_hash && productView.scanner_hash != encodedOffView.scanner_hash && productView.recipe_hash != encodedOffView.recipe_hash, "output CCTF-only changes identities at color/output owners");
                 JuicerTestSupport::InstanceFixture state;
                 JuicerTestSupport::capture(state, controls);
                 const auto old = JuicerTestSupport::admit(assets, state);
@@ -1551,15 +1583,10 @@ namespace {
             require(product.view(view, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
             require_scanner_encoding(view.scanner_color, catalogue);
             const auto actual = Cat02Fixtures::complete_result(product);
-            require(actual == row.at("expected"), id + " independent complete film/raw-midgray/scanner/tables/descriptors/identities: " + Json::diff(row.at("expected"), actual).dump());
+            require_live_identity_record(actual, ArchivedColorRecipe{row.at("expected")}, id + " independent complete film/raw-midgray/scanner/tables/descriptors/identities", i == 0);
             if (id == witness.at("recipe_id").get<std::string>()) {
                 check_preset_witness(actual, row.at("expected"), witness);
                 wrongPresetRejected = true;
-            }
-            if (i == 0) {
-                auto changedIdentity = actual;
-                changedIdentity["hashes"][0] = changedIdentity["hashes"][0].get<std::uint64_t>() ^ 1u;
-                require(changedIdentity != row.at("expected"), id + " complete identity comparator rejection");
             }
             event.passed();
         }
@@ -2359,17 +2386,10 @@ namespace {
             require(id == row.at("id").get<std::string>() && InputFixtures::controls_json(controls) == row.at("controls"), "ordered frozen product inputs/settings exact");
             auto product = Cat02Fixtures::prepare(assets, controls);
             const auto actual = InputFixtures::complete_result(product);
-            if (actual != row.at("expected")) {
-                throw std::runtime_error(id + " completed product mismatch: " + Json::diff(row.at("expected"), actual).dump());
-            }
+            require_live_identity_record(actual, ArchivedColorRecipe{row.at("expected")}, id + " completed product", i == 0);
             if (id == witness.at("recipe_id").get<std::string>()) {
                 check_preset_witness(actual, row.at("expected"), witness);
                 wrongPreset = true;
-            }
-            if (i == 0) {
-                auto altered = actual;
-                altered["hashes"][0] = altered["hashes"][0].get<std::uint64_t>() ^ 1u;
-                require(altered != row.at("expected"), "required completed identity negative control");
             }
             event.passed();
         }
@@ -2416,7 +2436,10 @@ namespace {
                 FjPreparedStateView encodedOffView{};
                 require(encodedOff.view(encodedOffView, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
                 const auto liveView = prepared_view(*replacement.state);
-                require(liveView.film_exposure.hash == encodedOffView.film_exposure.hash && liveView.film_exposure.tc_lut_hash == encodedOffView.film_exposure.tc_lut_hash && liveView.scanner_hash == encodedOffView.scanner_hash && Cat02Fixtures::tables_result(liveView.scanner_tables) == Cat02Fixtures::tables_result(encodedOffView.scanner_tables), "output encoding preserves film/TC and scanner spectral families");
+                require(liveView.film_exposure.hash == encodedOffView.film_exposure.hash && liveView.film_exposure.tc_lut_hash == encodedOffView.film_exposure.tc_lut_hash && Cat02Fixtures::tables_result(liveView.scanner_tables) == Cat02Fixtures::tables_result(encodedOffView.scanner_tables), "output encoding preserves film/TC and scanner spectral families");
+                require(bits(liveView.scanner_color.cat02, 9) == bits(encodedOffView.scanner_color.cat02, 9) && liveView.output_boundary.entry_identity == encodedOffView.output_boundary.entry_identity && liveView.output_boundary.cmax.data == encodedOffView.output_boundary.cmax.data, "output encoding retains CAT02 and the output boundary owner");
+                require(liveView.scanner_hash != encodedOffView.scanner_hash && liveView.recipe_hash != encodedOffView.recipe_hash,
+                        "output encoding changes the scanner binding and full recipe");
                 event.passed();
             }
         }

@@ -472,12 +472,6 @@ namespace JuicerCuda {
         DeviceCurveView printDcY{};
     };
 
-    struct ScannerDensityRangePayload {
-        int mediumIsNegative = 1;
-        float min_cmy[3] = {0.0f, 0.0f, 0.0f};
-        float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
-    };
-
     struct ScannerWavelength {
         float dyeC;
         float dyeM;
@@ -494,14 +488,6 @@ namespace JuicerCuda {
     };
 
     struct ScanStagePayload {
-        const float* JUICER_RESTRICT scanLutLog2PchipXYZ = nullptr;
-        const float* JUICER_RESTRICT scanLutPchipSlopeC = nullptr;
-        const float* JUICER_RESTRICT scanLutPchipSlopeM = nullptr;
-        const float* JUICER_RESTRICT scanLutPchipSlopeY = nullptr;
-        const float* JUICER_RESTRICT scanLutPchipCellMin = nullptr;
-        const float* JUICER_RESTRICT scanLutPchipCellMax = nullptr;
-        int scanLutRes = 0;
-        ScannerDensityRangePayload densityRange{};
         ScanColorPayload scanColor{};
         int correctionActive = 0;
         float correctionSlope = 1.0f;

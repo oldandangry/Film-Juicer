@@ -2103,7 +2103,7 @@ fn prepare_state(
         black_level: scanner_params.black_level,
         white_level: scanner_params.white_level,
     };
-    let (route, lut, scanner_bounds_hash) = match (print, print_main, print_balance) {
+    let (route, lut) = match (print, print_main, print_balance) {
         (Some(print), Some((source_illuminant, main_illuminant)), Some(balance)) => {
             let lut = print_lut.expect("print descriptor admitted before post effects");
             let resource_descriptors =
@@ -2161,7 +2161,6 @@ fn prepare_state(
                 }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
-            let bounds_hash = print.bounds.hash();
             let glare_hash = print_glare_hash(
                 params.scan_route,
                 &params.print_profile_key,
@@ -2201,7 +2200,6 @@ fn prepare_state(
                     hash,
                 }),
                 lut,
-                bounds_hash,
             )
         }
         (None, None, None) => {
@@ -2228,7 +2226,6 @@ fn prepare_state(
             (
                 PreparedRoute::Direct(DirectState { correction }),
                 direct_lut.expect("direct descriptor admitted before payload"),
-                film_bounds.hash(),
             )
         }
         _ => unreachable!("print route privately owns all print construction products"),
@@ -2264,7 +2261,6 @@ fn prepare_state(
             profile_route_hash,
             input.hash(),
             acquired.development.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
         ]),
         (PreparedRoute::Direct(_), true) => hash::u64s(&[
@@ -2272,15 +2268,12 @@ fn prepare_state(
             input.hash(),
             acquired.development.hash(),
             dir.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
         ]),
         (PreparedRoute::Print(print), false) => hash::u64s(&[
             profile_route_hash,
             input.hash(),
             acquired.development.hash(),
-            film_bounds.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
             print.hash(),
         ]),
@@ -2289,8 +2282,6 @@ fn prepare_state(
             input.hash(),
             acquired.development.hash(),
             dir.hash(),
-            film_bounds.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
             print.hash(),
         ]),
@@ -2572,6 +2563,73 @@ mod tests {
                 mutated[index] ^= 1;
                 assert!(matches(&mutated));
             }
+        }
+    }
+
+    #[test]
+    fn full_route_recipe_folds_the_surviving_owner_words() {
+        let stock = assets();
+        for (route, dir_enabled) in [
+            (ScanRoute::NegativeDirect, true),
+            (ScanRoute::NegativePrint, true),
+            (ScanRoute::PositiveDirect, false),
+            (ScanRoute::PositivePrint, false),
+        ] {
+            let mut controls = params(route, 1);
+            controls.dir_couplers.active = dir_enabled;
+            controls.grain.active = dir_enabled;
+            assert_eq!(controls.camera_exposure_compensation_ev.to_bits(), 0);
+            let mut identities = Vec::new();
+            for exposure in [0.0, 0.25, 0.0] {
+                controls.camera_exposure_compensation_ev = exposure;
+                let state = prepare(&stock, &controls).unwrap();
+                assert_eq!(state.dir().active(), dir_enabled);
+                assert_eq!(state.grain().hash() != 0, dir_enabled);
+                let mut base = Vec::new();
+                base.extend(state.profile_route_hash().to_le_bytes());
+                base.extend(state.input().hash().to_le_bytes());
+                base.extend(state.development().hash().to_le_bytes());
+                if dir_enabled {
+                    base.extend(state.dir().hash().to_le_bytes());
+                }
+                base.extend(state.scanner().hash().to_le_bytes());
+                if let PreparedRoute::Print(paper) = state.route() {
+                    base.extend(paper.hash().to_le_bytes());
+                }
+                let fold = |bytes: &[u8]| {
+                    let optional = [
+                        state.optics().hash(),
+                        state.grain().hash(),
+                        state.effects().hash(),
+                    ];
+                    let result = optional.into_iter().filter(|&word| word != 0).fold(
+                        hash::bytes(bytes),
+                        |previous, next| {
+                            let mut continuation = previous.to_le_bytes().to_vec();
+                            continuation.extend(next.to_le_bytes());
+                            hash::bytes(&continuation)
+                        },
+                    );
+                    #[cfg(feature = "grain-preview")]
+                    if let Some(film_grain) = state.film_grain() {
+                        return hash::bytes(
+                            &[result.to_le_bytes(), film_grain.hash().to_le_bytes()].concat(),
+                        );
+                    }
+                    result
+                };
+                assert_eq!(fold(&base), state.hash());
+                assert_eq!(state.upload_core_hash(), state.hash());
+                for index in [0, 8, 16, 24] {
+                    base[index] ^= 1;
+                    assert_ne!(fold(&base), state.hash());
+                    base[index] ^= 1;
+                }
+                assert_eq!(fold(&base), state.hash());
+                identities.push(state.hash());
+            }
+            assert_ne!(identities[0], identities[1]);
+            assert_eq!(identities[0], identities[2]);
         }
     }
 

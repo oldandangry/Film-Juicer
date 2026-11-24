@@ -1049,12 +1049,6 @@ namespace {
         JuicerCuda::GateWeavePayload weave{};
     };
 
-    void copy_scan_density_range_payload(JuicerCuda::ScannerDensityRangePayload& destination, const JuicerCuda::Resources::DeviceScanRange& source) {
-        destination.mediumIsNegative = source.mediumIsNegative;
-        copy_float3(destination.min_cmy, source.min_cmy);
-        copy_float3(destination.inv_max_cmy, source.inv_max_cmy);
-    }
-
     void meter_camera_exposure(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         JuicerCuda::FilmPayloadPack& filmPayloads,
@@ -1663,16 +1657,6 @@ namespace {
         const OutputGamutRecipe& outputGamut,
         const Scanner::ScannerColorCorrectionDescriptor& scannerCorrection,
         const ExecutionErrors& errors) {
-        copy_scan_density_range_payload(
-            scanStage.densityRange,
-            *prepared.scanRange);
-        scanStage.scanLutLog2PchipXYZ = prepared.scanLut->log2PchipXYZ;
-        scanStage.scanLutPchipSlopeC = prepared.scanLut->slopeC;
-        scanStage.scanLutPchipSlopeM = prepared.scanLut->slopeM;
-        scanStage.scanLutPchipSlopeY = prepared.scanLut->slopeY;
-        scanStage.scanLutPchipCellMin = prepared.scanLut->cellMin;
-        scanStage.scanLutPchipCellMax = prepared.scanLut->cellMax;
-        scanStage.scanLutRes = static_cast<int>(prepared.scanLut->res);
         if (!JuicerCuda::pack_scan_color(scanStage.scanColor, prepared, outputGamut)) {
             errors.fail_submission(
                 "pack_scan_color",
