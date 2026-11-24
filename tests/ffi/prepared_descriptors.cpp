@@ -337,10 +337,6 @@ namespace JuicerCudaTest {
         FjPreparedHostData& out) {
         out.route = static_cast<std::uint32_t>(source.route);
         out.capture_polarity = static_cast<std::uint32_t>(source.capturePolarity);
-        out.scanner_lut = {};
-        out.scanner_lut.density_bounds_hash = source.scanner.densityBoundsHash;
-        out.scanner_lut.resolution = source.scanner.lutResolution;
-        out.scanner_lut.hash = source.scanner.hash;
         out.scanner_correction = {};
         out.scanner_correction.flags = source.correction.active ? FJ_CORRECTION_ACTIVE : 0;
         out.scanner_correction.xyz_slope = source.correction.xyzSlope;

@@ -277,42 +277,22 @@ typedef struct FjDirCouplers {
     uint64_t hash;
 } FjDirCouplers;
 
-/* DensityBoundsRecipe -> scanner/enlarger payload; unmodified optical-density
- * minima and inverse spans in CMY. Direct-route sign convention is applied by
- * native packing, exactly as in prepare_focused_route_resources. */
-typedef struct FjDensityBounds {
-    float min_cmy[3];
-    float inv_span_cmy[3];
-    uint64_t hash;
-} FjDensityBounds;
-
 typedef struct FjScannerSpectra {
-    /* Each float[81], wavelength order 380..780 nm, 5 nm steps, Y/M/C optical
-     * extinction. PreparedState scanner tables -> scanner-LUT callback;
-     * expires at native-call return. */
+    /* Each float[81], wavelength order 380..780 nm, 5 nm steps. The native
+     * frame packs these optical-density coefficients into immutable spectra. */
     FjFloatSpan dye_y;
     FjFloatSpan dye_m;
     FjFloatSpan dye_c;
     /* Each float[81], same wavelength order, illuminant-weighted XYZ CMFs.
-     * scannerTables.Ax/Ay/Az -> canonical scan-LUT host build;
-     * relative tristimulus weights; expires at native-call return. */
+     * Relative tristimulus weights borrowed until the native call returns. */
     FjFloatSpan weighted_x;
     FjFloatSpan weighted_y;
     FjFloatSpan weighted_z;
     /* float[81] optical density in wavelength order, or empty for no baseline.
-     * scannerTables.baseDensityMin -> Scanner::spectral_to_log_xyz;
      * expires at native-call return. */
     FjFloatSpan base_density;
     float inverse_y_normalization;
 } FjScannerSpectra;
-
-/* Consumed ScannerSpectralLutDescriptor identity and resolution. Route/medium/
- * polarity come from FjPreparedHostData; hash constituent metadata stays upstream. */
-typedef struct FjScannerLut {
-    uint64_t density_bounds_hash;
-    uint32_t resolution;
-    uint64_t hash;
-} FjScannerLut;
 
 #define FJ_CORRECTION_ACTIVE 1U
 typedef struct FjScannerCorrection {
@@ -799,10 +779,7 @@ typedef struct FjPreparedHostData {
     FjAutoExposure auto_exposure;
     FjFilmDevelopment film_development;
     FjDirCouplers dir_couplers;
-    FjDensityBounds scanner_bounds;
-    FjDensityBounds enlarger_film_bounds;
     FjScannerSpectra scanner_spectra;
-    FjScannerLut scanner_lut;
     FjScannerCorrection scanner_correction;
     FjScannerPostEffects scanner_post;
     FjOutputColor output_color;

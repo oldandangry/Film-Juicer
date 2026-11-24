@@ -15,7 +15,6 @@ namespace JuicerCuda {
     struct PreparedDescriptors {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
-        Scanner::ScannerSpectralLutDescriptor scanner{};
         Scanner::ScannerColorCorrectionDescriptor correction{};
         Scanner::ScannerPostEffectsDescriptor post{};
         Scanner::ColorRuntime color{};

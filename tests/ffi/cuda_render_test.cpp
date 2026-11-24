@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -902,7 +903,7 @@ namespace JuicerCudaTest {
             require_status(fj_cuda_render(cuda, &context, &changed, &submission, &prepared, {}, error), unsupported, "frame input");
             row.passed();
         }
-        constexpr std::array<const char*, 10> preparedFaultIds{"unknown-route", "different-recipe-hash", "null-sensitivity", "short-density-count", "different-preview-width", "different-source-bounds", "different-density-bounds-hash", "invalid-profile-key", "reserved-scanner-post-flags", "reserved-output-color-flags"};
+        constexpr std::array<const char*, 10> preparedFaultIds{"unknown-route", "different-recipe-hash", "null-sensitivity", "short-density-count", "different-preview-width", "different-source-bounds", "different-scanner-normalization", "invalid-profile-key", "reserved-scanner-post-flags", "reserved-output-color-flags"};
         JuicerTests::Cohort preparedFaults(invocationContext + "/render-prepared-input", std::vector<std::string>(preparedFaultIds.begin(), preparedFaultIds.end()));
         for (int fault = 0; fault < 10; ++fault) {
             auto row = preparedFaults.case_event(preparedFaultIds[fault]);
@@ -927,7 +928,8 @@ namespace JuicerCudaTest {
                     ++changed.auto_exposure.source_bounds.x1;
                     break;
                 case 6:
-                    ++changed.scanner_lut.density_bounds_hash;
+                    changed.scanner_spectra.inverse_y_normalization = std::bit_cast<float>(
+                        std::bit_cast<std::uint32_t>(changed.scanner_spectra.inverse_y_normalization) ^ 1U);
                     break;
                 case 7:
                     changed.film_profile_key = {nullptr, 1};

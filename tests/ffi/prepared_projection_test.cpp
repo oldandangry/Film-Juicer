@@ -494,7 +494,6 @@ namespace {
         FjPreparedHostData input{};
         input.route = FJ_ROUTE_NEGATIVE_PRINT;
         input.capture_polarity = FJ_POLARITY_NEGATIVE;
-        input.scanner_lut = {101, 17, 102};
         input.scanner_correction = {FJ_CORRECTION_ACTIVE, 1.25f, -0.125f, 0.75f};
         input.scanner_post = {
             FJ_POST_GLARE, 2.5f, 0.375f, 1.25f, 4, 0.75f, 2, 1.5f, 5, 0.625f, 103};
@@ -722,13 +721,12 @@ namespace {
             std::uint32_t polarity;
             Spektrafilm::ScanRoute nativeRoute;
             Spektrafilm::ProfilePolarity nativePolarity;
-            Scanner::ScannedMediumKind medium;
         };
         const RouteCase cases[] = {
-            {FJ_ROUTE_NEGATIVE_DIRECT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Film},
-            {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Print},
-            {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Film},
-            {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Print}};
+            {FJ_ROUTE_NEGATIVE_DIRECT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ProfilePolarity::Negative},
+            {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative},
+            {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive},
+            {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive}};
         const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
         JuicerTests::GtestCohort cohort("route-polarity-medium", ids);
         for (const auto& item : cases) {
@@ -743,8 +741,6 @@ namespace {
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
             EXPECT_EQ(actual.route, item.nativeRoute);
             EXPECT_EQ(actual.capturePolarity, item.nativePolarity);
-            EXPECT_EQ(actual.scanner.medium, item.medium);
-            EXPECT_EQ(actual.scanner.polarity, item.nativePolarity);
             EXPECT_FALSE(actual.diffusion);
             EXPECT_FALSE(actual.halation);
             EXPECT_FALSE(actual.grain);
@@ -759,9 +755,6 @@ namespace {
         JuicerCuda::PreparedDescriptors actual;
         std::string diagnostic;
         ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
-        EXPECT_EQ(actual.scanner.densityBoundsHash, 101u);
-        EXPECT_EQ(actual.scanner.lutResolution, 17u);
-        EXPECT_EQ(actual.scanner.hash, 102u);
         EXPECT_TRUE(actual.correction.active);
         EXPECT_FLOAT_EQ(actual.correction.xyzSlope, 1.25f);
         EXPECT_FLOAT_EQ(actual.correction.xyzOffset, -0.125f);
@@ -982,9 +975,6 @@ namespace {
         JuicerCuda::PreparedDescriptors source{};
         source.route = Spektrafilm::ScanRoute::PositiveDirectScan;
         source.capturePolarity = Spektrafilm::ProfilePolarity::Positive;
-        source.scanner.densityBoundsHash = 601;
-        source.scanner.lutResolution = 33;
-        source.scanner.hash = 602;
         source.correction.active = true;
         source.correction.xyzOffset = -0.0625f;
         source.post.glareBlurRadius = 7;
@@ -1044,9 +1034,6 @@ namespace {
         JuicerCudaTest::encode_prepared_descriptors(source, actual);
         EXPECT_EQ(actual.route, FJ_ROUTE_POSITIVE_DIRECT);
         EXPECT_EQ(actual.capture_polarity, FJ_POLARITY_POSITIVE);
-        EXPECT_EQ(actual.scanner_lut.density_bounds_hash, 601u);
-        EXPECT_EQ(actual.scanner_lut.resolution, 33u);
-        EXPECT_EQ(actual.scanner_lut.hash, 602u);
         EXPECT_EQ(actual.scanner_correction.flags, FJ_CORRECTION_ACTIVE);
         EXPECT_FLOAT_EQ(actual.scanner_correction.xyz_offset, -0.0625f);
         EXPECT_EQ(actual.scanner_post.glare_blur_radius, 7);
@@ -1365,7 +1352,6 @@ namespace {
             EXPECT_EQ(actual.grainPayload.recipeHash, 0u);
             EXPECT_EQ(actual.grainPayload.densityLayersHash, 0u);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
-            EXPECT_EQ(actual.scanner.hash, 0u);
             caseEvent.passed();
         }
     }

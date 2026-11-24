@@ -325,10 +325,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             }
             out.dirAxesHash = dir.compensated_axes_hash;
             out.dirHash = dir.hash;
-            out.densityBoundsHash = Spektrafilm::scan_route_is_print(
-                                        static_cast<Spektrafilm::ScanRoute>(view.route))
-                                        ? view.enlarger_film_bounds.hash
-                                        : view.scanner_bounds.hash;
         }
 
     } // namespace
@@ -489,16 +485,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         descriptors.route = static_cast<Spektrafilm::ScanRoute>(view.route);
         descriptors.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(view.polarity);
         const bool print = Spektrafilm::scan_route_is_print(descriptors.route);
-        descriptors.scanner.route = descriptors.route;
-        descriptors.scanner.medium = print ? Scanner::ScannedMediumKind::Print : Scanner::ScannedMediumKind::Film;
-        descriptors.scanner.polarity = descriptors.capturePolarity;
-        descriptors.scanner.densityBoundsHash = view.scanner_lut.density_bounds_hash;
-        descriptors.scanner.channelDensityHash = view.scanner_lut.channel_density_hash;
-        descriptors.scanner.baseDensityHash = view.scanner_lut.base_density_hash;
-        descriptors.scanner.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
-        descriptors.scanner.observerHash = view.scanner_lut.observer_hash;
-        descriptors.scanner.lutResolution = view.scanner_lut.resolution;
-        descriptors.scanner.hash = view.scanner_lut.hash;
         const auto& correction = view.scanner_correction;
         descriptors.correction.route = descriptors.route;
         descriptors.correction.active = correction.active != 0;

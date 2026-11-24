@@ -52,18 +52,8 @@ namespace {
         std::copy_n(dir.compensated_axes_rgb, 3, executionDir.compensated_axes_rgb);
         executionDir.compensated_axes_hash = dir.compensated_axes_hash;
         executionDir.hash = dir.hash;
-        const auto bounds = [](const FjFilmDensityBounds& source) {
-            FjDensityBounds out{};
-            std::copy_n(source.minimum_cmy, 3, out.min_cmy);
-            std::copy_n(source.inv_span_cmy, 3, out.inv_span_cmy);
-            out.hash = source.hash;
-            return out;
-        };
-        prepared.scanner_bounds = bounds(state.scanner_bounds);
-        prepared.enlarger_film_bounds = bounds(state.enlarger_film_bounds);
         const auto& scanner = state.scanner_tables;
         prepared.scanner_spectra = {scanner.dyes_cmy[2], scanner.dyes_cmy[1], scanner.dyes_cmy[0], scanner.weighted_xyz[0], scanner.weighted_xyz[1], scanner.weighted_xyz[2], scanner.has_baseline ? scanner.baseline_min : FjFloatSpan{}, scanner.inv_yn};
-        prepared.scanner_lut = {state.scanner_lut.density_bounds_hash, state.scanner_lut.resolution, state.scanner_lut.hash};
         const auto& correction = state.scanner_correction;
         prepared.scanner_correction = {correction.active ? FJ_CORRECTION_ACTIVE : 0u, correction.xyz_slope, correction.xyz_offset, correction.exposure_scale};
         const auto& post = state.scanner_post_effects;

@@ -237,10 +237,6 @@ namespace {
             meter.preview_width != metering.previewWidth || meter.preview_height != metering.previewHeight || meter.hash != metering.hash) {
             return malformed(diagnostic, "auto_exposure.frame");
         }
-        if (source.scanner_bounds.hash == 0 || source.scanner_lut.hash == 0 ||
-            source.scanner_lut.density_bounds_hash != source.scanner_bounds.hash) {
-            return malformed(diagnostic, "scanner_bounds.identity");
-        }
         if (source.spatial_dir.hash != 0 &&
             (source.spatial_dir.recipe_hash != source.dir_couplers.hash ||
              !sameExtent(source.spatial_dir.render_extent, frame.renderWindow) ||
@@ -374,7 +370,6 @@ namespace JuicerCuda {
         std::copy_n(dir.receiver_kr_rgb, 3, film.receiverKrRgb.begin());
         film.dirAxesHash = dir.compensated_axes_hash;
         film.dirHash = dir.hash;
-        film.densityBoundsHash = print ? source.enlarger_film_bounds.hash : source.scanner_bounds.hash;
 
         const auto& noise = source.noise;
         const StaticNoiseInput staticNoise{bytes(noise.stbn), bytes(noise.wang_tiles), bytes(noise.wang_lut), noise.stbn_width, noise.stbn_height, noise.stbn_frames, noise.wang_width, noise.wang_height, static_cast<int>(noise.wang_tile_count), noise.wang_colors};

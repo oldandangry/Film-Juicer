@@ -132,14 +132,6 @@ fn empty_dir() -> sys::FjDirCouplers {
     }
 }
 
-fn empty_bounds() -> sys::FjDensityBounds {
-    sys::FjDensityBounds {
-        min_cmy: [0.0; 3],
-        inv_span_cmy: [0.0; 3],
-        hash: 0,
-    }
-}
-
 fn empty_print() -> sys::FjPrint {
     sys::FjPrint {
         film_density_cmy: float_span(&[]),
@@ -175,14 +167,6 @@ fn empty_noise() -> sys::FjStaticNoise {
         wang_height: 0,
         wang_tile_count: 0,
         wang_colors: 0,
-    }
-}
-
-fn density_bounds(bounds: &film_juicer_core::film::density::Bounds) -> sys::FjDensityBounds {
-    sys::FjDensityBounds {
-        min_cmy: *bounds.minimum_cmy(),
-        inv_span_cmy: *bounds.inv_span_cmy(),
-        hash: bounds.hash(),
     }
 }
 
@@ -393,8 +377,6 @@ pub(super) fn host_data(
     };
 
     let mut print = empty_print();
-    let mut scanner_bounds = density_bounds(state.film_bounds());
-    let mut enlarger_film_bounds = empty_bounds();
     let mut print_profile_key = sys::FjStringView {
         data: std::ptr::null(),
         count: 0,
@@ -408,12 +390,6 @@ pub(super) fn host_data(
         let balance = print_state.balance();
         print_profile_key = string_view(print_state.key());
         print_profile_asset_version = profile.asset_token();
-        scanner_bounds = sys::FjDensityBounds {
-            min_cmy: *print_state.bounds().minimum_cmy(),
-            inv_span_cmy: *print_state.bounds().inv_span_cmy(),
-            hash: print_state.bounds().hash(),
-        };
-        enlarger_film_bounds = density_bounds(state.film_bounds());
         print.film_density_cmy = float_span(film_tables.channel_density().as_flattened());
         print.film_base_density = float_span(film_tables.base_density());
         print.sensitivity_cmy = float_span(profile_tables.linear_sensitivity().as_flattened());
@@ -456,13 +432,6 @@ pub(super) fn host_data(
         },
         inverse_y_normalization: scanner_tables.inv_yn(),
     };
-    let lut = scanner.lut();
-    let scanner_lut = sys::FjScannerLut {
-        density_bounds_hash: lut.density_bounds_hash(),
-        resolution: lut.resolution(),
-        hash: lut.hash(),
-    };
-
     let static_noise = if let Some(noise) = noise {
         let [stbn_width, stbn_height, stbn_frames] = noise.stbn_dimensions;
         let [wang_width, wang_height, wang_tile_count] = noise.wang_dimensions;
@@ -498,10 +467,7 @@ pub(super) fn host_data(
         auto_exposure: *preview,
         film_development,
         dir_couplers: dir,
-        scanner_bounds,
-        enlarger_film_bounds,
         scanner_spectra,
-        scanner_lut,
         scanner_correction: correction,
         scanner_post,
         output_color,

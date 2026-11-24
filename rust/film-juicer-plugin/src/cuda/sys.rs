@@ -564,24 +564,6 @@ const _: () = {
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct FjDensityBounds {
-    pub min_cmy: [f32; 3usize],
-    pub inv_span_cmy: [f32; 3usize],
-    pub hash: u64,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of FjDensityBounds"][::core::mem::size_of::<FjDensityBounds>() - 32usize];
-    ["Alignment of FjDensityBounds"][::core::mem::align_of::<FjDensityBounds>() - 8usize];
-    ["Offset of field: FjDensityBounds::min_cmy"]
-        [::core::mem::offset_of!(FjDensityBounds, min_cmy) - 0usize];
-    ["Offset of field: FjDensityBounds::inv_span_cmy"]
-        [::core::mem::offset_of!(FjDensityBounds, inv_span_cmy) - 12usize];
-    ["Offset of field: FjDensityBounds::hash"]
-        [::core::mem::offset_of!(FjDensityBounds, hash) - 24usize];
-};
-#[repr(C)]
-#[derive(Copy, Clone)]
 pub struct FjScannerSpectra {
     pub dye_y: FjFloatSpan,
     pub dye_m: FjFloatSpan,
@@ -612,23 +594,6 @@ const _: () = {
         [::core::mem::offset_of!(FjScannerSpectra, base_density) - 96usize];
     ["Offset of field: FjScannerSpectra::inverse_y_normalization"]
         [::core::mem::offset_of!(FjScannerSpectra, inverse_y_normalization) - 112usize];
-};
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct FjScannerLut {
-    pub density_bounds_hash: u64,
-    pub resolution: u32,
-    pub hash: u64,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of FjScannerLut"][::core::mem::size_of::<FjScannerLut>() - 24usize];
-    ["Alignment of FjScannerLut"][::core::mem::align_of::<FjScannerLut>() - 8usize];
-    ["Offset of field: FjScannerLut::density_bounds_hash"]
-        [::core::mem::offset_of!(FjScannerLut, density_bounds_hash) - 0usize];
-    ["Offset of field: FjScannerLut::resolution"]
-        [::core::mem::offset_of!(FjScannerLut, resolution) - 8usize];
-    ["Offset of field: FjScannerLut::hash"][::core::mem::offset_of!(FjScannerLut, hash) - 16usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1714,10 +1679,7 @@ pub struct FjPreparedHostData {
     pub auto_exposure: FjAutoExposure,
     pub film_development: FjFilmDevelopment,
     pub dir_couplers: FjDirCouplers,
-    pub scanner_bounds: FjDensityBounds,
-    pub enlarger_film_bounds: FjDensityBounds,
     pub scanner_spectra: FjScannerSpectra,
-    pub scanner_lut: FjScannerLut,
     pub scanner_correction: FjScannerCorrection,
     pub scanner_post: FjScannerPostEffects,
     pub output_color: FjOutputColor,
@@ -1731,7 +1693,7 @@ pub struct FjPreparedHostData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6800usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6712usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1755,34 +1717,28 @@ const _: () = {
         [::core::mem::offset_of!(FjPreparedHostData, film_development) - 344usize];
     ["Offset of field: FjPreparedHostData::dir_couplers"]
         [::core::mem::offset_of!(FjPreparedHostData, dir_couplers) - 560usize];
-    ["Offset of field: FjPreparedHostData::scanner_bounds"]
-        [::core::mem::offset_of!(FjPreparedHostData, scanner_bounds) - 728usize];
-    ["Offset of field: FjPreparedHostData::enlarger_film_bounds"]
-        [::core::mem::offset_of!(FjPreparedHostData, enlarger_film_bounds) - 760usize];
     ["Offset of field: FjPreparedHostData::scanner_spectra"]
-        [::core::mem::offset_of!(FjPreparedHostData, scanner_spectra) - 792usize];
-    ["Offset of field: FjPreparedHostData::scanner_lut"]
-        [::core::mem::offset_of!(FjPreparedHostData, scanner_lut) - 912usize];
+        [::core::mem::offset_of!(FjPreparedHostData, scanner_spectra) - 728usize];
     ["Offset of field: FjPreparedHostData::scanner_correction"]
-        [::core::mem::offset_of!(FjPreparedHostData, scanner_correction) - 936usize];
+        [::core::mem::offset_of!(FjPreparedHostData, scanner_correction) - 848usize];
     ["Offset of field: FjPreparedHostData::scanner_post"]
-        [::core::mem::offset_of!(FjPreparedHostData, scanner_post) - 952usize];
+        [::core::mem::offset_of!(FjPreparedHostData, scanner_post) - 864usize];
     ["Offset of field: FjPreparedHostData::output_color"]
-        [::core::mem::offset_of!(FjPreparedHostData, output_color) - 1000usize];
+        [::core::mem::offset_of!(FjPreparedHostData, output_color) - 912usize];
     ["Offset of field: FjPreparedHostData::print"]
-        [::core::mem::offset_of!(FjPreparedHostData, print) - 1296usize];
+        [::core::mem::offset_of!(FjPreparedHostData, print) - 1208usize];
     ["Offset of field: FjPreparedHostData::optics"]
-        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1488usize];
+        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1400usize];
     ["Offset of field: FjPreparedHostData::spatial_dir"]
-        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4544usize];
+        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4456usize];
     ["Offset of field: FjPreparedHostData::grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, grain) - 5064usize];
+        [::core::mem::offset_of!(FjPreparedHostData, grain) - 4976usize];
     ["Offset of field: FjPreparedHostData::effects"]
-        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5872usize];
+        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5784usize];
     ["Offset of field: FjPreparedHostData::noise"]
-        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6704usize];
+        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6616usize];
     ["Offset of field: FjPreparedHostData::film_grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6792usize];
+        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6704usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;
