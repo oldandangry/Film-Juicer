@@ -28,13 +28,6 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct ScannerDensityRange {
-        float min_cmy[3]{0.0f, 0.0f, 0.0f};
-        float max_cmy[3]{0.0f, 0.0f, 0.0f};
-        float inv_max_cmy[3]{0.0f, 0.0f, 0.0f};
-        std::uint64_t digest = 0;
-    };
-
     struct ColorRuntime {
         float cat02[9]{0.0f};
         float xyzToRgb[9]{0.0f};
@@ -55,38 +48,6 @@ namespace Scanner {
         std::span<const float> Az;
         std::span<const float> baseDensityMin;
         float invYn = 1.0f;
-    };
-
-    struct MediumView {
-        ScannerMedium medium = ScannerMedium::Negative;
-        SpectralTablesView tables;
-        ScannerDensityRange range;
-    };
-
-    enum class ScannedMediumKind : std::uint8_t {
-        Film,
-        Print
-    };
-
-    // ScannerSpectralLutDescriptor family contract:
-    // Producer: Rust recipe construction calls scanner::describe_lut.
-    // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
-    // Identity: route, medium/polarity, density-bounds hash, selected channel/base density,
-    // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
-    // Scanner correction, output color/CCTF, glare, blur, unsharp, frame bounds, auto exposure,
-    // and downstream scanner effects are excluded.
-    // Lifetime: host value. Native Root owns CUDA LUT residency.
-    struct ScannerSpectralLutDescriptor {
-        Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
-        ScannedMediumKind medium = ScannedMediumKind::Film;
-        Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
-        std::uint64_t densityBoundsHash = 0;
-        std::uint64_t channelDensityHash = 0;
-        std::uint64_t baseDensityHash = 0;
-        std::uint64_t scanIlluminantHash = 0;
-        std::uint64_t observerHash = 0;
-        std::uint32_t lutResolution = 17;
-        std::uint64_t hash = 0;
     };
 
     struct ScannerColorCorrectionDescriptor {

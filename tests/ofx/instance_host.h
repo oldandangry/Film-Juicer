@@ -32,7 +32,7 @@ namespace ofx_test {
     };
 
     // Frozen from the independent C++ constructor, in handle acquisition order.
-    inline constexpr std::array<InstanceParamDefinition, 125> kInstanceParameters{{{"Exposure", InstanceParamKind::Double},
+    inline constexpr std::array<InstanceParamDefinition, 124> kInstanceParameters{{{"Exposure", InstanceParamKind::Double},
                                                                                    {"CameraAutoExposure", InstanceParamKind::Boolean},
                                                                                    {"CameraFilmFormatPreset", InstanceParamKind::Choice},
                                                                                    {"CameraFilmFormatMm", InstanceParamKind::Double},
@@ -73,7 +73,6 @@ namespace ofx_test {
                                                                                    {"ScannerWhiteCorrection", InstanceParamKind::Boolean},
                                                                                    {"ScannerBlackLevel", InstanceParamKind::Double},
                                                                                    {"ScannerWhiteLevel", InstanceParamKind::Double},
-                                                                                   {"ScannerLutResolution", InstanceParamKind::Integer},
                                                                                    {"PrintExposure", InstanceParamKind::Double},
                                                                                    {"PrintPreflash", InstanceParamKind::Double},
                                                                                    {"PrintExposureCompensation", InstanceParamKind::Boolean},

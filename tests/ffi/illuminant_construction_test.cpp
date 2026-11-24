@@ -210,7 +210,6 @@ namespace IlluminantConstruction {
         out["scatterHalationControls"] = controls_json(p.values.scatter_halation);
         out["scannerBlackCorrection"] = p.values.scanner_black_correction;
         out["scannerWhiteCorrection"] = p.values.scanner_white_correction;
-        out["scannerLutResolution"] = p.values.scanner_lut_resolution;
         out["outputColorSpace"] = p.values.output_color_space;
         out["outputCctfEncoding"] = p.values.output_cctf_encoding;
         out["outputGamutCompressionEnabled"] = p.values.output_gamut_compression_enabled;
@@ -584,7 +583,7 @@ namespace IlluminantConstruction {
             controls.values.print_preflash_exposure = route ? .1 : 0;
             controls.values.preflash_m_filter_cc = 12.5;
             controls.values.preflash_y_filter_cc = 7.25;
-            ASSERT_EQ(controls_json(controls), row["controls"]);
+            ASSERT_EQ(controls_json(controls), spectral_controls_from_archive(row.at("controls")));
             auto film = polarity ? positive : negative, print = paper;
             film["info"]["reference_illuminant"] = row["profile_reference"];
             film["info"]["viewing_illuminant"] = row["profile_viewing"];

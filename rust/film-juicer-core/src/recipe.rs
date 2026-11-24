@@ -185,7 +185,6 @@ pub struct Params {
     pub highlight_boost: optics::highlight_boost::Controls,
     pub scanner_black_correction: i32,
     pub scanner_white_correction: i32,
-    pub scanner_lut_resolution: i32,
     pub output_color_space: i32,
     pub output_cctf_encoding: i32,
     pub output_gamut_compression_enabled: i32,
@@ -342,7 +341,6 @@ pub enum PrepareError {
         stock: String,
     },
     Bounds(density::Error),
-    LutDescriptor(scanner::LutDescriptorError),
     SpectralBoundary(spectral::BoundaryError),
     EqualEnergy(illuminant::EqualEnergyError),
     Blackbody(illuminant::BlackbodyError),
@@ -425,7 +423,6 @@ impl fmt::Display for PrepareError {
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
-            Self::LutDescriptor(error) => error.fmt(f),
             Self::SpectralBoundary(error) => error.fmt(f),
             Self::EqualEnergy(error) => error.fmt(f),
             Self::Blackbody(error) => error.fmt(f),
@@ -698,14 +695,12 @@ pub struct ScannerOutput {
     params: ScannerParams,
     tables: spectral::Tables,
     color: scanner::Color,
-    lut: scanner::LutDescriptor,
     post_effects: scanner::PostEffects,
     gamut: OutputGamut,
     hash: u64,
 }
 #[derive(Clone, Copy)]
 pub struct ScannerParams {
-    pub resolution: u32,
     pub output_space: color::OutputSpace,
     pub encode_cctf: bool,
     pub black_correction: bool,
@@ -893,9 +888,6 @@ impl ScannerOutput {
     }
     pub fn color(&self) -> &scanner::Color {
         &self.color
-    }
-    pub fn lut(&self) -> &scanner::LutDescriptor {
-        &self.lut
     }
     pub fn post_effects(&self) -> &scanner::PostEffects {
         &self.post_effects
@@ -1482,7 +1474,6 @@ fn output_policy(params: &Params) -> Result<(gamut::OutputTransform, u64), Prepa
 fn scanner_params(params: &Params, space: color::OutputSpace) -> ScannerParams {
     let print = print_route(params.scan_route);
     ScannerParams {
-        resolution: params.scanner_lut_resolution.clamp(17, 128) as u32,
         output_space: space,
         encode_cctf: params.output_cctf_encoding != 0,
         black_correction: params.scanner_black_correction != 0,
@@ -1587,46 +1578,6 @@ fn print_glare_hash(route: ScanRoute, key: &str, effects: &scanner::PostEffects)
     hash::update_bytes(&mut identity, &[1]);
     update_floats(&mut identity, &fields.values()[..3]);
     identity
-}
-fn lut_descriptor(
-    params: &Params,
-    film: &FilmProfile,
-    film_bounds: &density::Bounds,
-    print: Option<(&PrintProfile, &print::Bounds)>,
-    viewing: &str,
-    resolution: u32,
-) -> Result<scanner::LutDescriptor, PrepareError> {
-    let common = scanner::LutDescriptorParams {
-        route: params.scan_route,
-        capture_polarity: polarity_tag(film.info().polarity()),
-        bounds_medium: u8::from(print.is_some()),
-        density_bounds_hash: print.map_or(film_bounds.hash(), |(_, bounds)| bounds.hash()),
-        viewing_illuminant: viewing.as_bytes(),
-        observer_identity: b"CIE1931_2deg_380_780_5nm",
-        resolution,
-    };
-    let input = match print {
-        Some((profile, _)) => scanner::LutDescriptorInput::Print {
-            params: common,
-            print: Some(scanner::LutSpectra {
-                channel_density_cmy: profile.tables().channel_density(),
-                base_density: profile.tables().base_density(),
-            }),
-            profile_key: params.print_profile_key.as_bytes(),
-            profile_token: profile.asset_token(),
-            bounds_source: 2,
-            output_medium: 1,
-            profile_viewing_illuminant: profile.info().viewing_illuminant().as_bytes(),
-        },
-        None => scanner::LutDescriptorInput::Direct {
-            params: common,
-            film: Some(scanner::LutSpectra {
-                channel_density_cmy: film.tables().channel_density(),
-                base_density: film.tables().base_density(),
-            }),
-        },
-    };
-    scanner::describe_lut(input).map_err(PrepareError::LutDescriptor)
 }
 fn correction_tables(tables: &spectral::Tables) -> scanner::ReferenceTables<'_> {
     scanner::ReferenceTables {
@@ -1887,19 +1838,6 @@ fn prepare_state(
         }
         None => None,
     };
-    let direct_lut = if print.is_none() {
-        Some(lut_descriptor(
-            params,
-            film,
-            &film_bounds,
-            None,
-            film.info().viewing_illuminant(),
-            scanner_params.resolution,
-        )?)
-    } else {
-        None
-    };
-
     trace_stage!(FilmPayload);
     let film_illuminant = profile_illuminant(
         &acquired.illuminants,
@@ -2071,19 +2009,6 @@ fn prepare_state(
         boundary,
         hash: gamut_hash,
     };
-    let print_lut = print
-        .as_ref()
-        .map(|print| {
-            lut_descriptor(
-                params,
-                film,
-                &film_bounds,
-                Some((&print.profile, &print.bounds)),
-                viewing,
-                scanner_params.resolution,
-            )
-        })
-        .transpose()?;
     let scanner_post_effects = scanner::describe_post_effects(scanner::PostEffectsParams {
         route: params.scan_route,
         glare_active: scanner_params.glare_active,
@@ -2103,9 +2028,8 @@ fn prepare_state(
         black_level: scanner_params.black_level,
         white_level: scanner_params.white_level,
     };
-    let (route, lut) = match (print, print_main, print_balance) {
+    let route = match (print, print_main, print_balance) {
         (Some(print), Some((source_illuminant, main_illuminant)), Some(balance)) => {
-            let lut = print_lut.expect("print descriptor admitted before post effects");
             let resource_descriptors =
                 print::ResourceDescriptors::new(print::ResourceDescriptorInput {
                     film,
@@ -2177,30 +2101,27 @@ fn prepare_state(
                 params.print_gamma_factor.to_bits(),
                 balance.hash(),
             ]);
-            (
-                PreparedRoute::Print(PrintState {
-                    key: params.print_profile_key.clone(),
-                    profile: print.profile,
-                    gamma: params.print_gamma_factor,
-                    curves: print.curves,
-                    bounds: print.bounds,
-                    calibration: print.calibration,
-                    neutral_cmy_cc: print.neutral_cmy_cc,
-                    filters: print.filters,
-                    exposure: print.exposure,
-                    illuminant_key: print.illuminant_key,
-                    illuminant_hash: print.illuminant_hash,
-                    source_illuminant,
-                    main_illuminant,
-                    preflash,
-                    balance,
-                    resource_descriptors,
-                    correction,
-                    glare_hash,
-                    hash,
-                }),
-                lut,
-            )
+            PreparedRoute::Print(PrintState {
+                key: params.print_profile_key.clone(),
+                profile: print.profile,
+                gamma: params.print_gamma_factor,
+                curves: print.curves,
+                bounds: print.bounds,
+                calibration: print.calibration,
+                neutral_cmy_cc: print.neutral_cmy_cc,
+                filters: print.filters,
+                exposure: print.exposure,
+                illuminant_key: print.illuminant_key,
+                illuminant_hash: print.illuminant_hash,
+                source_illuminant,
+                main_illuminant,
+                preflash,
+                balance,
+                resource_descriptors,
+                correction,
+                glare_hash,
+                hash,
+            })
         }
         (None, None, None) => {
             trace_stage!(ScannerCorrection);
@@ -2223,10 +2144,7 @@ fn prepare_state(
                 }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
-            (
-                PreparedRoute::Direct(DirectState { correction }),
-                direct_lut.expect("direct descriptor admitted before payload"),
-            )
+            PreparedRoute::Direct(DirectState { correction })
         }
         _ => unreachable!("print route privately owns all print construction products"),
     };
@@ -2251,7 +2169,6 @@ fn prepare_state(
         params: scanner_params,
         tables: scanner_tables,
         color: scanner_color,
-        lut,
         post_effects: scanner_post_effects,
         gamut,
         hash: scanner_recipe_hash,
@@ -2438,7 +2355,6 @@ pub(crate) mod test_support {
             highlight_boost: optics::highlight_boost::Controls::default(),
             scanner_black_correction: 0,
             scanner_white_correction: 0,
-            scanner_lut_resolution: 17,
             output_color_space: 0,
             output_cctf_encoding: 1,
             output_gamut_compression_enabled: 1,
@@ -2667,7 +2583,8 @@ mod tests {
                     (0, 0, 0)
                 );
                 assert_ne!(state.hash(), 0);
-                assert_ne!(state.scanner().lut().hash(), 0);
+                assert_ne!(state.scanner().hash(), 0);
+                assert_ne!(state.scanner_hash(), 0);
                 assert_ne!(state.reference().hash(), 0);
                 assert_eq!(state.reconstruction().tc_lut().is_some(), method != 1);
                 if let PreparedRoute::Print(print) = state.route() {

@@ -3245,7 +3245,7 @@ namespace JuicerCuda {
         Resources& resources,
         int*& host,
         void*& eventOpaque,
-        const ScanErrorReadbackIdentity& identity,
+        ScanErrorReadbackIdentity& identity,
         Failure& outError) {
         outError = {};
         if (!host || !eventOpaque) {
@@ -3259,11 +3259,11 @@ namespace JuicerCuda {
         }
 
         try {
-            Resources::PendingScanErrorReadback entry{};
+            static_assert(std::is_nothrow_move_assignable_v<ScanErrorReadbackIdentity>);
+            auto& entry = resources.pendingScanErrorReadbacks.emplace_back();
             entry.host = host;
             entry.eventOpaque = eventOpaque;
-            entry.identity = identity;
-            resources.pendingScanErrorReadbacks.push_back(entry);
+            entry.identity = std::move(identity);
         } catch (...) {
             outError.diagnostic = "scan error readback retention failed";
             return false;
@@ -3304,12 +3304,7 @@ namespace JuicerCuda {
             if (pollErr == cudaSuccess) {
                 if (*entry.host != 0) {
                     outResult.status = *entry.host;
-                    outResult.dirRecipeHash = entry.identity.dirRecipeHash;
-                    outResult.dirDescriptorHash = entry.identity.dirDescriptorHash;
-                    outResult.contextEpoch = entry.identity.contextEpoch;
-                    outResult.profileKey = entry.identity.profileKey;
-                    outResult.scanRoute = entry.identity.scanRoute;
-                    outResult.capturePolarity = entry.identity.capturePolarity;
+                    outResult.identity = std::move(entry.identity);
                 }
                 release_scan_error_readback_entry(entry, false);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));

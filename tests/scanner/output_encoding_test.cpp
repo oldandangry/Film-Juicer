@@ -1571,6 +1571,15 @@ namespace {
         JuicerTests::GtestCohort cases("route-readback-bits", ids);
         for (const auto route : routes) {
             RouteInputs inputs(runtime, route, 0, false);
+            const auto otherRoute = static_cast<Spektrafilm::ScanRoute>(static_cast<unsigned>(route) ^ 1U);
+            RouteInputs reporterInputs(runtime, otherRoute, 0, false);
+            FjPreparedStateView producingState{};
+            std::array<char, 256> text{};
+            FjErrorBuffer diagnostic{text.data(), text.size(), 0};
+            ASSERT_EQ(inputs.state->view(producingState, diagnostic).category, FJ_STATUS_SUCCESS);
+            const bool paper = Spektrafilm::scan_route_is_print(route);
+            const auto profile = paper ? producingState.print_profile_key : producingState.film_profile_key;
+            const auto assetVersion = paper ? producingState.print_profile_asset_version : producingState.film_profile_asset_version;
             Image image({17, 9}, 4);
             // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
             // with the failed DIR channels in bits 9-11.
@@ -1579,6 +1588,8 @@ namespace {
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " bits=" << bits);
                 JuicerCuda::Failure error;
                 auto submitted = prepare_route(inputs, image);
+                const auto producing = submitted.admitted_snapshot();
+                const auto epoch = submitted.admitted_context_epoch();
                 int* flag = nullptr;
                 ASSERT_EQ(submitted.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready);
                 check_cuda(cudaMemcpy(flag, &bits, sizeof(bits), cudaMemcpyHostToDevice));
@@ -1586,7 +1597,9 @@ namespace {
                 require(submitted.finish(nullptr, error), error.diagnostic);
                 check_cuda(cudaDeviceSynchronize());
 
-                auto next = prepare_route(inputs, image);
+                auto next = prepare_route(reporterInputs, image);
+                ASSERT_EQ(next.admitted_context_epoch(), epoch);
+                ASSERT_NE(next.admitted_snapshot().snapshotId, producing.snapshotId);
                 const auto result = next.prepare_scan_error_stage(flag, nullptr, error);
                 if (bits == 0) {
                     EXPECT_EQ(result, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready);
@@ -1599,7 +1612,28 @@ namespace {
                     EXPECT_EQ(error.status.category, FJ_STATUS_PREPARATION_FAILURE);
                     EXPECT_EQ(error.status.api, FJ_API_NONE);
                     EXPECT_EQ(error.status.native_code, 0);
+                    const auto routeKey = std::string(Spektrafilm::scan_route_key(route));
+                    if (bits == 1) {
+                        const std::string expected = "earlier CUDA scan produced non-finite RGB route=" + routeKey +
+                                                     (paper ? " medium=paper profile=" : " medium=film profile=") +
+                                                     std::string(profile.data, profile.count) +
+                                                     " profile_asset_version=" + std::to_string(assetVersion) +
+                                                     " submission_id=" + std::to_string(producing.snapshotId) +
+                                                     " frame_token=" + std::to_string(producing.frameToken.value) +
+                                                     " scanner_hash=" + std::to_string(inputs.scannerHash) +
+                                                     " context_epoch=" + std::to_string(epoch);
+                        EXPECT_EQ(error.diagnostic, expected);
+                    } else {
+                        const std::string provenance = "component=dir route=" + routeKey + " profile=" +
+                                                       std::string(producingState.film_profile_key.data, producingState.film_profile_key.count);
+                        EXPECT_NE(error.diagnostic.find(provenance), std::string::npos);
+                        EXPECT_NE(error.diagnostic.find("channel_mask=" + std::to_string((bits >> 9) & 7)), std::string::npos);
+                    }
                     next.abort();
+                    auto retry = prepare_route(reporterInputs, image);
+                    require(retry.prepare_scan_error_stage(flag, nullptr, error) == Frame::ScanErrorStageResult::Ready, error.diagnostic);
+                    require(retry.finalize_scan_error_stage(flag, nullptr, error), error.diagnostic);
+                    require(retry.finish(nullptr, error), error.diagnostic);
                 }
                 // Inactive-frame failure cannot retain the prior DIR disposition.
                 EXPECT_EQ(next.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed);

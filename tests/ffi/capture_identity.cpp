@@ -131,7 +131,6 @@ namespace JuicerTestSupport {
             mix_canonical_float(hash, value);
         for (float value : dir.langmuir_receiver_k_rgb)
             mix_canonical_float(hash, value);
-        mix(hash, static_cast<std::uint64_t>(p.scanner_lut_resolution));
         mix(hash, static_cast<std::uint64_t>(p.input_color_space));
         mix(hash, static_cast<std::uint64_t>(p.input_cctf_decoding));
         mix(hash, static_cast<std::uint64_t>(p.output_color_space));

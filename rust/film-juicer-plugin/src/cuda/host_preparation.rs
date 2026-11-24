@@ -7,11 +7,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use crate::cuda::{edge, sys};
-use crate::{optics_bridge, scanner_bridge};
+use crate::optics_bridge;
 
 #[derive(Default)]
 struct Backing {
-    scanner_luts: Vec<scanner_bridge::HostLutCandidate>,
     gaussians: Vec<optics_bridge::HostGaussianCandidate>,
 }
 
@@ -33,7 +32,6 @@ impl Call {
     pub(super) fn raw(&self) -> edge::FjHostPreparation {
         edge::FjHostPreparation {
             user: self.backing.get().cast(),
-            scanner_lut: Some(scanner_lut),
             gaussian: Some(gaussian),
         }
     }
@@ -46,69 +44,6 @@ fn valid<T>(pointer: *const T) -> bool {
         && (pointer as usize)
             .checked_add(std::mem::size_of::<T>())
             .is_some()
-}
-
-/// Synchronous native callback that prepares a scanner LUT into call-local backing.
-///
-/// # Safety
-/// The native caller must provide ABI-valid pointers for the callback records and
-/// keep the context supplied by `Call::raw` alive through this invocation.
-unsafe extern "C" fn scanner_lut(
-    user: *mut c_void,
-    input: *const scanner_bridge::FjScannerLutInput,
-    out: *mut scanner_bridge::FjScannerLutView,
-    failure: *mut scanner_bridge::FjScannerLutFailure,
-    error: *mut sys::FjErrorBuffer,
-) -> sys::FjStatus {
-    let acquire_fault = scanner_bridge::take_host_lut_acquire_fault();
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: The callback's native caller provides valid ABI records; the checked
-        // helper validates their extents before dereferencing them or the call context.
-        unsafe { scanner_lut_call(user, input, out, failure, error, acquire_fault) }
-    }));
-    result.unwrap_or_else(|_| {
-        // SAFETY: The native callback supplies writable output records when valid.
-        unsafe { scanner_bridge::fail_host_lut_view(out, failure, 6) };
-        write_diagnostic(error, "scanner LUT preparation panicked");
-        edge::status(sys::FJ_STATUS_INTERNAL_FAILURE)
-    })
-}
-
-/// Validate scanner callback records and populate this call's candidate backing.
-///
-/// # Safety
-/// Each non-null input/output/failure/error pointer must be aligned and reference
-/// initialized/readable or writable storage for its declared C record. `user`
-/// must be null/invalid (which is rejected) or refer to this call's live,
-/// exclusively accessed `Backing`; pointer-shape checks cannot validate allocation provenance.
-unsafe fn scanner_lut_call(
-    user: *mut c_void,
-    input: *const scanner_bridge::FjScannerLutInput,
-    out: *mut scanner_bridge::FjScannerLutView,
-    failure: *mut scanner_bridge::FjScannerLutFailure,
-    error: *mut sys::FjErrorBuffer,
-    acquire_fault: u32,
-) -> sys::FjStatus {
-    if !valid(user.cast::<Backing>()) {
-        // SAFETY: The native callback contract supplies either null or one writable view.
-        unsafe { scanner_bridge::fail_host_lut_view(out, failure, 1) };
-        write_diagnostic(error, "invalid host preparation callback context");
-        return edge::status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-    }
-    // SAFETY: `user` points to this render's `UnsafeCell<Backing>` and the native
-    // callback is synchronous and serialized within the one render call.
-    let backing = unsafe { &mut *user.cast::<Backing>() };
-    // SAFETY: Candidate vectors remain owned by this call through native return.
-    unsafe {
-        scanner_bridge::prepare_host_lut(
-            input,
-            out,
-            failure,
-            error,
-            &mut backing.scanner_luts,
-            acquire_fault,
-        )
-    }
 }
 
 /// Synchronous native callback that prepares a Gaussian kernel into call-local backing.

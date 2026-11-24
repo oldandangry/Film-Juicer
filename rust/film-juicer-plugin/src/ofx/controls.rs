@@ -315,7 +315,6 @@ pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, Capt
     let black = controls.double(c"ScannerBlackLevel")?;
     let white = controls.double(c"ScannerWhiteLevel")?;
     (p.scanner_black_level, p.scanner_white_level) = scanner::capture_levels(black, white);
-    p.scanner_lut_resolution = controls.integer(c"ScannerLutResolution")?;
     p.output_color_space = controls.integer(c"OutputColorSpace")?;
     p.output_cctf_encoding = i32::from(controls.integer(c"OutputCctfEncoding")? != 0);
     p.output_gamut_compression_enabled =

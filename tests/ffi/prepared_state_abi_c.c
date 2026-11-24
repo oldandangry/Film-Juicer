@@ -370,7 +370,6 @@ typedef FjStatus (*FjCallPreviewFn)(void*, const FjRect*, const FjRect*, uint32_
 typedef FjStatus (*FjCallFrameDescriptorsFn)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
 typedef FjRenderOutcome (*FjCallRenderFn)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
 typedef FjCallCompletionResult (*FjCallCompleteFn)(void*, const FjCallCompletionInput*);
-typedef FjStatus (*FjHostScannerLutFn)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 typedef FjStatus (*FjHostGaussianFn)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 typedef void (*FjTraceSubmissionFn)(void*, const FjSubmission*, uint32_t);
 typedef FjStatus (*FjPolicyEntryFn)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
@@ -386,7 +385,6 @@ _Static_assert(_Generic(((FjCudaCallAccess*)0)->preview, FjCallPreviewFn: 1, def
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->frame_descriptors, FjCallFrameDescriptorsFn: 1, default: 0), "frame descriptor callback signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->render, FjCallRenderFn: 1, default: 0), "render callback signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, default: 0), "complete callback signature");
-_Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerLutFn: 1, default: 0), "scanner LUT callback signature");
 _Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->trace_submission, FjTraceSubmissionFn: 1, default: 0), "submission trace signature");
 _Static_assert(_Generic(&fj_test_prepared_state_frame_policy, FjPolicyEntryFn: 1, default: 0), "frame policy entry signature");
@@ -397,7 +395,7 @@ _Static_assert(_Generic(&fj_test_with_host_preparation, FjHostPreparationScopeFn
 static FjStatus consume_host_preparation(void* user, const FjHostPreparation* preparation, FjErrorBuffer* error) {
     size_t* calls = (size_t*)user;
     ++*calls;
-    if (!preparation || !preparation->user || !preparation->gaussian || !preparation->scanner_lut)
+    if (!preparation || !preparation->user || !preparation->gaussian)
         return (FjStatus){FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
     const FjGaussianKernelInput input = {3, 1.0f};
     FjGaussianKernelView view = {0};
@@ -422,14 +420,6 @@ static FjStatus consume_host_preparation(void* user, const FjHostPreparation* pr
         failure.reason != FJ_GAUSSIAN_KERNEL_RAW)
         return (FjStatus){FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
     if (preparation->gaussian(preparation->user, &input, &next_view, &failure, error).category != FJ_STATUS_SUCCESS)
-        return (FjStatus){FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
-    FjScannerLutFailure scanner_failure = {0};
-    FjScannerLutView scanner_view = {0};
-    if (fj_test_scanner_lut_fault(0, 1).category != FJ_STATUS_SUCCESS ||
-        preparation->scanner_lut(preparation->user, NULL, NULL, &scanner_failure, error).category != FJ_STATUS_UNSUPPORTED_INPUT ||
-        scanner_failure.reason != FJ_SCANNER_LUT_REASON_RAW)
-        return (FjStatus){FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
-    if (preparation->scanner_lut(preparation->user, NULL, &scanner_view, &scanner_failure, error).category != FJ_STATUS_UNSUPPORTED_INPUT)
         return (FjStatus){FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
     return status;
 }

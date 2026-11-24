@@ -78,6 +78,12 @@ struct ArchivedSpectralProduct {
     const nlohmann::json& record;
 };
 
+inline nlohmann::json spectral_controls_from_archive(nlohmann::json archived) {
+    if (archived.erase("scannerLutResolution") != 1)
+        throw std::runtime_error("archived spectral controls are missing the scanner grid");
+    return archived;
+}
+
 inline nlohmann::json expected_spectral_product(const nlohmann::json& observed, ArchivedSpectralProduct archived) {
     auto expected = archived.record;
     if (expected.erase("scanner_descriptor") != 1)

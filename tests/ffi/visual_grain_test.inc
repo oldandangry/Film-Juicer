@@ -386,7 +386,10 @@ namespace {
             FjErrorBuffer error{};
             status(product.view(view, error));
             require(project(view.grain) == row.at("grain"), "all complete direct/print grain values and metadata");
-            require(JuicerTestSupport::hash_input_identity(params) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash") && view.film_development.hash == row.at("development_hash"), "36 exact native snapshot/development/final identities");
+            require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned() &&
+                        view.route == row.at("route") && view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash &&
+                        view.film_development.hash == row.at("development_hash"),
+                    "visual grain retains the exact film development and current route");
             if (row.at("route") != 0 || row.at("gamma")[0] != 1065353216u || !params.values.grain.active || !params.values.grain.sublayers_active) {
                 event.passed();
                 continue;

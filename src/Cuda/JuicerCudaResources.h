@@ -161,6 +161,11 @@ namespace JuicerCuda {
         std::string profileKey;
         int scanRoute = 0;
         int capturePolarity = 0;
+        std::uint64_t submissionId = 0;
+        std::uint64_t frameToken = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t scannedProfileAssetVersion = 0;
+        std::string paperProfileKey;
     };
 
     struct Resources {
@@ -571,19 +576,14 @@ namespace JuicerCuda {
         Failure& outError) noexcept;
     struct ScanErrorReadbackResult {
         int status = 0;
-        std::uint64_t dirRecipeHash = 0;
-        std::uint64_t dirDescriptorHash = 0;
-        std::uint64_t contextEpoch = 0;
-        std::string profileKey;
-        int scanRoute = 0;
-        int capturePolarity = 0;
+        ScanErrorReadbackIdentity identity;
     };
 
     bool retain_scan_error_readback(
         Resources& resources,
         int*& host,
         void*& eventOpaque,
-        const ScanErrorReadbackIdentity& identity,
+        ScanErrorReadbackIdentity& identity,
         Failure& outError);
     bool poll_scan_error_readbacks(
         Resources& resources,

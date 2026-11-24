@@ -3500,9 +3500,16 @@ def validate_build_result(result, payloads):
         testing = configuration["BUILD_TESTING"]
         python_option = "-DPython3_EXECUTABLE="
         preview_setting = configuration["JUICER_GRAIN_PREVIEW_CONFIGURED"]
-        preview_options = command[5:]
-        # This producer uses the preset's source and binary directories. The
-        # optional preview definition is the only argument after Python.
+        optional = command[5:]
+        stage_option = "-DCMAKE_INSTALL_PREFIX:PATH="
+        if optional and optional[-1].startswith(stage_option):
+            stage = path(optional.pop()[len(stage_option) :])
+            if (
+                stage.parent != source / "out" / "stage" / result["preset"]
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", stage.name)
+                or stage != path(configuration["CMAKE_INSTALL_PREFIX"])
+            ):
+                raise ValueError("CMake producer configure command has an invalid named stage")
         if (
             len(cmake_probe) != 2
             or cmake_probe[1] != "--version"
@@ -3516,9 +3523,9 @@ def validate_build_result(result, payloads):
             or not command[4].startswith(python_option)
             or path(command[4][len(python_option) :]) != python
             or (
-                preview_options
+                optional
                 and (
-                    preview_options != [f"-DJUICER_GRAIN_PREVIEW:BOOL={preview_setting}"]
+                    optional != [f"-DJUICER_GRAIN_PREVIEW:BOOL={preview_setting}"]
                     or configuration["JUICER_GRAIN_PREVIEW"] != preview_setting
                 )
             )

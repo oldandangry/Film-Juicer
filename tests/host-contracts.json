@@ -45,7 +45,7 @@
     },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
-      "registrations": 40
+      "registrations": 36
     },
     "JuicerFilmDevelopmentTests": {
       "protocol": "custom",
@@ -256,8 +256,6 @@
     "Ffi.Host.PrintPreflash": 4,
     "Ffi.Host.ScannerColor": 1,
     "Ffi.Host.ScannerCorrection": 5,
-    "Ffi.Host.ScannerLut": 6,
-    "Ffi.Host.ScannerLutDescriptor": 3,
     "Ffi.Host.ScannerPostEffects": 3,
     "Ffi.Host.SharedFixtureLoading": 2,
     "Ffi.Host.SpectralPreparation": 2,
@@ -293,7 +291,7 @@
     "Ffi.Host.OutputColorValues": 1
   },
   "rust_cohorts": {
-    "film-juicer-core": 90,
+    "film-juicer-core": 86,
     "film-juicer-core::assets": 17,
     "film-juicer-core::calibration": 6,
     "film-juicer-core::color": 8,

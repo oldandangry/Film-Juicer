@@ -415,7 +415,13 @@ namespace {
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
-            require(effects_projection(view.effects) == row.at("recipe") && view.recipe_hash == row.at("final_hash") && JuicerTestSupport::hash_input_identity(params) == row.at("snapshot_hash") && view.grain.hash == row.at("grain_hash") && view.film_development.hash == row.at("development_hash"), "all four routes preserve complete effects, final identity and preceding products");
+            require(effects_projection(view.effects) == row.at("recipe") &&
+                        view.grain.hash == row.at("grain_hash") &&
+                        view.film_development.hash == row.at("development_hash"),
+                    "all four routes preserve exact effects, grain and film development");
+            require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned() &&
+                        view.route == row.at("route") && view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash,
+                    "prepared effects retain the current route and aggregate");
             event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {

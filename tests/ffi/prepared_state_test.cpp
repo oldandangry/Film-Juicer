@@ -100,7 +100,6 @@ using FjCallPreviewFn = FjStatus (*)(void*, const FjRect*, const FjRect*, std::u
 using FjCallFrameDescriptorsFn = FjStatus (*)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
 using FjCallRenderFn = FjRenderOutcome (*)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
 using FjCallCompleteFn = FjCallCompletionResult (*)(void*, const FjCallCompletionInput*);
-using FjHostScannerLutFn = FjStatus (*)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 using FjHostGaussianFn = FjStatus (*)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 using FjPolicyEntryFn = FjStatus (*)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
 using FjTraceSubmissionFn = void (*)(void*, const FjSubmission*, std::uint32_t);
@@ -115,7 +114,6 @@ static_assert(std::is_same_v<decltype(FjCudaCallAccess::preview), FjCallPreviewF
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::frame_descriptors), FjCallFrameDescriptorsFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::render), FjCallRenderFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::complete), FjCallCompleteFn>);
-static_assert(std::is_same_v<decltype(FjHostPreparation::scanner_lut), FjHostScannerLutFn>);
 static_assert(std::is_same_v<decltype(FjHostPreparation::gaussian), FjHostGaussianFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::trace_submission), FjTraceSubmissionFn>);
 static_assert(std::is_same_v<decltype(&fj_test_prepared_state_frame_policy), FjPolicyEntryFn>);
@@ -295,6 +293,8 @@ namespace {
     }
 
     void prepare_live_comparison(Json& expected, Json& live, const FjPreparedStateView& actual) {
+        for (const char* key : {"scanner_lut", "scanner_bounds", "enlarger_film_bounds"})
+            ASSERT_EQ(expected.erase(key), 1U);
         ASSERT_NE(actual.recipe_hash, 0u);
         ASSERT_NE(actual.scanner_recipe_hash, 0u);
         ASSERT_NE(actual.scanner_hash, 0u);
@@ -335,7 +335,9 @@ namespace {
         observedProjectionCases.push_back(name);
         const auto& row = oracle_row(name);
         const auto wire = params.record();
-        PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(wire));
+        auto expectedInput = row.at("input");
+        ASSERT_EQ(expectedInput.erase("scanner_lut_resolution"), 1U);
+        PreparedStateOracle::compare(expectedInput, PreparedStateOracle::params(wire));
         auto expected = row.at("expected");
         auto live = PreparedStateOracle::view(actual);
         ASSERT_NO_FATAL_FAILURE(prepare_live_comparison(expected, live, actual));
@@ -555,6 +557,7 @@ namespace {
         auto expected = oracle_row("NegativeDirectHanatos").at("input");
         // Baseline only changed the original default route from print to direct.
         expected.at("scan_route").at("value") = std::uint32_t{1};
+        ASSERT_EQ(expected.erase("scanner_lut_resolution"), 1U);
         PreparedStateOracle::compare(expected, PreparedStateOracle::params(record));
     }
 
@@ -1034,7 +1037,6 @@ namespace {
         equal_status(state_view(linear, second), FJ_STATUS_SUCCESS);
         EXPECT_NE(first.recipe_hash, second.recipe_hash);
         EXPECT_NE(first.scanner_color.hash, second.scanner_color.hash);
-        EXPECT_EQ(first.scanner_lut.hash, second.scanner_lut.hash);
         EXPECT_EQ(first.scanner_tables.hash, second.scanner_tables.hash);
         EXPECT_NE(first.scanner_hash, second.scanner_hash);
         EXPECT_EQ(first.print.film_density_hash, second.print.film_density_hash);
@@ -1307,11 +1309,6 @@ namespace {
         return std::tie(route, active, black_correction, white_correction, target_black_linear, target_white_linear, reference_black_y, reference_white_y, xyz_slope, xyz_offset, exposure_scale, schema_version, hash);
     }
 
-    auto cleared_fields(const FjScannerLutDescriptor& value) {
-        const auto& [route, medium, capture_polarity, resolution, density_bounds_hash, channel_density_hash, base_density_hash, viewing_illuminant_hash, observer_hash, hash] = value;
-        return std::tie(route, medium, capture_polarity, resolution, density_bounds_hash, channel_density_hash, base_density_hash, viewing_illuminant_hash, observer_hash, hash);
-    }
-
     auto cleared_fields(const FjScannerPostEffectsDescriptor& value) {
         const auto& [route, glare_active, glare_percent, glare_roughness, glare_blur_sigma_px, glare_blur_radius, lens_blur_sigma_px, lens_blur_radius, unsharp_sigma_px, unsharp_radius, unsharp_amount, schema, hash] = value;
         return std::tie(route, glare_active, glare_percent, glare_roughness, glare_blur_sigma_px, glare_blur_radius, lens_blur_sigma_px, lens_blur_radius, unsharp_sigma_px, unsharp_radius, unsharp_amount, schema, hash);
@@ -1348,8 +1345,8 @@ namespace {
     }
 
     auto cleared_fields(const FjPreparedStateView& value) {
-        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
-        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
+        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
+        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
     }
 
     template <class T>
@@ -1674,7 +1671,6 @@ namespace {
         const auto before = fj_test_gaussian_kernel_live_owners();
         EXPECT_EQ(fj_test_host_preparation_c_call(), 1);
         EXPECT_EQ(fj_test_gaussian_kernel_live_owners(), before);
-        EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
     }
 
     TEST_F(PreparedStateAbi, InputHullFaultsBelongToActualOwnerAndRetainedWarmEntry) {

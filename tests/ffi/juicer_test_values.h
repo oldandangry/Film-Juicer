@@ -1068,7 +1068,6 @@ typedef struct FjScannerCorrectionTrace {
 
 #define FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH UINT32_C(4)
 
-typedef struct FjScannerLutOwner FjScannerLutOwner;
 
 typedef struct FjScannerColorInput {
     uint32_t medium, output_space, apply_cctf;
@@ -1098,45 +1097,6 @@ typedef struct FjScannerColorFailure {
 #define FJ_SCANNER_COLOR_REASON_BOUNDARY UINT32_C(4)
 
 #define FJ_SCANNER_COLOR_REASON_PANIC UINT32_C(5)
-
-typedef struct FjScannerLutDescriptorInput {
-    uint32_t mode, route, capture_polarity, bounds_medium;
-    uint32_t bounds_source, output_medium, profile_present, resolution;
-    uint64_t density_bounds_hash, print_profile_token;
-    FjFloatSpan channel_density_cmy, base_density;
-    FjByteSpan viewing_illuminant, profile_viewing_illuminant;
-    FjByteSpan observer_identity, print_profile_key;
-} FjScannerLutDescriptorInput;
-
-typedef struct FjScannerLutDescriptor {
-    uint32_t route, medium, capture_polarity, resolution;
-    uint64_t density_bounds_hash, channel_density_hash, base_density_hash;
-    uint64_t viewing_illuminant_hash, observer_hash, hash;
-} FjScannerLutDescriptor;
-
-typedef struct FjScannerLutDescriptorFailure {
-    uint32_t reason, lane;
-} FjScannerLutDescriptorFailure;
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_NONE UINT32_C(0)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_RAW UINT32_C(1)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_RECIPE UINT32_C(2)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_BOUNDS UINT32_C(3)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_OBSERVER UINT32_C(4)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_ILLUMINANT UINT32_C(5)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_HASH UINT32_C(6)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_PRINT_RECIPE UINT32_C(7)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_PRINT_HASH UINT32_C(8)
-
-#define FJ_SCANNER_LUT_DESCRIPTOR_PANIC UINT32_C(9)
 
 typedef struct FjScannerPostEffectsInput {
     uint32_t route, glare_active;
@@ -1400,7 +1360,7 @@ typedef struct FjPreparationParams {
     int32_t hanatos2025_adaptation_window, hanatos2025_adaptation_surface;
     int32_t camera_auto_exposure_enabled, camera_metering_method;
     FjPreparationHalation scatter_halation;
-    int32_t scanner_black_correction, scanner_white_correction, scanner_lut_resolution;
+    int32_t scanner_black_correction, scanner_white_correction;
     int32_t output_color_space, output_cctf_encoding, output_gamut_compression_enabled;
     FjVisualGrainParams grain;
     float film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount;
@@ -1453,7 +1413,6 @@ typedef struct FjPreparedStateView {
     uint32_t raw_midgray_bgr; /* 1 Mallett B/G/R; 0 TC R/G/B. */
     FjInputHullView input_hull;
     FjOutputBoundaryView output_boundary;
-    FjScannerLutDescriptor scanner_lut;
     FjScannerColor scanner_color;
     FjScannerColorCorrection scanner_correction;
     FjScannerPostEffectsDescriptor scanner_post_effects;

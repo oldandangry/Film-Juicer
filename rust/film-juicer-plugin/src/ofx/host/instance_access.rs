@@ -78,7 +78,6 @@ const REQUIRED: &[(&CStr, Kind)] = &[
     (c"ScannerWhiteCorrection", Kind::Boolean),
     (c"ScannerBlackLevel", Kind::Double),
     (c"ScannerWhiteLevel", Kind::Double),
-    (c"ScannerLutResolution", Kind::Integer),
     (c"PrintExposure", Kind::Double),
     (c"PrintPreflash", Kind::Double),
     (c"PrintExposureCompensation", Kind::Boolean),

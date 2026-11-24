@@ -180,7 +180,6 @@ namespace {
             out["scatterHalationControls"] = controls_json(p.values.scatter_halation);
             out["scannerBlackCorrection"] = p.values.scanner_black_correction;
             out["scannerWhiteCorrection"] = p.values.scanner_white_correction;
-            out["scannerLutResolution"] = p.values.scanner_lut_resolution;
             out["outputColorSpace"] = p.values.output_color_space;
             out["outputCctfEncoding"] = p.values.output_cctf_encoding;
             out["outputGamutCompressionEnabled"] = p.values.output_gamut_compression_enabled;
@@ -460,7 +459,7 @@ namespace {
                     p.values.camera_filter_ir[1] = 675;
                     p.values.camera_filter_ir[2] = 15;
                 }
-                require(controls_json(p) == row.at("controls"), "all serialized native controls preserved");
+                require(controls_json(p) == spectral_controls_from_archive(row.at("controls")), "all serialized native controls preserved");
                 std::array<char, 2048> diagnostic{};
                 FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
                 std::optional<JuicerTestSupport::PreparedStateHold> product;

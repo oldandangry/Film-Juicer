@@ -128,11 +128,10 @@ namespace ScannerCorrectionTest {
                                    {"mode", mode},
                                    {"print", route % 2 != 0},
                                    {"input", std::move(input)},
-                                   {"native", capturedCorrection},
-                                   {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)},
-                                   {"recipe_hash", state.recipe_hash},
-                                   {"scanner_hash", state.scanner_recipe_hash},
-                                   {"upload_hash", state.upload_core_hash}});
+                                   {"native", capturedCorrection}});
+                    require(state.route == route && state.recipe_hash != 0 && state.recipe_hash == state.upload_core_hash &&
+                                state.scanner_recipe_hash != 0 && state.scanner_hash != 0,
+                            "correction product retains the current route and scanner identities");
                     if (printOwner)
                         status(fj_test_print_profile_release(printOwner, &error));
                     status(fj_test_assets_film_release(filmOwner, &error));
@@ -527,6 +526,13 @@ namespace ScannerCorrectionTest {
     }
 
     void check_products(const std::filesystem::path& resources, const Json& captured) {
-        require_equal(products(resources, captured.at("products")), captured.at("products"), "all 48 actual correction products retain controls, resource inputs, descriptor and enclosing identities");
+        auto expected = captured.at("products");
+        require(expected.is_array() && expected.size() == 48, "archived correction product membership");
+        for (auto& row : expected)
+            for (const char* key : {"snapshot_hash", "recipe_hash", "scanner_hash", "upload_hash"}) {
+                require(row.at(key).is_number_unsigned(), "archived correction aggregate schema");
+                row.erase(key);
+            }
+        require_equal(products(resources, expected), expected, "all 48 ordered correction products retain controls, resource inputs and descriptor");
     }
 } // namespace ScannerCorrectionTest

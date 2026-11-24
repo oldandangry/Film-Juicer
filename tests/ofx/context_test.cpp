@@ -24,7 +24,7 @@ namespace {
     using ofx_test::Definition;
     constexpr std::string_view kCaller = "ofx.context";
     constexpr std::array kCases{"reference", "filter", "contexts", "acquisitions", "definitions", "properties", "catalog", "reentry"};
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 128> kExpected{{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 127> kExpected{{
         {"InputGroup", kOfxParamTypeGroup},
         {"Exposure", kOfxParamTypeDouble},
         {"CameraMeteringMethod", kOfxParamTypeChoice},
@@ -75,7 +75,6 @@ namespace {
         {"ScannerWhiteCorrection", kOfxParamTypeBoolean},
         {"ScannerBlackLevel", kOfxParamTypeDouble},
         {"ScannerWhiteLevel", kOfxParamTypeDouble},
-        {"ScannerLutResolution", kOfxParamTypeInteger},
         {"HalationGroup", kOfxParamTypeGroup},
         {"HalationActive", kOfxParamTypeBoolean},
         {"HalationScatterAmount", kOfxParamTypeDouble},
@@ -421,6 +420,28 @@ namespace {
         }
         test.passed();
     }
+    void retire_scanner_grid_from_reference(ContextHost& archive) {
+        constexpr auto control = "ScannerLutResolution";
+        const auto definition = std::find_if(archive.definitions.begin(), archive.definitions.end(), [](const auto& row) {
+            return row.name == control;
+        });
+        require(definition != archive.definitions.end() && definition->type == kOfxParamTypeInteger,
+                "archived scanner grid definition");
+        require(std::count_if(archive.definitions.begin(), archive.definitions.end(), [](const auto& row) {
+                    return row.name == control;
+                }) == 1,
+                "archived scanner grid definition count");
+        constexpr int first_definition_token = 7;
+        const auto token = static_cast<int>(definition - archive.definitions.begin()) + first_definition_token;
+        archive.definitions.erase(definition);
+        require(std::erase_if(archive.calls, [&](const auto& call) {
+                    return call.target == token || (call.operation == "param_define" && call.property == control);
+                }) == 10,
+                "archived scanner grid call count");
+        for (auto& call : archive.calls)
+            if (call.target > token)
+                --call.target;
+    }
     void filter_case(OfxPlugin* plugin, const ContextHost& reference) {
         JuicerTests::CaseEvent test(kCaller, "filter");
         const JuicerTests::Cohort rows("ofx.context.filter", {"equal", "repeat", "string_choice_sequence"});
@@ -599,7 +620,7 @@ namespace {
     }
     void definitions_case(OfxPlugin* plugin, const ContextHost& baseline) {
         JuicerTests::CaseEvent test(kCaller, "definitions");
-        const std::vector<std::string> kinds{"InputGroup", "Exposure", "CameraMeteringMethod", "CameraAutoExposure", "FilmProfileKey", "CouplersLangmuirDonorKRgb", "CouplersGammaInterlayerRToGb", "ScannerLutResolution", "GrainResetAdvanced"};
+        const std::vector<std::string> kinds{"InputGroup", "Exposure", "CameraMeteringMethod", "CameraAutoExposure", "FilmProfileKey", "CouplersLangmuirDonorKRgb", "CouplersGammaInterlayerRToGb", "HalationBounceCount", "GrainResetAdvanced"};
         auto ids = matrix_rows("param", {"InputGroup"});
         for (const auto& name : kinds)
             ids.push_back("kind/" + name);
@@ -847,6 +868,7 @@ int main(int argc, char** argv) try {
     require(candidate, "candidate descriptor");
     ContextHost oracle;
     ofx_test::reference::context(ofx_test::reference::read(argv[2], "context"), oracle);
+    retire_scanner_grid_from_reference(oracle);
     reference_case(oracle, oracle.startup);
     ContextHost binding;
     candidate->setHost(binding.binding());

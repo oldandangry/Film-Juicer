@@ -42,13 +42,6 @@ type Complete = unsafe extern "C" fn(
     *mut core::ffi::c_void,
     *const super::FjCallCompletionInput,
 ) -> super::FjCallCompletionResult;
-type ScannerLut = unsafe extern "C" fn(
-    *mut core::ffi::c_void,
-    *const crate::scanner_bridge::FjScannerLutInput,
-    *mut crate::scanner_bridge::FjScannerLutView,
-    *mut crate::scanner_bridge::FjScannerLutFailure,
-    *mut sys::FjErrorBuffer,
-) -> sys::FjStatus;
 type Gaussian = unsafe extern "C" fn(
     *mut core::ffi::c_void,
     *const crate::optics_bridge::FjGaussianKernelInput,
@@ -133,7 +126,6 @@ const _: fn(&super::FjCudaCallAccess) = |access| {
 };
 
 const _: fn(&super::FjHostPreparation, &super::FjCudaCallAccess) = |host, access| {
-    let _: &Option<ScannerLut> = &host.scanner_lut;
     let _: &Option<Gaussian> = &host.gaussian;
     let _: &Option<TraceSubmission> = &access.trace_submission;
 };
@@ -177,7 +169,6 @@ static FACTS: &[usize] = &[
     size_of::<super::FjHostPreparation>(),
     align_of::<super::FjHostPreparation>(),
     offset_of!(super::FjHostPreparation, user),
-    offset_of!(super::FjHostPreparation, scanner_lut),
     offset_of!(super::FjHostPreparation, gaussian),
     size_of::<super::FjCallCompletionInput>(),
     align_of::<super::FjCallCompletionInput>(),

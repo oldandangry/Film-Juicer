@@ -1022,11 +1022,15 @@ class NativeResultTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing required native run members"):
                 read_native_result(self.bundle, result_bytes=raw)
 
-    def module_producer_fixture(self, preview="OFF", *, explicit_preview=True, testing="ON", raw_preview=None):
+    def module_producer_fixture(
+        self, preview="OFF", *, explicit_preview=True, testing="ON", raw_preview=None, stage_name=None
+    ):
         source = "C:/checkout"
         preset = "windows-clang-release"
         build = f"{source}/out/build/{preset}"
         stage = f"{source}/out/stage/{preset}"
+        if stage_name is not None:
+            stage += f"/{stage_name}"
         cmake = "C:/tools/cmake.exe"
         python = "C:/venv/python.exe"
         targets = ["bundle-archive", "JuicerOfxModuleTests"]
@@ -1036,6 +1040,8 @@ class NativeResultTests(unittest.TestCase):
         configure = [cmake, "--preset", preset, f"-DBUILD_TESTING={testing}", f"-DPython3_EXECUTABLE={python}"]
         if explicit_preview:
             configure.append(f"-DJUICER_GRAIN_PREVIEW:BOOL={preview}")
+        if stage_name is not None:
+            configure.append(f"-DCMAKE_INSTALL_PREFIX:PATH={stage}")
         variants = {"production": ["grain-preview"] if preview == "ON" else []}
         if testing == "ON":
             variants["test-support"] = ["test-support"]
@@ -1127,6 +1133,24 @@ class NativeResultTests(unittest.TestCase):
             ],
         }
         return result, payloads
+
+    def test_module_producer_binds_named_stage(self):
+        self.subtest_cases = ("ordinary", "preview", "foreign", "different-cached-stage")
+        for case in self.subtest_cases:
+            with self.subTest(case=case):
+                preview = "ON" if case == "preview" else "OFF"
+                stage_name = "outside/bundle" if case == "foreign" else "scanner-candidate"
+                result, payloads = self.module_producer_fixture(preview, stage_name=stage_name)
+                if case == "different-cached-stage":
+                    result["commands"][0]["command"][-1] += "-different"
+                self.write_bundle(result, payloads)
+                if case in {"ordinary", "preview"}:
+                    self.assertEqual(read_native_result(self.bundle)["status"], "passed")
+                else:
+                    with self.assertRaisesRegex(ValueError, "invalid named stage"):
+                        read_native_result(self.bundle)
+
+    test_module_producer_binds_named_stage.required_subtests = True
 
     def test_module_producer_requires_configured_cmake_build(self):
         result, payloads = self.module_producer_fixture()

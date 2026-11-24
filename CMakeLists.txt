@@ -141,7 +141,7 @@ if(BUILD_TESTING)
         tests/film/effects-frame-fixtures tests/grain/frame-fixtures
         tests/dir/frame-fixtures tests/diffusion/frame-fixtures
         tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
-        tests/scanner/post-effects-fixtures tests/scanner/descriptor-fixtures)
+        tests/scanner/post-effects-fixtures)
     set(probe_fixture_inputs)
     foreach(directory IN LISTS probe_fixture_directories)
         file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS

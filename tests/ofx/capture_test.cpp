@@ -18,11 +18,11 @@
 
 
 #include "instance_host.h"
+#include "grain_capture_reference.h"
 #include "Hash.h"
 #include "juicer_ofx_api.h"
 #include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/preparation_fixture.h"
 #include "../ffi/capture_identity.h"
 
@@ -79,6 +79,8 @@ namespace {
         Admission& operator=(const Admission&) = delete;
     };
     void words(std::ostream& output, const FjVisualGrainParams& g, const FjPreparedStateView& state) {
+        require(state.recipe_hash != 0 && state.recipe_hash == state.upload_core_hash,
+                "grain capture retains the current aggregate and upload identity");
         const auto word = [&](float value) {
             output << ' ' << std::bit_cast<std::uint32_t>(value);
         };
@@ -114,7 +116,7 @@ namespace {
     void grain_fixture_inputs(ofx_test::InstanceHost& host, OfxImageEffectHandle effect) {
         for (const auto& [name, value] : std::to_array<std::pair<const char*, double>>({{"Exposure", 0.5}, {"CameraFilmFormatMm", 35.0}, {"FilmGammaFactor", 1.0}, {"PrintGammaFactor", 1.0}, {"CouplersAmount", 1.0}, {"CouplersInhibitionSameLayer", 1.0}, {"CouplersInhibitionInterlayer", 1.0}, {"CouplersDiffusionSizeUm", 20.0}, {"CouplersDiffusionTailUm", 200.0}, {"CouplersDiffusionTailWeight", 0.03}, {"ScannerLensBlurSigmaPx", 0.0}, {"ScannerBlackLevel", 0.01}, {"ScannerWhiteLevel", 0.98}, {"PrintExposure", 1.0}, {"PrintPreflash", 0.0}, {"EnlargerY", 0.0}, {"EnlargerM", 0.0}, {"EnlargerC", 0.0}, {"HalationScatterAmount", 1.0}, {"HalationScatterSpatialScale", 1.0}, {"HalationAmount", 1.0}, {"HalationSpatialScale", 1.0}, {"FilmDustAmount", 0.0}, {"GateDustAmount", 0.0}, {"FilmScratchAmount", 0.0}, {"GateScratchAmount", 0.0}, {"GateWeaveAmount", 0.0}, {"GlarePercent", 0.03}, {"GlareRoughness", 0.7}, {"GlareBlurSigmaPx", 0.5}, {"PrintShadowCompensationFactor", 0.0}, {"PrintShadowCompensationDensity", 1.2}, {"PrintShadowCompensationTransition", 0.3}}))
             host.set_value(effect, name, {value});
-        for (const auto& [name, value] : std::to_array<std::pair<const char*, int>>({{"CameraAutoExposure", 0}, {"CameraFilmFormatPreset", 0}, {"CameraMeteringMethod", 0}, {"SpectralUpsampling", 0}, {"ReferenceIlluminant", 0}, {"EnlargerIlluminant", 3}, {"InputColorSpace", 0}, {"InputCctfDecoding", 0}, {"InputCompression", 1}, {"Hanatos2025AdaptationWindow", 1}, {"Hanatos2025AdaptationSurface", 0}, {"OutputColorSpace", 0}, {"OutputCctfEncoding", 1}, {"OutputGamutCompression", 1}, {"CouplersActive", 0}, {"CouplersGammaUseStock", 1}, {"ScannerBlackCorrection", 0}, {"ScannerWhiteCorrection", 0}, {"ScannerLutResolution", 17}, {"PrintExposureCompensation", 1}, {"HalationActive", 0}, {"GlareActive", 1}}))
+        for (const auto& [name, value] : std::to_array<std::pair<const char*, int>>({{"CameraAutoExposure", 0}, {"CameraFilmFormatPreset", 0}, {"CameraMeteringMethod", 0}, {"SpectralUpsampling", 0}, {"ReferenceIlluminant", 0}, {"EnlargerIlluminant", 3}, {"InputColorSpace", 0}, {"InputCctfDecoding", 0}, {"InputCompression", 1}, {"Hanatos2025AdaptationWindow", 1}, {"Hanatos2025AdaptationSurface", 0}, {"OutputColorSpace", 0}, {"OutputCctfEncoding", 1}, {"OutputGamutCompression", 1}, {"CouplersActive", 0}, {"CouplersGammaUseStock", 1}, {"ScannerBlackCorrection", 0}, {"ScannerWhiteCorrection", 0}, {"PrintExposureCompensation", 1}, {"HalationActive", 0}, {"GlareActive", 1}}))
             host.set_value(effect, name, {value});
         host.set_value(effect, "FilmProfileKey", {std::string("kodak_portra_400")});
         host.set_value(effect, "PrintProfileKey", {std::string("kodak_portra_endura")});
@@ -173,6 +175,9 @@ namespace {
                         });
                         require(ordered != calls.end(), "grain current getter order");
                         Admission admitted(effect);
+                        require(JuicerTestSupport::hash_input_identity(JuicerTestSupport::PreparationInput(observed.view.captured)) ==
+                                    observed.view.input_identity,
+                                "grain capture retains the independently hashed input");
                         output << "GRAIN_CAPTURE " << print << ' ' << preset << ' ' << policy << ' ' << sample << ' ' << std::bit_cast<std::uint64_t>(amounts[sample]) << ' ' << std::bit_cast<std::uint64_t>(chromas[sample]);
                         words(output, g, admitted.view);
                     }
@@ -185,37 +190,7 @@ namespace {
         require(bool(manifest_stream), "grain manifest open");
         const auto manifest = nlohmann::json::parse(manifest_stream);
         const auto expected_path = manifest_path.parent_path() / manifest.at("presets").at(std::string(preset)).at("ofx").get<std::string>();
-        std::ifstream expected(expected_path);
-        require(bool(expected), "grain fixture open");
-        std::vector<std::string> original;
-        std::vector<std::pair<std::size_t, std::size_t>> positions;
-        std::size_t row = 0;
-        for (std::string line; std::getline(expected, line); ++row) {
-            std::istringstream words(line);
-            std::size_t token = 0;
-            for (std::string word; words >> word; ++token) {
-                original.push_back(word);
-                positions.emplace_back(row, token);
-            }
-        }
-        const auto selected = PrintIlluminantFixtures::apply(expected_path, original);
-        require(selected.size() == positions.size(), "grain overlay token count");
-        std::istringstream actual(actual_words);
-        std::string word;
-        for (std::size_t i = 0; i < selected.size(); ++i) {
-            const auto expected_word = selected.at(i).get<std::string>();
-            if (!(actual >> word)) {
-                std::ostringstream diagnostic;
-                diagnostic << "grain fixture missing row=" << positions[i].first << " token=" << positions[i].second << " expected=" << expected_word;
-                throw std::runtime_error(diagnostic.str());
-            }
-            if (word != expected_word) {
-                std::ostringstream diagnostic;
-                diagnostic << "grain fixture mismatch row=" << positions[i].first << " token=" << positions[i].second << " expected=" << expected_word << " actual=" << word;
-                throw std::runtime_error(diagnostic.str());
-            }
-        }
-        require(!(actual >> word), "extra grain fixture word");
+        ofx_test::compare_grain_capture(expected_path, actual_words);
     }
     std::vector<std::string> grain_edit_ids() {
         std::vector<std::string> ids;
@@ -246,6 +221,10 @@ namespace {
                 output << "GRAIN_EDIT_CAPTURE " << print << ' ' << label;
                 words(output, observed.view.captured.grain, admitted.view);
                 Observation first(effect);
+                require(first.view.published_identity == observed.view.input_identity &&
+                            JuicerTestSupport::hash_input_identity(JuicerTestSupport::PreparationInput(observed.view.captured)) ==
+                                observed.view.input_identity,
+                        "grain edit retains the independently hashed input at publication");
                 Admission repeated(effect);
                 Observation after(effect);
                 require(after.view.build == first.view.build && after.view.backing_identity == first.view.backing_identity, "grain publication reuse");
@@ -362,22 +341,26 @@ namespace {
                 require(!matches(expected_.front(), expected_.front() ^ UINT64_C(1)), "identity reference altered value accepted");
             }
         }
-        void observe(std::string_view label, std::uint64_t value) {
+        void observe(std::string_view label, const FjPreparationParams& captured, std::uint64_t value) {
             const auto sites = membership();
-            require(actual_.size() < sites.size(), "extra identity reference observation");
-            const auto& expectedSite = sites[actual_.size()];
+            require(observed_ < sites.size(), "extra identity reference observation");
+            const auto& expectedSite = sites[observed_];
             require(expectedSite.first == label, "identity reference call order");
-            {
-                require(actual_.size() < expected_.size() && matches(expected_[actual_.size()], value),
-                        "captured identity differs from frozen native reference");
-                if (actual_.empty())
-                    require(!matches(expected_[0] ^ UINT64_C(1), value), "candidate accepted altered identity reference");
+            const JuicerTestSupport::PreparationInput input(captured);
+            require(matches(JuicerTestSupport::hash_input_identity(input), value),
+                    "captured identity differs from independent record oracle");
+            if (observed_ == 0) {
+                auto altered = captured;
+                altered.camera_film_format_long_edge_mm = std::bit_cast<float>(
+                    std::bit_cast<std::uint32_t>(altered.camera_film_format_long_edge_mm) ^ UINT32_C(1));
+                require(!matches(JuicerTestSupport::hash_input_identity(JuicerTestSupport::PreparationInput(altered)), value),
+                        "captured identity accepted one-bit film format mutation");
             }
-            actual_.push_back(value);
+            ++observed_;
         }
         void finish() const {
-            require(actual_.size() == membership().size(), "missing identity reference observation");
-            require(actual_.size() == expected_.size(), "identity reference unconsumed rows");
+            require(observed_ == membership().size(), "missing identity reference observation");
+            require(observed_ == expected_.size(), "identity reference unconsumed rows");
         }
 
     private:
@@ -421,15 +404,13 @@ namespace {
         std::string preset_;
         std::filesystem::path path_;
         std::vector<std::uint64_t> expected_;
-        std::vector<std::uint64_t> actual_;
+        std::size_t observed_ = 0;
     };
 
     void identity_comparison(OfxImageEffectHandle effect, IdentityReference& reference, std::string_view label) {
         Observation observed(effect);
         require(observed.view.pending_kind == 4, "identity capture valid");
-        const JuicerTestSupport::PreparationInput input(observed.view.captured);
-        require(JuicerTestSupport::hash_input_identity(input) == observed.view.input_identity, "captured input identity differs from independent record oracle");
-        reference.observe(label, observed.view.input_identity);
+        reference.observe(label, observed.view.captured, observed.view.input_identity);
     }
 
     void ordinary_cases(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, IdentityReference& reference) {

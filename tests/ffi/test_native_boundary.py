@@ -699,7 +699,7 @@ class NativeBoundary(unittest.TestCase):
         self.assertFalse((ROOT / "src/Scanner.cpp").exists())
         header = (ROOT / "src/Scanner.h").read_text(encoding="utf-8")
         bridge = (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8")
-        retired = r"\b(?:hash_scanner_spectral_lut_descriptor|hash_nan_preserving_floats|kScannerSpectralLutSchemaVersion|DirectScannerLutInput|PrintScannerLutInput|PrintCorrectionDerivationInput|build_direct_scanner_spectral_lut_descriptor|build_print_scanner_spectral_lut_descriptor|build_direct_scanner_color_correction_descriptor|build_print_scanner_color_correction_descriptor|SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR)\b|_native_baseline"
+        retired = r"\b(?:ScannerSpectralLutDescriptor|prepare_scanner_lut|hash_scanner_spectral_lut_descriptor|hash_nan_preserving_floats|kScannerSpectralLutSchemaVersion|DirectScannerLutInput|PrintScannerLutInput|PrintCorrectionDerivationInput|build_direct_scanner_spectral_lut_descriptor|build_print_scanner_spectral_lut_descriptor|build_direct_scanner_color_correction_descriptor|build_print_scanner_color_correction_descriptor|SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR)\b|_native_baseline"
         self.assertNotRegex(header + bridge, retired)
         for text in (
             "DirectScannerLutInput input;",
@@ -709,10 +709,10 @@ class NativeBoundary(unittest.TestCase):
         ):
             self.assertRegex(text, retired)
         self.assertNotIn("Hash::", bridge)
-        reader = (ROOT / "tests/ffi/scanner_lut_descriptor_test.inc").read_text(encoding="utf-8")
-        self.assertIn("representableRows == (products ? 4u : 500u)", reader)
-        self.assertIn("retiredPointerRows == (products ? 0u : 20u)", reader)
-        self.assertIn('"null-preempts-route-255"', reader)
+        self.assertFalse((ROOT / "tests/ffi/scanner_lut_descriptor_test.inc").exists())
+        host = (ROOT / "native/juicer_host_preparation.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(host, retired)
+        self.assertIn("prepare_gaussian_kernel", host)
 
     def test_native_gaussian_coefficient_producer_and_capture_access_stay_deleted(self):
         source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()

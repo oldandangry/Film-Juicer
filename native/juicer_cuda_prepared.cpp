@@ -381,6 +381,10 @@ namespace JuicerCuda {
         identity.capturePolarity = descriptors.capturePolarity;
         identity.filmProfileKey = filmKey;
         identity.filmProfileAssetVersionToken = source.film_profile_asset_version;
+        if (print) {
+            identity.paperProfileKey = {source.print_profile_key.data, source.print_profile_key.count};
+            identity.paperProfileAssetVersionToken = source.print_profile_asset_version;
+        }
         identity.scatterHalationHash = source.optics.scatter_halation.recipe_hash;
         identity.highlightBoostHash = source.optics.highlight_boost.recipe_hash;
         identity.grainHash = source.grain.recipe_hash;

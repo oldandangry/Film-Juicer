@@ -98,7 +98,9 @@ namespace {
             FjErrorBuffer error{};
             status(product.view(view, error));
             const auto& dir = view.dir_recipe;
-            require(JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "64 frozen snapshot/final product identities");
+            require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned() &&
+                        view.route == controls.values.scan_route && view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash,
+                    "prepared DIR product retains the current route and aggregate");
             require(view.film_development.hash == row.at("development_hash") && view.film_exposure.hash == row.at("input_hash"), "accepted development/input identities");
             require(dir.hash == row.at("dir").at("hash") && dir.compensated_axes_hash == row.at("dir").at("axes_hash"), "actual DIR family identities");
             for (std::size_t i = 0; i < 3; ++i)

@@ -570,6 +570,19 @@ int main(int argc, char** argv) try {
         altered[0] = -100;
         require(encode(decode(altered)) != reference_rows[0][1], "render recorded value negative control");
         require(reference_rows[0][0] != reference_rows[1][0], "render recorded order negative control");
+        std::size_t archived_grid_getters = 0;
+        for (auto& row : reference_rows) {
+            auto expected = decode(row.at(1));
+            const auto removed = std::erase_if(expected.calls, [](const auto& call) {
+                return call.operation == "param_get" && call.target == "ScannerLutResolution";
+            });
+            require(removed <= 1, "archived render scanner grid getter multiplicity");
+            if (removed != 0) {
+                row.at(1) = encode(expected);
+                archived_grid_getters += static_cast<std::size_t>(removed);
+            }
+        }
+        require(archived_grid_getters == 12, "archived render scanner grid getter membership");
     }
     if (preview)
         expect_preview_capture();

@@ -475,14 +475,6 @@ juicer_add_host_test(Ffi.Host.ScannerPostEffects JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post "${JUICER_TEST_PRESET_NAME}")
 juicer_add_host_test(Scanner.Host.PostEffectsProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post-products "${JUICER_TEST_PRESET_NAME}")
-juicer_add_host_test(Ffi.Host.ScannerLutDescriptor JuicerFilmRecipeTests custom
-    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/descriptor-fixtures/manifest.json" scanner-descriptor "${JUICER_TEST_PRESET_NAME}")
-juicer_add_host_test(Scanner.Host.LutDescriptorProducts JuicerFilmRecipeTests custom
-    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/descriptor-fixtures/manifest.json" scanner-descriptor-products "${JUICER_TEST_PRESET_NAME}")
-juicer_add_host_test(Ffi.Host.ScannerLut JuicerFilmRecipeTests custom
-    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut "${JUICER_TEST_PRESET_NAME}")
-juicer_add_host_test(Scanner.Host.LutProducts JuicerFilmRecipeTests custom
-    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut-products "${JUICER_TEST_PRESET_NAME}")
 if(WIN32)
     set(JUICER_FILM_DIR_FIXTURE windows)
 else()
@@ -1727,7 +1719,7 @@ set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
 set(juicer_boundary_tests Ffi.Host.PreparedValues Ffi.Host.OutputColorValues Ofx.Host.Actions ${juicer_ofx_render_test} Ofx.Host.RenderControls Ofx.Gpu.Render Ofx.Gpu.RenderTrace ${juicer_ofx_instance_test} Ofx.Host.Capture Ofx.Host.InstanceControls Ofx.Host.Context Ofx.Host.ContextControls ${juicer_ofx_module_test} Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
-    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
+    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

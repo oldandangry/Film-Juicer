@@ -584,7 +584,6 @@ namespace {
         field("camera_metering_method", actual.camera_metering_method, expected.camera_metering_method);
         field("scanner_black_correction", actual.scanner_black_correction, expected.scanner_black_correction);
         field("scanner_white_correction", actual.scanner_white_correction, expected.scanner_white_correction);
-        field("scanner_lut_resolution", actual.scanner_lut_resolution, expected.scanner_lut_resolution);
         field("output_color_space", actual.output_color_space, expected.output_color_space);
         field("output_cctf_encoding", actual.output_cctf_encoding, expected.output_cctf_encoding);
         field("output_gamut_compression_enabled", actual.output_gamut_compression_enabled, expected.output_gamut_compression_enabled);

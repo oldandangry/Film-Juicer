@@ -657,12 +657,7 @@ namespace JuicerProcess {
             void* eventOpaque = nullptr;
             bool active = false;
             bool readbackPending = false;
-            std::uint64_t dirRecipeHash = 0;
-            std::uint64_t dirDescriptorHash = 0;
-            std::uint64_t contextEpoch = 0;
-            std::string profileKey;
-            int scanRoute = 0;
-            int capturePolarity = 0;
+            JuicerCuda::ScanErrorReadbackIdentity identity;
         };
 
         struct HighlightBoostFrameStage {
@@ -705,7 +700,6 @@ namespace JuicerProcess {
         std::map<void*, JuicerCuda::DeviceByteReservation>
             deviceAllocationRecords;
         JuicerCuda::CameraFilmLinearExposurePlanes scatterHalationCarrier{};
-        std::string filmProfileKey;
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
         WorkspaceDerivation requestedWorkspace;
         ScanErrorFrameStage scanErrorStage{};
@@ -1965,18 +1959,11 @@ namespace JuicerProcess {
         remember_stream(cudaStreamOpaque);
         void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
         if (stage.readbackPending && stage.hostFlag && stage.eventOpaque) {
-            JuicerCuda::ScanErrorReadbackIdentity identity{};
-            identity.dirRecipeHash = stage.dirRecipeHash;
-            identity.dirDescriptorHash = stage.dirDescriptorHash;
-            identity.contextEpoch = stage.contextEpoch;
-            identity.profileKey = stage.profileKey;
-            identity.scanRoute = stage.scanRoute;
-            identity.capturePolarity = stage.capturePolarity;
             if (!JuicerCuda::retain_scan_error_readback(
                     *resources,
                     stage.hostFlag,
                     stage.eventOpaque,
-                    identity,
+                    stage.identity,
                     outError)) {
                 if (outError.diagnostic.empty()) {
                     outError.diagnostic = "frame scan-error readback retention failed";
@@ -3262,37 +3249,42 @@ namespace JuicerProcess {
                 PreparedCudaFailureStage{"scan_error_previous_readback"},
                 "CUDA scan error validation failed");
             const bool deferredDirFailure = (previousError.status & (1 << 8)) != 0;
+            const auto& producing = previousError.identity;
+            const auto producingRoute = static_cast<Spektrafilm::ScanRoute>(producing.scanRoute);
             if (deferredDirFailure) {
                 const int channels = (previousError.status >> 9) & 0x7;
                 outError.diagnostic =
                     "earlier CUDA DIR submission failed component=dir route=" +
-                    std::string(Spektrafilm::scan_route_key(
-                        static_cast<Spektrafilm::ScanRoute>(
-                            previousError.scanRoute))) +
-                    " profile=" + previousError.profileKey +
-                    " polarity=" + std::to_string(previousError.capturePolarity) +
-                    " recipe_hash=" + std::to_string(previousError.dirRecipeHash) +
+                    std::string(Spektrafilm::scan_route_key(producingRoute)) +
+                    " profile=" + producing.profileKey +
+                    " polarity=" + std::to_string(producing.capturePolarity) +
+                    " recipe_hash=" + std::to_string(producing.dirRecipeHash) +
                     " descriptor_hash=" +
-                    std::to_string(previousError.dirDescriptorHash) +
+                    std::to_string(producing.dirDescriptorHash) +
                     " context_epoch=" +
-                    std::to_string(previousError.contextEpoch) +
+                    std::to_string(producing.contextEpoch) +
                     " channel_mask=" + std::to_string(channels) +
                     " requirement=finite_defined_receiver_arithmetic";
             } else {
-                outError.diagnostic = "previous scan produced non-finite RGB";
+                const bool paper = Spektrafilm::scan_route_is_print(producingRoute);
+                outError.diagnostic =
+                    "earlier CUDA scan produced non-finite RGB route=" +
+                    std::string(Spektrafilm::scan_route_key(producingRoute)) +
+                    (paper ? " medium=paper profile=" : " medium=film profile=") +
+                    (paper ? producing.paperProfileKey : producing.profileKey) +
+                    " profile_asset_version=" + std::to_string(producing.scannedProfileAssetVersion) +
+                    " submission_id=" + std::to_string(producing.submissionId) +
+                    " frame_token=" + std::to_string(producing.frameToken) +
+                    " scanner_hash=" + std::to_string(producing.scannerHash) +
+                    " context_epoch=" + std::to_string(producing.contextEpoch);
             }
             JTRACE("CUDA", std::string("FATAL: ") + outError.diagnostic);
             return deferredDirFailure ? ScanErrorStageResult::DeferredDirFailure : ScanErrorStageResult::Failed;
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
-        stage.dirRecipeHash = _state->resources->filmDirHash;
-        stage.dirDescriptorHash = _state->spatialDirDescriptor.hash;
-        stage.contextEpoch = _state->resources->contextEpoch;
-        stage.profileKey = _state->filmProfileKey;
-        stage.scanRoute =
-            static_cast<int>(_state->scanRoute);
-        stage.capturePolarity = static_cast<int>(_state->capturePolarity);
+        stage.identity.dirRecipeHash = _state->resources->filmDirHash;
+        stage.identity.dirDescriptorHash = _state->spatialDirDescriptor.hash;
         outScanErrorFlag = stage.deviceFlag;
         if (!outScanErrorFlag) {
             _state->set_failure(
@@ -5505,8 +5497,6 @@ namespace JuicerProcess {
         }
         frame._state->capturePolarity =
             request.identity.capturePolarity;
-        frame._state->filmProfileKey =
-            request.identity.filmProfileKey;
         frame._state->scanRoute =
             request.identity.scanRoute;
         frame._state->focusedInputRgbToXyz = request.focused.inputRgbToXyz;
@@ -5542,6 +5532,18 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
+        auto& scanIdentity = frame._state->scanErrorStage.identity;
+        const auto& admitted = frame._state->transaction;
+        scanIdentity.contextEpoch = admitted.contextEpoch;
+        scanIdentity.profileKey = request.identity.filmProfileKey;
+        scanIdentity.scanRoute = static_cast<int>(request.identity.scanRoute);
+        scanIdentity.capturePolarity = static_cast<int>(request.identity.capturePolarity);
+        scanIdentity.submissionId = admitted.snapshot.snapshotId;
+        scanIdentity.frameToken = admitted.snapshot.frameToken.value;
+        scanIdentity.scannerHash = admitted.snapshot.keyDigests.scannerHash;
+        scanIdentity.scannedProfileAssetVersion = printRoute ? request.identity.paperProfileAssetVersionToken
+                                                             : request.identity.filmProfileAssetVersionToken;
+        scanIdentity.paperProfileKey = request.identity.paperProfileKey;
         if (autoExposureBufferRequest.enabled &&
             !frame._state->allocate_auto_exposure_workspace(
                 autoExposureBufferRequest.descriptor,

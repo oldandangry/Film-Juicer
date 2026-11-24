@@ -683,15 +683,7 @@ FjStatus fj_test_scanner_print_correction_prepare(
 FjStatus fj_test_scanner_correction_fault(uint32_t operation, uint32_t fault);
 FjStatus fj_test_scanner_lookup(float query, FjFloatSpan axis, FjFloatSpan values, float* out, uint32_t* present);
 FjStatus fj_test_scanner_density_curve(float query, FjFloatSpan axis, FjFloatSpan curves_cmy, uint32_t channel, float* out, uint32_t* present);
-FjStatus fj_test_scanner_lut_acquire(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
-FjStatus fj_test_scanner_lut_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
-FjStatus fj_test_scanner_lut_release(FjScannerLutOwner*, FjErrorBuffer*);
-FjStatus fj_test_scanner_lut_fault(uint32_t operation, uint32_t fault);
-size_t fj_test_scanner_lut_live_owners(void);
 FjStatus fj_test_scanner_color_prepare(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
-
-FjStatus fj_test_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
-FjStatus fj_test_scanner_lut_descriptor_fault(uint32_t fault);
 
 /* Same synchronous scalar-copy contract as production. */
 FjStatus fj_test_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);

@@ -2838,57 +2838,6 @@ unsafe extern "C" fn fj_test_film_reference_density_lookup(
         )
     }
 }
-
-/// # Safety
-/// Same checked, disjoint synchronous contract as scanner_bridge::lut_acquire.
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-unsafe extern "C" fn fj_test_scanner_lut_acquire(
-    input: *const scanner_bridge::FjScannerLutInput,
-    out: *mut *mut scanner_bridge::FjScannerLutOwner,
-    failure: *mut scanner_bridge::FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The shared checked operation scopes every foreign projection.
-    unsafe { scanner_bridge::lut_acquire(input, out, failure, error) }
-}
-/// # Safety
-/// Same live unique-owner and disjoint output contract as scanner_bridge::lut_view.
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-unsafe extern "C" fn fj_test_scanner_lut_view(
-    owner: *const scanner_bridge::FjScannerLutOwner,
-    out: *mut scanner_bridge::FjScannerLutView,
-    failure: *mut scanner_bridge::FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The shared checked operation scopes the immutable owner borrow.
-    unsafe { scanner_bridge::lut_view(owner, out, failure, error) }
-}
-/// # Safety
-/// Same consuming unique-owner contract as scanner_bridge::lut_release.
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-unsafe extern "C" fn fj_test_scanner_lut_release(
-    owner: *mut scanner_bridge::FjScannerLutOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Ownership transfers into the shared consuming checked release.
-    unsafe { scanner_bridge::lut_release(owner, error) }
-}
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-extern "C" fn fj_test_scanner_lut_fault(operation: u32, fault: u32) -> FjStatus {
-    scanner_bridge::lut_faults::arm(operation, fault)
-}
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-extern "C" fn fj_test_scanner_lut_live_owners() -> usize {
-    scanner_bridge::lut_faults::live()
-}
-
-/// # Safety
-/// Same complete synchronous live/disjoint contract as scanner_bridge::color_prepare.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_scanner_color_prepare(
     input: *const scanner_bridge::FjScannerColorInput,
@@ -2906,30 +2855,6 @@ const _: unsafe extern "C" fn(
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_color_prepare;
 
-/// # Safety
-/// Identical synchronous storage contract to the production descriptor entry.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_test_scanner_lut_describe(
-    input: *const scanner_bridge::FjScannerLutDescriptorInput,
-    out: *mut scanner_bridge::FjScannerLutDescriptor,
-    failure: *mut scanner_bridge::FjScannerLutDescriptorFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The foreign caller provides live, disjoint input/output storage.
-    unsafe { scanner_bridge::describe_lut(input, out, failure, error) }
-}
-#[unsafe(no_mangle)]
-#[cfg(feature = "test-support")]
-extern "C" fn fj_test_scanner_lut_descriptor_fault(fault: u32) -> FjStatus {
-    if fault > 6 {
-        return status(FJ_STATUS_UNSUPPORTED_INPUT);
-    }
-    film_juicer_core::scanner::test_support::arm_descriptor_fault(fault);
-    status(FJ_STATUS_SUCCESS)
-}
-
-/// # Safety
-/// Same synchronous live/readable/exclusive/disjoint contract as production.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_scanner_post_describe(
     input: *const scanner_bridge::FjScannerPostEffectsInput,
@@ -2955,13 +2880,6 @@ const _: unsafe extern "C" fn(
     *mut scanner_bridge::FjScannerPostEffectsFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_post_describe;
-
-const _: unsafe extern "C" fn(
-    *const scanner_bridge::FjScannerLutDescriptorInput,
-    *mut scanner_bridge::FjScannerLutDescriptor,
-    *mut scanner_bridge::FjScannerLutDescriptorFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_test_scanner_lut_describe;
 
 /// # Safety
 /// Same initialized/disjoint ownership-transfer contract as the production acquire.

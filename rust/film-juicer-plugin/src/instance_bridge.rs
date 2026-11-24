@@ -1260,7 +1260,6 @@ pub(crate) fn captured_projection(
         camera_metering_method: params.camera_metering_method,
         scanner_black_correction: params.scanner_black_correction,
         scanner_white_correction: params.scanner_white_correction,
-        scanner_lut_resolution: params.scanner_lut_resolution,
         output_color_space: params.output_color_space,
         output_cctf_encoding: params.output_cctf_encoding,
         output_gamut_compression_enabled: params.output_gamut_compression_enabled,

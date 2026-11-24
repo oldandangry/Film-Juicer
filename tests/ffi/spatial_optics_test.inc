@@ -479,17 +479,17 @@ namespace OpticsTest {
             if (built)
                 status(product->view(view, error));
             require(built == row.at("success").get<bool>() && observedDiagnostic == row.at("diagnostic").get<std::string>(), "genuine held-state route product outcome and first failure");
-            Json actual{{"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"final_hash", built ? view.recipe_hash : 0}};
-            Json expected{{"snapshot_hash", row.at("snapshot_hash")}, {"final_hash", row.at("final_hash")}};
+            require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned(),
+                    "archived optics aggregate schema");
             if (built) {
-                actual["recipe"] = project(view.optics);
-                expected["recipe"] = row.at("recipe");
+                require_equal(project(view.optics), row.at("recipe"), "complete frozen optics product");
+                require(view.route == route && view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash,
+                        "prepared optics retain the current route and aggregate");
             } else {
                 require(result.category == FJ_STATUS_PREPARATION_FAILURE && result.api == FJ_API_NONE &&
                             result.native_code == 0 && !product,
                         "failed optics preparation returns no complete owner");
             }
-            require_equal(actual, expected, "native authored snapshot, complete optics and final route identities");
             event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {

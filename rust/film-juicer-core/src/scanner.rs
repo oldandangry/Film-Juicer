@@ -3,22 +3,14 @@
 use crate::hash;
 use std::fmt;
 
-mod descriptor;
 mod post_effects;
 pub use post_effects::{
     describe_post_effects, PostEffects, PostEffectsAttempt, PostEffectsParams, PostEffectsError,
     PostEffectsErrorKind,
 };
-pub use descriptor::{
-    describe_lut, LutDescriptor, LutDescriptorError, LutDescriptorInput, LutDescriptorParams,
-    LutSpectra,
-};
 
 mod color;
 pub use color::{Color, ColorError, ColorInput};
-
-mod lut;
-pub use lut::{Lut, LutError, LutInput, LutTables};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
@@ -650,20 +642,6 @@ pub mod test_support {
     }
     pub(super) fn take_post_fault() -> u32 {
         POST_FAULT.replace(0)
-    }
-    thread_local! { static DESCRIPTOR_FAULT: Cell<u32> = const { Cell::new(0) }; }
-    pub fn arm_descriptor_fault(fault: u32) {
-        DESCRIPTOR_FAULT.set(fault);
-    }
-    pub(super) fn take_descriptor_fault() -> u32 {
-        DESCRIPTOR_FAULT.replace(0)
-    }
-    thread_local! { static RESERVATION: Cell<u32> = const { Cell::new(0) }; }
-    pub fn reject_lut_reservation(buffer: u32) {
-        RESERVATION.set(buffer);
-    }
-    pub(super) fn take_lut_reservation() -> u32 {
-        RESERVATION.replace(0)
     }
     pub fn lookup(query: f32, axis: &[f32], values: &[f32]) -> Option<f32> {
         super::interpolate(query, axis.len(), values.len(), |i| axis[i], |i| values[i])

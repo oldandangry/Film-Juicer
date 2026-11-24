@@ -98,7 +98,6 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
         h.float(v);
     }
     for v in [
-        p.scanner_lut_resolution,
         p.input_color_space,
         p.input_cctf_decoding,
         p.output_color_space,
@@ -348,7 +347,6 @@ pub fn defaults() -> Params {
         highlight_boost: optics::highlight_boost::Controls::default(),
         scanner_black_correction: 0,
         scanner_white_correction: 0,
-        scanner_lut_resolution: 17,
         output_color_space: 0,
         output_cctf_encoding: 1,
         output_gamut_compression_enabled: 1,

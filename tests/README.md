@@ -65,6 +65,11 @@ python -B scripts/verify.py prepare --preset windows-clang-release --clean-first
   --production-contract --targets juicer JuicerProductionPreparedRenderProbe --testing OFF
 ```
 
+To qualify a candidate beside retained bundles, include `bundle-archive` in
+`--targets` and pass `--stage-subdirectory <name>`. CMake stages beneath the
+named child of `out/stage/<preset>`. The build receipt binds the configured path
+to the module loaded by the production contract.
+
 The report records the actual prepared-render probe, four direct/print cold/warm
 rows, C11 probe outcomes, production symbols/exports, and hashes for consumed
 fixtures and required build inputs. Offline reading validates the closure's
@@ -479,9 +484,9 @@ generated expected header and synthetic duplicate-film arguments.
 With testing OFF, each Release contract runs ten logical commands: four scan
 commands; build/run for each of the strict-C11 discovery and native CUDA ABI
 probes; and one standard module probe plus one prepared-render/native-CUDA
-contract command. `production-contract-v2`
-records this command set; the offline reader continues to accept historical v1
-reports. These probes are excluded from default product builds.
+contract command. Fresh spectral runs use `production-contract-v3` with a
+five-word trace identity tuple. The offline reader accepts the historical v1
+and v2 reports. These probes are excluded from default product builds.
 
 Test targets are excluded from the default product build. The verifier builds
 the selected target closure before CTest; `ctest` alone expects its selected
@@ -1277,50 +1282,18 @@ time, zero and signed-zero bias, non-finite density, and extreme blur weights.
 The oracle's particle generation intentionally shares production code; this test
 isolates the subsequent blur/delta schedule and does not validate the sampler.
 
-### Spectral scanner and historical cube fixtures
+### Spectral scanner
 
-`Ffi.Host.ScannerLut` checks full six-array native-characterization words,
-C11/C++/Rust ABI, raw/facade failure clearing, ten reservation stages, panic
-containment and input expiry. Valid callback construction and span comparisons
-stay inside the existing host-preparation scope. `Scanner.Host.LutProducts`
-checks complete historical profile/route products and their held inputs. The
-frozen `scanner/lut-fixtures/manifest.json` describes native numerical
-characterization and the `checked.json` transport fixture.
+`Scanner.Gpu.OutputEncoding` binds frame-owned spectra and verifies every packet
+word, held encoding pairs, the Float64 colour continuation, and restoration after
+medium edits. `Ofx.Gpu.ResourceFailure.OutputGamut` exercises typed failure, retry
+and warm reuse at the production Cmax allocation. The pinned upload and deferred
+retirement registrations exercise their surviving owners.
 
-`Scanner.Gpu.OutputEncoding` binds actual frame-owned spectra and verifies every
-packet word, held encoding pairs, the float64 colour continuation, and restoration
-after medium edits. `Ofx.Gpu.ResourceFailure.OutputGamut` exercises typed failure,
-retry and warm reuse at the production Cmax allocation. The pinned upload and
-deferred retirement registrations exercise their surviving owners.
-Cold null preparation rejects with the exact internal-failure status and no LUT
-candidate, preserves any old six-array winner and clears route metadata. A
-separate warmed-input case checks unchanged ledger/allocation accounting;
-valid callbacks recover, while warm hits require no callback.
-The fixture drains resources and pinned staging before destroying its CUDA context.
-The four logical native captures share `lut-fixtures/native.json`; the manifest's
-`contexts` map selects each preset's label and primitive results. Shared payload
-and context fields must be disjoint. `storage_files` hashes the physical files;
-the original per-preset hashes and capture/compiler/resource provenance remain
-unchanged. `Ffi.Host.SharedFixtureFormat` reconstructs every original capture byte
-for byte, including its line endings. Rust, raw ABI/C11 and prepared-upload
-readers expand the same logical capture before their existing checks.
-
-`Ffi.Host.ScannerLutDescriptor` and `Scanner.Host.LutDescriptorProducts` check
-complete scanner spectral-LUT metadata through the safe Rust family and checked
-test facade. Its strict-C11 scalar binder calls the direct checked operation. The independent
-[descriptor fixtures](scanner/descriptor-fixtures/README.md) preserve 520 literal
-cases and four products in four native contexts. Exact byte labels, NaN masks,
-signed-zero equivalence, raw admission/zero clearing, closed failure envelopes,
-C11/C++20/Rust ABI, expiry and actual complete-state early failure are covered.
-Named missing-model-pointer outcomes remain historical dispositions in the
-unchanged captures; the native model adapters are removed. Existing scanner
-routes own the actual frame/cache/upload witnesses.
-Compiler probes enforce private complete construction, readonly getters and owned
-results. Both Release production gates execute 41 descriptor C11 cases alongside
-the retained probes, with fixture/fault code excluded from normal artifacts.
-These are bounded characterization and construction checks; installed Resolve,
-visual acceptance, S4.D/E and parent closure remain separate.
-
+The [cubic LUT fixtures](scanner/lut-fixtures/README.md) and [descriptor
+fixtures](scanner/descriptor-fixtures/README.md) describe the archived scanner.
+`Ffi.Host.SharedFixtureFormat` verifies the exact reconstructed archive bytes,
+including their original preset and compiler provenance.
 ### Scanner color construction
 
 `Ffi.Host.ScannerColor` checks complete scanner output construction through the

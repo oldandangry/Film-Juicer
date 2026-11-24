@@ -34,6 +34,9 @@ namespace {
         return result;
     }
     using ofx_test::reference::advanced_halation_parameter;
+    constexpr std::string_view kArchivedScannerGrid = "ScannerLutResolution";
+    constexpr std::string_view kArchivedScannerGridGetter = "param_get/ScannerLutResolution";
+    constexpr std::string_view kIntegerControl = "HalationBounceCount";
     std::vector<InstanceCall> legacy_halation_calls(std::vector<InstanceCall> calls, bool create = false) {
         std::erase_if(calls, [&](const InstanceCall& c) {
             if (c.operation == "param_handle")
@@ -153,6 +156,15 @@ namespace {
         auto append = [&](HandleFault value) {
             if (expected) {
                 const auto& r = expected->at(results.size());
+                if (value.name == kIntegerControl) {
+                    require(r.name == kArchivedScannerGrid && value.injected == r.injected && value.status == r.status &&
+                                !value.calls.empty() && value.calls.back().operation == "get_string" &&
+                                value.calls.back().target == kIntegerControl && value.calls.back().property == kOfxParamPropType &&
+                                !value.params.empty() && value.params.back() == kIntegerControl,
+                            "integer type fault stops at the live type query");
+                    results.push_back(std::move(value));
+                    return;
+                }
                 auto legacy_params = value.params;
                 std::erase_if(legacy_params, advanced_halation_parameter);
                 require(value.name == r.name && value.injected == r.injected && value.status == r.status && legacy_params == r.params, "handle fault membership");
@@ -212,7 +224,7 @@ namespace {
                     append({operation, status, actual, std::move(seen), std::move(calls)});
                 }
             });
-        const std::array typed_names{"Exposure", "CameraAutoExposure", "CameraFilmFormatPreset", "FilmProfileKey", "ScannerLutResolution", "ScannerUnsharpMask", "CouplersLangmuirDonorKRgb", "GrainResetAdvanced"};
+        const std::array typed_names{"Exposure", "CameraAutoExposure", "CameraFilmFormatPreset", "FilmProfileKey", "HalationBounceCount", "ScannerUnsharpMask", "CouplersLangmuirDonorKRgb", "GrainResetAdvanced"};
         const std::array typed_ids{"double", "boolean", "choice", "string_choice", "integer", "double2", "double3", "push_button"};
         with_row(rows, "type", [&] {
             for (std::size_t index = 0; index < typed_names.size(); ++index)
@@ -326,7 +338,7 @@ namespace {
         ControlScenario{"set", "param_set/CameraFilmFormatMm", "CameraFilmFormatPreset"},
         ControlScenario{"get_boolean", "param_get/CameraAutoExposure", "Exposure"},
         ControlScenario{"get_choice", "param_get/CameraMeteringMethod", "Exposure"},
-        ControlScenario{"get_integer", "param_get/ScannerLutResolution", "Exposure"},
+        ControlScenario{"get_integer", "param_get/HalationBounceCount", "Exposure"},
         ControlScenario{"get_pair", "param_get/ScannerUnsharpMask", "Exposure"},
         ControlScenario{"get_triplet", "param_get/GrainParticleScale", "Exposure"},
         ControlScenario{"get_string", "param_get/FilmProfileKey", "Exposure"},
@@ -352,6 +364,11 @@ namespace {
             require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "control fault create");
             host.set_value(effect, "GrainActive", {1});
             host.set_value(effect, "CameraAutoExposure", {1});
+            const bool halation_integer = std::string_view(scenario.id) == "get_integer";
+            if (halation_integer) {
+                host.set_value(effect, "HalationActive", {1});
+                host.set_value(effect, "HalationBounceCount", {4});
+            }
             for (int status = kOfxStatOK; status <= kOfxStatReplyDefault; ++status) {
                 const auto id = std::string(scenario.id) + "/status_" + std::to_string(status);
                 with_row(rows, id.c_str(), [&] {
@@ -367,8 +384,24 @@ namespace {
                                 return c.operation == operation.substr(0, slash) && (c.target == operation.substr(slash + 1) || c.property == operation.substr(slash + 1)) && c.status == status;
                             }),
                             "control fault targeted operation");
-                    if (expected)
-                        require(same_effect_trace(observation, expected->at(observations.size())), "actual callback get/set full status continuation");
+                    if (expected) {
+                        const auto& archived = expected->at(observations.size());
+                        if (halation_integer) {
+                            require(archived.operation == kArchivedScannerGridGetter && archived.injected == status &&
+                                        result == archived.status,
+                                    "live integer getter returns the exact OFX status");
+                            const auto bounce = std::find_if(observation.calls.begin(), observation.calls.end(), [](const auto& call) {
+                                return call.operation == "param_get" && call.target == kIntegerControl;
+                            });
+                            const bool continued = std::any_of(std::next(bounce), observation.calls.end(), [](const auto& call) {
+                                return call.operation == "param_get" && call.target == "HalationBounceDecay";
+                            });
+                            require(continued == (result == kOfxStatReplyDefault && (status == kOfxStatOK || status >= kOfxStatReplyYes)),
+                                    "live integer getter continuation");
+                        } else {
+                            require(same_effect_trace(observation, archived), "actual callback get/set full status continuation");
+                        }
+                    }
                     observations.push_back(std::move(observation));
                 });
             }
@@ -403,7 +436,7 @@ namespace {
     };
     const std::array kTypedScenarios{
         TypedScenario{"get_scalar", "param_get", "Exposure", "Exposure", false},
-        TypedScenario{"get_integer", "param_get", "ScannerLutResolution", "Exposure", false},
+        TypedScenario{"get_integer", "param_get", "HalationBounceCount", "Exposure", false},
         TypedScenario{"get_boolean", "param_get", "CameraAutoExposure", "Exposure", false},
         TypedScenario{"get_choice", "param_get", "CameraMeteringMethod", "Exposure", false},
         TypedScenario{"get_pair", "param_get", "ScannerUnsharpMask", "Exposure", false},
@@ -422,8 +455,15 @@ namespace {
         require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "typed consumer create");
         host.set_value(effect, "GrainActive", {1});
         host.set_value(effect, "CameraAutoExposure", {1});
+        const auto original_active = host.value(effect, "HalationActive");
+        const auto original_bounces = host.value(effect, kIntegerControl);
         for (const auto& scenario : kTypedScenarios)
             with_row(rows, scenario.id, [&] {
+                const bool halation_integer = std::string_view(scenario.target) == kIntegerControl;
+                if (halation_integer) {
+                    host.set_value(effect, "HalationActive", {1});
+                    host.set_value(effect, scenario.target, {4});
+                }
                 if (std::string_view(scenario.changed) == "CameraFilmFormatPreset")
                     host.set_value(effect, scenario.changed, {1});
                 host.clear_calls();
@@ -455,8 +495,20 @@ namespace {
                 }
                 if (std::string_view(scenario.id) == "set_string_copy")
                     require(host.value(effect, scenario.target) == found->values, "candidate string setter retained copied bytes");
-                if (expected)
-                    require(same_effect_trace(observation, expected->at(observations.size())), "typed actual callback continuation");
+                if (expected) {
+                    const auto& archived = expected->at(observations.size());
+                    if (halation_integer) {
+                        require(archived.operation == scenario.id && result == archived.status &&
+                                    found->values == std::vector<ofx_test::InstanceValue>{4},
+                                "live integer getter preserves the authored value");
+                    } else {
+                        require(same_effect_trace(observation, archived), "typed actual callback continuation");
+                    }
+                }
+                if (halation_integer) {
+                    host.set_value(effect, "HalationActive", original_active);
+                    host.set_value(effect, kIntegerControl, original_bounces);
+                }
                 observations.push_back(std::move(observation));
             });
         require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "typed consumer destroy");
@@ -756,6 +808,30 @@ namespace {
         r.reentry_status = record[20].get<int>();
         if (r.faults.size() != 113 || r.controls.size() != kControlScenarios.size() * 15 || r.contexts.size() != kContextScenarios.size() || r.actions.size() != kActionScenarios.size() || r.nested_changes.size() != 2 || encode(r) != record)
             throw std::runtime_error("instance reference membership");
+        const auto retire_grid_calls = [](auto& calls) {
+            return std::erase_if(calls, [](const auto& call) {
+                return (call.operation == "param_handle" && call.property == kArchivedScannerGrid) ||
+                       call.target == kArchivedScannerGrid || call.target == "ScannerLutResolution.presentation";
+            });
+        };
+        require(retire_grid_calls(r.create) == 3 && retire_grid_calls(r.ordinary_create) == 3,
+                "archived scanner grid constructor boundaries");
+        for (auto& fault : r.faults) {
+            std::erase(fault.params, kArchivedScannerGrid);
+            retire_grid_calls(fault.calls);
+        }
+        for (auto* calls : {&r.begin, &r.change, &r.end, &r.edit, &r.reentry, &r.destroy})
+            retire_grid_calls(*calls);
+        for (auto* group : {&r.controls, &r.typed})
+            for (auto& observation : *group)
+                retire_grid_calls(observation.calls);
+        for (auto& context : r.contexts)
+            retire_grid_calls(context.calls);
+        for (auto& edit : r.edits)
+            retire_grid_calls(edit.calls);
+        for (auto* group : {&r.actions, &r.nested_changes})
+            for (auto& observation : *group)
+                retire_grid_calls(observation.calls);
         return r;
     }
     void reference_record_case(const Reference& r) {

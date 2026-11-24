@@ -556,6 +556,10 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         identity.capturePolarity = descriptors.capturePolarity;
         identity.filmProfileKey = {view.film_profile_key.data, view.film_profile_key.count};
         identity.filmProfileAssetVersionToken = view.film_profile_asset_version;
+        if (print) {
+            identity.paperProfileKey = {view.print_profile_key.data, view.print_profile_key.count};
+            identity.paperProfileAssetVersionToken = view.print_profile_asset_version;
+        }
         identity.scatterHalationHash = view.optics.scatter_halation.hash;
         identity.grainHash = view.grain.hash;
         identity.grainDensityLayersHash = view.film_development.density_layers_hash;

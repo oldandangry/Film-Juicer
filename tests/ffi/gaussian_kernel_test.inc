@@ -168,9 +168,6 @@ namespace GaussianTest {
         } reply;
         const FjHostPreparation preparation{
             &reply,
-            [](void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*) -> FjStatus {
-                return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
-            },
             [](void* user, const FjGaussianKernelInput* input, FjGaussianKernelView* view, FjGaussianKernelFailure* failure, FjErrorBuffer* error) -> FjStatus {
                 const auto& reply = *static_cast<Reply*>(user);
                 *view = reply.success ? FjGaussianKernelView{input->radius, input->sigma_px, {reply.weights.data(), reply.weights.size()}} : FjGaussianKernelView{};

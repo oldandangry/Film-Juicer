@@ -1284,11 +1284,21 @@ def fresh_prepare(args):
             home = ROOT / "tests/host" if cuda_free else ROOT
             if cache and not Path(cache["CMAKE_HOME_DIRECTORY"]).samefile(home):
                 raise ValueError("build cache belongs to another source tree")
+            configure = configure_command(
+                cmake, args.preset, cuda_free=cuda_free, testing=args.testing, grain_preview=args.grain_preview
+            )
+            stage_name = getattr(args, "stage_subdirectory", None)
+            if stage_name is not None:
+                if cuda_free:
+                    raise ValueError("bundle staging requires a native product configuration")
+                stage_root = ROOT / "out/stage" / args.preset
+                stage = stage_root / name_component(stage_name)
+                if stage.resolve() != stage_root.resolve() / stage.name:
+                    raise ValueError("bundle staging directory must not redirect the selected preset")
+                configure.append("-DCMAKE_INSTALL_PREFIX:PATH=" + str(stage))
             run.command(
                 "configure",
-                configure_command(
-                    cmake, args.preset, cuda_free=cuda_free, testing=args.testing, grain_preview=args.grain_preview
-                ),
+                configure,
                 vctip_executable=windows_vctip(os.environ),
             )
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
@@ -1752,6 +1762,7 @@ def main():
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
     prepare.add_argument("--grain-preview", choices=("ON", "OFF"), help="set the product preview option in CMake")
+    prepare.add_argument("--stage-subdirectory", help="stage under a named child of the native preset stage")
     prepare.add_argument("--run-id")
     prepare.add_argument("--clean-first", action="store_true")
     prepare.add_argument(

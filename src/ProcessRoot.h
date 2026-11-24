@@ -114,6 +114,8 @@ namespace JuicerProcess {
             Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
             std::string_view filmProfileKey;
             std::uint64_t filmProfileAssetVersionToken = 0;
+            std::string_view paperProfileKey;
+            std::uint64_t paperProfileAssetVersionToken = 0;
             std::uint64_t scatterHalationHash = 0;
             std::uint64_t grainHash = 0;
             std::uint64_t grainDensityLayersHash = 0;

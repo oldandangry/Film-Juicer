@@ -4,7 +4,8 @@ fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, recipe::Prep
     let _: &str = state.film_key();
     let _: &[f32; 9] = state.s_inverse();
     let _: &[f32; 81] = state.exposure_tables().illuminant();
-    let _: u64 = state.scanner().lut().hash();
+    let _: u64 = state.scanner().hash();
+    let _: u64 = state.scanner_hash();
     match state.route() {
         recipe::PreparedRoute::Direct(direct) => { let _ = direct.correction().hash(); }
         recipe::PreparedRoute::Print(print) => { let _ = print.curves().totals(); }

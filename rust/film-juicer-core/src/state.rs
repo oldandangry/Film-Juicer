@@ -1059,10 +1059,8 @@ mod tests {
                 landscape.film_bounds().hash(),
                 portrait.film_bounds().hash()
             );
-            assert_eq!(
-                landscape.scanner().lut().hash() == portrait.scanner().lut().hash(),
-                route == ScanRoute::NegativePrint,
-            );
+            assert_eq!(landscape.scanner_hash(), portrait.scanner_hash());
+            assert_ne!(landscape.hash(), portrait.hash());
             assert!(matches!(
                 admit(36001),
                 Err(Error::Preparation(PrepareError::FilmGrainFootprint { .. }))
@@ -1269,7 +1267,7 @@ mod tests {
                 eighth.film_grain().unwrap().table(),
             ));
             assert_eq!(full.film_bounds().hash(), eighth.film_bounds().hash());
-            assert_eq!(full.scanner().lut().hash(), eighth.scanner().lut().hash());
+            assert_eq!(full.scanner_hash(), eighth.scanner_hash());
             assert!(Arc::ptr_eq(&eighth, &admit(604, Some(grid))));
             let other = admit(
                 604,
@@ -1377,7 +1375,8 @@ mod tests {
             assert_eq!(state.development().route(), route);
             assert_ne!(state.hash(), 0);
             assert_ne!(state.reference().hash(), 0);
-            assert_ne!(state.scanner().lut().hash(), 0);
+            assert_ne!(state.scanner().hash(), 0);
+            assert_ne!(state.scanner_hash(), 0);
             assert!(!state.development().normalized_curves_cmy().is_empty());
             match (route, state.route()) {
                 (

@@ -501,7 +501,6 @@ namespace {
         integer("ScannerWhiteCorrection", p.scanner_white_correction);
         scalar("ScannerBlackLevel", p.scanner_black_level);
         scalar("ScannerWhiteLevel", p.scanner_white_level);
-        integer("ScannerLutResolution", p.scanner_lut_resolution);
         scalar("PrintExposure", p.print_exposure);
         scalar("PrintPreflash", p.print_preflash_exposure);
         integer("PrintExposureCompensation", p.print_exposure_compensation);
