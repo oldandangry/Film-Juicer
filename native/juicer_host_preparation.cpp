@@ -37,7 +37,7 @@ namespace JuicerCuda {
             return {samples.empty() ? nullptr : samples.data(), samples.size()};
         };
         const auto& tables = medium.tables;
-        FjScannerLutInput input{span(tables.epsC), span(tables.epsM), span(tables.epsY), span(tables.Ax), span(tables.Ay), span(tables.Az), span(tables.baseDensityMin), {}, {}, tables.K, tables.invYn, tables.hasBaseline ? 1u : 0u, static_cast<std::uint32_t>(medium.medium), resolution};
+        FjScannerLutInput input{span(tables.epsC), span(tables.epsM), span(tables.epsY), span(tables.Ax), span(tables.Ay), span(tables.Az), span(tables.baseDensityMin), {}, {}, static_cast<std::int32_t>(tables.epsC.size()), tables.invYn, tables.baseDensityMin.empty() ? 0u : 1u, static_cast<std::uint32_t>(medium.medium), resolution};
         std::copy_n(medium.range.min_cmy, 3, input.range_min_cmy);
         std::copy_n(medium.range.inv_max_cmy, 3, input.inverse_span_cmy);
         FjScannerLutFailure failure{};

@@ -3745,7 +3745,6 @@ namespace JuicerCuda {
             return false;
         }
         if (input.exposureSampleCount != Spectral::kNumSamples ||
-            input.scannerTables.K != Spectral::kNumSamples ||
             filmDevelop.logExposure.empty() ||
             filmDevelop.logExposure.size() * 3u != filmDevelop.normalizedDensityCurvesRgb.scalar_count()) {
             outError.diagnostic = "focused route resource host derivation shape mismatch";

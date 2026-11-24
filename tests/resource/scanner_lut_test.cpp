@@ -306,7 +306,10 @@ namespace {
             baseline.reserve(source.at("baseline").size());
             for (const auto& word : source.at("baseline"))
                 baseline.push_back(float_word(word));
-            input.scannerTables = {std::span<const float>(eps[0]), std::span<const float>(eps[1]), std::span<const float>(eps[2]), std::span<const float>(weighted[0]), std::span<const float>(weighted[1]), std::span<const float>(weighted[2]), std::span<const float>(baseline), source.at("sample_count").get<int>(), float_word(source.at("inv_yn")), source.at("has_baseline").get<bool>()};
+            const auto base = source.at("has_baseline").get<bool>() ? std::span<const float>(baseline) : std::span<const float>{};
+            if (source.at("sample_count").get<std::size_t>() != eps[0].size())
+                throw std::runtime_error("frozen scanner wavelength count differs from its cyan lane");
+            input.scannerTables = {std::span<const float>(eps[0]), std::span<const float>(eps[1]), std::span<const float>(eps[2]), std::span<const float>(weighted[0]), std::span<const float>(weighted[1]), std::span<const float>(weighted[2]), base, float_word(source.at("inv_yn"))};
 
             for (auto& rowSensitivity : sensitivity)
                 rowSensitivity = {1.0f, 1.0f, 1.0f};

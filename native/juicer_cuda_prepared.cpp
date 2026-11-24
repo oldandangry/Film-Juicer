@@ -342,7 +342,7 @@ namespace JuicerCuda {
         focused.densityBounds.hash = source.scanner_bounds.hash;
         focused.scannerLutDescriptor = descriptors.scanner;
         const auto& spectra = source.scanner_spectra;
-        focused.scannerTables = {floats(spectra.dye_c), floats(spectra.dye_m), floats(spectra.dye_y), floats(spectra.weighted_x), floats(spectra.weighted_y), floats(spectra.weighted_z), floats(spectra.base_density), 81, spectra.inverse_y_normalization, spectra.base_density.count != 0};
+        focused.scannerTables = {floats(spectra.dye_c), floats(spectra.dye_m), floats(spectra.dye_y), floats(spectra.weighted_x), floats(spectra.weighted_y), floats(spectra.weighted_z), floats(spectra.base_density), spectra.inverse_y_normalization};
         focused.exposureSampleCount = 81;
         focused.exposureIlluminant = floats(exposure.mallett_illuminant);
         focused.filmTcLut = floats(exposure.tc_lut_rgba);

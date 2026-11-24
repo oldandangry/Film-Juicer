@@ -302,7 +302,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.scannerLutDescriptor.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
             out.scannerLutDescriptor.observerHash = view.scanner_lut.observer_hash;
             const auto base = scanner.has_baseline ? span(scanner.baseline_min) : std::span<const float>{};
-            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), base, 81, scanner.inv_yn, scanner.has_baseline != 0};
+            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), base, scanner.inv_yn};
             out.exposureSampleCount = 81;
             out.exposureIlluminant = span(exposure.mallett_illuminant);
             out.filmTcLut = span(exposure.tc_lut_rgba);

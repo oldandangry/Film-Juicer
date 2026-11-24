@@ -54,9 +54,7 @@ namespace Scanner {
         std::span<const float> Ay;
         std::span<const float> Az;
         std::span<const float> baseDensityMin;
-        int K = 0;
         float invYn = 1.0f;
-        bool hasBaseline = false;
     };
 
     struct MediumView {
