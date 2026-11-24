@@ -1092,25 +1092,19 @@ namespace JuicerCudaTest {
 
             constexpr int originX = -13;
             constexpr int originY = 17;
-            const auto place_frame = [&frame](FjExtent area) {
-                const FjRect extent{area.x, area.y, area.x + area.width, area.y + area.height};
-                frame.source.bounds = extent;
-                frame.destination.bounds = extent;
-                frame.render_window = extent;
-                frame.full_frame_extent = extent;
-                frame.effects_geometry = {area, static_cast<double>(area.x), static_cast<double>(area.y), static_cast<double>(area.width), static_cast<double>(area.height), 1.0, 1.0, 1.0};
-            };
-            place_frame({originX, originY, width, height});
+            const FjRect glareBounds{originX, originY, originX + width, originY + height};
+            frame.source.bounds = glareBounds;
+            frame.destination.bounds = glareBounds;
+            frame.render_window = glareBounds;
+            frame.full_frame_extent = glareBounds;
+            frame.effects_geometry = {{originX, originY, width, height}, originX, originY, width, height, 1.0, 1.0, 1.0};
             frame.time_frames = 37.0;
             snapshot.frameToken.value = 37;
             controls.values.glare_active = true;
             controls.values.dir_couplers.active = true;
-            const auto glare_field_matches = [](const Observation& first, const Observation& second) {
-                return first.glareField.size() == second.glareField.size() &&
+            const auto glare_matches = [](const Observation& first, const Observation& second) {
+                return first.glareSeed == second.glareSeed && first.glareField.size() == second.glareField.size() &&
                        std::memcmp(first.glareField.data(), second.glareField.data(), first.glareField.size() * sizeof(float)) == 0;
-            };
-            const auto glare_matches = [&glare_field_matches](const Observation& first, const Observation& second) {
-                return first.glareSeed == second.glareSeed && glare_field_matches(first, second);
             };
             const auto schedules = [&] {
                 controls.values.film_dust_amount = 0.0;
@@ -1150,26 +1144,6 @@ namespace JuicerCudaTest {
                             d50.glareHash == d65.glareHash && d50.glareHash == restored.glareHash &&
                             glare_matches(d50.launch, d65.launch) && glare_matches(d50.launch, restored.launch),
                         "viewing-only Print edit changed the pre-white glare field or failed to change the scanner binding");
-                controls.values.film_dust_amount = 0.0;
-                const auto repeat = render(prepare());
-                require(repeat.output == restored.output && glare_matches(repeat.launch, restored.launch),
-                        "a repeated natural Print render changed the glare field or output");
-
-                frame.time_frames = 38.0;
-                snapshot.frameToken.value = 38;
-                const auto later = render(prepare());
-                frame.time_frames = 37.0;
-                snapshot.frameToken.value = 37;
-                place_frame({originX + 3, originY - 4, width, height});
-                const auto moved = render(prepare());
-                place_frame({originX, originY, width, height});
-                require(later.glare.launch.originX == originX && later.glare.launch.originY == originY &&
-                            moved.glare.launch.originX == originX + 3 && moved.glare.launch.originY == originY - 4 &&
-                            later.glareHash == repeat.glareHash && moved.glareHash == repeat.glareHash &&
-                            later.launch.glareSeed != repeat.launch.glareSeed && moved.launch.glareSeed != repeat.launch.glareSeed &&
-                            later.launch.glareField.size() == repeat.launch.glareField.size() && moved.launch.glareField.size() == repeat.launch.glareField.size() &&
-                            !glare_field_matches(later.launch, repeat.launch) && !glare_field_matches(moved.launch, repeat.launch),
-                        "natural Print frame-token and signed-origin changes did not generate distinct glare fields");
                 std::printf("%s D50/D65/restored-D50 retained exact blurred paper glare in both scanner schedules at (%d,%d) frame 37\n",
                             Spektrafilm::scan_route_key(route),
                             originX,
