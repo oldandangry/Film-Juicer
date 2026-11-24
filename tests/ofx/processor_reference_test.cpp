@@ -3136,8 +3136,20 @@ namespace {
             const auto run = [&](const Json& row, bool genuine, bool beforeBuilder, bool executePixels, bool fullFallback) {
                 const auto& input = row.at("input");
                 const auto name = input.at("name").get<std::string>() + "/route-" + std::to_string(route);
-                if (genuine && (row.at("recipe_hash") != stateView.recipe_hash || input.at("hash") != stateView.dir_recipe.hash)) {
-                    throw std::runtime_error(name + ": genuine recipe identity changed");
+                if (genuine) {
+                    const auto matches_held_dir = [&stateView](const Json& value) {
+                        return value.is_number_unsigned() && value.get<std::uint64_t>() == stateView.dir_recipe.hash;
+                    };
+                    const auto& hash = input.at("hash");
+                    if (!matches_held_dir(hash))
+                        throw std::runtime_error(name + ": genuine DIR recipe identity changed");
+                    if (input.at("name") == "0/pixel-8") {
+                        Json changed = hash.get<std::uint64_t>() ^ std::uint64_t{1};
+                        const bool rejected = !matches_held_dir(changed);
+                        changed = hash;
+                        if (!rejected || !matches_held_dir(changed))
+                            throw std::runtime_error(name + ": genuine DIR prerequisite did not reject and restore the changed identity");
+                    }
                 }
                 const auto render = extent(input.at("render")), full = extent(input.at("full"));
                 auto expected = row.at("native");

@@ -485,7 +485,7 @@ int main(int argc, char** argv) try {
             DirFrameTest::boundary(captured.at("cases"));
         } else {
             const auto actual = DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products"), captured.at("products").get_ref<const Json::array_t&>());
-            require(actual == captured.at("products"), "complete DIR route products and final native identities");
+            DirFrameTest::compare_product_rows(actual, captured.at("products"));
         }
         case_log.finish();
         return 0;
