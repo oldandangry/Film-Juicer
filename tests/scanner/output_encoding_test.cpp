@@ -787,7 +787,7 @@ namespace {
         void check_nonfinite_spectral_output(const RouteInputs& inputs, const std::string& caller) {
             JuicerTests::GtestCohort cases(
                 "spectral-transmission-" + caller,
-                {"nonfinite-normalization", "omitted-overflow", "active-overflow", "zero-weight-overflow", "partial-weights"});
+                {"nonfinite-normalization", "omitted-overflow", "active-overflow", "zero-weight-overflow", "partial-weights", "positive-float-limit", "negative-float-limit", "positive-dot-overflow", "cancelled-dot-overflow"});
             Image image({17, 9}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
@@ -835,9 +835,11 @@ namespace {
             constexpr std::array identity{1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F};
             std::copy(identity.begin(), identity.end(), color.cat02);
             std::copy(identity.begin(), identity.end(), color.xyzToRgb);
-            const auto evaluate = [&](float cyan, const JuicerCuda::ScannerSpectra& samples, int expectedFlag, const std::array<double, 3>& xyz) {
+            const auto evaluate = [&](const std::array<float, 3>& cmy, const JuicerCuda::ScannerSpectra& samples, int expectedFlag, const std::array<double, 3>& xyz) {
                 std::vector<float> input(3u * image.count);
-                std::fill_n(input.begin(), image.count, cyan);
+                for (std::size_t channel = 0; channel < cmy.size(); ++channel) {
+                    std::fill_n(input.data() + channel * image.count, image.count, cmy[channel]);
+                }
                 densities.upload(input);
                 clear_device_flag(params.scanStage.scanErrorFlag);
                 launch_density_scan(
@@ -868,25 +870,48 @@ namespace {
             spectra.wavelengths[0] = {1.0F, 0.0F, 0.0F, 0.0F, omitted, omitted, omitted};
             spectra.wavelengths[1] = {0.0F, 0.0F, 0.0F, 0.0F, 0.25F, 0.5F, 0.75F};
             auto omittedOverflow = cases.case_event("omitted-overflow");
-            evaluate(-64.0F, spectra, 0, {0.25 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10});
+            evaluate({-64.0F, 0.0F, 0.0F}, spectra, 0, {0.25 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10});
             omittedOverflow.passed();
 
             auto activeOverflow = cases.case_event("active-overflow");
             spectra.wavelengths[0].weightX = 0.25F;
-            evaluate(-64.0F, spectra, 1, {});
+            evaluate({-64.0F, 0.0F, 0.0F}, spectra, 1, {});
             activeOverflow.passed();
 
             auto zeroWeightOverflow = cases.case_event("zero-weight-overflow");
             spectra.wavelengths[0].weightX = 0.0F;
-            evaluate(-64.0F, spectra, 1, {});
+            evaluate({-64.0F, 0.0F, 0.0F}, spectra, 1, {});
             zeroWeightOverflow.passed();
 
             auto partialWeights = cases.case_event("partial-weights");
             spectra.wavelengths[0].weightX = 0.25F;
             spectra.wavelengths[0].weightZ = 0.5F;
             const double transmission = std::pow(10.0, -0.5);
-            evaluate(0.5F, spectra, 0, {0.25 + 0.25 * transmission + 1e-10, 0.5 + 1e-10, 0.75 + 0.5 * transmission + 1e-10});
+            evaluate({0.5F, 0.0F, 0.0F}, spectra, 0, {0.25 + 0.25 * transmission + 1e-10, 0.5 + 1e-10, 0.75 + 0.5 * transmission + 1e-10});
             partialWeights.passed();
+
+            constexpr float maxDot = std::numeric_limits<float>::max();
+            constexpr std::array unaffectedXyz{0.25 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10};
+            spectra.wavelengths[0] = {maxDot * 0.5F, 0.0F, 0.0F, 0.0F, 0.25F, omitted, omitted};
+            auto positiveLimit = cases.case_event("positive-float-limit");
+            evaluate({2.0F, 0.0F, 0.0F}, spectra, 0, unaffectedXyz);
+            positiveLimit.passed();
+
+            auto negativeLimit = cases.case_event("negative-float-limit");
+            evaluate({-2.0F, 0.0F, 0.0F}, spectra, 1, {});
+            negativeLimit.passed();
+
+            auto positiveDotOverflow = cases.case_event("positive-dot-overflow");
+            spectra.wavelengths[0].dyeC = maxDot;
+            // The original finite dot was above Float32 range and contributed zero transmission.
+            evaluate({2.0F, 0.0F, 0.0F}, spectra, 0, unaffectedXyz);
+            positiveDotOverflow.passed();
+
+            auto cancelledDotOverflow = cases.case_event("cancelled-dot-overflow");
+            spectra.wavelengths[0].dyeM = -maxDot;
+            // The original signed products cancelled exactly, making transmission one.
+            evaluate({2.0F, 2.0F, 0.0F}, spectra, 0, {0.5 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10});
+            cancelledDotOverflow.passed();
 
             clear_device_flag(params.scanStage.scanErrorFlag);
             require(

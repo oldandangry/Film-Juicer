@@ -1734,7 +1734,7 @@ namespace {
     }
 
 #if defined(JUICER_SCANNER_COST_TEST)
-    template <typename Dot = double, bool CheckResults = true, bool Preclassified = false>
+    template <typename Dot = float, bool CheckResults = true, bool Preclassified = false>
 #endif
     __device__ bool spectral_xyz(
         const JuicerCuda::ScannerSpectra& spectra,
@@ -1750,7 +1750,7 @@ namespace {
 #endif
     ) {
 #if !defined(JUICER_SCANNER_COST_TEST)
-        using Dot = double;
+        using Dot = float;
         constexpr bool CheckResults = true;
 #endif
         if (!isfinite(density[0]) || !isfinite(density[1]) || !isfinite(density[2])) {
@@ -1795,7 +1795,7 @@ namespace {
                                         sample.baseDensity;
             float transmission;
             if constexpr (CheckResults) {
-                constexpr double maxFloat = FLT_MAX;
+                constexpr Dot maxFloat = FLT_MAX;
                 if (!isfinite(spectralDensity) || spectralDensity < -maxFloat) {
                     return false;
                 }
@@ -2143,7 +2143,7 @@ namespace {
     static_assert(scan_parameter_bytes<JuicerCuda::ScanStagePayload, int, int, ScanLinearDensityPlanes, JuicerCuda::ScannerSpectra>() <= 4096);
 
 #if defined(JUICER_SCANNER_COST_TEST)
-    template <typename Dot = double, bool CheckResults = true, bool Preclassified = false>
+    template <typename Dot = float, bool CheckResults = true, bool Preclassified = false>
 #endif
     __global__ void scan_linear_density_rgb_kernel(
         JuicerCuda::ScanStagePayload scan,

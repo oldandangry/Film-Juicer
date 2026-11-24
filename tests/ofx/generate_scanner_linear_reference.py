@@ -299,7 +299,17 @@ def delivered_reference(row, source, signed_rgb):
     }
 
 
-def wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y):
+def float32_dye_dot(cmy, dye, base):
+    cyan, magenta, yellow = map(float, cmy)
+    dye_c, dye_m, dye_y = map(float, dye)
+    # The compiled scanner rounds the M product before contracting C and Y in that order.
+    magenta_product = float(np.float32(magenta * dye_m))
+    cyan_magenta = float(np.float32(math.fma(cyan, dye_c, magenta_product)))
+    cyan_magenta_yellow = float(np.float32(math.fma(yellow, dye_y, cyan_magenta)))
+    return float(np.float32(cyan_magenta_yellow + float(base)))
+
+
+def wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y, dye_dot_precision):
     """Check the actual loop records and attribute the evaluator residual on the worst pixels."""
     height, width, components = row["shape"]
     expected = promote(reference["delivered"]["output_bits"], (height * width, components))
@@ -342,7 +352,10 @@ def wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y):
             dot_terms = [float(a) * float(b) for a, b in zip(cmy[index], samples, strict=True)] + [float(floor)]
             expected_density = math.fsum(dot_terms)
             residual = abs(expected_density - observed_density)
-            if residual > 4.0 * sys.float_info.epsilon * math.fsum(map(abs, dot_terms)):
+            if dye_dot_precision == "float32":
+                if observed_density != float32_dye_dot(cmy[index], samples, floor):
+                    raise ValueError("scanner device dye dot differs from the compiled Float32 arithmetic")
+            elif residual > 4.0 * sys.float_info.epsilon * math.fsum(map(abs, dot_terms)):
                 raise ValueError("scanner device dye dot differs from the Float64 arithmetic")
             dot_error = max(dot_error, residual)
             if np.float32(-observed_density).view("<u4") != exponent_bits:
@@ -411,7 +424,7 @@ def wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y):
     return output
 
 
-def reference_row(row, density_spectral, density_to_light):
+def reference_row(row, density_spectral, density_to_light, *, dye_dot_precision="float64"):
     height, width, components = row["shape"]
     trace = FIXED_TRACES.get(row["id"])
     explicit = trace or RENDER_CASES.get(row["id"])
@@ -522,7 +535,9 @@ def reference_row(row, density_spectral, density_to_light):
     }:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
     if "wavelength_arithmetic" in row:
-        reference["wavelength_precision"] = wavelength_precision(row, reference, cmy, dye, base, weights, inverse_y)
+        reference["wavelength_precision"] = wavelength_precision(
+            row, reference, cmy, dye, base, weights, inverse_y, dye_dot_precision
+        )
     return reference
 
 
@@ -531,6 +546,12 @@ def main():
     parser.add_argument("capture", type=Path, help="completed native scanner reference input run directory")
     parser.add_argument("spektrafilm", type=Path, help="Git checkout containing the approved Spektrafilm revision")
     parser.add_argument("output", type=Path, help="new offline reference document")
+    parser.add_argument(
+        "--dye-dot-precision",
+        choices=("float64", "float32"),
+        default="float64",
+        help="compiled device precision to verify against the independent Float64 reference",
+    )
     parser.add_argument(
         "--trace-fixture", type=Path, action="append", default=[], help="freeze matched fixed trace pixels"
     )
@@ -569,7 +590,11 @@ def main():
         "generator_sha256": sha256(Path(__file__).read_bytes()),
         "dependencies": {"python": sys.version, "numpy": np.__version__, "opt-einsum": opt_einsum.__version__},
         **provenance,
-        "rows": [reference_row(row, density_spectral, density_to_light) for row in captures],
+        "dye_dot_precision": args.dye_dot_precision,
+        "rows": [
+            reference_row(row, density_spectral, density_to_light, dye_dot_precision=args.dye_dot_precision)
+            for row in captures
+        ],
     }
     with args.output.open("x", encoding="utf-8") as output:
         json.dump(report, output, indent=2, allow_nan=False)
