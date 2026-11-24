@@ -264,6 +264,13 @@ namespace JuicerCuda {
             int* host = nullptr;
             void* eventOpaque = nullptr;
             ScanErrorReadbackIdentity identity{};
+            bool hasReadback = false;
+        };
+
+        struct ScanErrorBuffer {
+            int* device = nullptr;
+            int* host = nullptr;
+            bool leased = false;
         };
 
         // Eight-byte-aligned identity, residency, pointer, and container state is grouped first
@@ -332,9 +339,9 @@ namespace JuicerCuda {
         std::vector<RetireEntry> retireQueue;
         // Completed untimed cudaEvent_t handles available for later completion fences.
         std::vector<void*> completionEventPoolOpaque;
-        // Submitted readbacks retained after a prepared frame releases its exclusive scan-error
-        // stage. These entries are not reusable workspace.
+        // Scan-error leases remain pending until their original stream event completes.
         std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
+        std::vector<ScanErrorBuffer> scanErrorBuffers;
 
         DeviceCurve densB;
         DeviceCurve densG;
@@ -579,15 +586,17 @@ namespace JuicerCuda {
         ScanErrorReadbackIdentity identity;
     };
 
+    bool acquire_scan_error_buffer(Resources& resources, int*& device, int*& host, Failure& outError);
+    bool release_scan_error_buffer(Resources& resources, int* host, Failure& outError);
     bool retain_scan_error_readback(
         Resources& resources,
         int*& host,
         void*& eventOpaque,
         ScanErrorReadbackIdentity& identity,
+        bool hasReadback,
         Failure& outError);
     bool poll_scan_error_readbacks(
         Resources& resources,
-        void* cudaStreamOpaque,
         ScanErrorReadbackResult& outResult,
         Failure& outError);
 

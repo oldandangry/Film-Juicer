@@ -655,7 +655,7 @@ namespace JuicerProcess {
             int* deviceFlag = nullptr;
             int* hostFlag = nullptr;
             void* eventOpaque = nullptr;
-            bool active = false;
+            bool flagUsed = false;
             bool readbackPending = false;
             JuicerCuda::ScanErrorReadbackIdentity identity;
         };
@@ -804,7 +804,6 @@ namespace JuicerProcess {
         bool submit_frame_use_event(
             void* cudaStreamOpaque,
             JuicerCuda::Failure& outError);
-        void free_scan_error_stage_now() noexcept;
         void free_auto_exposure_workspace_now() noexcept;
     };
 
@@ -1900,46 +1899,18 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(JuicerCuda::Failure& outError) {
         outError = {};
-        free_scan_error_stage_now();
-
-        ScanErrorFrameStage next{};
-        if (!allocate_device_bytes(
-                reinterpret_cast<void**>(&next.deviceFlag),
-                sizeof(int),
-                "frame scan error flag",
-                outError)) {
+        cudaEvent_t event = nullptr;
+        const auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (status != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(status), "allocate scan error event failed");
             return false;
         }
-
-        cudaError_t err =
-            cudaMallocHost(reinterpret_cast<void**>(&next.hostFlag), sizeof(int));
-        if (err != cudaSuccess) {
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(next.deviceFlag, freeError);
-            outError.status = JuicerCuda::runtime_failure_status(err);
-            outError.diagnostic = std::string("cudaMallocHost(frame scan error staging) failed: ") +
-                                  (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        auto& stage = scanErrorStage;
+        if (!JuicerCuda::acquire_scan_error_buffer(*resources, stage.deviceFlag, stage.hostFlag, outError)) {
+            (void)cudaEventDestroy(event);
             return false;
         }
-
-        cudaEvent_t ev = nullptr;
-        err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-        if (err != cudaSuccess || !ev) {
-            if (ev) {
-                cudaEventDestroy(ev);
-            }
-            cudaFreeHost(next.hostFlag);
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(next.deviceFlag, freeError);
-            outError.status = JuicerCuda::runtime_failure_status(err);
-            outError.diagnostic = std::string("cudaEventCreateWithFlags(frame scan error staging) failed: ") +
-                                  (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
-        }
-        next.eventOpaque = reinterpret_cast<void*>(ev);
-
-        next.active = true;
-        scanErrorStage = next;
+        stage.eventOpaque = event;
         return true;
     }
 
@@ -1948,7 +1919,7 @@ namespace JuicerProcess {
         JuicerCuda::Failure& outError) {
         outError = {};
         ScanErrorFrameStage& stage = scanErrorStage;
-        if (!stage.active) {
+        if (!stage.hostFlag) {
             return true;
         }
         if (!resources) {
@@ -1957,64 +1928,42 @@ namespace JuicerProcess {
         }
 
         remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        if (stage.readbackPending && stage.hostFlag && stage.eventOpaque) {
-            if (!JuicerCuda::retain_scan_error_readback(
-                    *resources,
-                    stage.hostFlag,
-                    stage.eventOpaque,
-                    stage.identity,
-                    outError)) {
-                if (outError.diagnostic.empty()) {
-                    outError.diagnostic = "frame scan-error readback retention failed";
+        auto* const stream = reinterpret_cast<cudaStream_t>(lastCudaStreamOpaque);
+        auto* const event = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
+        bool success = true;
+        bool complete = true;
+        if (stage.flagUsed) {
+            const auto recordStatus = stage.readbackPending ? cudaSuccess : cudaEventRecord(event, stream);
+            if (recordStatus == cudaSuccess) {
+                if (JuicerCuda::retain_scan_error_readback(
+                        *resources,
+                        stage.hostFlag,
+                        stage.eventOpaque,
+                        stage.identity,
+                        stage.readbackPending,
+                        outError)) {
+                    stage = {};
+                    return true;
                 }
-                return false;
+                complete = cudaEventSynchronize(event) == cudaSuccess;
+            } else {
+                JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(recordStatus), "record scan error buffer retirement failed");
+                complete = cudaStreamSynchronize(stream) == cudaSuccess;
             }
-            stage.readbackPending = false;
+            success = false;
         }
-
-        if (stage.deviceFlag) {
-            int* flag = stage.deviceFlag;
-            if (!retire_device_bytes(
-                    flag,
-                    retireStreamOpaque,
-                    "frame scan error flag",
-                    outError)) {
-                if (outError.diagnostic.empty()) {
-                    outError.diagnostic = "frame scan-error flag retire failed";
-                }
-                return false;
+        if (complete) {
+            JuicerCuda::Failure releaseError;
+            if (!JuicerCuda::release_scan_error_buffer(*resources, stage.hostFlag, releaseError) && success) {
+                outError = std::move(releaseError);
+                success = false;
             }
-            stage.deviceFlag = nullptr;
+        } else {
+            JuicerCuda::quarantine_unfenced_frame_use(*resources, stream);
         }
-
-        if (stage.hostFlag) {
-            cudaFreeHost(stage.hostFlag);
-            stage.hostFlag = nullptr;
-        }
-        if (stage.eventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
-            cudaEventDestroy(ev);
-            stage.eventOpaque = nullptr;
-        }
-        stage = ScanErrorFrameStage{};
-        return true;
-    }
-
-    void Root::PreparedCudaFrame::State::free_scan_error_stage_now() noexcept {
-        ScanErrorFrameStage& stage = scanErrorStage;
-        if (stage.deviceFlag) {
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(stage.deviceFlag, freeError);
-        }
-        if (stage.hostFlag) {
-            cudaFreeHost(stage.hostFlag);
-        }
-        if (stage.eventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
-            cudaEventDestroy(ev);
-        }
-        stage = ScanErrorFrameStage{};
+        (void)cudaEventDestroy(event);
+        stage = {};
+        return success;
     }
 
     bool Root::PreparedCudaFrame::State::allocate_auto_exposure_workspace(
@@ -3236,7 +3185,6 @@ namespace JuicerProcess {
         JuicerCuda::ScanErrorReadbackResult previousError{};
         if (!JuicerCuda::poll_scan_error_readbacks(
                 *_state->resources,
-                cudaStreamOpaque,
                 previousError,
                 outError)) {
             _state->set_failure(
@@ -3295,6 +3243,7 @@ namespace JuicerProcess {
         }
 
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        stage.flagUsed = true;
         const cudaError_t flagErr = cudaMemsetAsync(outScanErrorFlag, 0, sizeof(int), stream);
         if (flagErr != cudaSuccess) {
             _state->set_failure(

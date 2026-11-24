@@ -194,9 +194,13 @@ def readback_range(frame, address):
 def poll(frame, draw):
     if "poll" in draw:
         raise RuntimeError("more than one scan poll for a capacity render")
-    polled = {**owner(frame, argument(frame, 0)), "stream": argument(frame, 1), "queries": [], "destroyed": []}
+    # The archived cubic poll takes the reporter stream. The spectral poll
+    # only queries events and gets the reporter stream from the enclosing prepare.
+    takes_stream = settings["layout"].get("poll_takes_stream", True)
+    stream = argument(frame, 1) if takes_stream else draw["prepare"]["stream"]
+    polled = {**owner(frame, argument(frame, 0)), "stream": stream, "queries": [], "destroyed": []}
     draw["poll"] = polled
-    result = argument(frame, 2)
+    result = argument(frame, 2 if takes_stream else 1)
     if settings.get("mode") in ("replay", "tail"):
         polled["before"] = readback_range(frame, polled["resources"])
         begin, end = polled["before"]

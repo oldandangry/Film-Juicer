@@ -178,7 +178,7 @@ namespace JuicerCuda {
 
     static void free_stbn(Resources& resources) noexcept;
     static void free_wang(Resources& resources) noexcept;
-    static void free_scan_error_readbacks(Resources& resources) noexcept;
+    static bool free_scan_error_buffers(Resources& resources, Failure& outError) noexcept;
     static void free_tables(Resources& resources) noexcept;
     static void clear_gaussian_kernel_views(Resources& resources) noexcept;
     static void free_gaussian_cache(Resources& resources) noexcept;
@@ -1634,7 +1634,9 @@ namespace JuicerCuda {
         free_film_tc_lut(resources);
         free_mallett_basis(resources);
         free_output_gamut_table(resources);
-        free_scan_error_readbacks(resources);
+        if (!free_scan_error_buffers(resources, outError)) {
+            return false;
+        }
         for (auto& [key, slot] : resources.filmGrainBanks) {
             (void)key;
             if (slot->bank && !free_owned_device(resources, slot->bank, outError)) {
@@ -1784,6 +1786,12 @@ namespace JuicerCuda {
             resources.completionEventPoolOpaque.clear();
             resources.pendingFrameUseEvents.clear();
             resources.pendingScanErrorReadbacks.clear();
+            for (const auto& buffer : resources.scanErrorBuffers) {
+                if (buffer.host) {
+                    (void)cudaFreeHost(buffer.host);
+                }
+            }
+            resources.scanErrorBuffers.clear();
             resources.frameUseFenceQuarantined = false;
             resources.unfencedFrameUseStreamOpaque = nullptr;
             resources.retireBytes = 0;
@@ -3219,29 +3227,94 @@ namespace JuicerCuda {
         resources.wangColors = 0;
     }
 
-    static void release_scan_error_readback_entry(
-        Resources::PendingScanErrorReadback& entry,
-        bool waitForEvent) noexcept {
-        cudaEvent_t ev = entry.eventOpaque
-                             ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
-                             : nullptr;
-        if (waitForEvent && ev) {
-            (void)cudaEventSynchronize(ev);
-        }
-        if (entry.host) {
-            cudaFreeHost(entry.host);
-        }
-        if (ev) {
-            cudaEventDestroy(ev);
-        }
-        entry = Resources::PendingScanErrorReadback{};
-    }
-
-    static void free_scan_error_readbacks(Resources& resources) noexcept {
-        for (Resources::PendingScanErrorReadback& entry : resources.pendingScanErrorReadbacks) {
-            release_scan_error_readback_entry(entry, true);
+    static bool free_scan_error_buffers(Resources& resources, Failure& outError) noexcept {
+        for (auto& entry : resources.pendingScanErrorReadbacks) {
+            if (entry.eventOpaque) {
+                auto* const event = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
+                const auto status = cudaEventSynchronize(event);
+                if (status != cudaSuccess) {
+                    set_failure(outError, runtime_failure_status(status), "scan error buffer completion wait failed");
+                    return false;
+                }
+                (void)cudaEventDestroy(event);
+                entry.eventOpaque = nullptr;
+            }
         }
         resources.pendingScanErrorReadbacks.clear();
+        for (auto& buffer : resources.scanErrorBuffers) {
+            if (buffer.host) {
+                const auto status = cudaFreeHost(buffer.host);
+                if (status != cudaSuccess) {
+                    set_failure(outError, runtime_failure_status(status), "scan error pinned buffer free failed");
+                    return false;
+                }
+                buffer.host = nullptr;
+            }
+            if (!free_owned_device(resources, buffer.device, outError)) {
+                return false;
+            }
+            buffer.device = nullptr;
+        }
+        resources.scanErrorBuffers.clear();
+        return true;
+    }
+
+    bool acquire_scan_error_buffer(Resources& resources, int*& device, int*& host, Failure& outError) {
+        outError = {};
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        auto& buffers = resources.scanErrorBuffers;
+        // Prepare two independent leases at first use, before either can be pending.
+        auto available = std::ranges::find(buffers, false, &Resources::ScanErrorBuffer::leased);
+        if (buffers.size() < 2 || available == buffers.end()) {
+            const auto capacity = std::max(std::size_t{2}, buffers.size() + 1);
+            try {
+                buffers.reserve(capacity);
+                resources.pendingScanErrorReadbacks.reserve(capacity);
+            } catch (...) {
+                set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "reserve scan error buffers failed");
+                return false;
+            }
+            while (buffers.size() < capacity) {
+                void* pointer = nullptr;
+                if (!allocate_owned_device(resources, &pointer, sizeof(int), "frame scan error flag", outError)) {
+                    return false;
+                }
+                int* pinned = nullptr;
+                const auto status = cudaMallocHost(reinterpret_cast<void**>(&pinned), sizeof(int));
+                if (status != cudaSuccess) {
+                    free_owned_device_noexcept(resources, pointer);
+                    set_failure(outError, runtime_failure_status(status), "allocate pinned scan error buffer failed");
+                    return false;
+                }
+                buffers.push_back({static_cast<int*>(pointer), pinned, false});
+            }
+            available = std::ranges::find(buffers, false, &Resources::ScanErrorBuffer::leased);
+        }
+        available->leased = true;
+        device = available->device;
+        host = available->host;
+        return true;
+    }
+
+    static bool release_scan_error_buffer_locked(Resources& resources, int* host, Failure& outError) {
+        auto& buffers = resources.scanErrorBuffers;
+        const auto buffer = std::ranges::find(buffers, host, &Resources::ScanErrorBuffer::host);
+        if (!host || buffer == buffers.end() || !buffer->leased) {
+            outError.diagnostic = "scan error buffer lease missing";
+            return false;
+        }
+        buffer->leased = false;
+        return true;
+    }
+
+    bool release_scan_error_buffer(Resources& resources, int* host, Failure& outError) {
+        outError = {};
+        std::lock_guard<std::mutex> lock(resources.m);
+        return release_scan_error_buffer_locked(resources, host, outError);
     }
 
 
@@ -3250,6 +3323,7 @@ namespace JuicerCuda {
         int*& host,
         void*& eventOpaque,
         ScanErrorReadbackIdentity& identity,
+        bool hasReadback,
         Failure& outError) {
         outError = {};
         if (!host || !eventOpaque) {
@@ -3268,6 +3342,7 @@ namespace JuicerCuda {
             entry.host = host;
             entry.eventOpaque = eventOpaque;
             entry.identity = std::move(identity);
+            entry.hasReadback = hasReadback;
         } catch (...) {
             outError.diagnostic = "scan error readback retention failed";
             return false;
@@ -3280,7 +3355,6 @@ namespace JuicerCuda {
 
     bool poll_scan_error_readbacks(
         Resources& resources,
-        void* cudaStreamOpaque,
         ScanErrorReadbackResult& outResult,
         Failure& outError) {
         outResult = ScanErrorReadbackResult{};
@@ -3299,18 +3373,20 @@ namespace JuicerCuda {
                                  ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
                                  : nullptr;
             if (!entry.host || !ev) {
-                release_scan_error_readback_entry(entry, false);
-                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
-                continue;
+                outError.diagnostic = "scan error buffer completion is missing its lease or event";
+                return false;
             }
 
             const cudaError_t pollErr = cudaEventQuery(ev);
             if (pollErr == cudaSuccess) {
-                if (*entry.host != 0) {
+                if (entry.hasReadback && *entry.host != 0) {
                     outResult.status = *entry.host;
                     outResult.identity = std::move(entry.identity);
                 }
-                release_scan_error_readback_entry(entry, false);
+                if (!release_scan_error_buffer_locked(resources, entry.host, outError)) {
+                    return false;
+                }
+                (void)cudaEventDestroy(ev);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
                 if (outResult.status != 0) {
                     return true;
@@ -3318,16 +3394,6 @@ namespace JuicerCuda {
                 continue;
             }
             if (pollErr == cudaErrorNotReady) {
-                cudaStream_t stream = cudaStreamOpaque
-                                          ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                          : nullptr;
-                const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
-                if (waitErr != cudaSuccess) {
-                    outError.status = runtime_failure_status(waitErr);
-                    outError.diagnostic = std::string("CUDA scan error stream wait failed: ") +
-                                          (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                    return false;
-                }
                 ++i;
                 continue;
             }
