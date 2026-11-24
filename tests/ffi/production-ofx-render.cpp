@@ -69,8 +69,11 @@ namespace {
     using ofx_test::Case;
     using ofx_test::configure;
     using ofx_test::initial_source;
-    constexpr std::array<Case, 2> kCases{{{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3},
-                                          {"negative-print", "negative-print", "NegativePrintScan", 1, 4}}};
+    constexpr std::array kOrdinaryCases{
+        Case{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3},
+        Case{"negative-print", "negative-print", "NegativePrintScan", 1, 4},
+        Case{"positive-direct", "positive-direct", "PositiveDirectScan", 0, 3},
+        Case{"positive-print", "positive-print", "PositivePrintScan", 0, 4}};
     constexpr std::array<std::string_view, 4> kCaseIds{
         "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"};
     constexpr std::array kGrainPreviewCases{
@@ -388,46 +391,38 @@ namespace {
         return result;
     }
 
-    std::array<std::vector<float>, 2> expected_pixels(const std::filesystem::path& fixture,
-                                                      const Json& updates) {
-        std::ifstream input(fixture);
-        require(static_cast<bool>(input), "processor fixture is unavailable");
-        require(updates.at("schema") == 1 && updates.at("policy") == "print-erff-0.2.15-2026-10-20",
-                "unsupported print illuminant expectation policy");
-        constexpr std::array<std::string_view, 7> fixtureCases{
-            "negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print", "glare-plus-zero", "glare-minus-zero"};
+    std::array<std::vector<float>, 2> expected_pixels(const std::filesystem::path& path, const std::string& preset) {
+        std::ifstream input(path);
+        require(static_cast<bool>(input), "ordinary spectral fixture is unavailable");
+        const Json fixture = Json::parse(input);
+        require(path.filename() == "ordinary-" + preset + ".json" &&
+                    fixture.at("schema") == "spectral-ordinary-v1" && fixture.at("preset") == preset,
+                "ordinary spectral fixture identity");
+        const std::string referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
+        require(fixture.at("reference_preset") == referencePreset, "ordinary spectral fixture reference preset");
+        const auto& rows = fixture.at("rows");
+        require(rows.is_object() && rows.size() == kOrdinaryCases.size(), "ordinary spectral fixture membership");
         std::array<std::vector<float>, 2> result;
-        for (std::size_t index = 0; index < fixtureCases.size(); ++index) {
-            std::string name;
-            std::size_t count = 0;
-            input >> name >> count;
-            require(static_cast<bool>(input) && name == fixtureCases[index] && count > 0,
-                    "processor fixture membership or ordering changed");
-            std::vector<float> values(count);
-            for (float& value : values) {
-                input >> value;
-            }
-            require(static_cast<bool>(input), "processor fixture is truncated");
-            if (index < result.size()) {
-                Json words = words_json(values);
-                const auto logicalPath = "ofx/fixtures/exposure/" + fixture.filename().string() + "." + name;
-                const auto& fixtures = updates.at("fixtures");
-                if (fixtures.contains(logicalPath)) {
-                    const auto& patch = fixtures.at(logicalPath);
-                    require(patch.is_array() && patch.size() % 2 == 0,
-                            "incomplete print illuminant expectation supplement");
-                    for (std::size_t i = 0; i < patch.size(); i += 2) {
-                        require(patch[i].at("op") == "test" && patch[i + 1].at("op") == "replace" &&
-                                    patch[i].at("path") == patch[i + 1].at("path"),
-                                "unbounded print illuminant expectation supplement");
-                    }
-                    words = words.patch(patch);
-                }
-                result[index] = words_floats(words);
+        for (std::size_t route = 0; route < kOrdinaryCases.size(); ++route) {
+            const auto& test = kOrdinaryCases[route];
+            const auto& row = rows.at(test.id);
+            require(row.at("shape") == Json::array({test.height, test.width, test.components}) && row.at("route") == route &&
+                        row.at("reconstruction") == test.reconstruction && row.at("grain") == 0 && row.at("glare") == 0 &&
+                        row.at("frame_token") == test.time && row.at("frame_rate") == 24 &&
+                        row.at("film") == (route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f") &&
+                        row.at("paper") == (test.components == 4 ? "kodak_portra_endura" : ""),
+                    "ordinary spectral fixture controls");
+            const auto source = active_pixels(initial_source(test), test);
+            require(row.at("source_bits") == words_json(source), "ordinary spectral smoke source changed");
+            const auto& output = row.at("output_bits");
+            require(output.is_array() && output.size() == source.size() && std::ranges::all_of(output, [](const Json& word) {
+                        return word.is_number_unsigned() && word.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max();
+                    }),
+                    "ordinary spectral fixture output words");
+            if (route < result.size()) {
+                result[route] = words_floats(output);
             }
         }
-        std::string trailing;
-        require(!(input >> trailing), "processor fixture has unexpected trailing rows");
         return result;
     }
 
@@ -1586,9 +1581,10 @@ int main(int argc, char** argv) {
             return std::fflush(stdout) == 0 ? 0 : 1;
         }
         const bool capture = argc == 4 && std::string_view(argv[1]) == "--halation-capture";
-        const bool summary = capture || (argc == 7 && std::string_view(argv[6]) == "--summary");
-        require(argc == 6 || summary, "usage: JuicerProductionPreparedRenderProbe module Resources processor-${preset}.dat preset product-updates.json [--summary]; or --halation-capture module output-directory");
-        const auto selected = capture ? std::span<const Case>(kHalationCases) : std::span<const Case>(kCases);
+        const bool summary = capture || (argc == 6 && std::string_view(argv[5]) == "--summary");
+        require(argc == 5 || summary, "usage: JuicerProductionPreparedRenderProbe module Resources ordinary-${preset}.json preset [--summary]; or --halation-capture module output-directory");
+        const auto selected = capture ? std::span<const Case>(kHalationCases)
+                                      : std::span<const Case>(kOrdinaryCases).first(2);
         const std::string caller = capture ? "production-halation-capture" : "production-prepared-render";
         JuicerTests::CaseLog cases;
         std::vector<std::string> intended;
@@ -1600,16 +1596,12 @@ int main(int argc, char** argv) {
         const std::filesystem::path captureDirectory = capture ? std::filesystem::path(argv[3]) : std::filesystem::path{};
         if (capture)
             require(std::filesystem::is_directory(captureDirectory) && std::filesystem::is_empty(captureDirectory), "capture directory must exist and be empty");
-        require(std::filesystem::is_directory(modulePath.parent_path().parent_path() / "Resources"), "module Resources directory unavailable");
+        const auto resources = modulePath.parent_path().parent_path() / "Resources";
+        require(std::filesystem::is_directory(resources), "module Resources directory unavailable");
         std::array<std::vector<float>, 2> expected;
         if (!capture) {
-            const std::filesystem::path resources(argv[2]), fixture(argv[3]), updates(argv[5]);
-            const std::string preset(argv[4]);
-            require(fixture.filename().string() == "processor-" + preset + ".dat", "processor fixture does not match preset");
-            require(std::filesystem::is_directory(resources), "reference Resources directory unavailable");
-            std::ifstream updatesInput(updates);
-            require(static_cast<bool>(updatesInput), "print expectation updates unavailable");
-            expected = expected_pixels(fixture, Json::parse(updatesInput));
+            require(std::filesystem::path(argv[2]).lexically_normal() == resources.lexically_normal(), "ordinary smoke requires the staged module Resources");
+            expected = expected_pixels(argv[3], argv[4]);
         }
         const CudaDriver driver;
         driver.check(driver.init(0), "initialize CUDA driver");
@@ -1658,6 +1650,9 @@ int main(int argc, char** argv) {
             const auto& test = selected[index];
             auto* effect = host.create_effect();
             author_parameters(host, effect, test);
+            if (!capture) {
+                host.set_value(effect, "GlareActive", {0});
+            }
             if (capture) {
                 host.set_value(effect, "HalationActive", {1});
                 host.set_value(effect, "InputColorSpace", {1});

@@ -18,6 +18,14 @@ SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
 REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"
 ROUTES = ("negative-direct", "negative-print", "positive-direct", "positive-print")
 NATURAL_GLARE_TRACE = "fixed/negative-print"
+FIXED_TRACES = {
+    NATURAL_GLARE_TRACE: (1, 4, 1, (0, 0)),
+    "fixed/positive-direct": (2, 3, 2, (11, -3)),
+    "fixed/positive-print": (3, 4, 0, (0, 0)),
+    "fixed/combined-print": (1, 3, 0, (0, 0)),
+    "fixed/glare-plus-zero": (1, 3, 0, (0, 0)),
+    "fixed/glare-minus-zero": (1, 3, 0, (0, 0)),
+}
 
 
 def sha256(data):
@@ -69,11 +77,20 @@ def read_capture(result_dir):
             "scanner-reference-input-v2",
             "scanner-reference-input-v3",
             "scanner-reference-input-v4",
+            "scanner-reference-input-v5",
+            "scanner-reference-input-v6",
         }
     ]
-    current = rows and rows[0]["schema"] == "scanner-reference-input-v4"
-    ids = (*ROUTES, NATURAL_GLARE_TRACE) if current else ROUTES
-    routes = (0, 1, 2, 3, 1) if current else (0, 1, 2, 3)
+    schema = rows[0]["schema"] if rows else None
+    fixed = ()
+    if schema == "scanner-reference-input-v6":
+        fixed = tuple(FIXED_TRACES)
+    if schema == "scanner-reference-input-v5":
+        fixed = tuple(name for name in FIXED_TRACES if name != "fixed/combined-print")
+    if schema == "scanner-reference-input-v4":
+        fixed = (NATURAL_GLARE_TRACE,)
+    ids = (*ROUTES, *fixed)
+    routes = (0, 1, 2, 3, *(FIXED_TRACES[name][0] for name in fixed))
     if (
         tuple(row.get("id") for row in rows) != ids
         or tuple(row.get("route") for row in rows) != routes
@@ -157,10 +174,29 @@ def output_gamut(row, signed_rgb):
     return (lab @ lab_to_roots.T) ** 3 @ lms_to_xyz.T @ d65_to_native.T
 
 
+def scanner_unsharp(row, linear):
+    radius = row.get("unsharp_radius", 0)
+    if radius == 0:
+        return linear
+    height, width, _ = row["shape"]
+    sigma, amount = promote(row["unsharp_controls_bits"], (2,))
+    if radius < 0 or sigma <= 0 or amount <= 0 or not np.isfinite((sigma, amount)).all():
+        raise ValueError("invalid held unsharp parameters")
+    weights = [math.exp(-(index * index) / (2 * sigma * sigma)) for index in range(-radius, radius + 1)]
+    # Gaussian preparation rounds samples before normalizing by the unrounded sum.
+    weights = (np.asarray(weights, dtype="<f4").astype(np.float64) / math.fsum(weights)).astype("<f4")
+    original = linear.astype("<f4").reshape(height, width, 3).astype(np.float64)
+    horizontal = np.pad(original, ((0, 0), (radius, radius), (0, 0)), mode="symmetric")
+    filtered_x = sum(float(weight) * horizontal[:, tap : tap + width] for tap, weight in enumerate(weights))
+    vertical = np.pad(filtered_x.astype("<f4"), ((radius, radius), (0, 0), (0, 0)), mode="symmetric").astype(np.float64)
+    filtered_y = sum(float(weight) * vertical[tap : tap + height] for tap, weight in enumerate(weights)).astype("<f4")
+    return (original + amount * (original - filtered_y)).astype("<f4").reshape(-1, 3).astype(np.float64)
+
+
 def delivered_reference(row, source, signed_rgb):
     if (row["output_color_space"], row["output_color_flags"], row["cctf_kind"]) != (0, 7, 2):
         raise ValueError("expected prepared sRGB with gamut compression and encoding enabled")
-    linear = output_gamut(row, signed_rgb)
+    linear = scanner_unsharp(row, output_gamut(row, signed_rgb))
     encoded = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.maximum(linear, 0) ** (1 / 2.4) - 0.055)
     expected = np.empty_like(source, dtype="<f4")
     expected[:, :3] = np.clip(encoded, 0.0, 1.0)
@@ -192,13 +228,21 @@ def delivered_reference(row, source, signed_rgb):
 
 def reference_row(row, density_spectral, density_to_light):
     height, width, components = row["shape"]
-    natural_glare = row["id"] == NATURAL_GLARE_TRACE
+    trace = FIXED_TRACES.get(row["id"])
+    natural_glare = trace is not None and row["route"] in (1, 3)
+    combined = row["id"] == "fixed/combined-print"
+    expected_components = trace[1] if trace else 3 + row["route"] % 2
     if (
-        (height, width, components) != (5, 7, 3 + row["route"] % 2)
+        (height, width, components) != (5, 7, expected_components)
         or bool(row["glare"]) != natural_glare
-        or row["grain"]
+        or bool(row["grain"]) != combined
+        or (row.get("unsharp_radius", 0) > 0) != combined
     ):
         raise ValueError(f"invalid deterministic scanner capture for {row['id']}")
+    if trace and (
+        row["reconstruction"] != trace[2] or tuple(row["source_origin"]) != trace[3] or row["frame_token"] != 37
+    ):
+        raise ValueError(f"fixed trace controls changed for {row['id']}")
     pixels = height * width
     source = promote(row["source_bits"], (pixels, components))
     cmy = promote(row["developed_cmy_bits"], (pixels, 3))
@@ -233,8 +277,6 @@ def reference_row(row, density_spectral, density_to_light):
     scalar_corrected = corrected_xyz(scalar_xyz, slope, offset)
     primitive_corrected = corrected_xyz(primitive_xyz, slope, offset)
     if natural_glare:
-        if row["reconstruction"] != 1 or row["source_origin"] != [0, 0] or row["frame_token"] != 37:
-            raise ValueError("natural glare trace controls changed")
         percent = promote(row["glare_field_bits"], (pixels,))
         white = promote(row["white_bits"], (3,))
         if not np.isfinite(percent).all() or not np.all(percent > 0) or not np.isfinite(white).all():
@@ -271,7 +313,12 @@ def reference_row(row, density_spectral, density_to_light):
                 row["device_signed_rgb_bits"], signed_rgb, width, 1e-6 + 1e-4 * np.sum(np.abs(rgb_terms), axis=-1)
             ),
         }
-    if row["schema"] in {"scanner-reference-input-v3", "scanner-reference-input-v4"}:
+    if row["schema"] in {
+        "scanner-reference-input-v3",
+        "scanner-reference-input-v4",
+        "scanner-reference-input-v5",
+        "scanner-reference-input-v6",
+    }:
         reference["delivered"] = delivered_reference(row, source, signed_rgb)
     return reference
 
@@ -281,7 +328,10 @@ def main():
     parser.add_argument("capture", type=Path, help="completed native scanner reference input run directory")
     parser.add_argument("spektrafilm", type=Path, help="Git checkout containing the approved Spektrafilm revision")
     parser.add_argument("output", type=Path, help="new offline reference document")
-    parser.add_argument("--trace-fixture", type=Path, help="freeze the matched natural-glare trace pixels")
+    parser.add_argument(
+        "--trace-fixture", type=Path, action="append", default=[], help="freeze matched fixed trace pixels"
+    )
+    parser.add_argument("--ordinary-fixtures", type=Path, help="freeze the matching native ordinary smoke fixtures")
     args = parser.parse_args()
     preset, captures, provenance = read_capture(args.capture)
     density_spectral, density_to_light, source_hashes = reference_primitives(args.spektrafilm)
@@ -302,44 +352,104 @@ def main():
         stage.get("passed", True) for row in report["rows"] for stage in row.get("device_stages", {}).values()
     )
     delivered_passed = all(row.get("delivered", {}).get("passed", True) for row in report["rows"])
-    if args.trace_fixture and stages_passed and delivered_passed:
-        (trace,) = [row for row in report["rows"] if row["input"]["id"] == NATURAL_GLARE_TRACE]
-        capture = trace["input"]
-        fixture = {
-            "schema": "spectral-scanner-trace-v1",
-            "preset": preset,
-            "reference_sha256": sha256(args.output.read_bytes()),
-            "inputs": {
-                key: capture[key]
-                for key in (
-                    "id",
-                    "shape",
-                    "route",
-                    "film",
-                    "paper",
-                    "reconstruction",
-                    "frame_token",
-                    "frame_rate",
-                    "source_origin",
-                    "session_token",
-                    "instance_token",
-                    "clip_token",
-                    "grain",
-                    "glare",
-                    "glare_controls_bits",
-                    "glare_blur_radius",
-                    "recipe_hash",
-                    "scanner_hash",
-                    "source_bits",
-                    "glare_field_bits",
-                )
-            },
-            "output_bits": trace["delivered"]["output_bits"],
+    if args.ordinary_fixtures and stages_passed and delivered_passed:
+        write_ordinary_fixtures(report, sha256(args.output.read_bytes()), args.ordinary_fixtures)
+    if stages_passed and delivered_passed:
+        for path in args.trace_fixture:
+            write_trace_fixture(report, sha256(args.output.read_bytes()), path)
+    return int(not (stages_passed and delivered_passed))
+
+
+def write_trace_fixture(report, digest, path):
+    refs = {row["input"]["id"]: row for row in report["rows"] if row["input"]["id"] in FIXED_TRACES}
+    if tuple(refs) != tuple(FIXED_TRACES):
+        raise ValueError("fixed scanner trace fixture requires the complete cohort")
+    reference_preset = report["preset"]
+    preset = path.stem.removeprefix("fixed-trace-")
+    if preset not in {reference_preset, reference_preset.removesuffix("-debug") + "-release"}:
+        raise ValueError("fixed scanner trace output path must select the matching native preset")
+    fields = (
+        "id",
+        "shape",
+        "route",
+        "film",
+        "paper",
+        "reconstruction",
+        "exposure_bits",
+        "frame_token",
+        "frame_rate",
+        "source_origin",
+        "session_token",
+        "instance_token",
+        "clip_token",
+        "grain",
+        "glare",
+        "glare_controls_bits",
+        "glare_blur_radius",
+        "unsharp_radius",
+        "unsharp_controls_bits",
+        "recipe_hash",
+        "scanner_hash",
+        "source_bits",
+        "glare_field_bits",
+    )
+    rows = {
+        name: {
+            "inputs": {key: reference["input"][key] for key in fields},
+            "output_bits": reference["delivered"]["output_bits"],
         }
-        with args.trace_fixture.open("x", encoding="utf-8", newline="\n") as output:
+        for name, reference in refs.items()
+    }
+    fixture = {
+        "schema": "spectral-scanner-trace-v3",
+        "preset": preset,
+        "reference_preset": reference_preset,
+        "reference_sha256": digest,
+        "rows": rows,
+    }
+    with path.open("x", encoding="utf-8", newline="\n") as output:
+        json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
+        output.write("\n")
+
+
+def write_ordinary_fixtures(report, digest, directory):
+    native_preset = report["preset"]
+    if native_preset not in {"linux-debug", "windows-clang-debug"}:
+        raise ValueError("ordinary fixture preparation requires a native Debug reference capture")
+    rows = {}
+    reconstructions = (0, 1, 0, 0)
+    for reference, name, reconstruction in zip(report["rows"][: len(ROUTES)], ROUTES, reconstructions, strict=True):
+        capture = reference["input"]
+        if capture["id"] != name or capture["reconstruction"] != reconstruction or capture["grain"] or capture["glare"]:
+            raise ValueError(f"ordinary smoke controls changed in {name}")
+        rows[name] = {
+            key: capture[key]
+            for key in (
+                "shape",
+                "route",
+                "reconstruction",
+                "film",
+                "paper",
+                "grain",
+                "glare",
+                "frame_token",
+                "frame_rate",
+                "source_bits",
+            )
+        }
+        rows[name]["output_bits"] = reference["delivered"]["output_bits"]
+    for preset in (native_preset, native_preset.removesuffix("-debug") + "-release"):
+        fixture = {
+            "schema": "spectral-ordinary-v1",
+            "preset": preset,
+            "reference_preset": native_preset,
+            "reference_sha256": digest,
+            "rows": rows,
+        }
+        path = directory / f"ordinary-{preset}.json"
+        with path.open("x", encoding="utf-8", newline="\n") as output:
             json.dump(fixture, output, separators=(",", ":"), allow_nan=False)
             output.write("\n")
-    return int(not (stages_passed and delivered_passed))
 
 
 if __name__ == "__main__":

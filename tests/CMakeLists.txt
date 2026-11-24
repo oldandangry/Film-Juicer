@@ -1017,10 +1017,9 @@ target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_test_core film_
 add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
         "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
-        "${JUICER_TEST_ROOT}/Resources"
-        "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat"
-        "${JUICER_TEST_PRESET_NAME}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json" --summary)
+        "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/Resources"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/ordinary-${JUICER_TEST_PRESET_NAME}.json"
+        "${JUICER_TEST_PRESET_NAME}" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 if(JUICER_GRAIN_PREVIEW)
@@ -1213,7 +1212,7 @@ foreach(mode IN ITEMS Gpu Trace)
             $<TARGET_OBJECTS:juicer_executor_failure_test_objects>)
         target_compile_definitions(${target} PRIVATE JUICER_EXECUTOR_FAILURE_TEST_HOOK=1 JUICER_SCAN_DENSITY_CAPTURE_TEST=1
             JUICER_PARAMETER_IDENTITIES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json"
-            JUICER_SPECTRAL_TRACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/trace-${JUICER_TEST_PRESET_NAME}.json"
+            JUICER_SPECTRAL_TRACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/fixed-trace-${JUICER_TEST_PRESET_NAME}.json"
             JUICER_SPECTRAL_TRACE_PRESET="${JUICER_TEST_PRESET_NAME}")
     endif()
     target_compile_features(${target} PRIVATE cxx_std_20)

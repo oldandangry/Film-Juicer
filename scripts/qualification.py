@@ -25,6 +25,11 @@ PRESET_TARGETS = {
 }
 PRODUCTION_CONTRACT_RENDER_TARGET = "JuicerProductionPreparedRenderProbe"
 PRODUCTION_CONTRACT_TARGETS = frozenset({"juicer", PRODUCTION_CONTRACT_RENDER_TARGET})
+# Pins for the versioned ordinary Release fixtures.
+SPECTRAL_PRODUCTION_FIXTURE_SHA256 = {
+    "linux-release": "94b8c95e840b1d086347840a025ca8a0c351a8d3a5903e2e43fc5115128b87d2",
+    "windows-clang-release": "04515580acd64cdb52a98fb91759fc7b20748c667f975d4f5c880652d7e1b34c",
+}
 RUST_QUALITY_PACKAGES = ("film-juicer-core", "film-juicer-plugin")
 RUST_POLICY_FILES = {"Cargo.lock", "Cargo.toml", "clippy.toml", "rust-toolchain.toml", "rustfmt.toml"}
 RUST_BUILD_FILES = {"CMakeLists.txt", "cmake/JuicerRust.cmake"}
@@ -2922,8 +2927,8 @@ def validate_production_contract(preset, payloads):
     """Validate the retained OFF report without accessing its original files."""
     report = json.loads(payloads["production-contract.json"])
     check_receipt_shape(report, {"schema": str}, "production-contract.json")
-    if report.get("schema") == "production-contract-v2":
-        return _validate_production_contract_v2(preset, payloads, report)
+    if report["schema"] in {"production-contract-v2", "production-contract-v3"}:
+        return _validate_production_off(preset, payloads, report)
     return _validate_production_contract_v1(preset, payloads, report)
 
 
@@ -3012,7 +3017,42 @@ def _validate_production_contract_v1(preset, payloads, report):
     return {"production_off": True, "prepared_render_cases": len(prepared["rows"])}
 
 
-def _validate_production_contract_v2(preset, payloads, report):
+def _validate_spectral_command(preset, report, logged_command):
+    check_receipt_shape(report, {"collector": str}, "production-contract.json")
+    path = PureWindowsPath if preset.startswith("windows-") else PurePosixPath
+    collector = path(report["collector"])
+    if (
+        not collector.is_absolute()
+        or ".." in collector.parts
+        or collector.parts[-3:] != ("tests", "ffi", "production_contract.py")
+        or report["collector"] != str(collector)
+    ):
+        raise ValueError("spectral v3 collector path differs from the producing source tree")
+    source = collector.parents[2]
+    prepared = report["prepared_render"]
+    module = path(prepared["module"])
+    contents = module.parent.parent
+    fixture = source / "tests" / "ofx" / "fixtures" / "spectral-v1" / f"ordinary-{preset}.json"
+    expected = [prepared["executable"], prepared["module"], str(contents / "Resources"), str(fixture), preset]
+    pin = SPECTRAL_PRODUCTION_FIXTURE_SHA256.get(preset)
+    consumed = report["consumed_inputs"]
+    if not pin:
+        raise ValueError("spectral v3 fixture pin is unavailable")
+    if (
+        not contents.is_absolute()
+        or contents.name != "Contents"
+        or ".." in module.parts
+        or prepared["fixture"] != str(fixture)
+        or prepared["fixture_sha256"] != pin
+        or prepared["command"] != expected
+        or logged_command != expected
+        or report["collector"] not in consumed
+        or any(path(name).name == "product-updates.json" for name in consumed)
+    ):
+        raise ValueError("spectral v3 fixture or command binding differs from the reviewed contract")
+
+
+def _validate_production_off(preset, payloads, report):
     def digest(value):
         return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
@@ -3020,6 +3060,7 @@ def _validate_production_contract_v2(preset, payloads, report):
         return digest(row["sha256_before"]) and row["sha256_before"] == row["sha256_after"]
 
     check_receipt_shape(report, CONTRACT_V2_REPORT_SHAPE, "production-contract.json")
+    spectral_v3 = report["schema"] == "production-contract-v3"
     if (
         preset not in {"linux-release", "windows-clang-release"}
         or report.get("preset") != preset
@@ -3144,6 +3185,8 @@ def _validate_production_contract_v2(preset, payloads, report):
         raise ValueError("production command does not bind inspected inputs")
     prepared = report["prepared_render"]
     command = next(row for row in commands if row["name"] == "prepared-render")
+    if spectral_v3:
+        _validate_spectral_command(preset, report, command["command"])
     if (
         prepared["module"] != loaded["file"]
         or prepared["module_sha256"] != module_hash
@@ -3152,7 +3195,7 @@ def _validate_production_contract_v2(preset, payloads, report):
         or prepared["executable_sha256_before"] != build_inputs[prepared["executable"]]["sha256_before"]
         or prepared["fixture_sha256"] != consumed[prepared["fixture"]]["sha256_before"]
         or prepared["command"] != command["command"]
-        or len(prepared["command"]) != 6
+        or len(prepared["command"]) != (5 if spectral_v3 else 6)
         or prepared["command"][0] != prepared["executable"]
         or prepared["command"][1] != loaded["file"]
         or prepared["command"][3] != prepared["fixture"]
@@ -3377,16 +3420,27 @@ def validate_producer_contract_command(operation, python, source, preset):
     return artifacts
 
 
-def validate_producer_contract(preset, payloads, scratch, module, rust_artifacts, preview):
+def validate_producer_contract(preset, payloads, scratch, module, rust_artifacts, preview, source=None):
     """Bind the contract's evidence to the producer's artifacts and probes."""
     report = json.loads(payloads["production-contract.json"])
     check_receipt_shape(report, {"schema": str, "commands": {"file": str}}, "production-contract.json")
-    if report["schema"] != "production-contract-v2":
-        raise ValueError("production module producer requires a v2 production contract report")
-    assertions = _validate_production_contract_v2(preset, payloads, report)
+    if report["schema"] not in {"production-contract-v2", "production-contract-v3"}:
+        raise ValueError("production module producer requires a v2 or v3 production contract report")
+    assertions = _validate_production_off(preset, payloads, report)
     path = type(scratch)
     if path(report["commands"]["file"]) != scratch / "commands.json":
         raise ValueError("production contract commands file differs from the recorded artifacts path")
+    if report["schema"] == "production-contract-v3":
+        path_type = PureWindowsPath if preset.startswith("windows-") else PurePosixPath
+        if source is None:
+            raise ValueError("production v3 producer validation requires the configured source record")
+        source_path = path_type(str(source))
+        expected_collector = source_path / "tests" / "ffi" / "production_contract.py"
+        if path_type(report["collector"]) != expected_collector:
+            raise ValueError("production contract collector differs from the producing source record")
+        expected_fixture = source_path / "tests" / "ofx" / "fixtures" / "spectral-v1" / f"ordinary-{preset}.json"
+        if path_type(report["prepared_render"]["fixture"]) != expected_fixture:
+            raise ValueError("production contract fixture differs from the producing source record")
     loaded = report["loaded_module"]
     if loaded["sha256"] != module["stage_sha256"]:
         raise ValueError("production contract loaded module differs from the producing build and stage record")
@@ -3507,7 +3561,9 @@ def validate_build_result(result, payloads):
         if production_contract:
             contract_artifacts = validate_producer_contract_command(commands[3], python, source, result["preset"])
             assertions.update(
-                validate_producer_contract(result["preset"], payloads, contract_artifacts, module, artifacts, preview)
+                validate_producer_contract(
+                    result["preset"], payloads, contract_artifacts, module, artifacts, preview, source
+                )
             )
     elif production_contract:
         assertions.update(validate_production_contract(result["preset"], payloads))

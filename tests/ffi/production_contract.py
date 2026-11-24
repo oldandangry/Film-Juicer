@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -163,12 +164,54 @@ def production_module_export_names(output, windows):
     return [line.split()[-1] for line in output.splitlines() if line.strip()]
 
 
+def ordinary_spectral_rows(path, preset):
+    fixture = json.loads(path.read_bytes())
+    assert fixture["schema"] == "spectral-ordinary-v1" and fixture["preset"] == preset
+    reference_preset = preset.removesuffix("-release") + "-debug" if preset.endswith("-release") else preset
+    assert fixture["reference_preset"] == reference_preset
+    rows = fixture["rows"]
+    controls = (
+        ("negative-direct", 0, 3, 0, "kodak_portra_400", ""),
+        ("negative-print", 1, 4, 1, "kodak_portra_400", "kodak_portra_endura"),
+        ("positive-direct", 2, 3, 0, "fujifilm_provia_100f", ""),
+        ("positive-print", 3, 4, 0, "fujifilm_provia_100f", "kodak_portra_endura"),
+    )
+    assert set(rows) == {case[0] for case in controls}
+    for name, route, components, reconstruction, film, paper in controls:
+        row = rows[name]
+        assert row["shape"] == [5, 7, components]
+        assert (row["route"], row["reconstruction"], row["film"], row["paper"]) == (route, reconstruction, film, paper)
+        assert (row["grain"], row["glare"], row["frame_token"], row["frame_rate"]) == (0, 0, 37, 24)
+        for key in ("source_bits", "output_bits"):
+            words = row[key]
+            assert isinstance(words, list) and len(words) == 35 * components
+            assert all(type(word) is int and 0 <= word <= 0xFFFFFFFF for word in words)
+    return rows
+
+
+def compare_ordinary_output(packed, reference):
+    values = tuple(struct.iter_unpack("<f", packed))
+    expected = reference["output_bits"]
+    assert len(values) == len(expected), "ordinary spectral smoke output shape changed"
+    components = reference["shape"][-1]
+    for index, ((actual,), word) in enumerate(zip(values, expected, strict=True)):
+        want = struct.unpack("<f", struct.pack("<I", word))[0]
+        assert math.isfinite(actual) and math.isfinite(want), f"ordinary spectral smoke nonfinite sample {index}"
+        if components == 4 and index % components == 3:
+            assert packed[index * 4 : (index + 1) * 4] == struct.pack("<I", word), (
+                f"ordinary spectral smoke alpha changed at word {index}"
+            )
+        else:
+            assert abs(actual - want) <= 2.0e-4 + 3.0e-4 * abs(want), (
+                f"ordinary spectral smoke output changed at word {index}: {actual} vs {want}"
+            )
+
+
 def execute(arguments):
     from execution import NativeRun, OutputLease, windows_vctip
     from qualification import grain_preview_enabled
     from verify import cache_values
     from qualification import validate_production_contract
-    import math
 
     if arguments.preset not in {"linux-release", "windows-clang-release"}:
         raise ValueError("production contract requires a Release preset")
@@ -259,8 +302,7 @@ def execute(arguments):
             binary_inputs.append(build / (module_name + ".pdb"))
         before = {str(path): digest(path) for path in binary_inputs}
         assert before[str(build_module)] == before[str(module)], "staged and build modules differ"
-        processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
-        updates = root / "tests/print/illuminant-fixtures/product-updates.json"
+        spectral_fixture = root / "tests/ofx/fixtures/spectral-v1" / f"ordinary-{arguments.preset}.json"
         source_inputs = [
             Path(__file__),
             root / "scripts/execution.py",
@@ -274,10 +316,7 @@ def execute(arguments):
             root / "tests/ofx/instance_host.h",
             root / "tests/ofx/probe.py",
             descriptor,
-            processor_fixture,
-            updates,
-            root / "tests/ofx/fixtures/exposure/manifest.json",
-            root / "tests/print/illuminant-fixtures/manifest.json",
+            spectral_fixture,
         ]
         source_inputs.extend(path for path in (root / "Resources").rglob("*") if path.is_file())
         assert resources.is_dir(), "staged resources missing"
@@ -378,42 +417,16 @@ def execute(arguments):
             str(render),
             str(module),
             str(resources),
-            str(processor_fixture),
+            str(spectral_fixture),
             arguments.preset,
-            str(updates),
         ]
         document = json.loads(command("prepared-render", render_command))
         assert set(document) == {"rows", "lifecycle"}
-        fixture_tokens = iter(processor_fixture.read_text().split())
-        fixture_cases = (
-            "negative-direct",
-            "negative-print",
-            "positive-direct",
-            "positive-print",
-            "combined-print",
-            "glare-plus-zero",
-            "glare-minus-zero",
-        )
-        patch_spec = json.loads(updates.read_text())
-        assert patch_spec["schema"] == 1 and patch_spec["policy"] == "print-erff-0.2.15-2026-10-20"
-        expected_words = {}
-        for case in fixture_cases:
-            assert next(fixture_tokens) == case
-            count = int(next(fixture_tokens))
-            values = [struct.unpack("<I", struct.pack("<f", float(next(fixture_tokens))))[0] for _ in range(count)]
-            logical = f"ofx/fixtures/exposure/{processor_fixture.name}.{case}"
-            patches = patch_spec["fixtures"].get(logical, [])
-            assert len(patches) % 2 == 0
-            for test, replace in zip(patches[::2], patches[1::2], strict=True):
-                assert test["op"] == "test" and replace["op"] == "replace" and test["path"] == replace["path"]
-                index = int(test["path"].removeprefix("/"))
-                assert values[index] == test["value"]
-                values[index] = replace["value"]
-            expected_words[case] = values
-        assert next(fixture_tokens, None) is None
+        reference_rows = ordinary_spectral_rows(spectral_fixture, arguments.preset)
         rows = []
         for raw in document["rows"]:
             row = dict(raw)
+            reference = reference_rows[row["route"]]
             expected_count = 105 if row["route"] == "negative-direct" else 140
             for key, target in (("input_f32_words", "input_sha256"), ("output_f32_words", "output_f32_words_sha256")):
                 words = row.pop(key)
@@ -421,17 +434,9 @@ def execute(arguments):
                 assert all(type(word) is int and 0 <= word <= 0xFFFFFFFF for word in words)
                 packed = b"".join(struct.pack("<I", word) for word in words)
                 if key == "output_f32_words":
-                    values = [value[0] for value in struct.iter_unpack("<f", packed)]
-                    expected = [
-                        struct.unpack("<f", struct.pack("<I", word))[0] for word in expected_words[row["route"]]
-                    ]
-                    assert len(values) == len(expected)
-                    assert all(
-                        math.isfinite(actual)
-                        and math.isfinite(want)
-                        and abs(actual - want) <= 2.0e-4 + 3.0e-4 * abs(want)
-                        for actual, want in zip(values, expected, strict=True)
-                    )
+                    compare_ordinary_output(packed, reference)
+                else:
+                    assert words == reference["source_bits"], "ordinary spectral smoke source changed"
                 row[target] = hashlib.sha256(packed).hexdigest()
             rows.append(row)
         current = {path: digest(path) for path in before}
@@ -459,8 +464,8 @@ def execute(arguments):
             "executable": str(render),
             "executable_sha256_before": before[str(render)],
             "executable_sha256_after": current[str(render)],
-            "fixture": str(processor_fixture),
-            "fixture_sha256": consumed_before[str(processor_fixture)],
+            "fixture": str(spectral_fixture),
+            "fixture_sha256": consumed_before[str(spectral_fixture)],
             "command": render_command,
             "stdout_sha256": render_record["stdout_sha256"],
             "stderr_sha256": render_record["stderr_sha256"],
@@ -468,7 +473,8 @@ def execute(arguments):
             "lifecycle": document["lifecycle"],
         }
         report = {
-            "schema": "production-contract-v2",
+            "schema": "production-contract-v3",
+            "collector": str(Path(__file__).resolve()),
             "variant": "grain-preview" if preview else "production",
             "preset": arguments.preset,
             "build_testing": "OFF",

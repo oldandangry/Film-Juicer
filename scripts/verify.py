@@ -1349,8 +1349,11 @@ def fresh_prepare(args):
                     costs["report_read_bytes"] += len(data)
                     reports[member_name] = data
                     (directory / member_name).write_bytes(data)
+                production = json.loads(reports["production-contract.json"])
+                if production.get("schema") != "production-contract-v3":
+                    raise ValueError("fresh spectral production closure requires v3 receipts")
                 validate_production_contract(args.preset, reports)
-                costs["production_io"] = json.loads(reports["production-contract.json"])["io_costs"]
+                costs["production_io"] = production["io_costs"]
             result.update(status="passed", targets=targets)
         except BaseException as error:
             result["error"] = str(error)

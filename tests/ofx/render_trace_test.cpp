@@ -53,6 +53,11 @@ namespace {
         bool negativeZero;
     };
     constexpr FixedScenario kFixedNegativePrint{"negative-print", "NegativePrintScan", "kodak_portra_400", 1, 4, {0, 0}, kInstance + 1, false, false, false};
+    constexpr FixedScenario kFixedPositiveDirect{"positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 3, {11, -3}, kInstance + 2, false, false, false};
+    constexpr FixedScenario kFixedPositivePrint{"positive-print", "NegativePrintScan", "fujifilm_provia_100f", 0, 4, {0, 0}, kInstance + 3, false, false, false};
+    constexpr FixedScenario kFixedCombinedPrint{"combined-print", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 5, true, false, false};
+    constexpr FixedScenario kFixedGlarePlusZero{"glare-plus-zero", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 1, false, true, false};
+    constexpr FixedScenario kFixedGlareMinusZero{"glare-minus-zero", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 1, false, true, true};
 
     void configure_fixed_scan(ofx_test::RenderHost& fixture, ofx_test::DeviceImages& images, const FixedScenario& scenario) {
         fixture.configure(images, scenario.origin);
@@ -60,6 +65,32 @@ namespace {
         fixture.host().set_value(fixture.effect(), "FilmProfileKey", {std::string(scenario.profile)});
         fixture.host().set_value(fixture.effect(), "SpectralUpsampling", {scenario.reconstruction});
         fixture.host().set_value(fixture.effect(), "GlareActive", {1});
+        if (scenario.glareZero) {
+            fixture.host().set_value(fixture.effect(), "GlarePercent", {0.3});
+            fixture.host().set_value(fixture.effect(), "Exposure", {scenario.negativeZero ? -0.0 : 0.0});
+        }
+        if (scenario.combined) {
+            fixture.host().set_value(fixture.effect(), "ScannerUnsharpMask", {0.7, 0.7});
+            fixture.host().set_value(fixture.effect(), "CameraDiffusionEnabled", {1});
+            fixture.host().set_value(fixture.effect(), "GrainActive", {1});
+            fixture.host().set_value(fixture.effect(), "GrainSublayersActive", {1});
+            fixture.host().set_value(fixture.effect(), "GrainAmplitude", {0.0});
+            fixture.host().set_value(fixture.effect(), "GrainBlur", {0.65});
+            fixture.host().set_value(fixture.effect(), "GrainChroma", {0.0});
+            fixture.host().set_value(fixture.effect(), "GrainParticleAreaUm2", {0.2});
+            fixture.host().set_value(fixture.effect(), "GrainParticleScale", {0.8, 1.0, 2.0});
+            fixture.host().set_value(fixture.effect(), "GrainParticleScaleLayers", {2.5, 1.0, 0.5});
+            fixture.host().set_value(fixture.effect(), "GrainDensityMin", {0.07, 0.08, 0.12});
+            fixture.host().set_value(fixture.effect(), "GrainUniformity", {0.97, 0.97, 0.99});
+            fixture.host().set_value(fixture.effect(), "GrainBlurDyeCloudsUm", {1.0});
+            fixture.host().set_value(fixture.effect(), "GrainMicroStructure", {0.2, 30.0});
+            fixture.host().set_value(fixture.effect(), "GrainSizeMixWeight", {0.0});
+            fixture.host().set_value(fixture.effect(), "GrainSizeMixWeightMid", {0.0});
+            fixture.host().set_value(fixture.effect(), "GrainSizeMixScale", {1.0});
+            fixture.host().set_value(fixture.effect(), "GrainClumpTemporalMix", {0.0});
+            fixture.host().set_value(fixture.effect(), "GrainClumpMorphPeriodSec", {8.0});
+            fixture.host().set_value(fixture.effect(), "HalationActive", {1});
+        }
     }
 
     struct Observation {
@@ -182,20 +213,25 @@ namespace {
         return key.count ? std::string_view(key.data, key.count) : std::string_view{};
     }
 
-    std::vector<float> natural_glare_pixels(
+    std::vector<float> fixed_scan_pixels(
+        const FixedScenario& scenario,
         const FjInstanceObservationView& held,
         const FjOfxRenderObservation& seen,
         std::span<const float> glare) {
         const auto& state = held.published;
         const auto& post = state.scanner_post_effects;
-        const auto& scenario = kFixedNegativePrint;
-        const ofx_test::Case image{"fixed/negative-print", scenario.name, scenario.route, scenario.reconstruction, scenario.components};
+        const std::string id = std::string("fixed/") + scenario.name;
+        const ofx_test::Case image{id.c_str(), scenario.name, scenario.route, scenario.reconstruction, scenario.components};
         const std::array glareControls{post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px};
         std::ifstream stream(JUICER_SPECTRAL_TRACE_PATH);
-        ofx_test::require_render(static_cast<bool>(stream), "open versioned natural-glare fixture");
+        ofx_test::require_render(static_cast<bool>(stream), "open versioned fixed scanner fixture");
         const auto fixture = nlohmann::json::parse(stream);
-        ofx_test::require_render(fixture.at("schema") == "spectral-scanner-trace-v1" && fixture.at("preset") == JUICER_SPECTRAL_TRACE_PRESET,
-                                 "natural-glare fixture schema or preset changed");
+        const std::string preset = JUICER_SPECTRAL_TRACE_PRESET;
+        const std::string referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
+        ofx_test::require_render(fixture.at("schema") == "spectral-scanner-trace-v3" && fixture.at("preset") == preset &&
+                                     fixture.at("reference_preset") == referencePreset,
+                                 "fixed scanner fixture schema or preset changed");
+        const auto& row = fixture.at("rows").at(id);
         const nlohmann::json inputs{
             {"id", image.id},
             {"shape", {image.height, image.width, image.components}},
@@ -203,6 +239,7 @@ namespace {
             {"film", profile_key(state.film_profile_key)},
             {"paper", profile_key(state.print_profile_key)},
             {"reconstruction", held.captured.spectral_upsampling_mode},
+            {"exposure_bits", std::bit_cast<std::uint64_t>(held.captured.camera_exposure_compensation_ev)},
             {"frame_token", seen.frame_token},
             {"frame_rate", seen.frame_rate},
             {"source_origin", {seen.render_bounds[0], seen.render_bounds[1]}},
@@ -213,19 +250,21 @@ namespace {
             {"glare", post.glare_active},
             {"glare_controls_bits", float_bits(glareControls)},
             {"glare_blur_radius", post.glare_blur_radius},
+            {"unsharp_radius", post.unsharp_radius},
+            {"unsharp_controls_bits", float_bits(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
             {"recipe_hash", state.recipe_hash},
             {"scanner_hash", state.scanner_hash},
             {"source_bits", source_bits(image, ofx_test::initial_source(image))},
             {"glare_field_bits", float_bits(glare)}};
-        ofx_test::require_render(fixture.at("inputs") == inputs, "natural-glare fixture inputs changed");
-        const auto& expected = fixture.at("output_bits");
+        ofx_test::require_render(row.at("inputs") == inputs, "fixed scanner fixture inputs changed");
+        const auto& expected = row.at("output_bits");
         const auto samples = static_cast<std::size_t>(image.components) * DensityCaptureScope::kPixels;
-        ofx_test::require_render(expected.is_array() && expected.size() == samples, "natural-glare fixture output shape");
+        ofx_test::require_render(expected.is_array() && expected.size() == samples, "fixed scanner fixture output shape");
         std::vector<float> pixels;
         pixels.reserve(samples);
         for (const auto& word : expected) {
             ofx_test::require_render(word.is_number_unsigned() && word.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max(),
-                                     "natural-glare fixture output word");
+                                     "fixed scanner fixture output word");
             pixels.push_back(std::bit_cast<float>(word.get<std::uint32_t>()));
         }
         return pixels;
@@ -253,6 +292,8 @@ namespace {
 
     nlohmann::json capture_reference_inputs(const ScannerReferenceCase& reference) {
         const auto& test = reference.image;
+        const bool glareActive = reference.trace && reference.route != FJ_ROUTE_POSITIVE_DIRECT;
+        const bool combined = reference.trace && reference.trace->combined;
         ofx_test::DeviceImages images({test.width, test.height, test.components});
         const auto instance = reference.trace ? reference.trace->instance : kInstance;
         fj_test_ofx_render_tokens(kSession, instance, kClip);
@@ -273,7 +314,7 @@ namespace {
             const auto samples = witness.read();
             const auto glare = glare_field(samples);
             ofx_test::require_render(std::ranges::all_of(glare, [&](float value) {
-                                         return std::isfinite(value) && (reference.trace ? value > 0.0F : value == 0.0F);
+                                         return std::isfinite(value) && (glareActive ? value > 0.0F : value == 0.0F);
                                      }),
                                      "scanner reference captured the wrong glare field");
             return nlohmann::json{{"developed_cmy_bits", scan_sample_bits(samples, &Sample::density)},
@@ -286,7 +327,7 @@ namespace {
         };
         auto cold = capture();
         const auto warm = capture();
-        ofx_test::require_render(cold == warm, "scanner stage capture changed on a fixed grain-off render");
+        ofx_test::require_render(cold == warm, "scanner stage capture changed at fixed controls and tokens");
         const auto source = ofx_test::initial_source(test);
         std::vector<float> returnedSource(source.size());
         ofx_test::require_cuda(cudaMemcpy(returnedSource.data(), images.source(), images.bytes(), cudaMemcpyDeviceToHost), "verify scanner reference source");
@@ -295,9 +336,14 @@ namespace {
         const Observation held(fixture.effect());
         const auto& state = held.view.published;
         const auto& post = state.scanner_post_effects;
-        ofx_test::require_render(state.route == reference.route && static_cast<bool>(post.glare_active) == static_cast<bool>(reference.trace) && !state.grain.active, "scanner reference captured the wrong route or stochastic controls");
+        ofx_test::require_render(state.route == reference.route && static_cast<bool>(post.glare_active) == glareActive &&
+                                     static_cast<bool>(state.grain.active) == combined,
+                                 "scanner reference captured the wrong route or stochastic controls");
         ofx_test::require_render(held.view.captured.spectral_upsampling_mode == test.reconstruction, "scanner reference captured the wrong reconstruction");
-        ofx_test::require_render(!state.effects.active && post.lens_blur_radius == 0 && post.unsharp_amount == 0.0F, "scanner reference captured a spatial output effect");
+        ofx_test::require_render(!state.effects.active && post.lens_blur_radius == 0 &&
+                                     (combined ? post.unsharp_radius > 0 && post.unsharp_amount == 0.7F
+                                               : post.unsharp_radius == 0 && post.unsharp_amount == 0.0F),
+                                 "scanner reference captured unexpected spatial output effects");
         const auto& scanner = state.scanner_tables;
         const auto& color = state.output_color;
         const auto& correction = state.scanner_correction;
@@ -315,7 +361,7 @@ namespace {
                                  "scanner reference requires the complete sRGB gamut and transfer inputs");
         const auto seen = render_observation(fixture.effect());
         const std::array glareControls{post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px};
-        cold.update({{"schema", "scanner-reference-input-v4"},
+        cold.update({{"schema", "scanner-reference-input-v6"},
                      {"id", test.id},
                      {"shape", {test.height, test.width, test.components}},
                      {"route", state.route},
@@ -329,10 +375,13 @@ namespace {
                      {"instance_token", seen.instance_token},
                      {"clip_token", seen.clip_token},
                      {"reconstruction", held.view.captured.spectral_upsampling_mode},
-                     {"grain", 0},
+                     {"exposure_bits", std::bit_cast<std::uint64_t>(held.view.captured.camera_exposure_compensation_ev)},
+                     {"grain", state.grain.active},
                      {"glare", post.glare_active},
                      {"glare_controls_bits", float_bits(glareControls)},
                      {"glare_blur_radius", post.glare_blur_radius},
+                     {"unsharp_radius", post.unsharp_radius},
+                     {"unsharp_controls_bits", float_bits(std::array{post.unsharp_sigma_px, post.unsharp_amount})},
                      {"source_bits", source_bits(test, source)},
                      {"dye_bits", {lane(scanner.dyes_cmy[0]), lane(scanner.dyes_cmy[1]), lane(scanner.dyes_cmy[2])}},
                      {"weight_bits", {lane(scanner.weighted_xyz[0]), lane(scanner.weighted_xyz[1]), lane(scanner.weighted_xyz[2])}},
@@ -365,13 +414,33 @@ namespace {
         constexpr std::string_view caller = "ofx.gpu.scanner_reference_inputs";
         constexpr std::array cases{
             ScannerReferenceCase{{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_DIRECT},
-            ScannerReferenceCase{{"negative-print", "negative-print", "NegativePrintScan", 0, 4}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_PRINT},
+            ScannerReferenceCase{{"negative-print", "negative-print", "NegativePrintScan", 1, 4}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_PRINT},
             ScannerReferenceCase{{"positive-direct", "positive-direct", "NegativeDirectScan", 0, 3}, "fujifilm_provia_100f", FJ_ROUTE_POSITIVE_DIRECT},
             ScannerReferenceCase{{"positive-print", "positive-print", "NegativePrintScan", 0, 4}, "fujifilm_provia_100f", FJ_ROUTE_POSITIVE_PRINT},
             ScannerReferenceCase{{"fixed/negative-print", kFixedNegativePrint.name, kFixedNegativePrint.route, kFixedNegativePrint.reconstruction, kFixedNegativePrint.components},
                                  kFixedNegativePrint.profile,
                                  FJ_ROUTE_NEGATIVE_PRINT,
-                                 &kFixedNegativePrint}};
+                                 &kFixedNegativePrint},
+            ScannerReferenceCase{{"fixed/positive-direct", kFixedPositiveDirect.name, kFixedPositiveDirect.route, kFixedPositiveDirect.reconstruction, kFixedPositiveDirect.components},
+                                 kFixedPositiveDirect.profile,
+                                 FJ_ROUTE_POSITIVE_DIRECT,
+                                 &kFixedPositiveDirect},
+            ScannerReferenceCase{{"fixed/positive-print", kFixedPositivePrint.name, kFixedPositivePrint.route, kFixedPositivePrint.reconstruction, kFixedPositivePrint.components},
+                                 kFixedPositivePrint.profile,
+                                 FJ_ROUTE_POSITIVE_PRINT,
+                                 &kFixedPositivePrint},
+            ScannerReferenceCase{{"fixed/combined-print", kFixedCombinedPrint.name, kFixedCombinedPrint.route, kFixedCombinedPrint.reconstruction, kFixedCombinedPrint.components},
+                                 kFixedCombinedPrint.profile,
+                                 FJ_ROUTE_NEGATIVE_PRINT,
+                                 &kFixedCombinedPrint},
+            ScannerReferenceCase{{"fixed/glare-plus-zero", kFixedGlarePlusZero.name, kFixedGlarePlusZero.route, kFixedGlarePlusZero.reconstruction, kFixedGlarePlusZero.components},
+                                 kFixedGlarePlusZero.profile,
+                                 FJ_ROUTE_NEGATIVE_PRINT,
+                                 &kFixedGlarePlusZero},
+            ScannerReferenceCase{{"fixed/glare-minus-zero", kFixedGlareMinusZero.name, kFixedGlareMinusZero.route, kFixedGlareMinusZero.reconstruction, kFixedGlareMinusZero.components},
+                                 kFixedGlareMinusZero.profile,
+                                 FJ_ROUTE_NEGATIVE_PRINT,
+                                 &kFixedGlareMinusZero}};
         if (JuicerTests::list_requested(argc, argv)) {
             for (const auto& test : cases) {
                 JuicerTests::list_case(caller, test.image.id);
@@ -567,55 +636,26 @@ namespace {
     void frozen_scenarios(const JuicerTests::Cohort& rows) {
         constexpr std::array scenarios{
             kFixedNegativePrint,
-            FixedScenario{"positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 3, {11, -3}, kInstance + 2, false, false, false},
-            FixedScenario{"positive-print", "NegativePrintScan", "fujifilm_provia_100f", 0, 4, {0, 0}, kInstance + 3, false, false, false},
-            FixedScenario{"combined-print", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 5, true, false, false},
-            FixedScenario{"glare-plus-zero", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 1, false, true, false},
-            FixedScenario{"glare-minus-zero", "NegativePrintScan", "kodak_portra_400", 0, 3, {0, 0}, kInstance + 1, false, true, true}};
+            kFixedPositiveDirect,
+            kFixedPositivePrint,
+            kFixedCombinedPrint,
+            kFixedGlarePlusZero,
+            kFixedGlareMinusZero};
         for (const auto& scenario : scenarios) {
-            const bool naturalGlare = std::string_view(scenario.name) == kFixedNegativePrint.name;
+            const bool negativePrint = std::string_view(scenario.name) == kFixedNegativePrint.name;
             auto event = rows.case_event(std::string("fixed/") + scenario.name);
             ofx_test::DeviceImages images({7, 5, scenario.components});
             fj_test_ofx_render_tokens(kSession, scenario.instance, kClip);
             ofx_test::RenderHost fixture(OfxGetPlugin(0));
             configure_fixed_scan(fixture, images, scenario);
-            if (scenario.combined) {
-                fixture.host().set_value(fixture.effect(), "ScannerUnsharpMask", {0.7, 0.7});
-                fixture.host().set_value(fixture.effect(), "CameraDiffusionEnabled", {1});
-                fixture.host().set_value(fixture.effect(), "GrainActive", {1});
-                fixture.host().set_value(fixture.effect(), "GrainSublayersActive", {1});
-                fixture.host().set_value(fixture.effect(), "GrainAmplitude", {0.0});
-                fixture.host().set_value(fixture.effect(), "GrainBlur", {0.65});
-                fixture.host().set_value(fixture.effect(), "GrainChroma", {0.0});
-                fixture.host().set_value(fixture.effect(), "GrainParticleAreaUm2", {0.2});
-                fixture.host().set_value(fixture.effect(), "GrainParticleScale", {0.8, 1.0, 2.0});
-                fixture.host().set_value(fixture.effect(), "GrainParticleScaleLayers", {2.5, 1.0, 0.5});
-                fixture.host().set_value(fixture.effect(), "GrainDensityMin", {0.07, 0.08, 0.12});
-                fixture.host().set_value(fixture.effect(), "GrainUniformity", {0.97, 0.97, 0.99});
-                fixture.host().set_value(fixture.effect(), "GrainBlurDyeCloudsUm", {1.0});
-                fixture.host().set_value(fixture.effect(), "GrainMicroStructure", {0.2, 30.0});
-                fixture.host().set_value(fixture.effect(), "GrainSizeMixWeight", {0.0});
-                fixture.host().set_value(fixture.effect(), "GrainSizeMixWeightMid", {0.0});
-                fixture.host().set_value(fixture.effect(), "GrainSizeMixScale", {1.0});
-                fixture.host().set_value(fixture.effect(), "GrainClumpTemporalMix", {0.0});
-                fixture.host().set_value(fixture.effect(), "GrainClumpMorphPeriodSec", {8.0});
-                fixture.host().set_value(fixture.effect(), "HalationActive", {1});
-            }
-            if (scenario.glareZero) {
-                fixture.host().set_value(fixture.effect(), "GlarePercent", {0.3});
-                fixture.host().set_value(fixture.effect(), "Exposure", {scenario.negativeZero ? -0.0 : 0.0});
-            }
             fj_test_ofx_render_tokens(kSession, scenario.instance, kClip);
-            std::optional<DensityCaptureScope> witness;
-            if (naturalGlare) {
-                witness.emplace(images.stream());
-            }
+            DensityCaptureScope witness(images.stream());
             ofx_test::require_render(fixture.render() == kOfxStatOK, "frozen scenario render");
             const auto seen = render_observation(fixture.effect());
             ofx_test::require_render(seen.native_entry_count == 1 && seen.instance_token == scenario.instance &&
                                          seen.session_seed == kSession && seen.clip_token == kClip && seen.frame_token == 37,
                                      "frozen scenario frame identity");
-            if (naturalGlare || scenario.combined) {
+            if (negativePrint || scenario.combined) {
                 JuicerTestSupport::PreparationInput snapshot;
                 snapshot.film_key = scenario.profile;
                 snapshot.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
@@ -666,15 +706,12 @@ namespace {
                     report_control_differences(observed.view.captured, expectedControls);
                     throw std::runtime_error("actual print controls differ from independent typed reference inputs");
                 }
-                if (witness) {
-                    const auto glare = glare_field(witness->read());
-                    const auto predicted = natural_glare_pixels(observed.view, seen, glare);
-                    RenderAssertions::compare_pixels(scenario.name, images.pixels(images.read()), predicted);
-                    witness.reset();
-                }
             }
-            if (!naturalGlare) {
-                RenderAssertions::compare_pixels(scenario.name, images.pixels(images.read()), ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, scenario.name));
+            {
+                const Observation observed(fixture.effect());
+                const auto glare = glare_field(witness.read());
+                const auto predicted = fixed_scan_pixels(scenario, observed.view, seen, glare);
+                RenderAssertions::compare_pixels(scenario.name, images.pixels(images.read()), predicted);
             }
             ofx_test::require_render(fixture.host().image_release_count(fixture.effect(), "Source") == 1 &&
                                          fixture.host().image_release_count(fixture.effect(), "Output") == 1,
