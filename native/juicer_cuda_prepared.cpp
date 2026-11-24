@@ -333,14 +333,10 @@ namespace JuicerCuda {
             for (std::size_t layer = 0; layer < 3; ++layer) {
                 focused.filmDevelop.densityCurvesLayers[layer][channel] = floats(development.density_layers[layer][channel]);
             }
-            focused.densityBounds.dataMinCmy[channel] = source.scanner_bounds.min_cmy[channel];
-            focused.densityBounds.invSpanCmy[channel] = source.scanner_bounds.inv_span_cmy[channel];
         }
         focused.dirCouplers.active = dir.mode != FJ_DIR_INACTIVE;
         focused.dirCouplers.compensatedDensityCurveAxesHash = dir.compensated_axes_hash;
         focused.dirCouplers.hash = dir.hash;
-        focused.densityBounds.hash = source.scanner_bounds.hash;
-        focused.scannerLutDescriptor = descriptors.scanner;
         const auto& spectra = source.scanner_spectra;
         focused.scannerTables = {floats(spectra.dye_c), floats(spectra.dye_m), floats(spectra.dye_y), floats(spectra.weighted_x), floats(spectra.weighted_y), floats(spectra.weighted_z), floats(spectra.base_density), spectra.inverse_y_normalization};
         focused.exposureSampleCount = 81;

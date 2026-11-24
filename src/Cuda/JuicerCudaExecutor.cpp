@@ -955,7 +955,6 @@ namespace {
     };
 
     struct RouteDescriptors {
-        Scanner::ScannerSpectralLutDescriptor scanner{};
         Scanner::ScannerPostEffectsDescriptor post{};
         Spektrafilm::SpatialDirDescriptor dir{};
         std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
@@ -971,7 +970,6 @@ namespace {
         float filmRouteCorrectionScale{};
         const JuicerCuda::VisualGrainPayloadInput& grain;
         const OutputGamutRecipe& outputGamut;
-        std::uint64_t scannerBoundsHash{};
         std::uint64_t glareHash{};
         bool cameraAutoEnabled{};
         Spektrafilm::AutoExposureMethod meteringMethod{};
@@ -2701,8 +2699,6 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
             preparedFrame.focused_resources();
         if (!prepared.active ||
-            prepared.densityBoundsHash != input.scannerBoundsHash ||
-            prepared.scannerDescriptorHash != descriptors.scanner.hash ||
             prepared.selectedMethod != input.film.method) {
             errors.fail_route("ResourceDescriptorMismatch phase=3C field=direct_prepared_view");
         }
@@ -2980,8 +2976,6 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
             preparedFrame.print_resources();
         if (!prepared.active || !preparedPrint.active ||
-            prepared.densityBoundsHash != input.scannerBoundsHash ||
-            prepared.scannerDescriptorHash != descriptors.scanner.hash ||
             prepared.selectedMethod != input.film.method) {
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=4C field=print_prepared_view");
@@ -3239,8 +3233,8 @@ namespace JuicerCuda {
             !film_juicer_effects_full_frame_preflight(input.descriptors.effects, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent)) {
             errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
         }
-        const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
-        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.glareHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
+        const RouteDescriptors descriptors{input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.glareHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
             execute_print_schedule(root, schedule, recovery, abortCallback);
         } else {

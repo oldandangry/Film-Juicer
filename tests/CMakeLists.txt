@@ -616,21 +616,6 @@ add_test(NAME Resource.Gpu.GaussianKernel COMMAND JuicerGaussianKernelTests
     "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}.json")
 set_tests_properties(Resource.Gpu.GaussianKernel PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
-# Scanner publication uses its actual serving gate, six uploads and ordered retirement.
-add_library(juicer_scanner_lut_resource_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
-target_link_libraries(juicer_scanner_lut_resource_test_objects PRIVATE juicer_settings)
-target_compile_definitions(juicer_scanner_lut_resource_test_objects PRIVATE
-    JUICER_SCANNER_LUT_TEST_HOOK=1 JUICER_PINNED_UPLOAD_TEST_HOOK=1)
-add_executable(JuicerScannerLutResourceTests resource/scanner_lut_test.cpp
-    $<TARGET_OBJECTS:juicer_scanner_lut_resource_test_objects>)
-target_link_libraries(JuicerScannerLutResourceTests PRIVATE juicer_test_core film_juicer_rust_test_support GTest::gtest CUDA::cuda_driver)
-target_compile_definitions(JuicerScannerLutResourceTests PRIVATE
-    JUICER_SCANNER_LUT_TEST_HOOK=1 JUICER_PINNED_UPLOAD_TEST_HOOK=1)
-set_target_properties(JuicerScannerLutResourceTests PROPERTIES LINKER_LANGUAGE CXX)
-add_test(NAME Resource.Gpu.ScannerLut COMMAND JuicerScannerLutResourceTests
-    "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/${JUICER_TEST_PRESET_NAME}.json")
-set_tests_properties(Resource.Gpu.ScannerLut PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
-
 # Deferred retirement executes the real drain with a bounded post-extraction seam.
 add_library(juicer_deferred_destroy_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
 target_link_libraries(juicer_deferred_destroy_test_objects PRIVATE juicer_settings)
@@ -1134,7 +1119,7 @@ add_test(NAME Ofx.Gpu.ExecutorFailureOrder
     COMMAND JuicerExecutorFailureOrderProbe --failure-order)
 set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
-foreach(resource_failure IN ITEMS DefectFence GrainUpload ScannerLut OutputGamut)
+foreach(resource_failure IN ITEMS DefectFence GrainUpload OutputGamut)
     add_test(NAME "Ofx.Gpu.ResourceFailure.${resource_failure}"
         COMMAND JuicerExecutorFailureOrderProbe --resource-failure "${resource_failure}")
     set_tests_properties("Ofx.Gpu.ResourceFailure.${resource_failure}" PROPERTIES

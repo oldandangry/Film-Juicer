@@ -697,8 +697,6 @@ namespace JuicerProcess {
         std::optional<Scanner::ColorRuntime> focusedScannerColor;
         JuicerCuda::ScannerSpectra focusedScannerSpectra{};
         std::optional<Gamut::OutputGamutTransform> focusedOutputGamutTransform;
-        const JuicerCuda::Resources::DeviceScanRange* focusedScanRange = nullptr;
-        const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
         void* lastCudaStreamOpaque = nullptr;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
@@ -3964,8 +3962,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::FocusedPreparedView Root::PreparedCudaFrame::focused_resources() const noexcept {
         FocusedPreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
-            !_state->focusedScannerColor ||
-            !_state->focusedScanRange || !_state->focusedScanLut) {
+            !_state->focusedScannerColor) {
             return view;
         }
 
@@ -3997,14 +3994,10 @@ namespace JuicerProcess {
         view.film.finalSensitivityHash = resources.filmFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.filmDensityCurvesHash;
         view.film.dirCouplersHash = resources.filmDirHash;
-        view.scanRange = _state->focusedScanRange;
-        view.scanLut = _state->focusedScanLut;
         view.scannerSpectra = &_state->focusedScannerSpectra;
         view.scannerColor = &*_state->focusedScannerColor;
         view.outputGamutTransform = _state->focusedOutputGamutTransform ? &*_state->focusedOutputGamutTransform : nullptr;
         view.outputGamutCmax = resources.outputGamutCmax;
-        view.densityBoundsHash = resources.routeDensityBoundsHash;
-        view.scannerDescriptorHash = resources.routeScannerDescriptorHash;
         view.selectedMethod = resources.filmRgbToRawMethod;
         const bool outputGamutExpected =
             view.scannerColor->outputGamutRecipeHash != 0;
@@ -4016,9 +4009,7 @@ namespace JuicerProcess {
                                           : !view.outputGamutTransform &&
                                                 !view.outputGamutCmax &&
                                                 resources.outputGamutRecipeHash == 0;
-        view.active = view.scanRange && view.scanLut->canonical_ready() &&
-                      view.densityBoundsHash != 0 &&
-                      view.scannerDescriptorHash != 0 && outputGamutReady;
+        view.active = outputGamutReady;
         return view;
     }
 
@@ -5494,8 +5485,7 @@ namespace JuicerProcess {
                 *frame._state->resources,
                 request.focused,
                 cudaStreamOpaque,
-                outError,
-                hostPreparation)) {
+                outError)) {
             recordFailure(
                 "prepare_focused_route_resources",
                 "CUDA focused route resource preparation failed");
@@ -5512,15 +5502,6 @@ namespace JuicerProcess {
                 frame.abort();
                 return frame;
             }
-            frame._state->focusedScanRange =
-                &frame._state->resources->scanPrintRange;
-            frame._state->focusedScanLut =
-                &frame._state->resources->scanPrintLut;
-        } else {
-            frame._state->focusedScanRange =
-                &frame._state->resources->scanNegativeRange;
-            frame._state->focusedScanLut =
-                &frame._state->resources->scanNegativeLut;
         }
         frame._state->capturePolarity =
             request.identity.capturePolarity;

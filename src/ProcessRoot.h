@@ -217,13 +217,9 @@ namespace JuicerProcess {
             struct FocusedPreparedView {
                 JuicerCuda::FilmPreparedView film{};
                 const JuicerCuda::ScannerSpectra* scannerSpectra = nullptr;
-                const JuicerCuda::Resources::DeviceScanRange* scanRange = nullptr;
-                const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
                 const Scanner::ColorRuntime* scannerColor = nullptr;
                 const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
                 const float* outputGamutCmax = nullptr;
-                std::uint64_t densityBoundsHash = 0;
-                std::uint64_t scannerDescriptorHash = 0;
                 Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
                 bool active = false;
             };

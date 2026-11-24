@@ -198,27 +198,6 @@ namespace JuicerCuda {
             int K = 0;
         };
 
-        struct DeviceScanRange {
-            int mediumIsNegative = 1;
-            float min_cmy[3] = {0.0f, 0.0f, 0.0f};
-            float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
-        };
-
-        struct DeviceSpectralLut {
-            float* log2PchipXYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
-            float* slopeC = nullptr;
-            float* slopeM = nullptr;
-            float* slopeY = nullptr;
-            float* cellMin = nullptr; // layout: ((C*(res-1) + M)*(res-1) + Y) * 3 + XYZ
-            float* cellMax = nullptr;
-            std::uint32_t res = 0;
-            std::uint64_t hash = 0;
-
-            bool canonical_ready() const noexcept {
-                return log2PchipXYZ && slopeC && slopeM && slopeY && cellMin && cellMax && res >= 2u;
-            }
-        };
-
         struct DeviceGaussianKernel {
             float* weights = nullptr;
             int radius = 0;
@@ -299,8 +278,6 @@ namespace JuicerCuda {
         std::uint64_t filmDensityCurvesHash = 0;
         std::uint64_t filmDensityLayersHash = 0;
         std::uint64_t filmDirHash = 0;
-        std::uint64_t routeDensityBoundsHash = 0;
-        std::uint64_t routeScannerDescriptorHash = 0;
         std::uint64_t outputGamutTableHash = 0;
         std::uint64_t outputGamutRecipeHash = 0;
         std::size_t retireBytes = 0;
@@ -379,8 +356,6 @@ namespace JuicerCuda {
         DeviceCurve printSensM;
         DeviceCurve printSensY;
 
-        DeviceSpectralLut scanNegativeLut;
-        DeviceSpectralLut scanPrintLut;
         float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr},
                                             {nullptr, nullptr, nullptr},
                                             {nullptr, nullptr, nullptr}};
@@ -395,8 +370,6 @@ namespace JuicerCuda {
         // Leaf lock for per-device CUDA resource state. Do not wait on external work while held.
         std::mutex m;
 
-        DeviceScanRange scanNegativeRange;
-        DeviceScanRange scanPrintRange;
         DeviceOpticsScratch scannerScratch;
         DeviceSpatialDirScratch spatialDirScratch;
         std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
@@ -475,14 +448,12 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         Failure& outError);
 
-    // Descriptor-driven film and selected scan-route preparation. This is called only behind
-    // Root's prepared-frame boundary and intentionally has no static-noise input.
+    // Prepare the frame's film and optional output gamut device resources.
     bool prepare_focused_route_resources(
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        Failure& outError,
-        const FjHostPreparation* hostPreparation = nullptr);
+        Failure& outError);
 
     bool prepare_print_resources(
         Resources& resources,
@@ -647,15 +618,6 @@ namespace JuicerCuda {
         int deviceId,
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
-
-#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
-    namespace ScannerLutTest {
-        void after_prepare(Resources&) noexcept;
-        void after_upload(Resources&) noexcept;
-        bool before_upload(Resources&, const char* label, Failure&) noexcept;
-        std::int32_t retire_fence_error(Resources&, const char* label) noexcept;
-    } // namespace ScannerLutTest
-#endif
 
 #if defined(JUICER_GAUSSIAN_TEST_HOOK)
     namespace GaussianKernelTest {

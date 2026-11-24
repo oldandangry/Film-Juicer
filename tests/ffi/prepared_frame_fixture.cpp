@@ -264,7 +264,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             const auto& development = view.film_development;
             const auto& dir = view.dir_recipe;
             const auto& scanner = view.scanner_tables;
-            const auto& bounds = view.scanner_bounds;
             out.route = static_cast<Spektrafilm::ScanRoute>(view.route);
             out.filmRaw = {static_cast<Spektrafilm::RgbToRawMethod>(exposure.method),
                            channel_samples(exposure.sensitivity_rgb),
@@ -282,25 +281,10 @@ namespace JuicerCudaTest::PreparedFrameFixture {
                 for (std::size_t layer = 0; layer < 3; ++layer)
                     out.filmDevelop.densityCurvesLayers[layer][channel] =
                         span(development.density_layers[layer][channel]);
-                out.densityBounds.dataMinCmy[channel] = bounds.minimum_cmy[channel];
-                out.densityBounds.invSpanCmy[channel] = bounds.inv_span_cmy[channel];
             }
             out.dirCouplers.active = dir.mode != FJ_DIR_INACTIVE;
             out.dirCouplers.compensatedDensityCurveAxesHash = dir.compensated_axes_hash;
             out.dirCouplers.hash = dir.hash;
-            out.densityBounds.hash = bounds.hash;
-            out.scannerLutDescriptor.route = static_cast<Spektrafilm::ScanRoute>(view.route);
-            out.scannerLutDescriptor.medium = Spektrafilm::scan_route_is_print(out.route)
-                                                  ? Scanner::ScannedMediumKind::Print
-                                                  : Scanner::ScannedMediumKind::Film;
-            out.scannerLutDescriptor.polarity = static_cast<Spektrafilm::ProfilePolarity>(view.polarity);
-            out.scannerLutDescriptor.densityBoundsHash = view.scanner_lut.density_bounds_hash;
-            out.scannerLutDescriptor.lutResolution = view.scanner_lut.resolution;
-            out.scannerLutDescriptor.hash = view.scanner_lut.hash;
-            out.scannerLutDescriptor.channelDensityHash = view.scanner_lut.channel_density_hash;
-            out.scannerLutDescriptor.baseDensityHash = view.scanner_lut.base_density_hash;
-            out.scannerLutDescriptor.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
-            out.scannerLutDescriptor.observerHash = view.scanner_lut.observer_hash;
             const auto base = scanner.has_baseline ? span(scanner.baseline_min) : std::span<const float>{};
             out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), base, scanner.inv_yn};
             out.exposureSampleCount = 81;

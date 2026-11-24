@@ -2543,7 +2543,6 @@ namespace {
                 const bool observeNoResourceWork = early ||
                                                    (path == EffectsCallerPath::StopBeforePreparation && success);
                 if (actualHeld && observeNoResourceWork) {
-                    resources.lutPosition = 1;
                     JuicerCuda::ExecutorTest::observation = &events;
                     JuicerCuda::ExecutorTest::resourceFailures = &resources;
                 }
@@ -2654,10 +2653,10 @@ namespace {
                                                   ? route % 2 ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C"
                                               : actualHeld ? actualExpected->diagnostic
                                                            : row.at("diagnostic").get<std::string>();
-                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
+                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
                         throw std::runtime_error(name + ": failed effects reached preparation/upload/launch");
                 } else if (path == EffectsCallerPath::StopBeforePreparation &&
-                           (events.count != 0 || resources.lutAttempts != 0 || resources.stbnAttempts != 0 ||
+                           (events.count != 0 || resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 ||
                             resources.wangAttempts != 0 || resources.injections != 0)) {
                     throw std::runtime_error(name + ": cancellation entered resource preparation");
                 }
@@ -2884,7 +2883,6 @@ namespace {
                 const bool observeNoResourceWork = early ||
                                                    (path == GrainCallerPath::StopBeforePreparation && success);
                 if (actualHeld && observeNoResourceWork) {
-                    resources.lutPosition = 1;
                     JuicerCuda::ExecutorTest::observation = &events;
                     JuicerCuda::ExecutorTest::resourceFailures = &resources;
                 }
@@ -3003,11 +3001,11 @@ namespace {
                     throw std::runtime_error(std::string(name).append(": grain caller stage/status: ").append(failureText));
                 if (early) {
                     const auto expectedText = actualExpected->diagnostic;
-                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
+                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
                         throw std::runtime_error(name + ": failed grain reached preparation/upload/launch");
                     ++failures;
                 } else if (path == GrainCallerPath::StopBeforePreparation &&
-                           (events.count != 0 || resources.lutAttempts != 0 || resources.stbnAttempts != 0 ||
+                           (events.count != 0 || resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 ||
                             resources.wangAttempts != 0 || resources.injections != 0)) {
                     throw std::runtime_error(name + ": cancellation entered resource preparation");
                 }
@@ -3231,7 +3229,6 @@ namespace {
                 const bool earlyFailure = beforeBuilder || !success;
                 const bool observeNoResourceWork = earlyFailure || (!executePixels && !beforeBuilder && success);
                 if (actualHeld && observeNoResourceWork) {
-                    resources.lutPosition = 1;
                     JuicerCuda::ExecutorTest::observation = &failureEvents;
                     JuicerCuda::ExecutorTest::resourceFailures = &resources;
                 }
@@ -3328,11 +3325,11 @@ namespace {
                 if (earlyFailure) {
                     const std::string expectedText = actualExpected->diagnostic;
                     if (failureText != expectedText || failureEvents.count != 0 || !failureEvents.armed ||
-                        resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0) {
+                        resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0) {
                         throw std::runtime_error(name + ": failed mathematics reached resource preparation or launch");
                     }
                 } else if (!executePixels && !beforeBuilder &&
-                           (failureEvents.count != 0 || resources.lutAttempts != 0 || resources.stbnAttempts != 0 ||
+                           (failureEvents.count != 0 || resources.focusedPreparationAttempts != 0 || resources.stbnAttempts != 0 ||
                             resources.wangAttempts != 0 || resources.injections != 0)) {
                     throw std::runtime_error(name + ": cancellation entered resource preparation");
                 }
@@ -3808,39 +3805,6 @@ namespace {
                   << "/recovery/fatal order passed\n";
     }
 
-    void run_scanner_lut_upload_failure_cases(CallbackSession& runtime) {
-        const std::array cases{Case{"lut-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
-                               Case{"lut-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0},
-                               Case{"lut-positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 0, 3, 0, 0},
-                               Case{"lut-positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0}};
-        std::vector<std::string> intended;
-        intended.reserve(28);
-        for (const auto& test : cases) {
-            for (unsigned position = 1; position <= 6; ++position)
-                intended.push_back(std::string(test.name) + "/position/" + std::to_string(position));
-            intended.push_back(std::string(test.name) + "/warm-render");
-        }
-        JuicerTests::Cohort rows("scanner_lut_upload", intended);
-        for (const auto& test : cases) {
-            JuicerTestSupport::InstanceFixture state;
-            MembershipRetirement stateRetirement{runtime, state};
-            auto parameters = parameters_for(test);
-            parameters.values.grain.active = false;
-            for (unsigned position = 1; position <= 6; ++position) {
-                auto row = rows.case_event(std::string(test.name) + "/position/" + std::to_string(position));
-                JuicerCuda::ExecutorTest::ResourceFailures failures;
-                failures.lutPosition = position;
-                const std::string diagnostic = std::string("scanner LUT upload fixture failure route=") + Spektrafilm::scan_route_metadata(test.route).key;
-                check_resource_failure(runtime, test, parameters, state, failures, {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic}, "prepare_focused_route_resources", true);
-                if (failures.lutAttempts != position || failures.injections != 1 || fj_test_scanner_lut_live_owners() != 0)
-                    throw std::runtime_error("scanner LUT upload short circuit or host-owner cleanup changed");
-                row.passed();
-            }
-            auto warm = rows.case_event(std::string(test.name) + "/warm-render");
-            (void)render_case(runtime, test, parameters, state);
-            warm.passed();
-        }
-    }
     void run_output_gamut_failure_cases(CallbackSession& runtime) {
         const std::array cases{Case{"gamut-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"gamut-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
@@ -3872,14 +3836,14 @@ namespace {
             classified.diagnostic += " route=";
             classified.diagnostic += Spektrafilm::scan_route_metadata(test.route).key;
             check_resource_failure(runtime, test, parameters, state, failures, classified, "prepare_focused_route_resources", true);
-            if (failures.cmax || failures.cmaxAttempts != 1 || failures.injections != 1)
+            if (failures.focusedPreparationAttempts != 1 || failures.cmax || failures.cmaxAttempts != 1 || failures.injections != 1)
                 throw std::runtime_error("output gamut Cmax fault did not reach the live owner exactly once");
             failureRow.passed();
 
             auto retryRow = rows.case_event(std::string(test.name) + "/retry");
             JuicerCuda::ExecutorTest::ResourceFailures retry;
             const auto restored = capture_allocations(retry);
-            if (retry.cmaxAttempts != 1 || retry.injections != 0)
+            if (retry.focusedPreparationAttempts != 1 || retry.cmaxAttempts != 1 || retry.injections != 0)
                 throw std::runtime_error("output gamut Cmax retry did not perform one allocation");
             retryRow.passed();
 
@@ -3887,7 +3851,7 @@ namespace {
             JuicerCuda::ExecutorTest::ResourceFailures warm;
             warm.cmax = allocation;
             const auto repeated = capture_allocations(warm);
-            if (!warm.cmax || warm.cmaxAttempts != 0 || warm.injections != 0)
+            if (warm.focusedPreparationAttempts != 1 || !warm.cmax || warm.cmaxAttempts != 0 || warm.injections != 0)
                 throw std::runtime_error("warm output gamut repeated the Cmax allocation");
             RenderAssertions::compare_bits(std::string(test.name) + " warmed output gamut", restored, repeated);
             warmRow.passed();
@@ -4857,13 +4821,7 @@ int main(int argc, char** argv) try {
         if (argc == 4 && std::string_view(argv[1]) == "--resource-failure") {
             JuicerTests::list_case("processor_operation", std::string("resource_failure/") + argv[2]);
             JuicerTests::list_case("resource_failure", argv[2]);
-            if (std::string_view(argv[2]) == "ScannerLut") {
-                for (const char* route : {"lut-direct", "lut-print", "lut-positive-direct", "lut-positive-print"}) {
-                    for (unsigned position = 1; position <= 6; ++position)
-                        JuicerTests::list_case("scanner_lut_upload", std::string(route) + "/position/" + std::to_string(position));
-                    JuicerTests::list_case("scanner_lut_upload", std::string(route) + "/warm-render");
-                }
-            } else if (std::string_view(argv[2]) == "OutputGamut") {
+            if (std::string_view(argv[2]) == "OutputGamut") {
                 for (const char* route : {"gamut-direct", "gamut-print"})
                     for (const char* phase : {"allocation-failure", "retry", "warm-no-repeat"})
                         JuicerTests::list_case("output_gamut_cmax", std::string(route) + "/" + phase);
@@ -5120,8 +5078,6 @@ int main(int argc, char** argv) try {
             JuicerTests::CaseEvent resource_event("resource_failure", resourceFailure);
             if (resourceFailure == "DefectFence") {
                 run_defect_fence_failure_cases(runtime);
-            } else if (resourceFailure == "ScannerLut") {
-                run_scanner_lut_upload_failure_cases(runtime);
             } else if (resourceFailure == "OutputGamut") {
                 run_output_gamut_failure_cases(runtime);
             } else if (resourceFailure == "GrainUpload") {

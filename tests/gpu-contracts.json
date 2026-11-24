@@ -36,10 +36,6 @@
       "protocol": "custom",
       "registrations": 1
     },
-    "JuicerScannerLutResourceTests": {
-      "protocol": "gtest",
-      "registrations": 1
-    },
     "JuicerDeferredDestroyTests": {
       "protocol": "custom",
       "registrations": 5
@@ -62,7 +58,7 @@
     },
     "JuicerExecutorFailureOrderProbe": {
       "protocol": "custom",
-      "registrations": 11
+      "registrations": 10
     },
     "JuicerAdapterTraceProbe": {
       "protocol": "custom",
@@ -130,7 +126,6 @@
     "Ofx.Gpu.WorkspaceTransitions": 2,
     "Ofx.Gpu.WorkspaceReferenceInputs": 2,
     "Ofx.Gpu.ExecutorFailureOrder": 1,
-    "Ofx.Gpu.ResourceFailure.ScannerLut": 1,
     "Ofx.Gpu.ResourceFailure.OutputGamut": 1,
     "Ofx.Gpu.ResourceFailure.DefectFence": 1,
     "Ofx.Gpu.ResourceFailure.GrainUpload": 1,
@@ -165,12 +160,6 @@
     "PinnedUpload.ReservationDiagnosticFailurePreservesNativeStatus": 1,
     "PinnedUpload.CopyDiagnosticFailureReturnsReservationAndPreservesNativeStatus": 1,
     "PinnedUpload.CompletionDiagnosticFailurePreservesQuarantineAndContextLoss": 1,
-    "ScannerLut.ColdWarmAndCallbackFault": 4,
-    "ScannerLut.BothOwnerRechecks": 2,
-    "ScannerLut.SixUploadFailures": 2,
-    "ScannerLut.OrderedRetirementFailures": 2,
-    "ScannerLut.LaterGamutFailure": 1,
-    "ScannerLut.AsyncBackingAndTeardown": 1,
     "ProfileCudaSafety.SingletonDuplicateAndInfiniteDomains": 1,
     "ProfileCudaSafety.ClampsBeforeFloatToIndexConversion": 1,
     "ProfileCudaSafety.NonfiniteLutContentsAndNarrowingCoordinatesUseRealConsumers": 1,

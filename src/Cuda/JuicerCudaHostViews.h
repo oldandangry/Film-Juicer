@@ -61,23 +61,15 @@ namespace JuicerCuda {
         bool enabled = false;
     };
 
-    struct DensityBoundsInput {
-        std::array<float, 3> dataMinCmy{};
-        std::array<float, 3> invSpanCmy{};
-        std::uint64_t hash = 0;
-    };
-
     struct FocusedRouteResourceInput {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         FilmExposureResourceInput filmRaw;
         FilmDevelopmentResourceInput filmDevelop;
         DirResourceInput dirCouplers;
-        DensityBoundsInput densityBounds;
         std::array<float, 9> inputRgbToXyz{};
         std::array<float, 9> inputXyzAdapt{};
         std::array<float, 9> xyzToLinearSrgb{};
         bool applyInputChromaticAdapt = false;
-        Scanner::ScannerSpectralLutDescriptor scannerLutDescriptor;
         Scanner::SpectralTablesView scannerTables;
         std::span<const float> exposureIlluminant;
         std::span<const float> filmTcLut;

@@ -248,16 +248,15 @@ namespace JuicerCuda::ExecutorTest {
 
     thread_local ResourceFailures* resourceFailures = nullptr;
 
+    void observe_focused_resource_preparation() noexcept {
+        if (resourceFailures) {
+            ++resourceFailures->focusedPreparationAttempts;
+        }
+    }
+
     bool inject_grain_upload_failure(const char* label, Failure& failure) {
         if (!resourceFailures) {
             return false;
-        }
-        if (resourceFailures->lutPosition && std::string_view(label).starts_with("focused scan PCHIP")) {
-            if (++resourceFailures->lutAttempts == resourceFailures->lutPosition) {
-                failure = {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "scanner LUT upload fixture failure"};
-                resourceFailures->record_injection();
-                return true;
-            }
         }
         if (std::strcmp(label, "output gamut Cmax") == 0) {
             ++resourceFailures->cmaxAttempts;

@@ -180,7 +180,6 @@ namespace JuicerCuda {
     static void free_wang(Resources& resources) noexcept;
     static void free_scan_error_readbacks(Resources& resources) noexcept;
     static void free_tables(Resources& resources) noexcept;
-    static void free_scan_lut(Resources& resources, Resources::DeviceSpectralLut& lut) noexcept;
     static void clear_gaussian_kernel_views(Resources& resources) noexcept;
     static void free_gaussian_cache(Resources& resources) noexcept;
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
@@ -854,12 +853,7 @@ namespace JuicerCuda {
         if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
             return false;
         }
-#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
-        const auto injected = static_cast<cudaError_t>(ScannerLutTest::retire_fence_error(resources, record.label));
-        const cudaError_t recErr = injected == cudaSuccess ? cudaEventRecord(retireEv, stream) : injected;
-#else
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
-#endif
         if (recErr != cudaSuccess) {
             outError.status = runtime_failure_status(recErr);
             outError.diagnostic = std::string("cudaEventRecord for ") + (record.label ? record.label : "resource") + " retire failed: " + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
@@ -1173,10 +1167,6 @@ namespace JuicerCuda {
         if (ExecutorTest::inject_grain_upload_failure(label, outError)) {
             return false;
         }
-#endif
-#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
-        if (!ScannerLutTest::before_upload(resources, label, outError))
-            return false;
 #endif
         if (!allocate_owned_device(
                 resources,
@@ -1626,8 +1616,6 @@ namespace JuicerCuda {
         free_curve(resources, resources.sensG);
         free_curve(resources, resources.sensR);
         free_tables(resources);
-        free_scan_lut(resources, resources.scanNegativeLut);
-        free_scan_lut(resources, resources.scanPrintLut);
         clear_gaussian_kernel_views(resources);
         free_gaussian_cache(resources);
         for (auto& boundary : resources.spatialDirBoundaries) {
@@ -3701,13 +3689,11 @@ namespace JuicerCuda {
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        Failure& outError,
-        const FjHostPreparation* hostPreparation) {
+        Failure& outError) {
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        ExecutorTest::observe_focused_resource_preparation();
+#endif
         outError = {};
-        const Spektrafilm::ScanRoute route = input.route;
-        const Spektrafilm::ScanRouteMetadata& routeMetadata =
-            Spektrafilm::scan_route_metadata(route);
-        const bool printRoute = routeMetadata.printRoute;
         const FilmExposureResourceInput& filmRaw = input.filmRaw;
         const bool tcMethod =
             filmRaw.rgbToRawMethod ==
@@ -3728,7 +3714,6 @@ namespace JuicerCuda {
         }
         const FilmDevelopmentResourceInput& filmDevelop = input.filmDevelop;
         const DirResourceInput& dirCouplers = input.dirCouplers;
-        const DensityBoundsInput& densityBounds = input.densityBounds;
         const OutputGamutResourceInput& outputGamut = input.outputGamut;
         if ((outputGamut.enabled && outputGamut.cmax.size() != Gamut::kOutputBoundaryValueCount) ||
             (!outputGamut.enabled && !outputGamut.cmax.empty())) {
@@ -3738,12 +3723,6 @@ namespace JuicerCuda {
         }
         const bool wantDensityLayers =
             input.wantDensityLayers;
-        const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
-            input.scannerLutDescriptor;
-        if (scannerDescriptor.densityBoundsHash != densityBounds.hash) {
-            outError.diagnostic = "focused route resource descriptor mismatch";
-            return false;
-        }
         if (input.exposureSampleCount != Spectral::kNumSamples ||
             filmDevelop.logExposure.empty() ||
             filmDevelop.logExposure.size() * 3u != filmDevelop.normalizedDensityCurvesRgb.scalar_count()) {
@@ -3763,8 +3742,6 @@ namespace JuicerCuda {
             resources.filmDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
             resources.filmDensityLayersHash == (wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0) &&
             resources.filmDirHash == (dirCouplers.active ? dirCouplers.hash : 0) &&
-            resources.routeDensityBoundsHash == densityBounds.hash &&
-            resources.routeScannerDescriptorHash == scannerDescriptor.hash &&
             resources.filmRgbToRawMethod == filmRaw.rgbToRawMethod &&
             resources.sensB.x && resources.sensG.x && resources.sensR.x &&
             resources.densB.x && resources.densG.x && resources.densR.x &&
@@ -3779,8 +3756,6 @@ namespace JuicerCuda {
             (!dirCouplers.active ||
              (resources.dirDensB.x && resources.dirDensG.x && resources.dirDensR.x)) &&
             (tcMethod || resources.tablesIllum) &&
-            (printRoute ? resources.scanPrintLut.canonical_ready() : resources.scanNegativeLut.canonical_ready()) &&
-            (printRoute ? resources.scanPrintLut.hash : resources.scanNegativeLut.hash) == scannerDescriptor.hash &&
             ((tcMethod &&
               resources.filmTcLut &&
               resources.filmTcLutExtent == Spectral::kFilmTcLutExtent &&
@@ -3796,12 +3771,6 @@ namespace JuicerCuda {
                 lock,
                 outError);
         }
-        Resources::DeviceSpectralLut& routeLut =
-            printRoute ? resources.scanPrintLut : resources.scanNegativeLut;
-        const bool routeLutAlreadyPrepared =
-            routeLut.canonical_ready() &&
-            routeLut.hash == scannerDescriptor.hash;
-
         const std::span<const float> sensitivityWavelengthsNm = Spectral::kReferenceShape.wavelengths;
         std::vector<float> sensB(Spectral::kNumSamples);
         std::vector<float> sensG(Spectral::kNumSamples);
@@ -3991,164 +3960,10 @@ namespace JuicerCuda {
             return false;
         }
 
-        Resources::DeviceScanRange& scanRange =
-            printRoute ? resources.scanPrintRange : resources.scanNegativeRange;
-        resources.routeDensityBoundsHash = 0;
-        resources.routeScannerDescriptorHash = 0;
-        scanRange.mediumIsNegative = printRoute ? 0 : 1;
-        for (int channel = 0; channel < 3; ++channel) {
-            scanRange.min_cmy[channel] =
-                printRoute
-                    ? densityBounds.dataMinCmy[static_cast<std::size_t>(channel)]
-                    : -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
-            scanRange.inv_max_cmy[channel] =
-                densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
-        }
-
-        Scanner::MediumView medium{};
-        medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
-        medium.tables = input.scannerTables;
-        for (int channel = 0; channel < 3; ++channel) {
-            medium.range.min_cmy[channel] = scanRange.min_cmy[channel];
-            medium.range.inv_max_cmy[channel] = scanRange.inv_max_cmy[channel];
-            medium.range.max_cmy[channel] = scanRange.inv_max_cmy[channel] > 0.0f
-                                                ? 1.0f / scanRange.inv_max_cmy[channel]
-                                                : 0.0f;
-        }
-
-        if (!routeLutAlreadyPrepared) {
-            Failure constructionFailure;
-            FjScannerLutView lutView{};
-            const FjHostPreparation emptyPreparation{};
-            const auto& preparation = hostPreparation ? *hostPreparation : emptyPreparation;
-            lock.unlock();
-            const bool constructed = prepare_scanner_lut(preparation, medium, scannerDescriptor.lutResolution, lutView, constructionFailure);
-#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
-            ScannerLutTest::after_prepare(resources);
-#endif
-            lock.lock();
-            if (!validate_resource_owner_locked(resources, outError, false)) {
-                lock.unlock();
-                return false;
-            }
-            if (!constructed) {
-                outError = std::move(constructionFailure);
-                return false;
-            }
-            struct NextCanonicalScanLut {
-                float* log2PchipXYZ = nullptr;
-                float* slopeC = nullptr;
-                float* slopeM = nullptr;
-                float* slopeY = nullptr;
-                float* cellMin = nullptr;
-                float* cellMax = nullptr;
-            } next;
-            auto free_next = [&]() {
-                free_owned_device_noexcept(resources, next.log2PchipXYZ);
-                free_owned_device_noexcept(resources, next.slopeC);
-                free_owned_device_noexcept(resources, next.slopeM);
-                free_owned_device_noexcept(resources, next.slopeY);
-                free_owned_device_noexcept(resources, next.cellMin);
-                free_owned_device_noexcept(resources, next.cellMax);
-                next = {};
-            };
-            const std::size_t nodeBytes = lutView.log2_xyz.count * sizeof(float);
-            const std::size_t cellBytes = lutView.cell_min.count * sizeof(float);
-            const bool waitBetweenUploads =
-                nodeBytes > kPinnedUploadStagingMaxBytes / 4 ||
-                cellBytes > (kPinnedUploadStagingMaxBytes - 4 * nodeBytes) / 2;
-            auto upload_next = [&](float*& destination, FjFloatSpan source, const char* label) {
-                if (waitBetweenUploads) {
-                    // A large six-array LUT cannot rely on all staging
-                    // allocations fitting at once. Complete earlier copies
-                    // on this stream so their buffers can be reclaimed.
-                    const auto result = cudaStreamSynchronize(static_cast<cudaStream_t>(cudaStreamOpaque));
-                    if (result != cudaSuccess) {
-                        set_failure(outError, runtime_failure_status(result), "CUDA scanner LUT staging fence failed");
-                        return false;
-                    }
-                }
-                void* raw = nullptr;
-                if (!alloc_and_upload_bytes(
-                        resources,
-                        raw,
-                        source.data,
-                        source.count * sizeof(float),
-                        cudaStreamOpaque,
-                        label,
-                        outError)) {
-                    return false;
-                }
-                destination = static_cast<float*>(raw);
-                return true;
-            };
-
-            lock.unlock();
-            const bool canonicalUploaded =
-                upload_next(next.log2PchipXYZ, lutView.log2_xyz, "focused scan PCHIP log2 XYZ") &&
-                upload_next(next.slopeC, lutView.slope_c, "focused scan PCHIP C slopes") &&
-                upload_next(next.slopeM, lutView.slope_m, "focused scan PCHIP M slopes") &&
-                upload_next(next.slopeY, lutView.slope_y, "focused scan PCHIP Y slopes") &&
-                upload_next(next.cellMin, lutView.cell_min, "focused scan PCHIP cell minima") &&
-                upload_next(next.cellMax, lutView.cell_max, "focused scan PCHIP cell maxima");
-            // Native pinned staging owns every enqueued source byte at return.
-#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
-            ScannerLutTest::after_upload(resources);
-#endif
-            lock.lock();
-            if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
-                free_next();
-                return false;
-            }
-
-            const std::size_t oldVoxelBytes =
-                static_cast<std::size_t>(routeLut.res) * routeLut.res * routeLut.res * 3u * sizeof(float);
-            const std::size_t oldCellRes = routeLut.res > 0u ? static_cast<std::size_t>(routeLut.res - 1u) : 0u;
-            const std::size_t oldCellBytes = oldCellRes * oldCellRes * oldCellRes * 3u * sizeof(float);
-            auto retire_old = [&](float*& pointer, std::size_t bytes, const char* label) {
-                if (!pointer) {
-                    return true;
-                }
-                if (!retire_ptr_locked(
-                        resources,
-                        pointer,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        label,
-                        outError)) {
-                    return false;
-                }
-                pointer = nullptr;
-                return true;
-            };
-            routeLut.hash = 0;
-            if (!retire_old(routeLut.log2PchipXYZ, oldVoxelBytes, "focused scan PCHIP log2 XYZ") ||
-                !retire_old(routeLut.slopeC, oldVoxelBytes, "focused scan PCHIP C slopes") ||
-                !retire_old(routeLut.slopeM, oldVoxelBytes, "focused scan PCHIP M slopes") ||
-                !retire_old(routeLut.slopeY, oldVoxelBytes, "focused scan PCHIP Y slopes") ||
-                !retire_old(routeLut.cellMin, oldCellBytes, "focused scan PCHIP cell minima") ||
-                !retire_old(routeLut.cellMax, oldCellBytes, "focused scan PCHIP cell maxima")) {
-                free_next();
-                return false;
-            }
-            routeLut.log2PchipXYZ = next.log2PchipXYZ;
-            routeLut.slopeC = next.slopeC;
-            routeLut.slopeM = next.slopeM;
-            routeLut.slopeY = next.slopeY;
-            routeLut.cellMin = next.cellMin;
-            routeLut.cellMax = next.cellMax;
-            next = {};
-            routeLut.res = scannerDescriptor.lutResolution;
-            routeLut.hash = scannerDescriptor.hash;
-        }
-
         resources.filmFinalSensitivityHash = filmRaw.finalSensitivityHash;
         resources.filmDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
         resources.filmDensityLayersHash = wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0;
         resources.filmDirHash = dirCouplers.active ? dirCouplers.hash : 0;
-        resources.routeDensityBoundsHash = densityBounds.hash;
-        resources.routeScannerDescriptorHash = scannerDescriptor.hash;
         resources.filmRgbToRawMethod = filmRaw.rgbToRawMethod;
         return prepare_output_gamut_table_locked(
             resources,
@@ -4546,37 +4361,6 @@ namespace JuicerCuda {
             t.baseDensityMin = nullptr;
         }
         t.K = 0;
-    }
-
-    static void free_scan_lut(
-        Resources& resources,
-        Resources::DeviceSpectralLut& lut) noexcept {
-        if (lut.log2PchipXYZ) {
-            free_owned_device_noexcept(resources, lut.log2PchipXYZ);
-            lut.log2PchipXYZ = nullptr;
-        }
-        if (lut.slopeC) {
-            free_owned_device_noexcept(resources, lut.slopeC);
-            lut.slopeC = nullptr;
-        }
-        if (lut.slopeM) {
-            free_owned_device_noexcept(resources, lut.slopeM);
-            lut.slopeM = nullptr;
-        }
-        if (lut.slopeY) {
-            free_owned_device_noexcept(resources, lut.slopeY);
-            lut.slopeY = nullptr;
-        }
-        if (lut.cellMin) {
-            free_owned_device_noexcept(resources, lut.cellMin);
-            lut.cellMin = nullptr;
-        }
-        if (lut.cellMax) {
-            free_owned_device_noexcept(resources, lut.cellMax);
-            lut.cellMax = nullptr;
-        }
-        lut.res = 0;
-        lut.hash = 0;
     }
 
     static void clear_gaussian_kernel(

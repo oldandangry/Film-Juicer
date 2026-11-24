@@ -1277,24 +1277,21 @@ time, zero and signed-zero bias, non-finite density, and extreme blur weights.
 The oracle's particle generation intentionally shares production code; this test
 isolates the subsequent blur/delta schedule and does not validate the sampler.
 
-### Scanner spectral LUT construction
+### Spectral scanner and historical cube fixtures
 
 `Ffi.Host.ScannerLut` checks full six-array native-characterization words,
 C11/C++/Rust ABI, raw/facade failure clearing, ten reservation stages, panic
 containment and input expiry. Valid callback construction and span comparisons
 stay inside the existing host-preparation scope. `Scanner.Host.LutProducts`
-checks actual complete profile/route products and their held inputs.
-`Scanner.Gpu.OutputEncoding` includes whole-array prepared upload comparisons,
-cache reuse and resolution transitions; `Ofx.Gpu.ResourceFailure.ScannerLut`
-exercises all six upload failure positions through actual render preparation.
-The frozen `scanner/lut-fixtures/manifest.json` distinguishes native numerical
-characterization from the safety/transport contract in `checked.json`.
-Successful stored words are exact in each matching native platform/profile.
-`Resource.Gpu.ScannerLut` exercises the actual native serving owner with the
-same scoped Rust callbacks as held rendering. It checks all four route products,
-warm hits with armed faults, individual construction/upload/retirement failures,
-both owner rechecks, later gamut failure and upload backing expiry. Retirement
-checks account exactly for prefix fences that are still queued or already reaped.
+checks complete historical profile/route products and their held inputs. The
+frozen `scanner/lut-fixtures/manifest.json` describes native numerical
+characterization and the `checked.json` transport fixture.
+
+`Scanner.Gpu.OutputEncoding` binds actual frame-owned spectra and verifies every
+packet word, held encoding pairs, the float64 colour continuation, and restoration
+after medium edits. `Ofx.Gpu.ResourceFailure.OutputGamut` exercises typed failure,
+retry and warm reuse at the production Cmax allocation. The pinned upload and
+deferred retirement registrations exercise their surviving owners.
 Cold null preparation rejects with the exact internal-failure status and no LUT
 candidate, preserves any old six-array winner and clears route metadata. A
 separate warmed-input case checks unchanged ledger/allocation accounting;
