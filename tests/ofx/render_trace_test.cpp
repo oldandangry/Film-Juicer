@@ -742,6 +742,40 @@ namespace {
         host.set_value(effect, "GrainClumpTemporalMix", {0.0});
         host.set_value(effect, "GrainClumpMorphPeriodSec", {8.0});
     }
+    struct IdentityRender {
+        std::vector<float> pixels;
+        std::array<std::uint64_t, 4> identities;
+        std::uint64_t filmExposure;
+        std::uint64_t printRecipe;
+        std::uint64_t build;
+        std::size_t backing;
+    };
+
+    IdentityRender render_identity(ofx_test::RenderHost& fixture, ofx_test::DeviceImages& images, double value, bool printExposure) {
+        ofx_test::ScanReferenceCapture capture(images.stream());
+        auto pixels = render(fixture, images, 37.0);
+        const Observation actual(fixture.effect());
+        const auto frame = render_observation(fixture.effect());
+        const auto& state = actual.view.published;
+        const auto& launch = capture.glare_launch();
+        const bool glare = state.route == FJ_ROUTE_NEGATIVE_PRINT;
+        const auto selectedValue = printExposure ? actual.view.captured.print_exposure : actual.view.captured.camera_exposure_compensation_ev;
+        ofx_test::require_render(std::bit_cast<std::uint64_t>(selectedValue) == std::bit_cast<std::uint64_t>(value), "identity trace captured the exact exposure control");
+        if (!printExposure)
+            ofx_test::require_render(std::bit_cast<std::uint32_t>(state.film_exposure.manual_exposure_ev) == std::bit_cast<std::uint32_t>(static_cast<float>(value)), "resolved camera exposure words");
+        ofx_test::require_render(state.recipe_hash != 0 && state.scanner_hash != 0 && frame.input_identity != 0 &&
+                                     frame.build_number == actual.view.build && frame.backing_identity == actual.view.backing_identity,
+                                 "identity trace held publication and shipping entry agree");
+        if (glare) {
+            const auto seed = Hash::hash_uint64_values({state.print.glare_hash, frame.frame_token, 0, 0});
+            ofx_test::require_render(state.print.glare_hash != 0 && launch.count == 1 && launch.medium == 1 && launch.originX == 0 && launch.originY == 0 && launch.seed == seed,
+                                     "identity trace observed the actual Print glare launch");
+        } else {
+            ofx_test::require_render(state.print.glare_hash == 0 && launch.count == 0, "Direct identity trace has no Print glare launch");
+        }
+        return {std::move(pixels), {state.recipe_hash, state.scanner_hash, state.print.glare_hash, frame.input_identity}, state.film_exposure.hash, state.print_recipe_hash, actual.view.build, actual.view.backing_identity};
+    }
+
     void accepted_identities(const JuicerTests::Cohort& rows) {
         std::ifstream stream(JUICER_PARAMETER_IDENTITIES_PATH);
         ofx_test::require_render(static_cast<bool>(stream), "identity fixture unavailable");
@@ -757,41 +791,43 @@ namespace {
             fixture.configure(images);
             snapshot_defaults(fixture);
             fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string(print ? "NegativePrintScan" : "NegativeDirectScan")});
-            std::uint64_t previous_build = 0;
-            std::uint64_t previous_recipe = 0;
+            const char* control = medium ? "PrintExposure" : "Exposure";
+            const double original = signed_zero ? 0.0 : 1.0;
+            std::optional<IdentityRender> first;
             for (const char* suffix : {"A", "B"}) {
                 const std::string fixture_key = std::string(name) + "/" + suffix;
                 auto event = rows.case_event(std::string("identity/") + fixture_key);
                 const bool second = std::string_view(suffix) == "B";
-                const double value = signed_zero ? (second ? -0.0 : 0.0) : (second ? 1.00001 : 1.0);
-                const char* control = medium ? "PrintExposure" : "Exposure";
+                const double value = second ? (signed_zero ? -0.0 : 1.00001) : original;
                 fixture.host().set_value(fixture.effect(), control, {value});
                 if (second)
                     change(fixture, control, kOfxChangeTime, 37.0);
-                (void)render(fixture, images, 37.0);
-                Observation actual(fixture.effect());
-                const auto& state = actual.view.published;
+                auto actual = render_identity(fixture, images, value, medium);
                 const auto& accepted = expected.at(fixture_key);
-                const std::uint64_t seed = print ? Hash::hash_uint64_values({state.print_recipe_hash, 37, 5, 9}) : 0;
-                const std::array actual_identity{state.recipe_hash, state.film_exposure.hash, state.print_recipe_hash, seed};
-                const std::array expected_identity{accepted.at("recipe").get<std::uint64_t>(), accepted.at("filmRaw").get<std::uint64_t>(), accepted.at("printSeedInput").get<std::uint64_t>(), accepted.at("fixedGlareSeed").get<std::uint64_t>()};
-                const bool matches = RenderAssertions::identities_match(actual_identity, expected_identity) &&
-                                     (!second || (actual.view.build > previous_build && state.recipe_hash != previous_recipe)) &&
-                                     (!signed_zero || std::bit_cast<std::uint32_t>(state.film_exposure.manual_exposure_ev) == (second ? 0x80000000U : 0U));
-                if (!matches) {
-                    std::fprintf(stderr, "%s actual=(%llu,%llu,%llu,%llu) expected=(%llu,%llu,%llu,%llu) build=%llu previous=%llu\n", fixture_key.c_str(), static_cast<unsigned long long>(actual_identity[0]), static_cast<unsigned long long>(actual_identity[1]), static_cast<unsigned long long>(actual_identity[2]), static_cast<unsigned long long>(actual_identity[3]), static_cast<unsigned long long>(expected_identity[0]), static_cast<unsigned long long>(expected_identity[1]), static_cast<unsigned long long>(expected_identity[2]), static_cast<unsigned long long>(expected_identity[3]), static_cast<unsigned long long>(actual.view.build), static_cast<unsigned long long>(previous_build));
-                    JuicerTestSupport::PreparationInput baseline;
-                    baseline.values.scan_route = print ? FJ_ROUTE_NEGATIVE_PRINT : FJ_ROUTE_NEGATIVE_DIRECT;
-                    if (medium)
-                        baseline.values.print_exposure = value;
-                    else
-                        baseline.values.camera_exposure_compensation_ev = value;
-                    const FjPreparationParams expectedControls = baseline.record();
-                    report_control_differences(actual.view.captured, expectedControls);
-                    throw std::runtime_error("accepted actual-callback recipe identities");
+                ofx_test::require_render(actual.filmExposure == accepted.at("filmRaw") && actual.printRecipe == accepted.at("printSeedInput"), "accepted film and photographic Print identities");
+                const auto [recipe, scanner, glare, input] = actual.identities;
+                ofx_test::require_render(recipe != accepted.at("recipe"), "current recipe identity differs from the archived cubic recipe");
+                if (!first) {
+                    first.emplace(std::move(actual));
+                } else {
+                    const auto [firstRecipe, firstScanner, firstGlare, firstInput] = first->identities;
+                    ofx_test::require_render(actual.build > first->build && recipe != firstRecipe && input != firstInput &&
+                                                 scanner == firstScanner && glare == firstGlare,
+                                             "exposure edit publishes a new recipe with the same spectral and glare identities");
+                    if (signed_zero)
+                        RenderAssertions::compare_bits("exposure signed-zero pixels", actual.pixels, first->pixels);
+                    fixture.host().set_value(fixture.effect(), control, {original});
+                    change(fixture, control, kOfxChangeTime, 37.0);
+                    const auto restored = render_identity(fixture, images, original, medium);
+                    const auto warm = render_identity(fixture, images, original, medium);
+                    ofx_test::require_render(restored.build > actual.build && restored.build == warm.build && restored.backing == warm.backing &&
+                                                 RenderAssertions::identities_match(restored.identities, first->identities) &&
+                                                 RenderAssertions::identities_match(warm.identities, restored.identities) &&
+                                                 restored.filmExposure == first->filmExposure && restored.printRecipe == first->printRecipe,
+                                             "restored exposure publishes the original identities and warm reuse");
+                    RenderAssertions::compare_bits("restored exposure pixels", restored.pixels, first->pixels);
+                    RenderAssertions::compare_bits("warm restored exposure pixels", warm.pixels, restored.pixels);
                 }
-                previous_build = actual.view.build;
-                previous_recipe = state.recipe_hash;
                 event.passed();
             }
             fixture.close();
