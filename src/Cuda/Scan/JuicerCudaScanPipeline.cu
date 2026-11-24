@@ -19,6 +19,8 @@ namespace {
 
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
     thread_local JuicerCuda::ScanDensityCaptureTest::DensityCapture densityCapture{};
+    thread_local unsigned planeScanLaunches = 0;
+    thread_local unsigned fusedDirScanLaunches = 0;
 
     __device__ __forceinline__ JuicerCuda::ScanDensityCaptureTest::ScanSample* scan_sample_device(
         JuicerCuda::ScanDensityCaptureTest::DensityCapture capture,
@@ -2281,6 +2283,14 @@ JuicerCuda::ScanDensityCaptureTest::swap_density_capture(
     densityCapture = capture;
     return previous;
 }
+
+unsigned JuicerCuda::ScanDensityCaptureTest::plane_scan_launches() noexcept {
+    return planeScanLaunches;
+}
+
+unsigned JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() noexcept {
+    return fusedDirScanLaunches;
+}
 #endif
 
 extern "C" cudaError_t juicer_cuda_apply_film_defects(
@@ -2489,7 +2499,12 @@ cudaError_t launch_focused_scan_linear_rgb(
     params.scanStage.linearRgbR = rgb.r;
     params.scanStage.linearRgbG = rgb.g;
     params.scanStage.linearRgbB = rgb.b;
-    return launch_scan_pipeline(params, spectra, carrier, blocks, threads, stream);
+    const auto status = launch_scan_pipeline(params, spectra, carrier, blocks, threads, stream);
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    if (status == cudaSuccess)
+        ++fusedDirScanLaunches;
+#endif
+    return status;
 }
 
 template <typename Params>
@@ -2724,7 +2739,12 @@ cudaError_t launch_focused_scan_linear_density_rgb(
         densityCapture
 #endif
     );
-    return cudaGetLastError();
+    const auto status = cudaGetLastError();
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    if (status == cudaSuccess)
+        ++planeScanLaunches;
+#endif
+    return status;
 }
 
 cudaError_t blur_plane_in_place(

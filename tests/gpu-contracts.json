@@ -145,10 +145,10 @@
     "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
     "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
-    "Ffi.Gpu.CudaRender.negative-direct": 22,
-    "Ffi.Gpu.CudaRender.negative-print": 22,
-    "Ffi.Gpu.CudaRender.positive-direct": 22,
-    "Ffi.Gpu.CudaRender.positive-print": 22,
+    "Ffi.Gpu.CudaRender.negative-direct": 23,
+    "Ffi.Gpu.CudaRender.negative-print": 23,
+    "Ffi.Gpu.CudaRender.positive-direct": 23,
+    "Ffi.Gpu.CudaRender.positive-print": 23,
     "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
@@ -203,12 +203,15 @@
   },
   "native_membership": {
     "Ffi.Gpu.CudaRender.negative-direct": {
-      "listed": 16,
-      "terminal": 131,
+      "listed": 19,
+      "terminal": 134,
       "required": [
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
+        ["shipping-plane-scan-readback", "producer"],
+        ["shipping-plane-scan-readback", "reporter"],
+        ["shipping-plane-scan-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],
@@ -218,12 +221,15 @@
       ]
     },
     "Ffi.Gpu.CudaRender.negative-print": {
-      "listed": 16,
-      "terminal": 131,
+      "listed": 19,
+      "terminal": 134,
       "required": [
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
+        ["shipping-plane-scan-readback", "producer"],
+        ["shipping-plane-scan-readback", "reporter"],
+        ["shipping-plane-scan-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],
@@ -233,12 +239,15 @@
       ]
     },
     "Ffi.Gpu.CudaRender.positive-direct": {
-      "listed": 16,
-      "terminal": 131,
+      "listed": 19,
+      "terminal": 134,
       "required": [
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
+        ["shipping-fused-dir-readback", "producer"],
+        ["shipping-fused-dir-readback", "reporter"],
+        ["shipping-fused-dir-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],
@@ -248,12 +257,15 @@
       ]
     },
     "Ffi.Gpu.CudaRender.positive-print": {
-      "listed": 16,
-      "terminal": 131,
+      "listed": 19,
+      "terminal": 134,
       "required": [
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
+        ["shipping-fused-dir-readback", "producer"],
+        ["shipping-fused-dir-readback", "reporter"],
+        ["shipping-fused-dir-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],

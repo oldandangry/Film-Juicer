@@ -1831,7 +1831,7 @@ namespace {
 // stopped at the selected density-plane launch. The staging is driver-owned.
 extern "C" FJ_REPLAY_CAPTURE_EXPORT const std::uint32_t* fj_observe_replay_density(
     const float* cyan, const float* magenta, const float* yellow, std::size_t count, cudaStream_t stream, CUcontext expectedContext) noexcept {
-    constexpr std::size_t samples = 64 * 32;
+    constexpr auto samples = std::size_t{64} * 32;
     thread_local std::array<std::uint32_t, samples * 3 + 1> words{};
     CUcontext context = nullptr;
     if (!cyan || !magenta || !yellow || !stream || count != samples ||

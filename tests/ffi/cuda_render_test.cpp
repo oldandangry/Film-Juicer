@@ -1,6 +1,7 @@
 #include "prepared_boundary.h"
 #include "prepared_raw_render_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "Cuda/Scan/JuicerCudaScanDensityCaptureTest.h"
 
 #include <algorithm>
 #include <array>
@@ -857,9 +858,12 @@ namespace JuicerCudaTest {
         }
     }
 
-    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared) {
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe) {
         const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
-        JuicerTests::Cohort rows(kScanReadbackCaller, std::vector<std::string>(kScanReadbackCases.begin(), kScanReadbackCases.end()));
+        const bool receiver = probe == ReadbackProbe::FusedDir;
+        JuicerTests::Cohort rows(receiver ? kDirScanReadbackCaller : probe == ReadbackProbe::Plane ? kPlaneScanReadbackCaller
+                                                                                                   : kScanReadbackCaller,
+                                 std::vector<std::string>(kScanReadbackCases.begin(), kScanReadbackCases.end()));
         constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
         constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         auto& root = JuicerCuda::borrow_root(cuda);
@@ -884,21 +888,34 @@ namespace JuicerCudaTest {
         read_image(healthy);
 
         auto nonfinite = prepared;
-        nonfinite.scanner_spectra.inverse_y_normalization = std::numeric_limits<float>::infinity();
         auto producer = baseline;
         ++producer.submission_id;
-        const auto& color = nonfinite.output_color;
-        const auto gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
-        const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(nonfinite), gamut});
-        producer.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(nonfinite.recipe_hash, nonfinite.dir_couplers.hash, binding, nonfinite.auto_exposure.hash).scannerHash;
-        require(producer.scanner_hash != submission.scanner_hash, "nonfinite scan changes the admitted binding");
+        if (receiver) {
+            require(static_cast<DirNonlinearMode>(nonfinite.dir_couplers.mode) == DirNonlinearMode::PositiveReceiverLangmuir &&
+                        nonfinite.dir_couplers.receiver_c_ref_rgb[1] != 0.0f && nonfinite.dir_couplers.receiver_kr_rgb[1] > 0.0f,
+                    "positive DIR fixture binds an active green receiver");
+            nonfinite.dir_couplers.receiver_kr_rgb[1] = 0.0f;
+        } else {
+            nonfinite.scanner_spectra.inverse_y_normalization = std::numeric_limits<float>::infinity();
+            const auto& color = nonfinite.output_color;
+            const auto gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
+            const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(nonfinite), gamut});
+            producer.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(nonfinite.recipe_hash, nonfinite.dir_couplers.hash, binding, nonfinite.auto_exposure.hash).scannerHash;
+            require(producer.scanner_hash != submission.scanner_hash, "nonfinite scan changes the admitted binding");
+        }
         const bool paper = Spektrafilm::scan_route_is_print(route);
+        const bool fusedInline = probe == ReadbackProbe::Inline && paper && (prepared.scanner_post.flags & FJ_POST_GLARE) != 0u;
         const auto profile = paper ? prepared.print_profile_key : prepared.film_profile_key;
         const auto version = paper ? prepared.print_profile_asset_version : prepared.film_profile_asset_version;
         std::shared_ptr<JuicerCuda::Resources> owner;
         {
             auto row = rows.case_event("producer");
+            const auto planes = JuicerCuda::ScanDensityCaptureTest::plane_scan_launches();
+            const auto fused = JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches();
             require_status(render_raw_prepared(cuda, frame, producer, nonfinite, {}, &error), success, "nonfinite producer finishes asynchronous submission");
+            require(JuicerCuda::ScanDensityCaptureTest::plane_scan_launches() - planes == (probe == ReadbackProbe::Plane ? 1u : 0u) &&
+                        JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() - fused == (receiver || fusedInline ? 1u : 0u),
+                    "nonfinite producer used the expected scanner kernel entry");
             read_image(produced);
             require(produced != healthy, "nonfinite producer reaches the optical output");
             owner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
@@ -906,11 +923,16 @@ namespace JuicerCudaTest {
             const std::lock_guard<std::mutex> lock(owner->m);
             require(owner->pendingScanErrorReadbacks.size() == 1, "one completed predecessor readback");
             const auto& held = owner->pendingScanErrorReadbacks.front();
+            constexpr int greenReceiverFailure = (1 << 8) | (2 << 9);
             require(held.host && held.eventOpaque && cudaEventQuery(static_cast<cudaEvent_t>(held.eventOpaque)) == cudaSuccess &&
-                        *held.host == 1 && held.identity.submissionId == producer.submission_id &&
+                        (receiver ? (*held.host & ~1) == greenReceiverFailure : *held.host == 1) &&
+                        held.identity.submissionId == producer.submission_id &&
                         held.identity.frameToken == producer.frame_token && held.identity.scannerHash == producer.scanner_hash &&
                         held.identity.scannedProfileAssetVersion == version && held.identity.contextEpoch == owner->contextEpoch,
-                    "actual scanner result sets only bit zero on the producing submission");
+                    "actual arithmetic set the expected flags on the producing submission");
+            std::cout << "scanner failure route=" << prepared.route << " plane=" << (probe == ReadbackProbe::Plane)
+                      << " fused=" << (receiver || fusedInline) << " flags=" << *held.host
+                      << " submission=" << held.identity.submissionId << '\n';
             row.passed();
         }
         auto reportingFrame = frame;
@@ -921,18 +943,27 @@ namespace JuicerCudaTest {
         {
             auto row = rows.case_event("reporter");
             const auto outcome = render_raw_prepared(cuda, reportingFrame, reporter, prepared, {}, &error);
-            require_status(outcome, preparationFailure, "distinct raw reporter consumes the earlier scan failure");
-            const std::string expected = "earlier CUDA scan produced non-finite RGB route=" +
-                                         std::string(Spektrafilm::scan_route_key(route)) +
-                                         (paper ? " medium=paper profile=" : " medium=film profile=") +
-                                         std::string(profile.data, profile.count) +
-                                         " profile_asset_version=" + std::to_string(version) +
-                                         " submission_id=" + std::to_string(producer.submission_id) +
-                                         " frame_token=" + std::to_string(producer.frame_token) +
-                                         " scanner_hash=" + std::to_string(producer.scanner_hash) +
-                                         " context_epoch=" + std::to_string(owner->contextEpoch);
-            require(outcome.flags == 0 && std::string_view(message.data(), error.length) == expected,
-                    "raw reporter uses producer provenance and leaves DIR flags clear");
+            require_status(outcome.status, preparationFailure, "distinct raw reporter consumes the earlier scan failure");
+            const std::string expected = receiver ? "earlier CUDA DIR submission failed component=dir route=" +
+                                                        std::string(Spektrafilm::scan_route_key(route)) +
+                                                        " profile=" + std::string(prepared.film_profile_key.data, prepared.film_profile_key.count) +
+                                                        " polarity=" + std::to_string(prepared.capture_polarity) +
+                                                        " recipe_hash=" + std::to_string(prepared.dir_couplers.hash) +
+                                                        " descriptor_hash=" + std::to_string(prepared.spatial_dir.hash) +
+                                                        " context_epoch=" + std::to_string(owner->contextEpoch) +
+                                                        " channel_mask=2 requirement=finite_defined_receiver_arithmetic"
+                                                  : "earlier CUDA scan produced non-finite RGB route=" +
+                                                        std::string(Spektrafilm::scan_route_key(route)) +
+                                                        (paper ? " medium=paper profile=" : " medium=film profile=") +
+                                                        std::string(profile.data, profile.count) +
+                                                        " profile_asset_version=" + std::to_string(version) +
+                                                        " submission_id=" + std::to_string(producer.submission_id) +
+                                                        " frame_token=" + std::to_string(producer.frame_token) +
+                                                        " scanner_hash=" + std::to_string(producer.scanner_hash) +
+                                                        " context_epoch=" + std::to_string(owner->contextEpoch);
+            require(outcome.flags == (receiver ? FJ_RENDER_DEFERRED_DIR_ERROR : 0u) &&
+                        std::string_view(message.data(), error.length) == expected,
+                    "raw reporter returns producing route and medium provenance with the expected DIR outcome");
             read_image(compared);
             require(compared == produced, "failed reporter preserves the entire pitched destination");
             const std::lock_guard<std::mutex> lock(owner->m);

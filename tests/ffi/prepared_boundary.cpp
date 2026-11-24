@@ -352,8 +352,35 @@ namespace JuicerCudaTest {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
-        if (contract)
-            check_scan_readback(runtime.cuda, context, frame, submission, prepared);
+        if (contract) {
+            check_scan_readback(runtime.cuda, context, frame, submission, prepared, ReadbackProbe::Inline);
+            const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
+            const bool receiver = Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive;
+            auto alternateParams = params;
+            alternateParams.values.dir_couplers.active = receiver;
+            alternateParams.values.scanner_lens_blur_sigma_px = 0.5;
+            const auto alternateOwner = prepare_state(runtime.assets, alternateParams, status, diagnostic);
+            if (status.category != FJ_STATUS_SUCCESS)
+                return false;
+            FjPreparedStateView alternateState{};
+            if (alternateOwner->view(alternateState, error).category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(message.data(), error.length);
+                return false;
+            }
+            if (alternateState.dir_recipe.hash != (receiver ? dir.hash : 0) || alternateState.scanner_post_effects.lens_blur_radius <= 0) {
+                diagnostic = "alternate scanner fixture failed to resolve lens blur and its DIR binding";
+                return false;
+            }
+            FjPreparedHostData alternate{};
+            bind_state(alternateState, alternate);
+            alternate.auto_exposure = prepared.auto_exposure;
+            if (receiver)
+                alternate.spatial_dir = prepared.spatial_dir;
+            const auto alternateDigests = JuicerCuda::ResourceManager::make_key_digests(
+                alternateState.upload_core_hash, alternateState.dir_recipe.hash, alternateState.scanner_hash, meter.hash);
+            const FjSubmission alternateSubmission{instanceToken, submission.frame_token, submission.submission_id, alternateDigests.uploadCoreHash, alternateDigests.dirHash, alternateDigests.scannerHash, alternateDigests.autoExposureHash};
+            check_scan_readback(runtime.cuda, context, frame, alternateSubmission, alternate, receiver ? ReadbackProbe::FusedDir : ReadbackProbe::Plane);
+        }
         if (lifetime)
             check_prepared_state_lifetime(owner, runtime.assets, runtime.cuda, context, frame, submission, prepared, &error, lifetimeCase);
         else if (!render_held_state(runtime.assets, runtime.cuda, *owner, state, frame, submission, state.recipe_hash, error, diagnostic))

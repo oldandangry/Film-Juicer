@@ -38,6 +38,8 @@ namespace JuicerCuda::ScanDensityCaptureTest {
     // Installs one observation for the calling host thread and returns the prior
     // descriptor. The caller owns allocation, stream ordering, and context checks.
     DensityCapture swap_density_capture(DensityCapture capture) noexcept;
+    unsigned plane_scan_launches() noexcept;
+    unsigned fused_dir_scan_launches() noexcept;
 
 } // namespace JuicerCuda::ScanDensityCaptureTest
 

@@ -4843,6 +4843,9 @@ int main(int argc, char** argv) try {
                 JuicerTests::list_case(JuicerCudaTest::kGrainDispatchCaller, id);
             for (const auto id : JuicerCudaTest::kScanReadbackCases)
                 JuicerTests::list_case(JuicerCudaTest::kScanReadbackCaller, id);
+            const auto* alternate = std::string_view(argv[2]).starts_with("negative-") ? JuicerCudaTest::kPlaneScanReadbackCaller : JuicerCudaTest::kDirScanReadbackCaller;
+            for (const auto id : JuicerCudaTest::kScanReadbackCases)
+                JuicerTests::list_case(alternate, id);
             return 0;
         }
         if (argc == 4 && std::string_view(argv[1]) == "--state-lifetime") {
