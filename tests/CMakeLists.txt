@@ -974,6 +974,10 @@ add_dependencies(JuicerProcessorReferenceProbe juicer_test_resources)
 add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
 add_test(NAME Ofx.Gpu.ProcessorReferenceInputs COMMAND JuicerProcessorReferenceProbe --processor-reference-inputs)
 set_tests_properties(Ofx.Gpu.ProcessorReferenceInputs PROPERTIES LABELS "gpu;reference" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+string(REGEX REPLACE "-debug$" "-release" juicer_processor_scanner_preset "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Ofx.Gpu.ProcessorScannerReferenceInputs COMMAND JuicerProcessorReferenceProbe --processor-scanner-reference-inputs
+    "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/processor-scanner-${juicer_processor_scanner_preset}.json")
+set_tests_properties(Ofx.Gpu.ProcessorScannerReferenceInputs PROPERTIES LABELS "gpu;reference" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
@@ -989,6 +993,7 @@ target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings juicer_
 target_compile_definitions(juicer_render_test_objects PRIVATE JUICER_CUDA_RENDER_TEST_HOOK=1)
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp ofx/render_assertions.cpp
+    ofx/scanner_reference_capture.cpp ../src/Cuda/Scan/JuicerCudaScanPipeline.cu
     ofx/instance_host.cpp ../native/ofx_exports.cpp
     ffi/spatial_optics_fixture.cpp
     ffi/prepared_frame_fixture.cpp
@@ -1033,6 +1038,7 @@ endif()
 target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
     JUICER_PINNED_UPLOAD_TEST_HOOK=1
     JUICER_CUDA_RENDER_TEST_HOOK=1
+    JUICER_SCAN_DENSITY_CAPTURE_TEST=1
     JUICER_PREPARED_BOUNDARY_TEST=1
     JUICER_TEST_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}"
     JUICER_PROCESSOR_REFERENCE_PATH="${juicer_processor_reference}"
@@ -1048,8 +1054,10 @@ foreach(prepared_case IN ITEMS negative-direct negative-print positive-direct po
     set_tests_properties("Ffi.Gpu.PreparedBoundary.${prepared_case}" PROPERTIES
         LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 endforeach()
+set_property(TEST Ffi.Gpu.PreparedBoundary.negative-print APPEND PROPERTY
+    ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/print-preflash")
 
-foreach(render_case IN ITEMS negative-direct negative-print)
+foreach(render_case IN ITEMS negative-direct negative-print positive-direct positive-print)
     add_test(NAME "Ffi.Gpu.CudaRender.${render_case}"
         COMMAND JuicerPreparedBoundaryProbe --state-contract "${render_case}")
     set_tests_properties("Ffi.Gpu.CudaRender.${render_case}" PROPERTIES
@@ -1161,6 +1169,50 @@ else()
     set_property(TARGET JuicerOfxMeasurementModule APPEND PROPERTY LINK_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/measurement.exports")
 endif()
+
+if(TARGET film_juicer_rust_preview_replay)
+    set(spectral_replay_rust film_juicer_rust_preview_replay)
+    set(spectral_replay_variant preview)
+    set(spectral_replay_features "\"test-support\",\"grain-preview\"")
+else()
+    set(spectral_replay_rust film_juicer_rust_test_support)
+    set(spectral_replay_variant ordinary)
+    set(spectral_replay_features "\"test-support\"")
+endif()
+set(spectral_replay_contents "${CMAKE_CURRENT_BINARY_DIR}/spectral-replay/${spectral_replay_variant}/Contents")
+target_compile_definitions(JuicerHalationComparisonProbe PRIVATE JUICER_SPECTRAL_REPLAY_CAPTURE=1)
+target_link_libraries(JuicerHalationComparisonProbe PRIVATE CUDA::cuda_driver)
+add_library(JuicerOfxSpectralReplayModule MODULE EXCLUDE_FROM_ALL
+    ../native/ofx_exports.cpp benchmarks/spectral_replay_exports.cpp)
+target_link_libraries(JuicerOfxSpectralReplayModule PRIVATE
+    juicer_core ${spectral_replay_rust} juicer_dependencies)
+set_target_properties(JuicerOfxSpectralReplayModule PROPERTIES
+    PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX OUTPUT_NAME "juicer-spectral-replay"
+    LIBRARY_OUTPUT_DIRECTORY "${spectral_replay_contents}/${JUICER_ARCH_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${spectral_replay_contents}/${JUICER_ARCH_DIR}")
+add_dependencies(JuicerOfxSpectralReplayModule bundle-archive)
+# Refresh Resources even when the link is already up to date.
+add_custom_target(juicer_spectral_replay_resources
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${JUICER_STAGE_PREFIX}/${JUICER_CONTENTS}/Resources" "${spectral_replay_contents}/Resources"
+    DEPENDS bundle-archive VERBATIM)
+add_dependencies(JuicerOfxSpectralReplayModule juicer_spectral_replay_resources)
+if(WIN32)
+    add_custom_command(TARGET JuicerOfxSpectralReplayModule POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${JUICER_cudart64_13.dll}" "${JUICER_cufft64_12.dll}" ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+            "${spectral_replay_contents}/${JUICER_ARCH_DIR}" VERBATIM)
+else()
+    set_property(TARGET JuicerOfxSpectralReplayModule PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    target_link_options(JuicerOfxSpectralReplayModule PRIVATE
+        -static-libstdc++ -static-libgcc
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/spectral_replay.exports"
+        "LINKER:--exclude-libs,ALL" "LINKER:--no-undefined")
+    set_property(TARGET JuicerOfxSpectralReplayModule APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/spectral_replay.exports")
+endif()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/spectral-replay/artifacts.json" CONTENT
+    "{\"variant\":\"${spectral_replay_variant}\",\"module\":\"$<TARGET_FILE:JuicerOfxSpectralReplayModule>\",\"native_archive\":\"$<TARGET_FILE:juicer_core>\",\"rust_archive\":\"$<TARGET_FILE:${spectral_replay_rust}>\",\"rust_features\":[${spectral_replay_features}],\"resources\":\"${spectral_replay_contents}/Resources\"}\n")
 
 add_executable(JuicerOfxMeasurementTests benchmarks/observation_test.cpp
     benchmarks/observation.cpp benchmarks/observation_contract.cpp benchmarks/observation_c11.c)

@@ -59,6 +59,8 @@ namespace {
     void require_live_identity_record(const Json& actual, ArchivedColorRecipe archived, const std::string& id, const bool negativeControl) {
         const auto differences_for = [archived](const Json& observed) {
             auto record = archived.record;
+            // The frozen Release products still include the retired cube descriptor.
+            record.erase("scanner_descriptor");
             for (const std::size_t index : {0U, 1U, 2U, 3U, 4U, 6U}) {
                 require(observed.at("hashes").at(index).is_number_unsigned() && record.at("hashes").at(index).is_number_unsigned(),
                         "surviving recipe hash has its unsigned type");

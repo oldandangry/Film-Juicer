@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import statistics
+import struct
 import subprocess
 import sys
 import tarfile
@@ -24,6 +25,25 @@ verify = importlib.import_module("verify")
 qualification = importlib.import_module("qualification")
 
 ROWS = ("negative-direct", "negative-print", "negative-direct-grain", "negative-print-grain")
+SCANNER_PAIRED_ROWS = {
+    **{
+        f"ordinary-negative-{route}-current-{size}": ("ordinary", route, "materialized", geometry)
+        for route in ("direct", "print")
+        for size, geometry in (("1080p", (1920, 1080)), ("4k", (3840, 2160)))
+    },
+    **{
+        f"ordinary-negative-{route}-{schedule}-4k": ("ordinary", route, schedule, (3840, 2160))
+        for route in ("direct", "print")
+        for schedule in ("monolithic", "fused-dir")
+    },
+    **{
+        f"preview-negative-{route}-film-v1-full-36": ("preview", route, "materialized", (4832, 2016))
+        for route in ("direct", "print")
+    },
+    "preview-negative-direct-film-v1-full-8-high": ("preview", "direct", "materialized", (4832, 2016)),
+    "preview-negative-direct-film-v1-full-11-66-high": ("preview", "direct", "materialized", (4832, 2016)),
+    "preview-negative-direct-film-v1-quarter-8-high": ("preview", "direct", "materialized", (1208, 504)),
+}
 HALATION_EXTENTS = {
     f"halation-{size}-{route}{spatial}": extent
     for size, extent in (("1080p", (1920, 1080)), ("uhd", (3840, 2160)))
@@ -1819,27 +1839,619 @@ def scanner_capacity(args):
                 )
             )
             environment = {**os.environ, "FJ_SCANNER_OBSERVER": str(settings)}
-            debugger_environment = inputs.get("debugger_environment", {})
-            if set(debugger_environment) - {"PATH", "PYTHONHOME"}:
-                raise ValueError("unsupported scanner debugger environment")
-            if os.name == "nt" and debugger_environment:
-                # The Python version embedded in LLDB does not own the process supervisor.
-                def quote(value):
-                    return "'" + str(value).replace("'", "''") + "'"
-
-                script = [f"$env:{key} = {quote(value)}" for key, value in debugger_environment.items()]
-                script.extend(("& " + " ".join(map(quote, command)), "exit $LASTEXITCODE"))
-                encoded = base64.b64encode("\n".join(script).encode("utf-16-le")).decode("ascii")
-                shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-                command = [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
-            else:
-                environment.update(debugger_environment)
+            command, environment = scanner_debugger_environment(command, environment, inputs)
             run.command("capacity", command, env=environment)
             report["capacity"] = scanner_capacity_receipt(output, receipt, module, resources)
             if {name: execution.digest(path) for name, path in files.items()} != hashes or inventory(
                 resources
             ) != resource_hashes:
                 raise ValueError("scanner capacity inputs changed during the run")
+            report["status"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
+        finally:
+            execution.write_json(directory / "result.json", report)
+
+
+def scanner_debugger_environment(command, environment, inputs):
+    debugger_environment = inputs.get("debugger_environment", {})
+    if set(debugger_environment) - {"PATH", "PYTHONHOME"}:
+        raise ValueError("unsupported scanner debugger environment")
+    if os.name != "nt" or not debugger_environment:
+        return command, {**environment, **debugger_environment}
+
+    # The Python version embedded in LLDB does not own the process supervisor.
+    def quote(value):
+        return "'" + str(value).replace("'", "''") + "'"
+
+    script = [f"$env:{key} = {quote(value)}" for key, value in debugger_environment.items()]
+    script.extend(("& " + " ".join(map(quote, command)), "exit $LASTEXITCODE"))
+    encoded = base64.b64encode("\n".join(script).encode("utf-16-le")).decode("ascii")
+    shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    return [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], environment
+
+
+def spectral_replay_poll(predecessor, reporter):
+    held = predecessor["retained"]
+    poll = reporter["poll"]
+    query = {"event": held["event"], "status": 0, "completed_flag": 0}
+    if (
+        not held["success"]
+        or not held["handoff"]
+        or not held["event"]
+        or not held["host"]
+        or held["producer"][:2] != [predecessor["submission"], predecessor["token"]]
+        or any(held[key] != poll[key] for key in ("resources", "context", "device", "epoch"))
+        or predecessor["context"] != held["context"]
+        or reporter["context"] != held["context"]
+        or held["epoch_at_production"] != held["epoch"]
+        or reporter["stream"] != predecessor["stream"]
+        or reporter["stream"] != poll["stream"]
+        or reporter["prepare"] != {"stream": reporter["stream"], "outcome": 0}
+        or reporter["submission"] != predecessor["submission"] + 1
+        or reporter["token"] == predecessor["token"]
+        or poll["before"][0] == poll["before"][1]
+        or poll["after"][0] != poll["after"][1]
+        or poll["entry"] != [held["host"], held["event"]]
+        or poll["queries"] != [query]
+        or held["event"] not in poll["destroyed"]
+        or not poll["success"]
+        or poll["status"] != 0
+    ):
+        raise ValueError("spectral replay did not consume the exact preceding owner event and zero flag")
+    return {"predecessor": held, "reporter": reporter["submission"], "poll": poll}
+
+
+def read_spectral_pilot_child(directory, settings, companion):
+    host = json.loads((directory / "receipt.json").read_text(encoding="utf-8"))
+    observation = json.loads(Path(settings["receipt"]).read_text(encoding="utf-8"))
+    frames = observation["frames"]
+    module = Path(settings["module"])
+    if (
+        host["schema"] != "juicer-ofx-spectral-seed-replay-v1"
+        or observation["schema"] != "juicer-scanner-replay-observation-v2"
+        or Path(host["module"]).resolve() != module
+        or Path(host["resources"]).resolve() != module.parent.parent / "Resources"
+        or any(host[key] != settings[key] or observation[key] != settings[key] for key in ("variant", "grain", "route"))
+        or host["replay_export"] is not companion
+        or (companion and host["replay_tokens"] != observation["tokens"])
+        or not all(host[key] is True for key in ("context_restored", "grain_changes_output", "fraction_changes_output"))
+        or observation["errors"]
+        or not observation["exited"]
+        or observation["inferior_exit"] != 0
+        or observation["pending_returns"]
+        or len(frames) != 4
+        or len(host["rows"]) != 4
+    ):
+        raise ValueError("spectral replay child has a different identity or incomplete outcome")
+
+    width, height = 64, 32
+    pitch = (width * 4 + 5) * 4
+    if host["bounds"] != [0, 0, width, height] or host["canonical_rod"] != host["bounds"] or host["row_bytes"] != pitch:
+        raise ValueError("spectral replay host geometry differs")
+    source = (directory / "source-pitched.f32").read_bytes()
+    if len(source) != height * pitch:
+        raise ValueError("spectral replay source has the wrong pitched extent")
+    alpha = tuple(
+        struct.unpack_from("<I", source, y * pitch + x * 16 + 12)[0] for y in range(height) for x in range(width)
+    )
+    rasters = {"source": hashlib.sha256(source).hexdigest()}
+    words = []
+    densities = {}
+    names = ("grain-off", "integral", "fractional", "reporting")
+    expected_route = int(settings["route"] == "negative-print")
+    active_model = "film_grain" if settings["grain"] == "film-v1" else "current_grain"
+    inactive_model = "current_grain" if active_model == "film_grain" else "film_grain"
+    for index, (phase, frame_time, host_row, frame) in enumerate(
+        zip(names, (0.0, 0.0, 0.5, 1.0), host["rows"], frames)
+    ):
+        time_bits = struct.unpack("<Q", struct.pack("<d", frame_time))[0]
+        controls = host_row["controls"]
+        if (
+            frame["tokens"] != observation["tokens"]
+            or frame["thread"] != frames[0]["thread"]
+            or frame["context"] != frames[0]["context"]
+            or frame["stream"] != frames[0]["stream"]
+            or frame["outcome"] != [0, 0, 0, 0]
+            or frame["index"] != index
+            or frame["route"] != expected_route
+            or frame["token"] != int(frame_time)
+            or frame["time_bits"] != time_bits
+            or host_row["time_bits"] != time_bits
+            or host_row["pass"] != phase
+            or host_row["ofx_status"] != 0
+            or host_row["source_image_releases"] != 1
+            or host_row["output_image_releases"] != 1
+            or not all(
+                host_row[key] is True
+                for key in (
+                    "alpha_preserved",
+                    "padding_preserved",
+                    "source_preserved",
+                    "finite_output",
+                    "readback_complete",
+                    "stream_completed",
+                    "context_preserved",
+                )
+            )
+            or controls["GrainActive"] != [int(index > 0)]
+            or controls["GlareActive"] != [0]
+            or (
+                settings["variant"] == "preview"
+                and controls["GrainModel"] != ["film_v1" if active_model == "film_grain" else "current"]
+            )
+            or frame[inactive_model] is not None
+            or bool(frame[active_model]) != bool(index)
+            or (index and frame["launches"] != ["spectral_launch"])
+        ):
+            raise ValueError(f"spectral replay {phase} controls, native draw or guards differ")
+        filename = phase + ".f32"
+        if host_row["output_file"] != filename:
+            raise ValueError(f"spectral replay {phase} raster is missing")
+        pixels = (directory / filename).read_bytes()
+        packed = struct.unpack(f"<{width * height * 4}I", pixels)
+        if packed[3::4] != alpha:
+            raise ValueError(f"spectral replay {phase} changed alpha")
+        rasters[phase] = hashlib.sha256(pixels).hexdigest()
+        words.append(frame[active_model])
+        if index:
+            declaration = frame["density"]
+            receipt = Path(settings["receipt"])
+            expected = f"{receipt.stem}-density-{index}.f32"
+            if declaration["file"] != expected or (declaration["width"], declaration["height"]) != (width, height):
+                raise ValueError(f"spectral replay {phase} did not bind the actual scanner density image")
+            density = (receipt.parent / expected).read_bytes()
+            digest = hashlib.sha256(density).hexdigest()
+            if (
+                len(density) != width * height * 3 * 4
+                or digest != declaration["sha256"]
+                or any(not math.isfinite(lane) for (lane,) in struct.iter_unpack("<f", density))
+            ):
+                raise ValueError(f"spectral replay {phase} density words missing or altered")
+            densities[phase] = digest
+    if words[1][-1] != 0 or words[2][-1] != 0x3F000000 or words[1][0] != words[2][0] or words[2][0] == words[2][1]:
+        raise ValueError("spectral replay temporal grain words differ")
+    return {
+        "controls": [row["controls"] for row in host["rows"]],
+        "rasters": rasters,
+        "tokens": observation["tokens"],
+        "grain_words": words,
+        "density_words": densities,
+        "terminal_poll": spectral_replay_poll(*frames[-2:]),
+    }
+
+
+def spectral_seed_pilot(args):
+    if args.preset.startswith("windows-") != (os.name == "nt"):
+        raise ValueError("run spectral replay on its native platform")
+    build = ROOT / "out/build" / args.preset
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
+    observer = Path(__file__).with_name("observe_seed.py").resolve(strict=True)
+    run = execution.NativeRun(ROOT, directory)
+    with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
+        configuration = verify.cache_values(build)
+        preview, _ = qualification.read_preview_and_replay_configuration(configuration)
+        variant = "preview" if preview else "ordinary"
+        if configuration["BUILD_TESTING"] != "ON" or (not preview and args.grain != "current"):
+            raise ValueError("spectral replay requires testing ON and matching configured grain model")
+        _, built, staged = qualification.production_module_paths(args.preset, configuration)
+        product = Path(staged).resolve(strict=True)
+        manifest = build / "tests/spectral-replay/artifacts.json"
+        companion = json.loads(manifest.read_text(encoding="utf-8"))
+        archive = Path(companion["rust_archive"]).resolve(strict=True)
+        expected_features = ["test-support", "grain-preview"] if preview else ["test-support"]
+        rust_cache = build / "cargo/test-support"
+        if preview:
+            rust_cache /= "preview-replay"
+        if (
+            companion["variant"] != variant
+            or companion["rust_features"] != expected_features
+            or not archive.is_relative_to(rust_cache)
+        ):
+            raise ValueError("spectral replay archive variant differs from configured product")
+        modules = {"product": product, "companion": Path(companion["module"]).resolve(strict=True)}
+        resources = {side: module.parent.parent / "Resources" for side, module in modules.items()}
+        if (
+            modules["companion"] == product
+            or resources["companion"] != Path(companion["resources"])
+            or inventory(resources["product"]) != inventory(resources["companion"])
+        ):
+            raise ValueError("spectral replay requires distinct modules with matching Resources")
+        suffix = ".exe" if os.name == "nt" else ""
+        driver = (build / "tests/bin" / ("JuicerHalationComparisonProbe" + suffix)).resolve(strict=True)
+        debugger = Path(inputs["debugger"]).resolve(strict=True)
+        products = {side: inputs[side] for side in modules}
+        symbols = {
+            side: Path(products[side]["symbols"]).resolve(strict=True) if os.name == "nt" else module
+            for side, module in modules.items()
+        }
+        files = {
+            "driver": driver,
+            "debugger": debugger,
+            "observer": observer,
+            "companion_manifest": manifest,
+            "companion_rust_archive": archive,
+            "native_archive": Path(companion["native_archive"]),
+            **modules,
+            **{side + "_symbols": path for side, path in symbols.items()},
+        }
+        hashes = {name: execution.digest(path) for name, path in files.items()}
+        resource_hashes = inventory(resources["product"])
+        if hashes["product"] != execution.digest(Path(built)) or any(
+            hashes[side] != products[side]["module_sha256"]
+            or hashes[side + "_symbols"] != products[side]["symbols_sha256"]
+            for side in modules
+        ):
+            raise ValueError("spectral replay staged bytes or symbols differ from observer inputs")
+        report = {
+            "schema": "juicer-ofx-spectral-seed-pilot-v2",
+            "status": "failed",
+            "preset": args.preset,
+            "variant": variant,
+            "route": args.route,
+            "grain": args.grain,
+            "inputs": {name: {"path": str(path), "sha256": hashes[name]} for name, path in files.items()},
+            "resources": resource_hashes,
+            "gpu_lease": str(gpu.path),
+            "commands": run.commands,
+        }
+        directory.mkdir(parents=False, exist_ok=False)
+        try:
+            captures = {}
+            for side, module in modules.items():
+                output = directory / side
+                output.mkdir()
+                settings_path = directory / f"{side}-observer.json"
+                settings = {
+                    "mode": "replay",
+                    "variant": variant,
+                    "grain": args.grain,
+                    "route": args.route,
+                    "module": str(module),
+                    "symbols": str(symbols[side]) if os.name == "nt" else None,
+                    "uuid": products[side]["uuid"],
+                    "points": products[side]["points"],
+                    "layout": products[side]["layout"],
+                    "trace": str(directory / f"{side}-observations.jsonl"),
+                    "receipt": str(directory / f"{side}-draw.json"),
+                }
+                execution.write_json(settings_path, settings)
+                command = [debugger, "--batch"]
+                if os.name != "nt":
+                    command.extend(("-o", "settings set target.disable-aslr false"))
+                command.extend(
+                    (
+                        "-o",
+                        f'command script import "{observer.as_posix()}"',
+                        "-o",
+                        "script observe_seed.install(lldb.debugger)",
+                        "-o",
+                        "run",
+                        "-o",
+                        "script observe_seed.finish(lldb.debugger)",
+                        "--",
+                        driver,
+                        "--spectral-seed-pilot",
+                        module,
+                        output,
+                        variant,
+                        args.grain,
+                        args.route,
+                    )
+                )
+                if side == "companion":
+                    command.append(directory / "product-draw.json")
+                environment = {**os.environ, "FJ_SCANNER_OBSERVER": str(settings_path)}
+                command, environment = scanner_debugger_environment(command, environment, inputs)
+                try:
+                    run.command(side, command, env=environment)
+                except subprocess.CalledProcessError as error:
+                    raise ValueError(
+                        f"spectral replay {side} exited {error.returncode}. See {directory / (side + '.log')}"
+                    ) from error
+                captures[side] = read_spectral_pilot_child(output, settings, side == "companion")
+            report["captures"] = captures
+            if any(
+                captures["companion"][key] != captures["product"][key]
+                for key in ("controls", "rasters", "tokens", "grain_words", "density_words")
+            ):
+                raise ValueError("spectral replay did not reproduce exact source, control, seed and output words")
+            if {name: execution.digest(path) for name, path in files.items()} != hashes or any(
+                inventory(path) != resource_hashes for path in resources.values()
+            ):
+                raise ValueError("spectral replay inputs changed during the pair")
+            report["status"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
+        finally:
+            execution.write_json(directory / "result.json", report)
+
+
+def read_scanner_timing_arm(host, tail, workload, mode, arm):
+    ready = tail["ready"]
+    predecessor = tail["predecessor"]
+    [reporter] = tail["frames"]
+    variant, route, schedule, geometry = SCANNER_PAIRED_ROWS[workload]
+    row = host["scanner_paired"]
+    expected_id = "com.juicer.Juicer" + (".GrainPreview" if variant == "preview" else "")
+    witnessed_route = "NegativePrintScan" if route == "print" else "NegativeDirectScan"
+    last = 2 if mode == "check" else 40
+    phases = ["cold", *(["warmup"] * (1 if mode == "check" else 10)), *(["warm"] * (1 if mode == "check" else 30))]
+    controls = host["controls"]
+    life = host["lifecycle"]
+    if (
+        tail["schema"] != "juicer-scanner-measured-tail-v1"
+        or tail["errors"]
+        or tail["pending_returns"]
+        or tail["exit"] != 0
+        or tail["child_exit"] != 0
+        or host["status"] != "passed"
+        or host["mode"] != mode
+        or host["lane"] != "shipping"
+        or host["campaign"] != "scanner-paired"
+        or host["workload"] != workload
+        or row["variant"] != variant
+        or row["product_id"] != expected_id
+        or row["route"] != witnessed_route
+        or row["expected_schedule"] != schedule
+        or row["geometry"] != list(geometry)
+        or row["natural_grain"] != (schedule == "materialized")
+        or row.get("authored_grid") != (17 if arm == "cubic" else None)
+        or controls["ScanRoute"] != [witnessed_route]
+        or controls["GrainActive"] != [int(row["natural_grain"])]
+        or (route == "print" and controls["GlareActive"] != [0])
+        or host["tail_ready"] != ready
+        or ready["ordinal"] != last
+        or life["effects_created"] != 1
+        or life["effects_destroyed"] != 1
+        or not life["context_restored"]
+        or not life["module_closed"]
+        or life["callback_error"]
+        or host["edits"]
+        or [sample["phase"] for sample in host["renders"]] != phases
+    ):
+        raise ValueError(f"{arm} {workload} timing identity, lifecycle or row membership differs")
+    result = host["tail_reporter"]
+    if (
+        result["token"] != last + 1
+        or result["status"] != 0
+        or not result["output_guard_valid"]
+        or not result["releases_valid"]
+        or any(ready[k] != result[k] for k in ("context", "stream", "effect", "instance_data"))
+        or predecessor["route"] != int(route == "print")
+        or reporter["instance"] != predecessor["instance"]
+        or reporter["native_handle"] != predecessor["handle"]
+        or reporter["submission"] != predecessor["next_id"]
+        or reporter["token"] != result["token"]
+        or reporter["route"] != predecessor["route"]
+        or reporter["outcome"] != [0, 0, 0, 0]
+    ):
+        raise ValueError(f"{arm} {workload} reporter does not match measured owner and latch")
+    held = {**predecessor, "success": True, "handoff": True}
+    if not held["producer"]:
+        # The cubic entry identifies the preceding request by its sole retained event and live Rust latch.
+        held["producer"] = [predecessor["latch_id"], predecessor["frame_token"]]
+    terminal = spectral_replay_poll(
+        {
+            "retained": held,
+            "submission": predecessor["latch_id"],
+            "token": predecessor["frame_token"],
+            "context": ready["context"],
+            "stream": ready["stream"],
+        },
+        reporter,
+    )
+    for index, sample in enumerate(host["renders"]):
+        if (
+            sample["frame_time"] != index
+            or sample["callback_status"] != 0
+            or not sample["releases_valid"]
+            or not sample["context_preserved"]
+            or not nonnegative(sample["stream_interval_ms"])
+            or not isinstance(sample["completed_render_ns"], int)
+            or sample["completed_render_ns"] <= 0
+            or (sample["output_checked"] and sample["output_valid"] is not True)
+        ):
+            raise ValueError(f"{arm} {workload} incomplete measured render {index}")
+    return {
+        "terminal": terminal,
+        "source_digest": host["source_digest"],
+        "device": {k: host["device"][k] for k in ("name", "ordinal", "driver_version")},
+        "controls": controls,
+        "cold": host["renders"][0],
+        "memory": host["memory"],
+        "frame_samples": [sample for sample in host["renders"] if sample["phase"] == "warm"],
+    }
+
+
+def scanner_paired(args):
+    if args.preset.startswith("windows-") != (os.name == "nt"):
+        raise ValueError("run scanner paired timing on its native platform")
+    if len(set(args.workloads)) != len(args.workloads):
+        raise ValueError("scanner paired workload membership contains duplicates")
+    if (args.mode == "measure") != (args.check_result is not None):
+        raise ValueError("scanner paired timing requires prior check-mode evidence")
+    build = ROOT / "out/build" / args.preset
+    directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
+    inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
+    inputs_sha = execution.digest(args.inputs)
+    driver = (
+        build / "tests/bin" / ("JuicerOfxMeasurement.exe" if os.name == "nt" else "JuicerOfxMeasurement")
+    ).resolve(strict=True)
+    observer = Path(__file__).with_name("observe_seed.py").resolve(strict=True)
+    debugger = Path(inputs["debugger"]).resolve(strict=True)
+    run = execution.NativeRun(ROOT, directory)
+    if args.check_result:
+        checked = json.loads(args.check_result.read_text(encoding="utf-8"))
+        if (
+            checked["schema"] != "juicer-scanner-paired-v1"
+            or checked["mode"] != "check"
+            or checked["preset"] != args.preset
+            or checked["inputs_sha256"] != inputs_sha
+            or checked["status"] != "passed"
+            or not set(args.workloads) <= checked["workloads"].keys()
+        ):
+            raise ValueError("check-mode evidence is outside this campaign scope")
+    report = {
+        "schema": "juicer-scanner-paired-v1",
+        "status": "failed",
+        "preset": args.preset,
+        "mode": args.mode,
+        "inputs_sha256": inputs_sha,
+        "workloads": {},
+        "commands": run.commands,
+    }
+    with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
+        if (
+            execution.digest(driver) != inputs["driver_sha256"]
+            or execution.digest(debugger) != inputs["debugger_sha256"]
+        ):
+            raise ValueError("scanner timing driver or debugger identity differs")
+        report["gpu_lease"] = str(gpu.path)
+        report["observer_sha256"] = execution.digest(observer)
+        if args.check_result and checked["observer_sha256"] != report["observer_sha256"]:
+            raise ValueError("scanner timing observer changed since check mode")
+        directory.mkdir(parents=False, exist_ok=False)
+        try:
+            all_gates = True
+            for workload in args.workloads:
+                variant, _, schedule, _ = SCANNER_PAIRED_ROWS[workload]
+                arms = inputs["variants"][variant]
+                qualification_row = inputs["row_bindings"][workload]
+                if (
+                    any(
+                        qualification_row[arm]["module_sha256"] != arms[arm]["module_sha256"]
+                        or qualification_row[arm]["schedule"] != schedule
+                        for arm in ("cubic", "spectral")
+                    )
+                    or qualification_row["cubic"]["grid"] != 17
+                ):
+                    raise ValueError(f"{workload} is missing the actual schedule and cubic grid qualification")
+                row_dir = directory / workload
+                row_dir.mkdir()
+                pairs = (
+                    [("cubic", "spectral")]
+                    if args.mode == "check"
+                    else [
+                        ("cubic", "cubic"),
+                        ("cubic", "cubic"),
+                        ("cubic", "cubic"),
+                        ("cubic", "spectral"),
+                        ("spectral", "cubic"),
+                        ("cubic", "spectral"),
+                    ]
+                )
+                results = []
+                binding = None
+                for pair_index, pair in enumerate(pairs):
+                    runs = []
+                    for ordinal, arm in enumerate(pair):
+                        declaration = arms[arm]
+                        module = Path(declaration["module"]).resolve(strict=True)
+                        resources = (module.parent.parent / "Resources").resolve(strict=True)
+                        symbols = Path(declaration["symbols"]).resolve(strict=True) if os.name == "nt" else module
+                        if (
+                            execution.digest(module) != declaration["module_sha256"]
+                            or execution.digest(symbols) != declaration["symbols_sha256"]
+                            or inventory(resources) != inputs["variants"][variant]["resources"]
+                        ):
+                            raise ValueError(f"{arm} {workload} module, symbols or Resources differ")
+                        name = f"{pair_index}-{ordinal}-{arm}"
+                        arm_dir = row_dir / name
+                        arm_dir.mkdir()
+                        settings_path = arm_dir / "observer.json"
+                        native_receipt = arm_dir / "driver.json"
+                        tail_receipt = arm_dir / "tail.json"
+                        ready = arm_dir / "ready.json"
+                        release = arm_dir / "release.json"
+                        command = [
+                            driver,
+                            "--campaign",
+                            "scanner-paired",
+                            "--mode",
+                            args.mode,
+                            "--lane",
+                            "shipping",
+                            "--workload",
+                            workload,
+                            "--module",
+                            module,
+                            "--resources",
+                            resources,
+                            "--output",
+                            native_receipt,
+                            "--tail-run",
+                            args.run_id,
+                            "--tail-arm",
+                            name,
+                            "--tail-ready",
+                            ready,
+                            "--tail-release",
+                            release,
+                        ]
+                        execution.write_json(
+                            settings_path,
+                            {
+                                "mode": "tail",
+                                "run": args.run_id,
+                                "arm": name,
+                                "last_ordinal": 2 if args.mode == "check" else 40,
+                                "command": list(map(str, command)),
+                                "ready": str(ready),
+                                "release": str(release),
+                                "receipt": str(tail_receipt),
+                                "trace": str(arm_dir / "native.jsonl"),
+                                "module": str(module),
+                                "symbols": str(symbols) if os.name == "nt" else None,
+                                "uuid": declaration["uuid"],
+                                "points": declaration["points"],
+                                "layout": declaration["layout"],
+                            },
+                        )
+                        command = [
+                            debugger,
+                            "--batch",
+                            "-o",
+                            f'command script import "{observer.as_posix()}"',
+                            "-o",
+                            "script observe_seed.tail(lldb.debugger)",
+                        ]
+                        environment = {**os.environ, "FJ_SCANNER_OBSERVER": str(settings_path)}
+                        command, environment = scanner_debugger_environment(command, environment, inputs)
+                        run.command(f"{workload}-{name}", command, env=environment)
+                        host = json.loads(native_receipt.read_text(encoding="utf-8"))
+                        tail = json.loads(tail_receipt.read_text(encoding="utf-8"))
+                        item = read_scanner_timing_arm(host, tail, workload, args.mode, arm)
+                        same_inputs = {key: item[key] for key in ("source_digest", "device", "controls")}
+                        if binding is not None and same_inputs != binding:
+                            raise ValueError(f"{workload} natural timing pair changed common workload inputs")
+                        binding = same_inputs
+                        samples = sorted(sample["completed_render_ns"] for sample in item["frame_samples"])
+                        runs.append(
+                            {
+                                "arm": arm,
+                                "receipt": str(arm_dir),
+                                "result": item,
+                                "median_ns": statistics.median(samples),
+                                "p90_ns": samples[math.ceil(0.9 * len(samples)) - 1],
+                            }
+                        )
+                    results.append(runs)
+                paired = []
+                for left, right in results:
+                    reference, candidate = (left, right) if left["arm"] == "cubic" else (right, left)
+                    if reference["arm"] == candidate["arm"]:
+                        continue
+                    paired.append({key: candidate[key] / reference[key] for key in ("median_ns", "p90_ns")})
+                gated = args.mode == "measure" and variant == "ordinary"
+                passed = not gated or all(all(value <= 1.05 for value in pair.values()) for pair in paired)
+                report["workloads"][workload] = {"gated": gated, "passed": passed, "pairs": results, "ratios": paired}
+                all_gates = all_gates and passed
+            if not all_gates:
+                raise ValueError("ordinary small-grid timing exceeds the 5% median or p90 limit")
             report["status"] = "passed"
         except Exception as error:
             report["error"] = str(error)
@@ -1873,6 +2485,19 @@ def main():
     command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
     command.add_argument("--run-id", required=True)
     command.add_argument("--inputs", required=True, type=Path)
+    command = sub.add_parser("spectral-seed-pilot")
+    command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
+    command.add_argument("--run-id", required=True)
+    command.add_argument("--inputs", required=True, type=Path)
+    command.add_argument("--route", required=True, choices=("negative-direct", "negative-print"))
+    command.add_argument("--grain", required=True, choices=("current", "film-v1"))
+    command = sub.add_parser("scanner-paired")
+    command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
+    command.add_argument("--run-id", required=True)
+    command.add_argument("--inputs", required=True, type=Path)
+    command.add_argument("--mode", required=True, choices=("check", "measure"))
+    command.add_argument("--workloads", required=True, nargs="+", choices=SCANNER_PAIRED_ROWS)
+    command.add_argument("--check-result", type=Path)
     command = sub.add_parser("prepare-reference")
     for option in ("preset", "revision", "source-dir", "build-dir", "overlay", "run-id"):
         command.add_argument("--" + option, required=True)
@@ -1885,6 +2510,10 @@ def main():
         g3_route(args)
     elif args.operation == "scanner-capacity":
         scanner_capacity(args)
+    elif args.operation == "spectral-seed-pilot":
+        spectral_seed_pilot(args)
+    elif args.operation == "scanner-paired":
+        scanner_paired(args)
     elif args.operation == "report":
         execution.write_json(Path(args.output), offline_report(args.runs))
     elif args.operation == "prepare-reference":

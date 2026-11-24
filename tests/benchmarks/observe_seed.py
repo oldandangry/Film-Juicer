@@ -1,15 +1,19 @@
-"""Observe a natural scanner capacity run in its symbol-matched LLDB target."""
+"""Observe scanner capacity and replay in symbol-matched LLDB targets."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import struct
+import subprocess
+import time
 
 import lldb
 
 
 WINDOWS = os.name == "nt"
 POINTS = {
-    "render": "fj_cuda_render",
+    "render": "CallScope::render",
     "spectral_launch": "scan_linear_density_rgb_kernel",
     "allocate": "allocate_owned_device",
     "upload": "enqueue_host_to_device_copy",
@@ -18,17 +22,26 @@ POINTS = {
     "query": "cudaEventQuery",
     "destroy_event": "cudaEventDestroy",
 }
+REPLAY_POINTS = {
+    **{name: POINTS[name] for name in ("render", "spectral_launch", "retain", "poll", "query", "destroy_event")},
+    "prepare": "prepare_scan_error_stage",
+    "current_grain": "juicer_cuda_apply_visual_grain",
+}
+TAIL_POINTS = {name: REPLAY_POINTS[name] for name in ("render", "prepare", "retain", "poll", "query", "destroy_event")}
 settings = {}
 entries = {}
 returns = {}
 frames = []
 active = {}
 errors = []
+tail_predecessor = None
 
 
-def record(event, **fields):
+def record(observation, **fields):
+    if "event" in fields:
+        fields["cuda_event"] = fields.pop("event")
     with Path(settings["trace"]).open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"event": event, **fields}, sort_keys=True) + "\n")
+        stream.write(json.dumps({"event": observation, **fields}, sort_keys=True) + "\n")
 
 
 def read(frame, address, size=8):
@@ -81,7 +94,11 @@ def fail(error):
 
 def on_return(frame, location, _):
     try:
-        returns.pop(location.GetBreakpoint().GetID())(frame)
+        breakpoint = location.GetBreakpoint()
+        breakpoint.SetEnabled(False)
+        handler = returns.pop(breakpoint.GetID(), None)
+        if handler is not None:
+            handler(frame)
     except Exception as error:
         fail(error)
     return False
@@ -111,6 +128,15 @@ def render(frame, thread):
         "uploads": [],
         "launches": [],
     }
+    if settings.get("mode") == "tail":
+        draw["native_handle"] = read(frame, argument(frame, shift) + settings["layout"]["call_scope_owner"])
+        draw["bindings"] = [read(frame, submission + offset) for offset in (24, 32, 40, 48)]
+    if settings.get("mode") == "replay":
+        # FjFrame and FjPreparedHostData layouts are fixed by the native ABI.
+        film = read(frame, prepared + 6704)
+        draw["tokens"] = [read(frame, raster + 0x90), draw["instance"], read(frame, raster + 0x98)]
+        draw["film_grain"] = [read(frame, film + offset, 4) for offset in (680, 684, 692)] if film else None
+        draw["current_grain"] = None
     frames.append(draw)
     active[thread] = draw
     record("render_binding", **draw)
@@ -147,6 +173,9 @@ def retain(frame, draw):
         "event": read(frame, event_ref),
         "epoch_at_production": read(frame, argument(frame, 3) + 16),
     }
+    if settings.get("mode") in ("replay", "tail"):
+        identity = argument(frame, 3)
+        held["producer"] = [read(frame, identity + offset) for offset in settings["layout"]["producer"]]
     draw["retained"] = held
 
     def finished(return_frame):
@@ -157,17 +186,42 @@ def retain(frame, draw):
     at_return(frame, finished)
 
 
+def readback_range(frame, address):
+    vector = address + settings["layout"]["pending_vector"]
+    return [read(frame, vector), read(frame, vector + 8)]
+
+
 def poll(frame, draw):
     if "poll" in draw:
         raise RuntimeError("more than one scan poll for a capacity render")
     polled = {**owner(frame, argument(frame, 0)), "stream": argument(frame, 1), "queries": [], "destroyed": []}
     draw["poll"] = polled
     result = argument(frame, 2)
+    if settings.get("mode") in ("replay", "tail"):
+        polled["before"] = readback_range(frame, polled["resources"])
+        begin, end = polled["before"]
+        if begin != end:
+            if end - begin != settings["layout"]["pending_size"]:
+                raise RuntimeError("expected one earlier replay readback on the held owner")
+            polled["entry"] = [read(frame, begin), read(frame, begin + 8)]
 
     def finished(return_frame):
         polled["success"] = register(return_frame, "rax") & 0xFF == 1
         polled["status"] = read(return_frame, result, 4)
+        if settings.get("mode") in ("replay", "tail"):
+            polled["after"] = readback_range(return_frame, polled["resources"])
         record("readback_poll", index=draw["index"], **polled)
+
+    at_return(frame, finished)
+
+
+def prepare(frame, draw):
+    stage = {"stream": argument(frame, 2)}
+    draw["prepare"] = stage
+
+    def finished(return_frame):
+        stage["outcome"] = register(return_frame, "rax") & 0xFF
+        record("scan_prepare", index=draw["index"], **stage)
 
     at_return(frame, finished)
 
@@ -187,6 +241,56 @@ def resource_operation(frame, draw, operation):
     at_return(frame, finished)
 
 
+def replay_density(frame, draw):
+    width, height = (argument(frame, index) & 0xFFFFFFFF for index in (1, 2))
+    planes = argument(frame, 3)
+    if (width, height) != (64, 32) or not planes or read(frame, planes + 24) or read(frame, planes + 32):
+        raise RuntimeError("replay scanner is not using the admitted clear materialized density image")
+    addresses = [read(frame, planes + offset) for offset in (0, 8, 16)]
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+    target = process.GetTarget()
+    entry = target.FindSymbols("fj_observe_replay_density", lldb.eSymbolTypeCode)
+    driver = str(target.GetExecutable())
+    locations = {
+        item.GetSymbol().GetStartAddress().GetLoadAddress(target)
+        for item in entry
+        if str(item.GetModule().GetFileSpec()) == driver
+    }
+    if len(locations) != 1 or not all(addresses):
+        raise RuntimeError("replay density pointers or isolated driver observer cannot be bound")
+    address = locations.pop()
+    count = width * height
+    operands = ", ".join(f"(void*){pointer}ull" for pointer in addresses)
+    expression = (
+        f"(unsigned long long)((void* (*)(void*, void*, void*, unsigned long long, void*, void*))0x{address:x})"
+        f"({operands}, {count}ull, (void*){draw['stream']}ull, (void*){draw['context']}ull)"
+    )
+    options = lldb.SBExpressionOptions()
+    options.SetIgnoreBreakpoints(True)
+    options.SetUnwindOnError(True)
+    options.SetLanguage(lldb.eLanguageTypeC)
+    result = frame.EvaluateExpression(expression, options)
+    if result.GetError().Fail() or not result.GetValueAsUnsigned():
+        raise RuntimeError(f"driver could not copy the live scanner density planes: {result.GetError()}")
+    status = lldb.SBError()
+    location = result.GetValueAsUnsigned()
+    data = process.ReadMemory(location, (count * 3 + 1) * 4, status)
+    if status.Fail() or len(data) != (count * 3 + 1) * 4 or struct.unpack_from("<I", data)[0] != 0:
+        raise RuntimeError("live scanner density plane copy was incomplete")
+    receipt = Path(settings["receipt"])
+    pathname = receipt.with_name(f"{receipt.stem}-density-{draw['index']}.f32")
+    with pathname.open("xb") as output:
+        output.write(data[4:])
+    draw["density"] = {
+        "file": pathname.name,
+        "sha256": hashlib.sha256(data[4:]).hexdigest(),
+        "width": width,
+        "height": height,
+    }
+    record("live_scanner_density", index=draw["index"], **draw["density"])
+
+
 def on_entry(frame, location, _):
     try:
         operation = entries[location.GetBreakpoint().GetID()]
@@ -200,6 +304,21 @@ def on_entry(frame, location, _):
         if operation == "spectral_launch":
             draw["launches"].append(operation)
             record(operation, index=draw["index"])
+            if settings.get("mode") == "replay":
+                replay_density(frame, draw)
+        elif operation == "prepare":
+            prepare(frame, draw)
+        elif operation == "current_grain":
+            if draw["current_grain"] is not None:
+                raise RuntimeError("unexpected second Current grain launch")
+            payload = argument(frame, 0)
+            if read(frame, payload, 4) != 1:
+                raise RuntimeError("Current grain launch payload is inactive")
+            # GrainPayload seedBase, seedBaseNext, frameIndex and timeAlpha.
+            draw["current_grain"] = [
+                read(frame, payload + offset, size) for offset, size in ((24, 8), (32, 8), (72, 8), (80, 4))
+            ]
+            record("current_grain", index=draw["index"], words=draw["current_grain"])
         elif operation in ("allocate", "upload"):
             resource_operation(frame, draw, operation)
         elif operation == "retain":
@@ -212,7 +331,7 @@ def on_entry(frame, location, _):
             if operation == "destroy_event":
                 polled["destroyed"].append(event)
             else:
-                predecessor = frames[draw["index"] - 1]["retained"] if draw["index"] else None
+                predecessor = frames[draw["index"] - 1]["retained"] if draw["index"] else tail_predecessor
 
                 def finished(return_frame):
                     status = register(return_frame, "rax") & 0xFFFFFFFF
@@ -229,14 +348,12 @@ def on_entry(frame, location, _):
     return False
 
 
-def install(debugger):
-    global settings
-    settings = json.loads(Path(os.environ["FJ_SCANNER_OBSERVER"]).read_text(encoding="utf-8"))
-    target = debugger.GetSelectedTarget()
-    module = target.AddModule(settings["module"], None, None, settings.get("symbols"))
+def bind_points(target, module, required):
     if not module.IsValid() or module.GetUUIDString() != settings["uuid"]:
         raise RuntimeError("scanner observer module or symbol identity differs")
-    if set(settings["points"]) != set(POINTS):
+    if settings.get("symbols") and Path(str(module.GetSymbolFileSpec())).resolve() != Path(settings["symbols"]):
+        raise RuntimeError("scanner observer did not load the admitted symbol file")
+    if set(settings["points"]) != set(required):
         raise RuntimeError("incomplete scanner producer, resource and terminal instrumentation")
     record(
         "debugger_module",
@@ -245,23 +362,205 @@ def install(debugger):
         uuid=module.GetUUIDString(),
     )
     text = module.FindSection(".text")
-    for name, expected in POINTS.items():
+    for name, expected in required.items():
         declaration = settings["points"][name]
         address = module.ResolveFileAddress((text.GetFileAddress() if WINDOWS else 0) + declaration["offset"])
-        symbol = address.GetSymbol()
-        if (
-            not symbol.IsValid()
-            or symbol.GetStartAddress().GetFileAddress() != address.GetFileAddress()
-            or declaration["symbol"] != symbol.GetName()
-            or expected not in declaration["symbol"]
-        ):
+        names = {
+            match.GetName()
+            for match in (address.GetFunction(), address.GetSymbol())
+            if match.IsValid() and match.GetStartAddress().GetFileAddress() == address.GetFileAddress()
+        }
+        if declaration["symbol"] not in names or expected not in declaration["symbol"]:
             raise RuntimeError(f"scanner observer could not verify the {name} symbol entry")
         bp = target.BreakpointCreateBySBAddress(address)
         if not bp.IsValid():
             raise RuntimeError(f"scanner observer could not bind {name}")
         bp.SetScriptCallbackFunction("observe_seed.on_entry")
         entries[bp.GetID()] = name
-        record("symbol_entry", name=name, symbol=symbol.GetName(), file_address=address.GetFileAddress())
+        record("symbol_entry", name=name, symbol=declaration["symbol"], file_address=address.GetFileAddress())
+
+
+def install(debugger):
+    global settings
+    settings = json.loads(Path(os.environ["FJ_SCANNER_OBSERVER"]).read_text(encoding="utf-8"))
+    target = debugger.GetSelectedTarget()
+    module = target.AddModule(settings["module"], None, None, settings.get("symbols"))
+    bind_points(target, module, REPLAY_POINTS if settings.get("mode") == "replay" else POINTS)
+
+
+def stopped_predecessor(frame, ready):
+    layout = settings["layout"]
+    instance = ready["instance_data"]
+    submission = instance + layout["owner_state"] + layout["instance_submission"]
+    state = submission + layout["submission_state"] + layout["mutex_value"]
+    latch = state + layout["state_latch"]
+    key = latch + layout["latch_key"]
+    bindings = [read(frame, key + offset) for offset in layout["key_bindings"]]
+    identity = submission + layout["submission_identity"] + layout["identity_value"]
+    instance_token = read(frame, identity + layout["instance_token"])
+    latch_id = read(frame, latch + layout["latch_id"])
+    next_id = read(frame, state + layout["state_next_id"])
+    if (
+        not instance_token
+        or not latch_id
+        or next_id != latch_id + 1
+        or not all(bindings)
+        or read(frame, key + layout["key_frame"]) != ready["token"]
+        or read(frame, key + layout["key_device"], 4) != ready["device_ordinal"]
+        or read(frame, key + layout["key_context"]) != ready["context"]
+    ):
+        raise RuntimeError("live Rust latch does not identify the measured request")
+    runtime_arc = read(frame, instance + layout["owner_loaded"] + layout["admission_runtime"])
+    handle = read(frame, runtime_arc + layout["arc_value"] + layout["runtime_native"] + layout["native_handle"])
+    if not runtime_arc or not handle:
+        raise RuntimeError("measured instance has no live native Runtime")
+    owner_map = handle + layout["cuda_root"] + layout["root_context_map"]
+    first = read(frame, owner_map + layout["map_first"])
+    sentinel = read(frame, owner_map + layout["map_sentinel"]) if layout["map_sentinel"] is not None else 0
+    count = read(frame, owner_map + layout["map_length"])
+    if layout["map_first_next"]:
+        first = read(frame, first + layout["node_next"])
+    candidates = []
+    visited = set()
+    node = first
+    for _ in range(count):
+        if not node or node == sentinel or node in visited:
+            raise RuntimeError("live Root context traversal ended before its recorded size")
+        visited.add(node)
+        payload = node + layout["node_value"]
+        device = read(frame, payload + layout["map_key_device"], 4)
+        context = read(frame, payload + layout["map_key_context"])
+        epoch = read(frame, payload + layout["map_key_epoch"])
+        resource = read(frame, payload + layout["map_frame_owner"])
+        if device == ready["device_ordinal"] and context == ready["context"] and resource:
+            state_view = owner(frame, resource)
+            if (device, context, epoch) != tuple(state_view[name] for name in ("device", "context", "epoch")):
+                raise RuntimeError("Root map entry and retained frame owner disagree")
+            begin, end = readback_range(frame, resource)
+            if begin != end:
+                if end - begin != layout["pending_size"]:
+                    raise RuntimeError("measured owner lacks a singleton retained scan readback")
+                held = {
+                    **state_view,
+                    "host": read(frame, begin),
+                    "event": read(frame, begin + 8),
+                    "identity_epoch": read(frame, begin + 16 + layout["identity_epoch"]),
+                    "producer": [read(frame, begin + 16 + offset) for offset in layout["producer"]],
+                    "route": read(frame, begin + 16 + layout["identity_route"], 4),
+                }
+                candidates.append(held)
+        node = read(frame, node + layout["node_next"])
+    if node != sentinel or len(candidates) != 1:
+        raise RuntimeError("no unique measured Root owner retained the scan result")
+    held = candidates[0]
+    if (
+        held["identity_epoch"] != held["epoch"]
+        or not held["host"]
+        or not held["event"]
+        or held["event"] == ready["stop_event"]
+        or (held["producer"] and held["producer"][:3] != [latch_id, ready["token"], bindings[2]])
+    ):
+        raise RuntimeError("measured predecessor scan retention disagrees with its Rust latch")
+    return {
+        **held,
+        "handle": handle,
+        "instance": instance_token,
+        "latch_id": latch_id,
+        "next_id": next_id,
+        "bindings": bindings,
+        "stream": ready["stream"],
+        "frame_token": ready["token"],
+    }
+
+
+def release_reporter(ready, action):
+    path = Path(settings["release"])
+    staged = path.with_suffix(".tmp")
+    request = {key: ready[key] for key in ("run", "arm", "pid", "token")}
+    staged.write_text(json.dumps({**request, "action": action}) + "\n", encoding="utf-8")
+    staged.replace(path)
+
+
+def tail(debugger):
+    global settings, tail_predecessor
+    settings = json.loads(Path(os.environ["FJ_SCANNER_OBSERVER"]).read_text(encoding="utf-8"))
+    ready = None
+    process = None
+    status = None
+    child_status = None
+    debugger.SetAsync(False)
+    child = subprocess.Popen(settings["command"])
+    try:
+        ready_path = Path(settings["ready"])
+        while not ready_path.is_file():
+            if child.poll() is not None:
+                raise RuntimeError("measured child exited before its tail rendezvous")
+            time.sleep(0.01)
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        expected_requests = settings["last_ordinal"] + 1
+        if (
+            ready["pid"] != child.pid
+            or ready["run"] != settings["run"]
+            or ready["arm"] != settings["arm"]
+            or ready["ordinal"] != settings["last_ordinal"]
+            or ready["token"] != ready["ordinal"]
+            or ready["time_bits"] != struct.unpack("<Q", struct.pack("<d", float(ready["ordinal"])))[0]
+            or ready["stop_status"] != 0
+            or ready["render_status"] != 0
+            or ready["callback_error"]
+            or not ready["output_guard_valid"]
+            or not ready["releases_valid"]
+            or ready["source_releases"] != expected_requests
+            or ready["destination_releases"] != expected_requests
+        ):
+            raise RuntimeError("measured child tail rendezvous failed admission")
+        target = debugger.CreateTarget(settings["command"][0])
+        listener = debugger.GetListener()
+        attach_error = lldb.SBError()
+        process = target.AttachToProcessWithID(listener, child.pid, attach_error)
+        if attach_error.Fail() or process.GetState() != lldb.eStateStopped:
+            raise RuntimeError(f"could not stop the measured child for late attachment: {attach_error}")
+        thread = process.GetThreadByID(ready["render_thread"])
+        if not thread.IsValid() or not thread.GetFrameAtIndex(0).IsValid():
+            raise RuntimeError("reported render thread unavailable at the measured barrier")
+        loaded = [target.GetModuleAtIndex(index) for index in range(target.GetNumModules())]
+        loaded = [module for module in loaded if Path(str(module.GetFileSpec())).resolve() == Path(settings["module"])]
+        if len(loaded) != 1:
+            raise RuntimeError("measured module is missing or ambiguous in the attached process")
+        module = loaded[0]
+        if settings.get("symbols"):
+            debugger.HandleCommand(f'target symbols add "{Path(settings["symbols"]).as_posix()}"')
+        bind_points(target, module, TAIL_POINTS)
+        tail_predecessor = stopped_predecessor(thread.GetFrameAtIndex(0), ready)
+        record("measured_predecessor", **tail_predecessor)
+        release_reporter(ready, "release")
+        continue_error = process.Continue()
+        if continue_error.Fail() or process.GetState() != lldb.eStateExited:
+            raise RuntimeError(f"reporter child did not complete under LLDB: {continue_error}")
+        status = process.GetExitStatus()
+    except Exception as error:
+        fail(error)
+        if ready and not Path(settings["release"]).exists():
+            release_reporter(ready, "abort")
+        if process and process.IsValid() and process.GetState() == lldb.eStateStopped:
+            process.Detach()
+        if (not ready or Path(settings["release"]).is_file()) and child.poll() is None:
+            child.terminate()
+    finally:
+        child_status = child.wait()
+        report = {
+            "schema": "juicer-scanner-measured-tail-v1",
+            "ready": ready,
+            "predecessor": tail_predecessor,
+            "frames": frames,
+            "errors": errors,
+            "exit": status,
+            "child_exit": child_status,
+            "pending_returns": len(returns),
+        }
+        Path(settings["receipt"]).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        passed = status == child_status == 0 and len(frames) == 1 and not errors and not active and not returns
+        debugger.HandleCommand(f"quit {0 if passed else 1}")
 
 
 def finish(debugger):
@@ -269,14 +568,22 @@ def finish(debugger):
     status = process.GetExitStatus()
     exited = process.GetState() == lldb.eStateExited
     record("inferior_exit", status=status, exited=exited, pending_returns=len(returns))
+    replay = settings.get("mode") == "replay"
     report = {
-        "schema": "juicer-scanner-capacity-observation-v1",
+        "schema": "juicer-scanner-replay-observation-v2" if replay else "juicer-scanner-capacity-observation-v1",
         "frames": frames,
         "errors": errors,
         "inferior_exit": status,
         "exited": exited,
         "pending_returns": len(returns),
     }
+    if replay:
+        report["variant"] = settings["variant"]
+        report["grain"] = settings["grain"]
+        report["route"] = settings["route"]
+        report["tokens"] = frames[0]["tokens"] if frames else None
     Path(settings["receipt"]).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    passed = status == 0 and exited and len(frames) == 2 and not errors and not active and not returns
+    passed = (
+        status == 0 and exited and len(frames) == (4 if replay else 2) and not errors and not active and not returns
+    )
     debugger.HandleCommand(f"quit {0 if passed else 1}")

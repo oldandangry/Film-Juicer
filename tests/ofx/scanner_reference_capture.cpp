@@ -36,18 +36,27 @@ namespace {
 } // namespace
 
 namespace ofx_test {
-    ScanReferenceCapture::ScanReferenceCapture(cudaStream_t stream) : stream_(stream) {
+    ScanReferenceCapture::ScanReferenceCapture(cudaStream_t stream, bool capturePrint) : stream_(stream) {
         CUcontext streamContext = nullptr;
         require(cuCtxGetCurrent(&context_) == CUDA_SUCCESS && context_ && cuStreamGetCtx(stream_, &streamContext) == CUDA_SUCCESS &&
                     streamContext == context_,
                 "scan observation requires the active frame context");
         check_cuda(cudaMalloc(&device_, sizeof(Samples)), "allocate scan observation");
-        const auto status = cudaMemsetAsync(device_, 255, sizeof(Samples), stream_);
-        if (status != cudaSuccess) {
-            (void)cudaFree(device_);
-            check_cuda(status, "clear scan observation");
+        if (capturePrint) {
+            const auto allocation = cudaMalloc(&printCyanDevice_, sizeof(float));
+            if (allocation != cudaSuccess) {
+                (void)cudaFree(device_);
+                check_cuda(allocation, "allocate Print cyan observation");
+            }
         }
-        previous_ = JuicerCuda::ScanDensityCaptureTest::swap_density_capture({device_, kPixels, 7, 5, &glare_});
+        const auto status = cudaMemsetAsync(device_, 255, sizeof(Samples), stream_);
+        const auto cyanStatus = capturePrint ? cudaMemsetAsync(printCyanDevice_, 255, sizeof(float), stream_) : cudaSuccess;
+        if (status != cudaSuccess || cyanStatus != cudaSuccess) {
+            (void)cudaFree(device_);
+            (void)cudaFree(printCyanDevice_);
+            check_cuda(status != cudaSuccess ? status : cyanStatus, "clear scan observations");
+        }
+        previous_ = JuicerCuda::ScanDensityCaptureTest::swap_density_capture({device_, kPixels, 7, 5, &glare_, printCyanDevice_});
     }
 
     ScanReferenceCapture::~ScanReferenceCapture() {
@@ -55,6 +64,7 @@ namespace ofx_test {
         if (cuCtxPushCurrent(context_) == CUDA_SUCCESS) {
             (void)cudaStreamSynchronize(stream_);
             (void)cudaFree(device_);
+            (void)cudaFree(printCyanDevice_);
             CUcontext restored = nullptr;
             (void)cuCtxPopCurrent(&restored);
         }
@@ -67,6 +77,17 @@ namespace ofx_test {
         check_cuda(cudaMemcpyAsync(samples.data(), device_, sizeof(samples), cudaMemcpyDeviceToHost, stream_), "read scan observation");
         check_cuda(cudaStreamSynchronize(stream_), "complete scan observation");
         return samples;
+    }
+
+    float ScanReferenceCapture::print_cyan() const {
+        CUcontext current = nullptr;
+        require(cuCtxGetCurrent(&current) == CUDA_SUCCESS && current == context_, "print observation context changed");
+        require(printCyanDevice_ != nullptr, "Print cyan observation was not requested");
+        float value = 0.0f;
+        check_cuda(cudaMemcpyAsync(&value, printCyanDevice_, sizeof(value), cudaMemcpyDeviceToHost, stream_), "read Print cyan observation");
+        check_cuda(cudaStreamSynchronize(stream_), "complete Print cyan observation");
+        require(std::isfinite(value), "Print cyan observation did not reach the selected sample");
+        return value;
     }
 
     const JuicerCuda::ScanDensityCaptureTest::GlareLaunch& ScanReferenceCapture::glare_launch() const noexcept {

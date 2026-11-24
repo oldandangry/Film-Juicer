@@ -127,6 +127,8 @@ namespace {
         const std::vector<float>* sourcePixels = nullptr;
         int fullWidth = 0;
         int fullHeight = 0;
+        const char* filmKey = nullptr;
+        const char* paperKey = nullptr;
     };
 
     constexpr std::array kProcessorCases{
@@ -137,6 +139,12 @@ namespace {
         Case{"combined-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, true},
         Case{"glare-plus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, false},
         Case{"glare-minus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, true}};
+
+#if defined(JUICER_ACCEPTED_CAPTURE_PATH) && defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    constexpr std::array kExtendedProcessorCases{
+        Case{.name = "negative-direct-ektar", .route = Spektrafilm::ScanRoute::NegativeDirectScan, .components = 3, .filmKey = "kodak_ektar_100"},
+        Case{.name = "negative-print-crystal-archive-ii", .route = Spektrafilm::ScanRoute::NegativePrintScan, .reconstruction = 1, .components = 4, .paperKey = "fujifilm_crystal_archive_typeii"}};
+#endif
 
     float procedural_source_sample(const Case& test, int x, int y, int channel) {
         if (channel == 3)
@@ -250,6 +258,10 @@ namespace {
             Spektrafilm::ProfilePolarity::Positive) {
             parameters.film_key = "fujifilm_provia_100f";
         }
+        if (test.filmKey)
+            parameters.film_key = test.filmKey;
+        if (test.paperKey)
+            parameters.print_key = test.paperKey;
         parameters.values.spectral_upsampling_mode = test.reconstruction;
         parameters.values.camera_auto_exposure_enabled = 0;
         if (!test.combined) {
@@ -779,9 +791,9 @@ namespace {
         return input;
     }
 
-    void report_processor_scan(const Case& test, const std::vector<float>& pixels, const ofx_test::ScanReferenceCapture::Samples& samples, nlohmann::json inputs, ReferenceSchedule schedule) {
+    [[maybe_unused]] nlohmann::json processor_scan_report(const Case& test, const std::vector<float>& pixels, const ofx_test::ScanReferenceCapture::Samples& samples, nlohmann::json inputs, ReferenceSchedule schedule, std::string_view schema = "scanner-reference-processor-v1") {
         inputs.update(ofx_test::scan_reference_stages(samples));
-        inputs.update({{"schema", "scanner-reference-processor-v1"},
+        inputs.update({{"schema", schema},
                        {"schedule", reference_schedule_name(schedule)},
                        {"id", test.name},
                        {"shape", {test.height, test.width, test.components}},
@@ -794,7 +806,7 @@ namespace {
                        {"exposure_bits", std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0)},
                        {"source_bits", processor_source_words(test)},
                        {"device_output_bits", ofx_test::scan_float_words(pixels)}});
-        std::puts(inputs.dump().c_str());
+        return inputs;
     }
 #endif
 
@@ -956,7 +968,7 @@ namespace {
                     frameBounds, frameBounds, static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
                 snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                     stateView.upload_core_hash, stateView.dir_recipe.hash, stateView.scanner_hash, meter.hash);
-                if (!JuicerCudaTest::execute_boundary(runtime.borrow(), *held, frame, snapshot, diagnostic, std::string(test.name) + "/" + std::string(invocationPhase), path == ExecutionPath::GrainDispatch))
+                if (!JuicerCudaTest::execute_boundary(runtime.borrow(), *held, frame, snapshot, diagnostic, std::string(test.name) + "/" + std::string(invocationPhase), path == ExecutionPath::GrainDispatch, &parameters))
                     throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
 #else
                 throw std::runtime_error("boundary path requires the prepared fixture target");
@@ -2136,7 +2148,8 @@ namespace {
                 ofx_test::ScanReferenceCapture::Samples samples{};
                 nlohmann::json inputs;
                 const auto rendered = render_case(runtime, test, parameters, state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "workspace", &samples, &inputs);
-                report_processor_scan(test, rendered, samples, std::move(inputs), ReferenceSchedule::Workspace);
+                const auto report = processor_scan_report(test, rendered, samples, std::move(inputs), ReferenceSchedule::Workspace);
+                std::puts(report.dump().c_str());
             } else {
                 const auto rendered = render_case(runtime, test, parameters, state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++);
                 const auto expected = decode_reference_words(expectedRows.at(index).at("output_bits"), rendered.size(), test.name);
@@ -4721,7 +4734,74 @@ namespace {
                 std::bit_cast<std::uint64_t>(view.captured.camera_exposure_compensation_ev) != std::bit_cast<std::uint64_t>(test.negativeZero ? -0.0 : 0.0) ||
                 seen.frame_token != 37 || seen.frame_rate != 24.0 || seen.render_bounds[0] != test.originX || seen.render_bounds[1] != test.originY)
                 throw std::runtime_error("processor scanner fixture captured the wrong controls or frame");
-            report_processor_scan(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
+            const auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
+            std::puts(report.dump().c_str());
+            row.passed();
+        }
+    }
+
+    void run_processor_scanner_reference_inputs(CallbackSession& runtime, const char* fixturePath) {
+        nlohmann::json fixtures;
+        if (fixturePath) {
+            std::ifstream stream(fixturePath);
+            if (!stream)
+                throw std::runtime_error("extended scanner reference fixture unavailable");
+            const auto document = nlohmann::json::parse(stream);
+            const std::string preset = JUICER_PROCESSOR_REFERENCE_PRESET;
+            const auto releasePreset = preset.ends_with("-debug") ? preset.substr(0, preset.size() - 6) + "-release" : preset;
+            if (document.at("schema") != "spectral-processor-extended-v1" || document.at("preset") != releasePreset ||
+                document.at("reference_preset") != releasePreset || document.at("schedule") != "processor" ||
+                document.at("reference_sha256").get_ref<const std::string&>().size() != 64)
+                throw std::runtime_error("extended scanner reference fixture identity differs");
+            fixtures = document.at("rows");
+            if (!fixtures.is_array() || fixtures.size() != kExtendedProcessorCases.size())
+                throw std::runtime_error("extended scanner reference fixture membership differs");
+        }
+        std::vector<std::string> names;
+        names.reserve(kExtendedProcessorCases.size());
+        for (const auto& test : kExtendedProcessorCases)
+            names.emplace_back(test.name);
+        JuicerTests::Cohort rows("processor_scanner_reference_inputs", names);
+        std::puts("CTEST_FULL_OUTPUT");
+        for (std::size_t index = 0; index < kExtendedProcessorCases.size(); ++index) {
+            const auto& test = kExtendedProcessorCases[index];
+            auto row = rows.case_event(test.name);
+            JuicerTestSupport::InstanceFixture state;
+            MembershipRetirement stateRetirement(runtime, state);
+            ofx_test::ScanReferenceCapture::Samples observed{};
+            const auto rendered = render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "processor-scanner", &observed);
+            FjInstanceObservation* raw = nullptr;
+            auto* const effect = runtime.find(state);
+            if (!effect || fj_test_ofx_instance_observe(effect, &raw, nullptr).category != FJ_STATUS_SUCCESS || !raw)
+                throw std::runtime_error("extended processor scanner capture state unavailable");
+            const auto release = [](FjInstanceObservation* owner) {
+                (void)fj_test_instance_observation_release(owner, nullptr);
+            };
+            const std::unique_ptr<FjInstanceObservation, decltype(release)> hold(raw, release);
+            FjInstanceObservationView view{};
+            FjOfxRenderObservation seen{};
+            if (fj_test_instance_observation_view(hold.get(), &view, nullptr).category != FJ_STATUS_SUCCESS ||
+                fj_test_ofx_render_observe(effect, &seen) != 1 || seen.native_entry_count != 1 ||
+                view.published.route != static_cast<unsigned>(test.route) ||
+                view.captured.spectral_upsampling_mode != test.reconstruction ||
+                std::bit_cast<std::uint64_t>(view.captured.camera_exposure_compensation_ev) != 0 ||
+                seen.frame_token != 37 || seen.frame_rate != 24.0 || seen.render_bounds[0] != test.originX || seen.render_bounds[1] != test.originY)
+                throw std::runtime_error("extended processor scanner capture controls differ");
+            const auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor, "scanner-reference-processor-extended-v1");
+            if (fixturePath) {
+                const auto& reference = fixtures.at(index);
+                for (const char* name : {"id", "shape", "route", "reconstruction", "film", "paper", "source_origin", "frame", "frame_rate", "grain", "glare", "exposure_bits", "source_bits"}) {
+                    if (report.at(name) != reference.at(name))
+                        throw std::runtime_error(std::string(test.name) + ": extended scanner reference input differs at " + name);
+                }
+                const auto expected = decode_reference_words(reference.at("output_bits"), rendered.size(), test.name);
+                compare_pixels(test.name, rendered, expected);
+                if (test.components == 4) {
+                    for (std::size_t alpha = 3; alpha < rendered.size(); alpha += 4)
+                        RenderAssertions::require_same_bits(test.name, rendered[alpha], expected[alpha]);
+                }
+            }
+            std::puts(report.dump().c_str());
             row.passed();
         }
     }
@@ -4925,6 +5005,12 @@ int main(int argc, char** argv) try {
                 JuicerTests::list_case("processor_reference_inputs", test.name);
             return 0;
         }
+        if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--processor-scanner-reference-inputs") {
+            JuicerTests::list_case("processor_operation", "processor_scanner_reference_inputs");
+            for (const auto& test : kExtendedProcessorCases)
+                JuicerTests::list_case("processor_scanner_reference_inputs", test.name);
+            return 0;
+        }
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
         if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-reference-inputs") {
             JuicerTests::list_case("processor_operation", "accepted_clean_reference_inputs");
@@ -4968,6 +5054,8 @@ int main(int argc, char** argv) try {
             operation_id = "accepted_clean_reference_inputs";
         else if (mode == "--processor-reference-inputs")
             operation_id = "processor_reference_inputs";
+        else if (mode == "--processor-scanner-reference-inputs")
+            operation_id = "processor_scanner_reference_inputs";
         else if (mode == "--workspace-transitions")
             operation_id = "workspace_transitions";
         else if (mode == "--workspace-reference-inputs")
@@ -4996,6 +5084,14 @@ int main(int argc, char** argv) try {
             run_processor_reference_inputs(runtime);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("processor reference capture owner cleanup failed");
+            operation_event.passed();
+            case_log.finish();
+            return 0;
+        }
+        if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--processor-scanner-reference-inputs") {
+            run_processor_scanner_reference_inputs(runtime, argc == 3 ? argv[2] : nullptr);
+            if (runtime.close().category != FJ_STATUS_SUCCESS)
+                throw std::runtime_error("extended processor scanner capture owner cleanup failed");
             operation_event.passed();
             case_log.finish();
             return 0;
@@ -5421,6 +5517,10 @@ int main(int argc, char** argv) try {
         if (runtime.close().category != FJ_STATUS_SUCCESS) {
             throw std::runtime_error("final native owner close failed");
         }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (!stateContract && preparedCase == "negative-print")
+            JuicerCudaTest::check_shipping_print_preflash(JUICER_TEST_RESOURCE_DIR, parameters_for(kProcessorCases[1]));
+#endif
         for (auto& event : case_events)
             event->passed();
         operation_event.passed();

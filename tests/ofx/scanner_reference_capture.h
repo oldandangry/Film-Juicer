@@ -23,17 +23,19 @@ namespace ofx_test {
         using Sample = JuicerCuda::ScanDensityCaptureTest::ScanSample;
         using Samples = std::array<Sample, kPixels>;
 
-        explicit ScanReferenceCapture(cudaStream_t stream);
+        explicit ScanReferenceCapture(cudaStream_t stream, bool capturePrint = false);
         ~ScanReferenceCapture();
         ScanReferenceCapture(const ScanReferenceCapture&) = delete;
         ScanReferenceCapture& operator=(const ScanReferenceCapture&) = delete;
         Samples read() const;
+        float print_cyan() const;
         const JuicerCuda::ScanDensityCaptureTest::GlareLaunch& glare_launch() const noexcept;
 
     private:
         cudaStream_t stream_;
         CUcontext context_ = nullptr;
         Sample* device_ = nullptr;
+        float* printCyanDevice_ = nullptr;
         JuicerCuda::ScanDensityCaptureTest::GlareLaunch glare_{};
         JuicerCuda::ScanDensityCaptureTest::DensityCapture previous_{};
     };

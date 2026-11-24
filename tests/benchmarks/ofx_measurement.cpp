@@ -322,6 +322,34 @@ namespace {
         bool diffusion = false;
         bool aboveOnset = false;
     };
+    struct ScannerPairedRow {
+        std::string_view id;
+        bool preview;
+        bool print;
+        bool naturalGrain;
+        int width;
+        int height;
+        double filmFormatMm;
+        std::string_view grainModel;
+        double grainAmountEv;
+        double grainPitchUm;
+        std::string_view schedule;
+    };
+    constexpr std::array kScannerPairedRows{
+        ScannerPairedRow{"ordinary-negative-direct-current-1080p", false, false, true, 1920, 1080, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-direct-current-4k", false, false, true, 3840, 2160, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-print-current-1080p", false, true, true, 1920, 1080, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-print-current-4k", false, true, true, 3840, 2160, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-direct-monolithic-4k", false, false, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "monolithic"},
+        ScannerPairedRow{"ordinary-negative-direct-fused-dir-4k", false, false, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "fused-dir"},
+        ScannerPairedRow{"ordinary-negative-print-monolithic-4k", false, true, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "monolithic"},
+        ScannerPairedRow{"ordinary-negative-print-fused-dir-4k", false, true, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "fused-dir"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-36", true, false, true, 4832, 2016, 36.0, "film_v1", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"preview-negative-print-film-v1-full-36", true, true, true, 4832, 2016, 36.0, "film_v1", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-8-high", true, false, true, 4832, 2016, 8.0, "film_v1", 3.0, 0.5, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-11-66-high", true, false, true, 4832, 2016, 11.66, "film_v1", 3.0, 0.5, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-quarter-8-high", true, false, true, 1208, 504, 8.0, "film_v1", 3.0, 0.5, "materialized"},
+    };
     constexpr std::array kHalationWorkloads{
         HalationWorkload{"halation-1080p-direct", 1920, 1080, false, false},
         HalationWorkload{"halation-1080p-print", 1920, 1080, true, false},
@@ -444,7 +472,7 @@ namespace {
     }
     struct Arguments {
         std::filesystem::path module, resources, output;
-        std::string mode, lane, workload;
+        std::string mode, lane, workload, campaign;
         std::string tailRun, tailArm;
         std::filesystem::path tailReady, tailRelease;
     };
@@ -452,7 +480,7 @@ namespace {
         return !args.tailRun.empty();
     }
     Arguments arguments(int argc, char** argv) {
-        require(argc == 13 || argc == 21, "expected --mode --module --resources --lane --workload --output, optionally with the four tail settings");
+        require(argc == 13 || argc == 15 || argc == 21 || argc == 23, "expected measurement arguments and optional campaign/tail settings");
         Arguments args;
         for (int i = 1; i < argc; i += 2) {
             const std::string_view key(argv[i]);
@@ -463,6 +491,8 @@ namespace {
                 args.lane = value;
             else if (key == "--workload")
                 args.workload = value;
+            else if (key == "--campaign")
+                args.campaign = value;
             else if (key == "--module")
                 args.module = std::filesystem::absolute(value);
             else if (key == "--resources")
@@ -482,6 +512,9 @@ namespace {
         }
         require((args.mode == "check" || args.mode == "measure") && (args.lane == "shipping" || args.lane == "observed"), "invalid mode or lane");
         require(std::filesystem::is_regular_file(args.module) && std::filesystem::is_directory(args.resources) && !args.output.empty(), "missing measurement input/output");
+        require(args.campaign.empty() || args.campaign == "scanner-paired", "unknown measurement campaign");
+        if (args.campaign == "scanner-paired")
+            require(std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) != kScannerPairedRows.end(), "unknown scanner-paired workload row");
         const bool anyTail = !args.tailRun.empty() || !args.tailArm.empty() || !args.tailReady.empty() || !args.tailRelease.empty();
         require(!anyTail || (tail_enabled(args) && !args.tailArm.empty() && !args.tailReady.empty() && !args.tailRelease.empty()),
                 "tail settings must be supplied as run, arm, ready and release together");
@@ -494,6 +527,7 @@ namespace {
             require(!args.tailReady.parent_path().empty() && std::filesystem::is_directory(args.tailReady.parent_path()), "tail ready parent is missing");
             require(!args.tailRelease.parent_path().empty() && std::filesystem::is_directory(args.tailRelease.parent_path()), "tail release parent is missing");
         }
+        require(args.campaign != "scanner-paired" || tail_enabled(args), "scanner-paired requires all tail rendezvous settings");
         return args;
     }
     std::uint64_t output_digest(const std::vector<float>& output) {
@@ -554,6 +588,9 @@ namespace {
         verify_output_guard();
         const bool observed = args.lane == "observed";
         const bool check = args.mode == "check";
+        const bool scannerPaired = args.campaign == "scanner-paired";
+        const decltype(kScannerPairedRows)::const_iterator scannerRow = scannerPaired ? std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) : kScannerPairedRows.end();
+        require(!scannerPaired || scannerRow != kScannerPairedRows.end(), "scanner-paired row admission failed");
         const decltype(kHalationWorkloads)::const_iterator halation = std::ranges::find(kHalationWorkloads, args.workload, &HalationWorkload::id);
         const bool pairedHalation = halation != kHalationWorkloads.end();
         // G3 workload encoding is explicit so historical workload meanings remain unchanged.
@@ -578,16 +615,20 @@ namespace {
                         (parts[2] == "portra" || parts[3] == "direct"),
                     "invalid G3 route workload");
         }
-        const bool print = g3 ? parts[3] == "print" : pairedHalation ? halation->print
-                                                                     : args.workload == "negative-print" || args.workload == "negative-print-grain";
-        const bool grain = g3 ? parts[5] == "on" : args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
-        require(g3 || pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
-        const int width = check ? 7 : g3           ? (parts[1] == "hd" ? 1920 : 3840)
-                                  : pairedHalation ? halation->width
-                                                   : 6048;
-        const int height = check ? 5 : g3           ? (parts[1] == "hd" ? 1080 : 2160)
-                                   : pairedHalation ? halation->height
-                                                    : 4032;
+        const bool print = scannerPaired ? scannerRow->print : g3           ? parts[3] == "print"
+                                                           : pairedHalation ? halation->print
+                                                                            : args.workload == "negative-print" || args.workload == "negative-print-grain";
+        const bool grain = scannerPaired ? scannerRow->naturalGrain : g3 ? parts[5] == "on"
+                                                                         : args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
+        require(scannerPaired || g3 || pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
+        const int width = scannerPaired ? scannerRow->width : check        ? 7
+                                                          : g3             ? (parts[1] == "hd" ? 1920 : 3840)
+                                                          : pairedHalation ? halation->width
+                                                                           : 6048;
+        const int height = scannerPaired ? scannerRow->height : check        ? 5
+                                                            : g3             ? (parts[1] == "hd" ? 1080 : 2160)
+                                                            : pairedHalation ? halation->height
+                                                                             : 4032;
         const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : g3 && parts[2] == "provia" ? "PositiveDirectScan"
                                                                                                                                                                 : "NegativeDirectScan",
                                   print ? 1 : 0,
@@ -596,7 +637,10 @@ namespace {
                                   height,
                                   grain ? 1 : 0,
                                   0.0};
-        report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
+        report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"campaign", args.campaign.empty() ? Json(nullptr) : Json(args.campaign)}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
+        if (scannerPaired) {
+            report["scanner_paired"] = {{"row_id", scannerRow->id}, {"variant", scannerRow->preview ? "preview" : "ordinary"}, {"product_id", scannerRow->preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"}, {"route", print ? "NegativePrintScan" : "NegativeDirectScan"}, {"schedule", nullptr}, {"expected_schedule", scannerRow->schedule}, {"geometry", {test.width, test.height}}, {"input_mode", scannerRow->naturalGrain ? "natural-grain" : "grain-off"}, {"natural_grain", scannerRow->naturalGrain}, {"cubic_grid", nullptr}, {"film_format_mm", scannerRow->filmFormatMm}, {"grain_model", scannerRow->grainModel}, {"grain_amount_ev", scannerRow->grainAmountEv}, {"grain_pitch_um", scannerRow->grainPitchUm}};
+        }
         const auto effectiveResources = std::filesystem::canonical(args.module.parent_path().parent_path() / "Resources");
         report["resources"] = effectiveResources.string();
         require(std::filesystem::equivalent(effectiveResources, args.resources), "declared Resources differs from module-relative Resources");
@@ -615,6 +659,8 @@ namespace {
         cuda_check(cudaEventCreate(&device.start), "create start event");
         cuda_check(cudaEventCreate(&device.stop), "create stop event");
         const auto source = ofx_test::initial_source(test);
+        if (scannerPaired)
+            report["source_digest"] = output_digest(source);
         const std::vector<float> initial(source.size(), kDestinationCanary);
         std::vector<float> output(source.size());
         const auto bytes = source.size() * sizeof(float);
@@ -643,9 +689,10 @@ namespace {
         const auto get = module.symbol<Get>("OfxGetPlugin");
         require(count() == 1, "discovery membership failed");
         auto* plugin = get(0);
+        const std::string_view expectedPluginIdentifier = scannerPaired && scannerRow->preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
         require(plugin && plugin->mainEntry && plugin->setHost && plugin->pluginApi &&
                     std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->pluginIdentifier &&
-                    std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer",
+                    std::string_view(plugin->pluginIdentifier) == expectedPluginIdentifier,
                 "invalid OFX descriptor or entry points");
         InstanceHost host;
         Lifecycle lifecycle(plugin, host);
@@ -842,20 +889,22 @@ namespace {
                                        {"instance_data", reinterpret_cast<std::uintptr_t>(instanceData)}};
         };
         const int warmups = check ? 1 : 10, measured = check ? 1 : 30;
-        for (int cycle = 0; cycle < (g3 ? 1 : 3); ++cycle) {
+        for (int cycle = 0; cycle < (scannerPaired || g3 ? 1 : 3); ++cycle) {
             auto* effect = host.create_effect();
             timings["author_ns"].push_back(nullptr);
             timed(timings["author_ns"].back(), [&] {
                 std::vector<std::pair<std::string, std::vector<ofx_test::InstanceValue>>> grainDefaults;
-                if (g3) {
+                if (g3 || (scannerPaired && !scannerRow->preview)) {
                     for (const auto& definition : ofx_test::kInstanceParameters)
                         if (std::string_view(definition.name).starts_with("Grain") && definition.kind != ofx_test::InstanceParamKind::PushButton)
                             grainDefaults.emplace_back(definition.name, host.value(effect, definition.name));
                 }
                 ofx_test::author_parameters(host, effect, test);
-                if (g3) {
+                if (g3 || (scannerPaired && !scannerRow->preview)) {
                     for (const auto& [name, value] : grainDefaults)
                         host.set_value(effect, name, value);
+                }
+                if (g3) {
                     host.set_value(effect, "GrainActive", {grain ? 1 : 0});
                     host.set_value(effect, "CameraFilmFormatMm", {36.0});
                     host.set_value(effect, "CouplersActive", {0});
@@ -875,6 +924,37 @@ namespace {
                         host.set_value(effect, "GrainBlurDyeCloudsUm", {0.0});
                         host.set_value(effect, "GrainChroma", {1.0});
                     }
+                }
+                if (scannerPaired) {
+                    // Keep the measured format in the editable custom field.  A
+                    // named preset would overwrite 8/11.66 mm through the
+                    // instance-change callback.
+                    host.set_value(effect, "CameraFilmFormatPreset", {0});
+                    host.set_value(effect, "CameraFilmFormatMm", {scannerRow->filmFormatMm});
+                    require(host.value(effect, "CameraFilmFormatPreset") == std::vector<ofx_test::InstanceValue>{0},
+                            "scanner paired format was not left on the custom preset");
+                    require(host.value(effect, "CameraFilmFormatMm") == std::vector<ofx_test::InstanceValue>{scannerRow->filmFormatMm},
+                            "scanner paired format did not read back");
+                    report["scanner_paired"]["format_preset"] = "custom";
+                    report["scanner_paired"]["format_mm"] = scannerRow->filmFormatMm;
+                    host.set_value(effect, "GrainActive", {scannerRow->naturalGrain ? 1 : 0});
+                    if (controlTypes.contains("ScannerLutResolution")) {
+                        host.set_value(effect, "ScannerLutResolution", {17});
+                        require(host.value(effect, "ScannerLutResolution") == std::vector<ofx_test::InstanceValue>{17}, "declared cubic scanner grid is not 17");
+                        report["scanner_paired"]["authored_grid"] = 17;
+                    }
+                    if (scannerRow->preview) {
+                        require(controlTypes.contains("GrainModel"), "Preview scanner row requires GrainModel");
+                        host.set_value(effect, "GrainModel", {std::string(scannerRow->grainModel)});
+                        host.set_value(effect, "FilmGrainAmountEv", {scannerRow->grainAmountEv});
+                        host.set_value(effect, "FilmGrainTexelPitchUm", {scannerRow->grainPitchUm});
+                    } else {
+                        require(!controlTypes.contains("GrainModel"), "ordinary scanner row unexpectedly exposes GrainModel");
+                    }
+                    const double unsharp = scannerRow->schedule == "fused-dir" ? 0.7 : 0.0;
+                    host.set_value(effect, "ScannerUnsharpMask", {unsharp, unsharp});
+                    if (print)
+                        host.set_value(effect, "GlareActive", {0});
                 }
                 if (pairedHalation) {
                     host.set_value(effect, "HalationActive", {halation->spatial ? 1 : 0});
@@ -914,6 +994,16 @@ namespace {
             else
                 require(controls == report.at("controls"), "effective controls changed across owners");
             ofx_test::configure(host, effect, test, device);
+            if (scannerPaired && scannerRow->width == 1208) {
+                host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {0.25, 0.25});
+                for (const auto* clip : {"Source", "Output"}) {
+                    host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                    host.set_clip_region(effect, clip, {0.0, 0.0, 4832.0, 2016.0});
+                }
+                report["scanner_paired"]["canonical_clip_extent"] = {0, 0, 4832, 2016};
+                report["scanner_paired"]["action_render_scale"] = {0.25, 0.25};
+                report["scanner_paired"]["actual_geometry"] = {{"bounds", {0, 0, 1208, 504}}, {"canonical_clip_extent", {0, 0, 4832, 2016}}, {"render_scale", {0.25, 0.25}}};
+            }
             endpoint("after-create", cycle);
             render(effect, {.phase = cycle == 0 ? "cold" : "cycle-cold", .cycle = cycle, .expect_construction = true, .readback = true});
             endpoint("after-cold", cycle);
@@ -926,7 +1016,7 @@ namespace {
                 if (tail_enabled(args))
                     run_tail(effect);
                 endpoint("after-sample", cycle, measured);
-                if (!g3) {
+                if (!scannerPaired && !g3) {
                     constexpr std::array<double, 3> gamma{1.1, 1.0, 1.1};
                     for (std::size_t i = 0; i < gamma.size(); ++i) {
                         OfxStatus status = kOfxStatFailed;
@@ -956,7 +1046,7 @@ namespace {
             life["effects_destroyed"] = cycle + 1;
             endpoint("after-destroy", cycle);
         }
-        require(sampleCount == (g3 ? (check ? 3u : 41u) : (check ? 15u : 71u)), "incomplete render sample membership");
+        require(sampleCount == (scannerPaired || g3 ? (check ? 3u : 41u) : (check ? 15u : 71u)), "incomplete render sample membership");
         OfxStatus unload = kOfxStatFailed;
         timed(timings["unload_ns"], [&] {
             unload = lifecycle.unload();

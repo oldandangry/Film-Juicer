@@ -3027,6 +3027,9 @@ namespace JuicerCuda {
         run.filmDevelop = filmPayloads.filmDevelop;
         run.printExpose = printPayloads.expose;
         run.printDevelop = printPayloads.develop;
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        JuicerCuda::RenderTest::observe_print_launch(preparedPrint, run.printExpose);
+#endif
         auto printCameraFilmLinear = expose_print_camera(
             run,
             preparedFrame,

@@ -50,11 +50,11 @@
     },
     "JuicerProcessorReferenceProbe": {
       "protocol": "custom",
-      "registrations": 6
+      "registrations": 7
     },
     "JuicerPreparedBoundaryProbe": {
       "protocol": "custom",
-      "registrations": 12
+      "registrations": 14
     },
     "JuicerExecutorFailureOrderProbe": {
       "protocol": "custom",
@@ -118,6 +118,7 @@
     "Ofx.Gpu.PrintGlareLaunches": 1,
     "Ofx.Gpu.ProcessorReference": 1,
     "Ofx.Gpu.ProcessorReferenceInputs": 1,
+    "Ofx.Gpu.ProcessorScannerReferenceInputs": 1,
     "Ofx.Gpu.SequentialOwners": 1,
     "Ofx.Gpu.CutoverContract": 8,
     "Ofx.Gpu.AcceptedCudaCaptures": 1,
@@ -146,6 +147,8 @@
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
     "Ffi.Gpu.CudaRender.negative-direct": 22,
     "Ffi.Gpu.CudaRender.negative-print": 22,
+    "Ffi.Gpu.CudaRender.positive-direct": 22,
+    "Ffi.Gpu.CudaRender.positive-print": 22,
     "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
@@ -215,6 +218,36 @@
       ]
     },
     "Ffi.Gpu.CudaRender.negative-print": {
+      "listed": 16,
+      "terminal": 131,
+      "required": [
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.positive-direct": {
+      "listed": 16,
+      "terminal": 131,
+      "required": [
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.positive-print": {
       "listed": 16,
       "terminal": 131,
       "required": [

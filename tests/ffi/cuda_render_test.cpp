@@ -70,6 +70,8 @@ namespace JuicerProcess::TestSupport {
 namespace JuicerCuda::PinnedUploadTest {
     thread_local std::array<std::int32_t, 5> errors{};
     thread_local std::array<unsigned, 5> consumed{};
+    thread_local UploadObservation uploadObservation{};
+    thread_local bool observingUploads = false;
     std::int32_t injected_error(Operation operation) noexcept {
         const auto index = static_cast<std::size_t>(operation);
         const auto error = std::exchange(errors[index], 0);
@@ -78,6 +80,35 @@ namespace JuicerCuda::PinnedUploadTest {
     }
     void before_diagnostic() {}
     void after_overwrite_staging(Resources&) noexcept {}
+    void reset_upload_observation() noexcept {
+        uploadObservation = {};
+        observingUploads = true;
+    }
+    UploadObservation finish_upload_observation() noexcept {
+        observingUploads = false;
+        return uploadObservation;
+    }
+    void observe_staged_upload(const char* label, std::size_t bytes) noexcept {
+        if (!observingUploads || !label)
+            return;
+        const std::string_view name(label);
+        if (!name.starts_with("phase4B "))
+            return;
+        const auto add = [bytes](TransferCount& transfer) {
+            ++transfer.calls;
+            transfer.bytes += bytes;
+        };
+        add(uploadObservation.print);
+        constexpr std::array<std::string_view, 4> filmLanes{
+            "phase4B print film density epsC", "phase4B print film density epsM", "phase4B print film density epsY", "phase4B print film density base"};
+        for (std::size_t lane = 0; lane < filmLanes.size(); ++lane)
+            if (name == filmLanes[lane])
+                add(uploadObservation.filmDensity[lane]);
+        if (name == "phase4B filtered main print illuminant")
+            add(uploadObservation.mainIlluminant);
+        if (name == "phase4B filtered preflash print illuminant")
+            add(uploadObservation.preflashIlluminant);
+    }
 } // namespace JuicerCuda::PinnedUploadTest
 
 namespace JuicerCuda::RenderTest {
@@ -97,6 +128,57 @@ namespace JuicerCuda::RenderTest {
     thread_local bool missingFilmBank = false;
     thread_local bool nullGrainPlane = false;
     thread_local unsigned filmProxyReservations = 0;
+    thread_local PrintLaunchObservation* printLaunchObserver = nullptr;
+
+    void set_print_launch_observer(PrintLaunchObservation* observation) noexcept {
+        printLaunchObserver = observation;
+    }
+
+    void observe_print_launch(const PrintPreparedView& prepared, const PrintExposePayload& expose) {
+        if (!printLaunchObserver)
+            return;
+        if (prepared.spectralSampleCount != 81)
+            throw std::runtime_error("Print launch observation requires 81 spectral samples");
+        auto& out = *printLaunchObserver;
+        out = {};
+        out.filmDensityC = reinterpret_cast<std::uintptr_t>(prepared.filmDensityTables.epsC);
+        out.filmDensityM = reinterpret_cast<std::uintptr_t>(prepared.filmDensityTables.epsM);
+        out.filmDensityY = reinterpret_cast<std::uintptr_t>(prepared.filmDensityTables.epsY);
+        out.filmBase = reinterpret_cast<std::uintptr_t>(prepared.filmDensityTables.baseDensityMin);
+        out.mainIlluminant = reinterpret_cast<std::uintptr_t>(prepared.mainIlluminant);
+        out.preflashIlluminant = reinterpret_cast<std::uintptr_t>(prepared.preflashIlluminant);
+        out.filmDensityHash = prepared.filmDensityTablesHash;
+        out.profileTablesHash = prepared.profileTablesHash;
+        out.mainIlluminantHash = prepared.mainIlluminantHash;
+        out.preflashIlluminantHash = prepared.preflashIlluminantHash;
+        out.spectralSampleCount = prepared.spectralSampleCount;
+        out.printExposure = expose.printExposure;
+        out.printPreflashExposure = expose.printPreflashExposure;
+        out.printMidgrayFactor = expose.printMidgrayFactor;
+        std::copy(std::begin(expose.printPreflashRaw), std::end(expose.printPreflashRaw), std::begin(out.printPreflashRaw));
+        out.valid = true;
+    }
+    void complete_print_launch_observation(PrintLaunchObservation& out, std::uintptr_t stream) {
+        if (!out.valid)
+            return;
+        auto* const streamHandle = reinterpret_cast<cudaStream_t>(stream);
+        if (cudaStreamSynchronize(streamHandle) != cudaSuccess)
+            throw std::runtime_error("Print launch observation stream synchronization failed");
+        const auto copy = [](float* destination, std::uintptr_t device, std::size_t count) {
+            if (!device) {
+                std::fill_n(destination, count, 0.0f);
+                return;
+            }
+            if (cudaMemcpy(destination, reinterpret_cast<const void*>(device), count * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+                throw std::runtime_error("Print launch observation device readback failed");
+        };
+        copy(out.mainLight.data(), out.mainIlluminant, out.mainLight.size());
+        copy(out.preflashLight.data(), out.preflashIlluminant, out.preflashLight.size());
+        copy(out.filmBaseWords.data(), out.filmBase, out.filmBaseWords.size());
+        copy(out.filmDyes.data(), out.filmDensityC, 81);
+        copy(out.filmDyes.data() + 81, out.filmDensityM, 81);
+        copy(out.filmDyes.data() + 162, out.filmDensityY, 81);
+    }
     void observe_film_proxy_reservation() noexcept {
         ++filmProxyReservations;
     }
@@ -776,6 +858,7 @@ namespace JuicerCudaTest {
     }
 
     void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared) {
+        const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
         JuicerTests::Cohort rows(kScanReadbackCaller, std::vector<std::string>(kScanReadbackCases.begin(), kScanReadbackCases.end()));
         constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
         constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -809,7 +892,6 @@ namespace JuicerCudaTest {
         const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(nonfinite), gamut});
         producer.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(nonfinite.recipe_hash, nonfinite.dir_couplers.hash, binding, nonfinite.auto_exposure.hash).scannerHash;
         require(producer.scanner_hash != submission.scanner_hash, "nonfinite scan changes the admitted binding");
-        const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
         const bool paper = Spektrafilm::scan_route_is_print(route);
         const auto profile = paper ? prepared.print_profile_key : prepared.film_profile_key;
         const auto version = paper ? prepared.print_profile_asset_version : prepared.film_profile_asset_version;

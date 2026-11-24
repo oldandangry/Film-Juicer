@@ -98,6 +98,33 @@ namespace JuicerCuda {
         bool omit_grain_plane() noexcept;
         void before_abort_query();
         void observe_film_proxy_reservation() noexcept;
+        struct PrintLaunchObservation {
+            bool valid = false;
+            std::uintptr_t filmDensityC = 0;
+            std::uintptr_t filmDensityM = 0;
+            std::uintptr_t filmDensityY = 0;
+            std::uintptr_t filmBase = 0;
+            std::uintptr_t mainIlluminant = 0;
+            std::uintptr_t preflashIlluminant = 0;
+            std::uint64_t filmDensityHash = 0;
+            std::uint64_t profileTablesHash = 0;
+            std::uint64_t mainIlluminantHash = 0;
+            std::uint64_t preflashIlluminantHash = 0;
+            int spectralSampleCount = 0;
+            float printExposure = 1.0f;
+            float printPreflashExposure = 0.0f;
+            float printMidgrayFactor = 1.0f;
+            float printCyanTap = 0.0f;
+            PinnedUploadTest::UploadObservation uploads{};
+            float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
+            std::array<float, 81> mainLight{};
+            std::array<float, 81> preflashLight{};
+            std::array<float, 81> filmBaseWords{};
+            std::array<float, 243> filmDyes{};
+        };
+        void set_print_launch_observer(PrintLaunchObservation* observation) noexcept;
+        void observe_print_launch(const PrintPreparedView& prepared, const PrintExposePayload& expose);
+        void complete_print_launch_observation(PrintLaunchObservation& out, std::uintptr_t stream);
     } // namespace RenderTest
 #endif
 

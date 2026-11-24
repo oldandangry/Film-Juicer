@@ -628,6 +628,22 @@ namespace JuicerCuda {
     } // namespace GaussianKernelTest
 #endif
 
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK) || defined(JUICER_CUDA_RENDER_TEST_HOOK)
+    namespace PinnedUploadTest {
+        struct TransferCount {
+            std::size_t calls = 0;
+            std::size_t bytes = 0;
+            bool operator==(const TransferCount&) const = default;
+        };
+        struct UploadObservation {
+            TransferCount print{};
+            std::array<TransferCount, 4> filmDensity{};
+            TransferCount mainIlluminant{};
+            TransferCount preflashIlluminant{};
+        };
+    } // namespace PinnedUploadTest
+#endif
+
 #if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
     namespace PinnedUploadTest {
         enum class Operation : std::uint8_t {
@@ -658,6 +674,9 @@ namespace JuicerCuda {
         bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure);
         Snapshot snapshot(const ResourceManager::DeviceContextKey& key);
         void poll(const ResourceManager::DeviceContextKey& key);
+        void reset_upload_observation() noexcept;
+        UploadObservation finish_upload_observation() noexcept;
+        void observe_staged_upload(const char* label, std::size_t bytes) noexcept;
     } // namespace PinnedUploadTest
 #endif
 

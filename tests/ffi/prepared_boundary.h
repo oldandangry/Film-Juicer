@@ -15,6 +15,7 @@ FjRenderOutcome fj_test_execute_prepared_c(const FjCudaCallAccess* access, const
 }
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -72,7 +73,10 @@ namespace JuicerCudaTest {
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         std::string& diagnostic,
         const std::string& invocationPhase,
-        bool grainDispatchContract);
+        bool grainDispatchContract,
+        const JuicerTestSupport::PreparationInput* sourceParams = nullptr);
+
+    void check_shipping_print_preflash(const std::filesystem::path& resources, const JuicerTestSupport::PreparationInput& sourceParams);
 
 } // namespace JuicerCudaTest
 #endif

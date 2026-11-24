@@ -868,7 +868,8 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     const JuicerCuda::PrintExposePayload& expose,
     const JuicerCuda::PrintDevelopPayload& develop,
     float D_cmy[3],
-    float filmTransmittance) {
+    float filmTransmittance,
+    [[maybe_unused]] float* capturedCyan = nullptr) {
     if (!expose.active || !D_cmy) {
         return;
     }
@@ -885,6 +886,10 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
         rawPrint[2] *= filmTransmittance;
     }
     print_apply_exposure_scale_device(expose, rawPrint);
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    if (capturedCyan)
+        *capturedCyan = rawPrint[0];
+#endif
     float logPrint[3] = {0.0f, 0.0f, 0.0f};
     print_log_encode_device(rawPrint, logPrint);
     print_sample_density_curves_device(develop, logPrint, D_cmy);

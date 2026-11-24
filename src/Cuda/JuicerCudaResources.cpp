@@ -2950,6 +2950,10 @@ namespace JuicerCuda {
 #endif
         if (copyErr == cudaSuccess) {
             copyErr = cudaMemcpyAsync(dst, reservation.stagingPtr, bytes, cudaMemcpyHostToDevice, stream);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            if (copyErr == cudaSuccess)
+                PinnedUploadTest::observe_staged_upload(request.label, bytes);
+#endif
         }
         if (copyErr != cudaSuccess) {
             const bool returned = return_pinned_upload_reservation(reservation);

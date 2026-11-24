@@ -642,6 +642,181 @@ namespace {
         return 0;
     }
 
+    struct SpectralReplayPaths {
+        std::filesystem::path module;
+        std::filesystem::path output;
+        std::string_view variant;
+        std::string_view grain;
+        std::string_view route;
+        std::filesystem::path draw;
+    };
+
+    int spectral_seed_pilot(const SpectralReplayPaths& paths) {
+        const auto& [path, output, variant, grain, route, draw] = paths;
+        const bool preview = variant == "preview";
+        const bool filmV1 = grain == "film-v1";
+        const bool print = route == "negative-print";
+        require((preview || variant == "ordinary") && (grain == "current" || (preview && filmV1)) &&
+                    (print || route == "negative-direct"),
+                "invalid spectral replay variant, grain model or route");
+        require(path.is_absolute() && std::filesystem::is_directory(output) && std::filesystem::is_empty(output),
+                "spectral replay requires an absolute module and an empty output directory");
+        constexpr int width = 64;
+        constexpr int height = 32;
+        const char* routeName = print ? "negative-print" : "negative-direct";
+        const Case test{routeName, routeName, print ? "NegativePrintScan" : "NegativeDirectScan", 0, 4, width, height, 0, 0.0};
+        const GrainGeometry geometry{{0, 0, width, height}, {0, 0, width, height}};
+        const auto resources = std::filesystem::canonical(path.parent_path().parent_path() / "Resources");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize replay CUDA driver");
+        CUcontext original = nullptr;
+        driver.check(driver.get_current(&original), "read initial replay context");
+        ContextRestore restore(driver, original);
+        require_cuda(cudaSetDevice(0), "select replay CUDA device");
+        Module module(path);
+        const char* identifier = preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
+        auto* plugin = const_cast<OfxPlugin*>(check_discovery(module, path, identifier));
+        using TokenSetter = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
+        const auto setTokens = module.find_symbol<TokenSetter>("fj_spectral_replay_set_tokens");
+        require(draw.empty() == (setTokens == nullptr), "spectral replay module has the wrong token export surface");
+        require(!module.find_symbol<TokenSetter>("fj_preview_replay_set_tokens") &&
+                    !module.find_symbol<TokenSetter>("fj_preview_benchmark_set_tokens"),
+                "unexpected historical replay token export");
+        Json tokens = nullptr;
+        if (setTokens) {
+            std::ifstream input(draw);
+            require(static_cast<bool>(input), "natural spectral replay draw unavailable");
+            const auto capture = Json::parse(input);
+            require(capture.at("variant").get_ref<const std::string&>() == variant &&
+                        capture.at("route").get_ref<const std::string&>() == route &&
+                        capture.at("grain").get_ref<const std::string&>() == grain,
+                    "natural spectral replay draw is bound to another workload");
+            tokens = capture.at("tokens");
+            require(tokens.is_array() && tokens.size() == 3 &&
+                        std::all_of(tokens.begin(), tokens.end(), [](const Json& value) {
+                            return value.is_number_unsigned();
+                        }),
+                    "natural spectral replay draw requires three unsigned tokens");
+            setTokens(tokens.at(0).get<std::uint64_t>(), tokens.at(1).get<std::uint64_t>(), tokens.at(2).get<std::uint64_t>());
+        }
+
+        InstanceHost host;
+        DeviceBuffers device;
+        Lifecycle lifecycle(plugin, host);
+        require(lifecycle.load() == kOfxStatOK, "spectral replay Load failed");
+        require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
+                "spectral replay DescribeInContext failed");
+        std::set<std::string, std::less<>> declared;
+        for (const auto& call : host.calls()) {
+            if (call.operation == "param_define")
+                declared.insert(call.property);
+        }
+        std::vector<std::string> names;
+        for (const auto& definition : ofx_test::kInstanceParameters) {
+            if (definition.kind != ofx_test::InstanceParamKind::PushButton && declared.contains(definition.name))
+                names.emplace_back(definition.name);
+        }
+        for (const char* name : {"GrainModel", "FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"})
+            if (declared.contains(name))
+                names.emplace_back(name);
+        auto* effect = host.create_effect();
+        author_parameters(host, effect, test);
+        host.set_value(effect, "GlareActive", {0});
+        host.set_value(effect, "CouplersActive", {0});
+        host.set_value(effect, "CameraFilmFormatPreset", {2});
+        host.set_value(effect, "CameraFilmFormatMm", {36.0});
+        require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "spectral replay CreateInstance failed");
+        lifecycle.created(effect);
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create spectral replay stream");
+        const auto source = flat_grain_source(test);
+        const auto bytes = source.size() * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, bytes), "allocate spectral replay source");
+        require_cuda(cudaMalloc(&device.destination, bytes), "allocate spectral replay destination");
+        configure(host, effect, test, device);
+        host.set_effect_property(effect, kOfxImageEffectPropFrameRate, {24.0});
+        set_grain_geometry(host, effect, geometry);
+        const auto change = [&](const char* name, const std::vector<InstanceValue>& value) {
+            host.set_value(effect, name, value);
+            require(lifecycle.call(kOfxActionInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name})) ==
+                            kOfxStatReplyDefault &&
+                        host.value(effect, name) == value,
+                    std::string("spectral replay control readback differs: ") + name);
+        };
+        if (preview)
+            change("GrainModel", {std::string(filmV1 ? "film_v1" : "current")});
+        if (filmV1) {
+            change("FilmGrainAmountEv", {0.0});
+            change("FilmGrainTexelPitchUm", {4.0});
+            change("FilmGrainChromaFraction", {1.0});
+            change("CameraFilmFormatPreset", {0});
+            change("CameraFilmFormatMm", {36.0});
+        }
+        write_pixels(output / "source-pitched.f32", source);
+        Json rows = Json::array();
+        const auto render = [&](std::string_view phase, double time) {
+            host.set_property(host.action_args(), kOfxPropTime, {time});
+            const auto controls = parameter_values(host, effect, names);
+            std::vector<std::uint32_t> words;
+            auto row = run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, words, true);
+            for (const auto& call : host.calls()) {
+                if (call.operation == "param_get" || call.operation == "param_get_time") {
+                    require(call.status == kOfxStatOK && controls.contains(call.target) &&
+                                call.values == host.value(effect, call.target),
+                            "spectral replay OFX control readback differs");
+                }
+            }
+            std::vector<float> pixels;
+            pixels.reserve(words.size());
+            for (const auto word : words) {
+                const auto pixel = std::bit_cast<float>(word);
+                require(pixel != kDestinationCanary, "spectral replay has an unwritten output word");
+                pixels.push_back(pixel);
+            }
+            const auto filename = std::string(phase) + ".f32";
+            write_pixels(output / filename, pixels);
+            row["pass"] = phase;
+            row["time_bits"] = std::bit_cast<std::uint64_t>(time);
+            row["output_file"] = filename;
+            row["controls"] = controls;
+            rows.push_back(std::move(row));
+            return words;
+        };
+        const auto clean = render("grain-off", 0.0);
+        change("GrainActive", {1});
+        const auto integral = render("integral", 0.0);
+        const auto fractional = render("fractional", 0.5);
+        require(clean != integral && integral != fractional, "spectral replay grain or fractional time did not change output");
+        (void)render("reporting", 1.0);
+        require(lifecycle.destroy(effect) == kOfxStatOK, "spectral replay DestroyInstance failed");
+        device.release_images();
+        device.close();
+        require(lifecycle.unload() == kOfxStatOK && !host.callback_error(), "spectral replay Unload failed");
+        module.close();
+        restore.restore();
+        const Json receipt{{"schema", "juicer-ofx-spectral-seed-replay-v1"},
+                           {"module", path.string()},
+                           {"resources", resources.string()},
+                           {"variant", variant},
+                           {"grain", grain},
+                           {"route", route},
+                           {"plugin_id", identifier},
+                           {"replay_export", setTokens != nullptr},
+                           {"replay_tokens", tokens},
+                           {"components", test.components},
+                           {"canonical_rod", {0, 0, width, height}},
+                           {"bounds", {0, 0, width, height}},
+                           {"row_bytes", (width * test.components + kPitchPadding) * sizeof(float)},
+                           {"context_restored", restore.restored},
+                           {"grain_changes_output", true},
+                           {"fraction_changes_output", true},
+                           {"rows", rows}};
+        std::ofstream stream(output / "receipt.json");
+        stream << receipt.dump(2) << '\n';
+        stream.close();
+        require(static_cast<bool>(stream), "spectral replay receipt write failed");
+        return 0;
+    }
+
     int grain_preview_discovery(const std::filesystem::path& previewPath, const std::filesystem::path& ordinaryPath) {
         const bool paired = !ordinaryPath.empty();
         const char* caller = paired ? "grain-preview-paired-discovery" : "grain-preview-discovery";
@@ -1646,8 +1821,41 @@ namespace {
 #endif
 } // namespace
 
+#if defined(JUICER_SPECTRAL_REPLAY_CAPTURE)
+#if defined(_WIN32)
+#define FJ_REPLAY_CAPTURE_EXPORT __declspec(dllexport)
+#else
+#define FJ_REPLAY_CAPTURE_EXPORT __attribute__((used, retain, visibility("default")))
+#endif
+// Untimed scanner replay calls this in the host driver while the producer is
+// stopped at the selected density-plane launch. The staging is driver-owned.
+extern "C" FJ_REPLAY_CAPTURE_EXPORT const std::uint32_t* fj_observe_replay_density(
+    const float* cyan, const float* magenta, const float* yellow, std::size_t count, cudaStream_t stream, CUcontext expectedContext) noexcept {
+    constexpr std::size_t samples = 64 * 32;
+    thread_local std::array<std::uint32_t, samples * 3 + 1> words{};
+    CUcontext context = nullptr;
+    if (!cyan || !magenta || !yellow || !stream || count != samples ||
+        cuCtxGetCurrent(&context) != CUDA_SUCCESS || context != expectedContext) {
+        words[0] = static_cast<std::uint32_t>(cudaErrorInvalidValue);
+        return words.data();
+    }
+    auto status = cudaStreamSynchronize(stream);
+    const std::array planes{cyan, magenta, yellow};
+    for (std::size_t lane = 0; lane < planes.size() && status == cudaSuccess; ++lane)
+        status = cudaMemcpy(words.data() + 1 + lane * samples, planes[lane], samples * sizeof(float), cudaMemcpyDeviceToHost);
+    words[0] = static_cast<std::uint32_t>(status);
+    return words.data();
+}
+#undef FJ_REPLAY_CAPTURE_EXPORT
+#endif
+
 int main(int argc, char** argv) {
     try {
+        if (argc >= 2 && std::string_view(argv[1]) == "--spectral-seed-pilot") {
+            require(argc == 7 || argc == 8,
+                    "expected --spectral-seed-pilot module output-directory variant grain route [natural-draw]");
+            return spectral_seed_pilot({argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : ""});
+        }
         if (argc >= 2 && std::string_view(argv[1]) == "--scanner-capacity") {
             require(argc == 4, "expected --scanner-capacity preview-module output-directory");
             return scanner_capacity(argv[2], argv[3]);

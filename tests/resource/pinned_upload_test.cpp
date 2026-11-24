@@ -65,6 +65,7 @@ namespace JuicerCuda::PinnedUploadTest {
             }
         }
     }
+    void observe_staged_upload(const char*, std::size_t) noexcept {}
 } // namespace JuicerCuda::PinnedUploadTest
 
 namespace {

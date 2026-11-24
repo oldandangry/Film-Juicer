@@ -1,4 +1,4 @@
-//! Call-local backing for the native scanner-LUT and Gaussian miss callbacks.
+//! Call-local backing for native Gaussian cache misses.
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;

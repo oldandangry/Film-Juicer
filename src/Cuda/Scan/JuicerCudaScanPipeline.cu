@@ -1378,7 +1378,12 @@ __global__ void develop_print_density_kernel(
     float* ioC,
     float* ioM,
     float* ioY,
-    const float* filmDustTransmittance) {
+    const float* filmDustTransmittance
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+    ,
+    float* printCyan
+#endif
+) {
     if (!printExpose.active) {
         return;
     }
@@ -1395,7 +1400,12 @@ __global__ void develop_print_density_kernel(
         for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < widthCount; x += xStep) {
             const std::size_t idx = y * width + x;
             float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            apply_print_pipeline_device(printExpose, printDevelop, D_cmy, filmDustTransmittance ? filmDustTransmittance[idx] : 1.0f);
+            float* cyan = nullptr;
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+            if (width == 7 && height == 5 && x == 1 && y == 1)
+                cyan = printCyan;
+#endif
+            apply_print_pipeline_device(printExpose, printDevelop, D_cmy, filmDustTransmittance ? filmDustTransmittance[idx] : 1.0f, cyan);
             ioC[idx] = D_cmy[0];
             ioM[idx] = D_cmy[1];
             ioY[idx] = D_cmy[2];
@@ -1865,11 +1875,17 @@ namespace {
             return;
         }
 
+        const std::size_t idx = yIndex * static_cast<std::size_t>(params.width) + xIndex;
+
         if constexpr (requires { params.printExpose; params.printDevelop; }) {
-            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy, 1.0f);
+            float* cyan = nullptr;
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+            if (params.width == 7 && params.height == 5 && xIndex == 1 && yIndex == 1)
+                cyan = capture.printCyan;
+#endif
+            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy, 1.0f, cyan);
         }
 
-        const std::size_t idx = yIndex * static_cast<std::size_t>(params.width) + xIndex;
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
         auto* observed = scan_sample_device(capture, idx);
 #endif
@@ -2541,7 +2557,12 @@ cudaError_t launch_focused_print_continuation_from_capture_density(
         dDensityC,
         dDensityM,
         dDensityY,
-        filmDustTransmittance);
+        filmDustTransmittance
+#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
+        ,
+        densityCapture.printCyan
+#endif
+    );
     return cudaGetLastError();
 }
 

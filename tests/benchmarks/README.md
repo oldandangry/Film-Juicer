@@ -5,6 +5,35 @@ scatter/halation command below needs its Release target prepared first;
 `highlight-check` prepares its production check through the shared verifier. Record
 the GPU model, driver, preset/commit and whether other GPU processes were active.
 
+### Scanner replay and paired timing
+
+Use the native Release preset with testing enabled. Build
+`JuicerOfxSpectralReplayModule` and `JuicerHalationComparisonProbe` through
+`scripts/verify.py prepare`. Keep the ordinary and Grain Preview configurations
+and staged products in their prescribed order. The replay companion copies
+the configured staged Resources and links the matching test-support archive.
+
+```sh
+python -B tests/benchmarks/ofx.py spectral-seed-pilot --preset linux-release \
+  --inputs <symbol-and-layout-inputs.json> --run-id replay-negative-direct \
+  --route negative-direct --grain current
+```
+
+The inputs bind both module hashes, their symbol identities, the compiled
+breakpoint entries and pending-readback layouts. Replay uses natural tokens
+from the staged product and reproduces them on the isolated companion. The
+ordinary pair uses Current. Preview can exercise both Current and Film v1.
+
+`ofx.py scanner-paired` takes a native Release preset, an input manifest, a
+fresh run ID and one or more `--workloads`. Its check mode uses the same tail
+rendezvous as measure mode. Measure mode requires the corresponding check
+receipt and retains the raw A/A and reordered cubic/spectral timing samples.
+Both modes require the pinned products, symbol layouts and qualified workload
+bindings. The product driver leaves the final measured render's owner live
+until the observer admits the single untimed reporter.
+
+### Scatter and halation
+
 For the retained scatter/halation measurement on Linux:
 
 ```sh
