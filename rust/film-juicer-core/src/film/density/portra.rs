@@ -6,8 +6,6 @@ mod placement_extrema;
 mod periodic_extrema;
 #[cfg(test)]
 mod calibration_interval;
-
-#[cfg(feature = "grain-preview")]
 pub(crate) const MIN_FOOTPRINT: f32 = 0.25;
 // The 8 mm, Size 4 µm proxy of an 8192-pixel Full raster uses this cell pitch.
 // Internal samples use the subtexel convex-light certificate below.

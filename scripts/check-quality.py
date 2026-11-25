@@ -36,7 +36,8 @@ from qualification import (
     APERTURE_CONFIGURATION_KEY,
     configured_aperture_target,
     PRESET_TARGETS,
-    PRODUCT_PREVIEW_KEYS,
+    FILM_V1_CONFIGURATION_KEY,
+    PRODUCT_CONFIGURATION_KEYS,
     QUALITY_CHECKS_SCHEMA,
     RUST_POLICY_FILES,
     RUST_QUALITY_PACKAGES,
@@ -702,7 +703,7 @@ def check_rust(
     raw_preview = cache.get("JUICER_GRAIN_PREVIEW")
     runner.rust_quality = {"JUICER_GRAIN_PREVIEW": raw_preview, "packages": selected_packages}
     preview_enabled = None
-    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache or FILM_V1_CONFIGURATION_KEY in cache:
         preview_enabled, _ = read_preview_and_replay_configuration(cache)
     for label, form in clippy_forms(arguments.preset, selected_packages, raw_preview, preview=preview_enabled):
         runner.run([*common, *form], env=environment, label=label)
@@ -1573,8 +1574,10 @@ def quality_main(root, arguments):
         root, log_dir, jobs=arguments.jobs, native_run=native_run, name_prefix="quality-" if in_bundle else ""
     )
     cache = cache_values(root / "out/build" / arguments.preset)
-    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache:
-        runner.product_configuration = {key: cache.get(key) for key in (*PRODUCT_PREVIEW_KEYS, "CMAKE_HOME_DIRECTORY")}
+    if "JUICER_GRAIN_PREVIEW_CONFIGURED" in cache or FILM_V1_CONFIGURATION_KEY in cache:
+        runner.product_configuration = {
+            key: cache[key] for key in (*PRODUCT_CONFIGURATION_KEYS, "CMAKE_HOME_DIRECTORY") if key in cache
+        }
         if APERTURE_CONFIGURATION_KEY in cache:
             runner.product_configuration[APERTURE_CONFIGURATION_KEY] = cache[APERTURE_CONFIGURATION_KEY]
     runner.consume(

@@ -13,7 +13,8 @@
     "ScatterHalation.Gpu.Lifecycle",
     "Ffi.Gpu.CudaInspect",
     "Ffi.Gpu.CudaInspect.MultiDevice",
-    "Ffi.Gpu.ProductionPreparedRender"
+    "Ffi.Gpu.ProductionPreparedRender",
+    "Ffi.Gpu.FilmV1Staged"
   ],
   "targets": {
     "JuicerOfxRenderGpuTests": {
@@ -94,7 +95,7 @@
     },
     "JuicerProductionPreparedRenderProbe": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 2
     }
   },
   "native_cohorts": {
@@ -151,7 +152,8 @@
     "Ffi.Gpu.CudaRender.positive-direct": 24,
     "Ffi.Gpu.CudaRender.positive-print": 24,
     "Ffi.Gpu.PreparedStateLifetime": 53,
-    "Ffi.Gpu.ProductionPreparedRender": 1
+    "Ffi.Gpu.ProductionPreparedRender": 1,
+    "Ffi.Gpu.FilmV1Staged": 1
   },
   "gtest_cohorts": {
     "InspectGpu.AllocationCoverageIncludesFullSourceAndDestinationBounds": 1,
@@ -203,6 +205,80 @@
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
+    "Ffi.Gpu.FilmV1Staged": {
+      "listed": 23,
+      "terminal": 23,
+      "required": [
+        [
+          "film-v1-render",
+          "negative-direct-quarter-size-half"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-proxy-sequence"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-hd"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-hd"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-uhd"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-uhd"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-4832"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-4832"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-portrait"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-smaller-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-smaller-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-larger-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-larger-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-thumbnails"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-thumbnails"
+        ],
+        ["film-v1-render", "negative-direct-8mm-proxy"],
+        ["film-v1-render", "negative-print-8mm-proxy"],
+        ["film-v1-render", "negative-direct-clipped-quarter"],
+        ["film-v1-render", "negative-print-clipped-quarter"],
+        ["film-v1-render", "negative-direct-time-endpoint"],
+        ["film-v1-render", "negative-print-time-endpoint"],
+        ["film-v1-render", "negative-direct-small-format-high-gain"],
+        ["film-v1-render", "negative-print-small-format-high-gain"]
+      ]
+    },
     "Ffi.Gpu.CudaRender.negative-direct": {
       "listed": 22,
       "terminal": 137,
@@ -329,96 +405,6 @@
           "negative-print/warm"
         ]
       ]
-    }
-  },
-  "grain_preview": {
-    "targets": {
-      "JuicerProductionPreparedRenderProbe": {
-        "protocol": "custom",
-        "registrations": 2
-      }
-    },
-    "required": [
-      "Ffi.Gpu.GrainPreviewStaged"
-    ],
-    "native_cohorts": {
-      "Ffi.Gpu.GrainPreviewStaged": 1
-    },
-    "native_membership": {
-      "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 23,
-        "terminal": 23,
-        "required": [
-          [
-            "grain-preview-render",
-            "negative-direct-quarter-size-half"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-proxy-sequence"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-hd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-hd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-uhd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-uhd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-4832"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-4832"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-portrait"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-smaller-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-smaller-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-larger-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-larger-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-thumbnails"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-thumbnails"
-          ],
-          ["grain-preview-render", "negative-direct-8mm-proxy"],
-          ["grain-preview-render", "negative-print-8mm-proxy"],
-          ["grain-preview-render", "negative-direct-clipped-quarter"],
-          ["grain-preview-render", "negative-print-clipped-quarter"],
-          ["grain-preview-render", "negative-direct-time-endpoint"],
-          ["grain-preview-render", "negative-print-time-endpoint"],
-          ["grain-preview-render", "negative-direct-small-format-high-gain"],
-          ["grain-preview-render", "negative-print-small-format-high-gain"]
-        ]
-      }
     }
   },
   "grain_preview_motion_replay": {

@@ -180,8 +180,9 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
     h.add(optics::hash_diffusion_authored_controls(
         &p.enlarger_diffusion,
     ));
-    #[cfg(feature = "grain-preview")]
-    if let Some(film) = p.film_grain {
+    // With grain disabled the prepared photographic state is shared. OFX
+    // resolves per-frame dust and scratch geometry from the captured selection.
+    if let Some(film) = p.film_grain.controls() {
         h.add(hash::bytes(b"film-v1-grain"));
         for value in [film.amount_ev, film.texel_pitch_um, film.chroma_fraction] {
             h.add(u64::from(value.to_bits()));
@@ -373,8 +374,7 @@ pub fn defaults() -> Params {
             clump_morph_period_sec: 8.0,
             debug_view: 0,
         },
-        #[cfg(feature = "grain-preview")]
-        film_grain: None,
+        film_grain: crate::film::grain::film_v1::Selection::Current,
         film_dust_amount: 0.0,
         film_scratch_amount: 0.0,
         gate_dust_amount: 0.0,

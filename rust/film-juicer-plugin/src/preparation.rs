@@ -603,8 +603,7 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
             clump_morph_period_sec: grain.clump_morph_period_sec,
             debug_view: grain.debug_view,
         },
-        #[cfg(feature = "grain-preview")]
-        film_grain: None,
+        film_grain: film_juicer_core::film::grain::film_v1::Selection::Current,
         film_dust_amount: *film_dust_amount,
         film_scratch_amount: *film_scratch_amount,
         gate_dust_amount: *gate_dust_amount,
@@ -2441,7 +2440,6 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
     use recipe::PrepareError as E;
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
-        #[cfg(feature = "grain-preview")]
         E::Control(recipe::ControlError::FilmGrain) => FJ_STATUS_UNSUPPORTED_INPUT,
         E::Control(
             recipe::ControlError::InputColorSpace

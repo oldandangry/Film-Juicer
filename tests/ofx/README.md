@@ -46,33 +46,17 @@ are rejected with Fatal after the frame-rate getter, before native entry; earlie
 no-op and failure results retain precedence. Nonfinite frame positions normalize
 to zero only at frame assembly.
 
-With `JUICER_GRAIN_PREVIEW=ON`, `Ofx.Host.GrainPreviewModule`,
-`Ofx.Host.GrainPreviewInstance`, and `Ofx.Host.GrainPreviewRender` take the
-place of the three ordinary production witnesses. Module uses the preview
-descriptor manifest and keeps its Describe and lifecycle cases. Instance
-checks the four preview parameter handles and their types, Current visibility,
-and cleanup. Render checks the Current model read at the end of grain capture
-alongside the existing status, ordering and release expectations.
+The regular product witnesses check the established module identity, descriptor,
+constructor and render callbacks. `Ofx.Host.Context` checks the Film v1
+declarations and the Current default. `Ofx.Host.FilmV1Instance` checks the four
+grain parameter handles and their types, the initial visibility, and cleanup.
+`Ofx.Host.Render` checks the Current model read alongside the existing status,
+ordering and release expectations. `Ffi.Gpu.FilmV1Staged` exercises the staged
+normal bundle on CUDA. The platform-owned `Grain.Gpu.FilmOfxApertures` adds
+the linked aperture and motion checks.
 
-`Ffi.Host.GrainPreviewDiscovery` loads the staged preview module after checking
-its SHA-256 against the configured build module. To also run
-`Ffi.Host.GrainPreviewPairedDiscovery`, prepare an ordinary build followed by
-a preview build of the same working candidate and preset. Keep both build
-receipts and the stage paths they record. The preview producer must name
-`JuicerProductionPreparedRenderProbe` as a build target. Paired discovery
-checks the recorded probe path and SHA-256 before listing or running cases.
-For example, on Linux:
-
-```sh
-python -B scripts/verify.py prepare --preset linux-release --grain-preview OFF \
-  --targets bundle-archive --run-id paired-ordinary
-python -B scripts/verify.py prepare --preset linux-release --grain-preview ON \
-  --targets bundle-archive JuicerProductionPreparedRenderProbe --run-id paired-preview
-python -B scripts/verify.py paired-discovery --preset linux-release \
-  --ordinary out/validation/linux-release/results/paired-ordinary \
-  --preview out/validation/linux-release/results/paired-preview --run-id paired-discovery
-python -B scripts/qualification.py --bundle out/validation/linux-release/results/paired-discovery
-```
+Retained preview and paired-discovery receipts are readable offline with
+`scripts/qualification.py --bundle <receipt-directory>`.
 
 `Ofx.Gpu.Render` uses actual device images, the default-feature descriptor and the
 independent test comparator. `Ofx.Gpu.RenderTrace` uses test-support controls for fixed

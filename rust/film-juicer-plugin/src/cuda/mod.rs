@@ -18,7 +18,6 @@ pub(crate) mod edge;
 
 mod frame;
 mod frame_policy;
-#[cfg(feature = "grain-preview")]
 pub(crate) const FILM_GRAIN_TIME_RANGE: std::ops::RangeInclusive<f64> = -1_000_000.0..=1_000_000.0;
 #[cfg(feature = "test-support")]
 pub(crate) use frame_policy::{empty_halation, halation_projection};

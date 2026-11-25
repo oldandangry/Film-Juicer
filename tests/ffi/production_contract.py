@@ -207,7 +207,7 @@ def compare_ordinary_output(packed, reference):
 
 def execute(arguments):
     from execution import NativeRun, OutputLease, windows_vctip
-    from qualification import grain_preview_enabled
+    from qualification import FILM_V1_CONFIGURATION_KEY, read_preview_and_replay_configuration
     from verify import cache_values
     from qualification import validate_production_contract
 
@@ -254,8 +254,7 @@ def execute(arguments):
         compdb_path = build / "compile_commands.json"
         configuration = cache_values(build)
         assert configuration.get("BUILD_TESTING") == "OFF"
-        assert "JUICER_GRAIN_PREVIEW" in configuration
-        preview = grain_preview_enabled(configuration["JUICER_GRAIN_PREVIEW"])
+        preview, _ = read_preview_and_replay_configuration(configuration)
         module_name = "juicer-grain-preview" if preview else "juicer"
         descriptor = (
             root / "tests/ofx" / ("descriptor_manifest_grain_preview.json" if preview else "descriptor_manifest.json")
@@ -318,6 +317,17 @@ def execute(arguments):
         ]
         source_inputs.extend(path for path in (root / "Resources").rglob("*") if path.is_file())
         assert resources.is_dir(), "staged resources missing"
+        if FILM_V1_CONFIGURATION_KEY in configuration:
+            for name in ("manifest.json", "records.f32", "sums.f32"):
+                member = Path("grain/portra-400") / name
+                assert digest(resources / member) == digest(root / "Resources" / member), f"staged Film v1 {member}"
+            legal = contents / "Legal/fotufilm"
+            for name, original in (
+                ("NOTICE.md", root / "Resources/grain/portra-400/NOTICE.md"),
+                ("LICENSE.Fotufilm", root / "tests/grain/LICENSE.Fotufilm"),
+            ):
+                assert digest(legal / name) == digest(original), f"staged Film v1 {name}"
+                source_inputs.extend((original, legal / name))
         source_inputs.extend(path for path in resources.rglob("*") if path.is_file())
         consumed_before = {str(path): digest(path) for path in sorted(set(source_inputs))}
         forbidden = re.compile(

@@ -6,8 +6,6 @@ use crate::hash;
 use crate::profile::Polarity;
 use crate::route::ScanRoute;
 use super::Development;
-
-#[cfg(any(feature = "grain-preview", test))]
 pub(crate) mod portra;
 
 #[derive(Clone, Copy, Debug)]
@@ -24,14 +22,9 @@ pub enum Source {
 #[derive(Debug)]
 pub enum Error {
     Minimum,
-    Span {
-        channel: usize,
-    },
-    #[cfg(any(feature = "grain-preview", test))]
+    Span { channel: usize },
     FilmNormalization,
-    #[cfg(any(feature = "grain-preview", test))]
     FilmProjectionSpan,
-    #[cfg(any(feature = "grain-preview", test))]
     FilmSpectralRange,
     ZeroIdentity,
 }
@@ -44,15 +37,12 @@ impl fmt::Display for Error {
                 f,
                 "film density span requires finite positive result channel={channel}"
             ),
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmNormalization => {
                 f.write_str("Film v1 normalization falls outside the Portra density certificate")
             }
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmProjectionSpan => {
                 f.write_str("Portra Film v1 projection requires a finite CMY span within 64 D")
             }
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmSpectralRange => {
                 f.write_str("Portra Film v1 exceeds the scanner and enlarger transmission range")
             }
@@ -97,15 +87,11 @@ impl Bounds {
             *development.maximum_cmy(),
         )
     }
-
-    #[cfg(any(feature = "grain-preview", test))]
     pub(crate) fn film_v1(development: &Development, allowances: [f32; 2]) -> Result<Self, Error> {
         let [lower, upper] = allowances;
         let maximum_cmy = Self::film_v1_clean_maximum(development).map(|d| (d + upper).next_up());
         Self::checked_film_v1(development, [lower; 3], maximum_cmy)
     }
-
-    #[cfg(any(feature = "grain-preview", test))]
     pub(crate) fn portra_film_v1(
         development: &Development,
         bank: &crate::assets::PortraGrainBank,
@@ -136,8 +122,6 @@ impl Bounds {
         }
         original
     }
-
-    #[cfg(any(feature = "grain-preview", test))]
     pub(crate) fn film_v1_clean_maximum(development: &Development) -> [f32; 3] {
         // Development samples its normalized knots with capped linear
         // interpolation. Thinning by a factor in [0, 1] stays inside this
@@ -148,8 +132,6 @@ impl Bounds {
             maximum.max(maximum - minimum)
         })
     }
-
-    #[cfg(any(feature = "grain-preview", test))]
     fn checked_film_v1(
         development: &Development,
         minimum_cmy: [f32; 3],
@@ -261,8 +243,6 @@ impl Bounds {
         self.hash
     }
 }
-
-#[cfg(any(feature = "grain-preview", test))]
 fn check_spectral_floor(
     lo: [f64; 3],
     hi: [f64; 3],

@@ -128,7 +128,14 @@ class GpuLauncherTests(unittest.TestCase):
     preset = "linux-release"
     preview = "Ffi.Gpu.GrainPreviewStaged"
     apertures = "Grain.Gpu.FilmOfxApertures"
-    catalog = (Path(__file__).resolve().parents[1] / "gpu-contracts.json").read_bytes()
+    catalog = encoded(
+        {
+            **json.loads((Path(__file__).resolve().parents[1] / "gpu-contracts.json").read_bytes()),
+            "grain_preview": json.loads(Path(__file__).with_name("legacy-grain-preview-contracts.json").read_bytes())[
+                "gpu"
+            ],
+        }
+    )
 
     def launch(self, name, listed, cohorts, *, preview=None, testing="ON", error=None):
         replay = "ON" if preview == "ON" and testing == "ON" else "OFF"
@@ -192,11 +199,11 @@ class GpuLauncherTests(unittest.TestCase):
         return listed
 
     def test_preview_launch_accepts_declared_cases(self):
-        listed = self.optional_cases("grain_preview", self.preview, 21)
+        listed = self.optional_cases("grain_preview", self.preview, 23)
         self.launch(self.preview, listed, {listed[0][0]: [case_id for _, case_id in listed]}, preview="ON")
 
     def test_preview_launch_rejects_missing_case(self):
-        listed = self.optional_cases("grain_preview", self.preview, 21)
+        listed = self.optional_cases("grain_preview", self.preview, 23)
         listed.remove(["grain-preview-render", "negative-print-time-endpoint"])
         self.launch(
             self.preview,
@@ -207,7 +214,7 @@ class GpuLauncherTests(unittest.TestCase):
         )
 
     def test_preview_launch_rejects_second_cohort(self):
-        listed = self.optional_cases("grain_preview", self.preview, 21)
+        listed = self.optional_cases("grain_preview", self.preview, 23)
         self.launch(
             self.preview,
             listed,
@@ -251,7 +258,7 @@ class GpuLauncherTests(unittest.TestCase):
         self.assertEqual(execution["commands"], [])
 
     def test_base_launch_uses_catalog_without_product_cache(self):
-        name = "Ffi.Gpu.PreparedStateLifetime"
+        name = "Ffi.Gpu.FilmV1Staged"
         catalog = json.loads(self.catalog)
         membership = catalog["native_membership"][name]
         required = membership["required"]

@@ -79,7 +79,7 @@ namespace {
         Case{"positive-print", "positive-print", "PositivePrintScan", 0, 4}};
     constexpr std::array<std::string_view, 4> kCaseIds{
         "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"};
-    constexpr std::array kGrainPreviewCases{
+    constexpr std::array kFilmV1Cases{
         Case{"negative-direct-quarter-size-half", "negative-direct", "NegativeDirectScan", 0, 4, 1208, 504},
         Case{"negative-print-proxy-sequence", "negative-print", "NegativePrintScan", 0, 4, 1208, 504},
         Case{"negative-direct-hd", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
@@ -540,9 +540,9 @@ namespace {
     int scanner_capacity(const std::filesystem::path& path, const std::filesystem::path& output) {
         constexpr Case test{"capacity", "negative-direct", "NegativeDirectScan", 0, 3, 12800, 96, 0, 0.0};
         constexpr GrainGeometry geometry{{0, 0, test.width, test.height}, {0, 0, test.width, test.height}};
-        require(path.is_absolute() && path.filename() == "juicer-grain-preview.ofx" &&
+        require(path.is_absolute() && path.filename() == "juicer.ofx" &&
                     std::filesystem::is_directory(output) && std::filesystem::is_empty(output),
-                "capacity requires the absolute Preview module and an empty output directory");
+                "capacity requires the absolute standard module and an empty output directory");
         const auto resources = std::filesystem::canonical(path.parent_path().parent_path() / "Resources");
         require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json"), "capacity grain bank unavailable");
         const CudaDriver driver;
@@ -552,7 +552,7 @@ namespace {
         ContextRestore restore(driver, original);
         require_cuda(cudaSetDevice(0), "select capacity CUDA device");
         Module module(path);
-        auto* plugin = const_cast<OfxPlugin*>(check_discovery(module, path, "com.juicer.Juicer.GrainPreview"));
+        auto* plugin = const_cast<OfxPlugin*>(check_discovery(module, path, "com.juicer.Juicer"));
         using TokenSetter = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
         require(!module.find_symbol<TokenSetter>("fj_preview_replay_set_tokens") &&
                     !module.find_symbol<TokenSetter>("fj_preview_benchmark_set_tokens"),
@@ -661,7 +661,7 @@ namespace {
         const bool preview = variant == "preview";
         const bool filmV1 = grain == "film-v1";
         const bool print = route == "negative-print";
-        require((preview || variant == "ordinary") && (grain == "current" || (preview && filmV1)) &&
+        require((preview || variant == "ordinary") && (grain == "current" || filmV1) &&
                     (print || route == "negative-direct"),
                 "invalid spectral replay variant, grain model or route");
         require(path.is_absolute() && std::filesystem::is_directory(output) && std::filesystem::is_empty(output),
@@ -747,7 +747,8 @@ namespace {
                         host.value(effect, name) == value,
                     std::string("spectral replay control readback differs: ") + name);
         };
-        if (preview)
+        require(!filmV1 || declared.contains("GrainModel"), "module does not support Film v1");
+        if (declared.contains("GrainModel"))
             change("GrainModel", {std::string(filmV1 ? "film_v1" : "current")});
         if (filmV1) {
             change("FilmGrainAmountEv", {0.0});
@@ -848,14 +849,14 @@ namespace {
         return 0;
     }
 
-    int grain_preview_witness(const std::filesystem::path& path) {
+    int film_v1_witness(const std::filesystem::path& path) {
         JuicerTests::CaseLog cases;
         std::vector<std::string> ids;
-        ids.reserve(kGrainPreviewCases.size());
-        for (const auto& test : kGrainPreviewCases)
+        ids.reserve(kFilmV1Cases.size());
+        for (const auto& test : kFilmV1Cases)
             ids.emplace_back(test.id);
-        cases.membership("grain-preview-render", ids);
-        require(path.filename() == "juicer-grain-preview.ofx", "expected preview module");
+        cases.membership("film-v1-render", ids);
+        require(path.filename() == "juicer.ofx", "expected standard module");
         const auto resources = path.parent_path().parent_path() / "Resources";
         require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
                     std::filesystem::is_regular_file(resources / "grain/portra-400/records.f32") &&
@@ -871,7 +872,7 @@ namespace {
         const auto count = module.symbol<int (*)()>("OfxGetNumberOfPlugins");
         const auto get = module.symbol<OfxPlugin* (*)(int)>("OfxGetPlugin");
         require(count() == 1 && get(0) && get(0)->pluginIdentifier &&
-                    std::string_view(get(0)->pluginIdentifier) == "com.juicer.Juicer.GrainPreview",
+                    std::string_view(get(0)->pluginIdentifier) == "com.juicer.Juicer",
                 "preview discovery identity");
         InstanceHost host;
         Lifecycle lifecycle(get(0), host);
@@ -882,8 +883,8 @@ namespace {
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create preview stream");
         Json routes = Json::array();
         bool allPassed = true;
-        for (const auto& test : kGrainPreviewCases) {
-            JuicerTests::CaseEvent event("grain-preview-render", test.id);
+        for (const auto& test : kFilmV1Cases) {
+            JuicerTests::CaseEvent event("film-v1-render", test.id);
             auto* effect = host.create_effect();
             const auto amountDefault = host.value(effect, "FilmGrainAmountEv");
             const auto sizeDefault = host.value(effect, "FilmGrainTexelPitchUm");
@@ -1208,12 +1209,13 @@ namespace {
                         const auto clean = render(time);
                         change("FilmDustAmount", {10.0});
                         change("FilmScratchAmount", {10.0});
-                        // The ordinary image-scale path supplies an independent
-                        // processed reference for the same physical artifact grid.
+                        // Use Current at the physical image scale as the processed reference.
+                        change("GrainModel", {std::string("current")});
                         for (const auto* clip : {"Source", "Output"})
                             host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, scale);
                         const auto artifacts = render(time);
                         require(artifacts != clean, "dust and scratches did not change the processed reference");
+                        change("GrainModel", {std::string("film_v1")});
                         for (const auto* clip : {"Source", "Output"})
                             host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
                         require(render(time) == artifacts, "unit image scales changed grain-off artifact geometry");
@@ -1341,11 +1343,14 @@ namespace {
                     require(current != off, "Current grain did not change grain-off effects pixels");
                     for (const auto* clip : {"Source", "Output"})
                         host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
-                    require(render(time) == current, "unit image scales changed Current grain or effects");
+                    const auto currentUnit = render(time);
+                    require(currentUnit != current, "Current did not use its source image scale");
                     source_flag({1});
                     output_flag({1});
-                    require(render(time) == current, "thumbnail flags changed pre-resized Current grain or effects");
-                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"flag_raster", {92, 46}}, {"flag_checks", std::move(flags)}, {"property_faults_recovered", true}, {"film_controls_rejected", {{"thumbnail", kOfxStatErrFatal}, {"timeline", kOfxStatErrFatal}, {"diagnostic", "FilmJuicerRenderAdmission"}, {"recovered", true}}}, {"film_amount_edit_changed_words_and_returned", true}, {"one_pixel_mismatches", std::move(mismatches)}, {"current_pre_resized_preserved", true}, {"images_released_once", true}});
+                    require(render(time) == currentUnit, "thumbnail flags changed pre-resized Current grain or effects");
+                    geometry(8);
+                    require(render(time) == current, "Current did not recover when the source image scale returned");
+                    routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"flag_raster", {92, 46}}, {"flag_checks", std::move(flags)}, {"property_faults_recovered", true}, {"film_controls_rejected", {{"thumbnail", kOfxStatErrFatal}, {"timeline", kOfxStatErrFatal}, {"diagnostic", "FilmJuicerRenderAdmission"}, {"recovered", true}}}, {"film_amount_edit_changed_words_and_returned", true}, {"one_pixel_mismatches", std::move(mismatches)}, {"current_image_scale_preserved", true}, {"images_released_once", true}});
                     require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                     device.release_images();
                     event.passed();
@@ -1585,7 +1590,7 @@ namespace {
         cases.finish();
         // Keep the verified subcases of both routes in the staged CTest receipt.
         std::cout << "CTEST_FULL_OUTPUT\n";
-        std::cout << Json{{"schema", "grain-preview-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
+        std::cout << Json{{"schema", "film-v1-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
         return allPassed && std::cout ? 0 : 1;
     }
 
@@ -1785,7 +1790,7 @@ namespace {
         require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
                 "replay context description failed");
         std::vector<ofx_test::InstanceParamDefinition> definitions(ofx_test::kInstanceParameters.begin(), ofx_test::kInstanceParameters.end());
-        if (replayGrain && preview) {
+        if (replayGrain) {
             using Kind = ofx_test::InstanceParamKind;
             definitions.insert(definitions.end(), {{"GrainModel", Kind::StringChoice}, {"FilmGrainAmountEv", Kind::Double}, {"FilmGrainTexelPitchUm", Kind::Double}, {"FilmGrainChromaFraction", Kind::Double}});
         }
@@ -2076,14 +2081,14 @@ int main(int argc, char** argv) {
             return scanner_capacity(argv[2], argv[3]);
         }
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
-        if (argc >= 2 && std::string_view(argv[1]) == "--grain-preview-apertures") {
+        if (argc >= 2 && std::string_view(argv[1]) == "--film-v1-apertures") {
             if (JuicerTests::list_requested(argc, argv)) {
                 for (const auto& witness : kOfxApertures)
                     JuicerTests::list_case(kApertureCaller, witness.id);
                 return std::fflush(stdout) == 0 ? 0 : 1;
             }
             require(argc == 2, "aperture witness arguments");
-            return grain_preview_apertures();
+            return film_v1_apertures();
         }
 #endif
 #if defined(JUICER_GRAIN_MOTION_REPLAY) && !defined(_WIN32)
@@ -2091,16 +2096,16 @@ int main(int argc, char** argv) {
             return grain_motion_replay(argv[1], argv[2]);
 #endif
 #if defined(JUICER_GRAIN_MOTION_REPLAY) && defined(_WIN32)
-        require(false, "expected --grain-preview-apertures");
+        require(false, "expected --film-v1-apertures");
 #endif
-        if (argc >= 3 && std::string_view(argv[1]) == "--grain-preview-witness") {
+        if (argc >= 3 && std::string_view(argv[1]) == "--film-v1-witness") {
             if (JuicerTests::list_requested(argc, argv)) {
-                for (const auto& test : kGrainPreviewCases)
-                    JuicerTests::list_case("grain-preview-render", test.id);
+                for (const auto& test : kFilmV1Cases)
+                    JuicerTests::list_case("film-v1-render", test.id);
                 return std::fflush(stdout) == 0 ? 0 : 1;
             }
             require(argc == 3, "preview witness arguments");
-            return grain_preview_witness(argv[2]);
+            return film_v1_witness(argv[2]);
         }
         if (argc >= 2 && (std::string_view(argv[1]) == "--grain-preview-discovery" ||
                           std::string_view(argv[1]) == "--grain-preview-paired-discovery")) {
@@ -2162,7 +2167,7 @@ int main(int argc, char** argv) {
         require(count() == 1 && get(-1) == nullptr && get(1) == nullptr, "production discovery membership");
         auto* plugin = get(0);
         require(plugin && plugin->pluginApi && std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi &&
-                    plugin->pluginIdentifier && std::string_view(plugin->pluginIdentifier) == (modulePath.filename() == "juicer-grain-preview.ofx" ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer") &&
+                    plugin->pluginIdentifier && std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer" &&
                     plugin->apiVersion == 1 && plugin->pluginVersionMajor == 1 && plugin->pluginVersionMinor == 0 &&
                     plugin->setHost && plugin->mainEntry && get(0) == plugin,
                 "production descriptor contract");
@@ -2209,12 +2214,12 @@ int main(int argc, char** argv) {
             require(create == kOfxStatOK, "production instance creation failed");
             lifecycle.created(effect);
             ++effectsCreated;
-            if (index == 0 && modulePath.filename() == "juicer-grain-preview.ofx") {
-                require(host.value(effect, "GrainModel") == std::vector<InstanceValue>{std::string("current")}, "preview model default");
+            if (index == 0) {
+                require(host.value(effect, "GrainModel") == std::vector<InstanceValue>{std::string("current")}, "grain model default");
                 require(host.value(effect, "FilmGrainAmountEv") == std::vector<InstanceValue>{0.0} &&
                             host.value(effect, "FilmGrainTexelPitchUm") == std::vector<InstanceValue>{1.0} &&
                             host.value(effect, "FilmGrainChromaFraction") == std::vector<InstanceValue>{1.0},
-                        "preview slider defaults");
+                        "Film v1 control defaults");
                 host.set_value(effect, "GrainDebugView", {3});
                 host.set_value(effect, "GrainModel", {std::string("film_v1")});
                 auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainModel"});

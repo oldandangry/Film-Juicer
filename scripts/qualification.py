@@ -41,9 +41,11 @@ PRODUCT_PREVIEW_KEYS = (
     "JUICER_GRAIN_PREVIEW_CONFIGURED",
     "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED",
 )
+FILM_V1_CONFIGURATION_KEY = "JUICER_FILM_V1_CONFIGURED"
+PRODUCT_CONFIGURATION_KEYS = (*PRODUCT_PREVIEW_KEYS, FILM_V1_CONFIGURATION_KEY)
 APERTURE_CONFIGURATION_KEY = "JUICER_GRAIN_APERTURE_TARGET"
 MODULE_CONFIGURATION_KEYS = (
-    *PRODUCT_PREVIEW_KEYS,
+    *PRODUCT_CONFIGURATION_KEYS,
     APERTURE_CONFIGURATION_KEY,
     "CMAKE_BUILD_TYPE",
     "CMAKE_CXX_COMPILER",
@@ -175,10 +177,21 @@ def motion_replay_tidy_label(source, *, legacy=False):
 
 
 def read_preview_and_replay_configuration(configuration):
-    """Read CMake's effective product and replay decisions, retaining the raw option."""
+    """Read the effective aperture replay decision and historical preview identity."""
     if not isinstance(configuration, dict):
         raise ValueError("missing configured product preview and replay state")
     testing, raw_preview, preview, replay = (configuration.get(key) for key in PRODUCT_PREVIEW_KEYS)
+    if FILM_V1_CONFIGURATION_KEY in configuration:
+        if (
+            configuration[FILM_V1_CONFIGURATION_KEY] != "ON"
+            or any(key in configuration for key in PRODUCT_PREVIEW_KEYS[1:3])
+            or not isinstance(testing, str)
+            or replay not in ("ON", "OFF")
+            or (replay == "ON" and not grain_preview_enabled(testing))
+            or APERTURE_CONFIGURATION_KEY not in configuration
+        ):
+            raise ValueError("invalid standard Film v1 product configuration")
+        return False, replay == "ON"
     if (
         not isinstance(testing, str)
         or not isinstance(raw_preview, str)
@@ -194,7 +207,8 @@ def read_preview_and_replay_configuration(configuration):
 
 def quality_replay_configuration(configuration, preset):
     preview, replay = read_preview_and_replay_configuration(configuration)
-    expected = preset.startswith("linux-") and grain_preview_enabled(configuration["BUILD_TESTING"]) and preview
+    enabled = preview or FILM_V1_CONFIGURATION_KEY in configuration
+    expected = preset.startswith("linux-") and grain_preview_enabled(configuration["BUILD_TESTING"]) and enabled
     if replay != expected:
         raise ValueError("configured replay availability disagrees with the native preset, testing and preview")
     return preview, replay
@@ -205,7 +219,9 @@ def configured_aperture_target(configuration, preset=None):
     recorded = configuration.get(APERTURE_CONFIGURATION_KEY)
     if recorded is None:
         return MOTION_REPLAY_TARGET if replay else None  # Historical receipts.
-    enabled = preview and grain_preview_enabled(configuration["BUILD_TESTING"])
+    enabled = (preview or FILM_V1_CONFIGURATION_KEY in configuration) and grain_preview_enabled(
+        configuration["BUILD_TESTING"]
+    )
     if preset is not None and replay != (enabled and preset.startswith("linux-")):
         raise ValueError("configured replay availability disagrees with the aperture preset")
     expected = (MOTION_REPLAY_TARGET if replay else WINDOWS_APERTURE_TARGET) if enabled else "OFF"
@@ -708,7 +724,10 @@ def native_registration(
         contract = {**contract, "targets": targets, "required": required}
     if contract.get("schema") != f"native-{runtime}-contracts-v1" or set(paths) != set(contract["targets"]):
         raise ValueError("invalid host target contract")
-    current_ofx = runtime == "host" and not cuda_free and "replaces" in contract.get("grain_preview", {})
+    standard_film = FILM_V1_CONFIGURATION_KEY in (configuration or {})
+    current_ofx = (
+        runtime == "host" and not cuda_free and (standard_film or "replaces" in contract.get("grain_preview", {}))
+    )
     if current_ofx:
         source, built, staged = production_module_paths(preset, configuration)
         path = type(source)
@@ -716,6 +735,8 @@ def native_registration(
         if not python.is_absolute():
             raise ValueError("missing configured Python for OFX witness launcher")
         witnesses = {PREVIEW_DISCOVERY, *OFX_PREVIEW_REPLACEMENTS, *OFX_PREVIEW_REPLACEMENTS.values()}
+        if standard_film:
+            witnesses.add("Ofx.Host.FilmV1Instance")
     found = {}
     counts = dict.fromkeys(paths, 0)
     for test in registration["tests"]:
@@ -779,6 +800,8 @@ def native_registration(
         entry = found.get(name)
         if name == APERTURE_REGISTRATION and configuration is not None:
             owner = configured_aperture_target(configuration, preset)
+            if standard_film:
+                selector = "--film-v1-apertures"
         if (
             runtime != expected_runtime
             or entry is None
@@ -791,6 +814,23 @@ def native_registration(
             binary = artifact_consumers.get(owner, {}).get("binary")
             if paths[owner] != binary or entry["command"][0] != binary:
                 raise ValueError("optional product executable differs from configured target output: " + name)
+    if standard_film and runtime == "gpu":
+        name = "Ffi.Gpu.FilmV1Staged"
+        owner = "JuicerProductionPreparedRenderProbe"
+        entry = found.get(name)
+        _, built, staged = production_module_paths(preset, configuration)
+        probe = prepared_render_probe_path(preset, built)
+        path = type(built)
+        if (
+            entry is None
+            or name not in contract["required"]
+            or entry["target"] != owner
+            or len(entry["command"]) != 3
+            or entry["command"][1] != "--film-v1-witness"
+            or path(entry["command"][0]) != probe
+            or path(entry["command"][2]) != staged
+        ):
+            raise ValueError("Film v1 staged witness differs from its configured probe or standard module")
     if current_ofx:
         preview, _ = read_preview_and_replay_configuration(configuration)
         consumers = artifact_consumers or {}
@@ -807,10 +847,15 @@ def native_registration(
             entry.update(module_record=True, variant_witness=True)
         elif PREVIEW_DISCOVERY in found:
             raise ValueError("preview discovery registered in the ordinary build")
-        for witness, fixture in OFX_CALLBACK_WITNESSES.items():
+        callback_witnesses = [(witness, fixture, None) for witness, fixture in OFX_CALLBACK_WITNESSES.items()]
+        if standard_film:
+            callback_witnesses.append(("Instance", OFX_CALLBACK_WITNESSES["Instance"], "Ofx.Host.FilmV1Instance"))
+        for witness, fixture, film_name in callback_witnesses:
             ordinary = f"Ofx.Host.{witness}"
             preview_name = OFX_PREVIEW_REPLACEMENTS[ordinary]
             name, opposite = (preview_name, ordinary) if preview else (ordinary, preview_name)
+            if film_name is not None:
+                name = film_name
             owner = f"JuicerOfx{witness}Tests"
             row = found.get(name)
             consumer = consumers.get(owner, {})
@@ -818,6 +863,8 @@ def native_registration(
             if witness == "Module":
                 fixture += "_grain_preview.json" if preview else ".json"
             selectors = ["--grain-preview"] if preview else []
+            if film_name is not None:
+                selectors.append("--film-v1")
             if witness != "Module":
                 selectors.append("--reference")
             if (
@@ -1110,7 +1157,8 @@ def rust_membership(document, package, cargo, binaries, *, bound=False):
 
 
 def rust_core_publication(contract):
-    if contract.get("grain_preview", {}).get("rust_core_publication") != PREVIEW_PUBLICATION_FUNCTION:
+    binding = contract.get("film_v1", contract.get("grain_preview", {}))
+    if binding.get("rust_core_publication") != PREVIEW_PUBLICATION_FUNCTION:
         raise ValueError("missing or invalid Rust core publication contract")
     return PREVIEW_PUBLICATION_FUNCTION
 
@@ -1488,7 +1536,7 @@ def rust_receipt_membership(
                 raise ValueError("Rust JUnit digest differs from the recorded execution")
         elif "junit_sha256" in execution:
             raise ValueError("current Rust JUnit binding in an older result")
-        if preview and package == "core":
+        if (preview or "film_v1" in contract) and package == "core":
             publication = rust_core_publication(contract)
     else:
         validate_rust_execution_features(execution, package, cargo, require_resolved=require_resolved)
@@ -2217,7 +2265,9 @@ def validate_tests_result(result, payloads):
             contracts[runtime] = configured_product_contract(
                 contracts[runtime], runtime, candidate["configuration"], result["preset"]
             )
-        if "replaces" in contracts["host"].get("grain_preview", {}):
+        if FILM_V1_CONFIGURATION_KEY in candidate["configuration"] or "replaces" in contracts["host"].get(
+            "grain_preview", {}
+        ):
             versions = [item for item in result["commands"] if item["name"] == "versions"]
             if len(versions) != 1:
                 raise ValueError("missing or duplicate tool-version invocation for OFX witness launchers")
@@ -2826,7 +2876,7 @@ def validate_quality_result(result, payloads):
             if (
                 rust_required
                 and binding
-                and binding.get("JUICER_GRAIN_PREVIEW") != configuration["JUICER_GRAIN_PREVIEW"]
+                and binding.get("JUICER_GRAIN_PREVIEW") != configuration.get("JUICER_GRAIN_PREVIEW")
             ):
                 raise ValueError("quality preview value differs from the native configuration")
         validate_clippy_forms(checks, rust_required=rust_required, required_packages=packages, preview=preview_enabled)
@@ -3270,7 +3320,10 @@ def _validate_production_off(preset, payloads, report):
 MODULE_RECORD_SHAPE = dict.fromkeys(("build", "stage", "build_sha256", "stage_sha256"), str)
 PROBE_RECORD_SHAPE = {"path": str, "sha256": str}
 MODULE_CONFIGURATION_SHAPE = {
-    (key + "?" if key == APERTURE_CONFIGURATION_KEY else key): str for key in MODULE_CONFIGURATION_KEYS
+    (
+        key + "?" if key in (*PRODUCT_PREVIEW_KEYS[1:3], FILM_V1_CONFIGURATION_KEY, APERTURE_CONFIGURATION_KEY) else key
+    ): str
+    for key in MODULE_CONFIGURATION_KEYS
 }
 RUST_ARTIFACT_SHAPE = {
     "schema": str,
@@ -3425,10 +3478,16 @@ def validate_scanner_replay_links(result, candidate, payloads):
     selected = set(cmake_build_targets(build_command, paths(configure_command["command"][0]), source, build) or [])
     if "bundle-archive" in selected:
         selected.add("juicer")
+    standard_film = FILM_V1_CONFIGURATION_KEY in configuration
+    is_ordinary = (
+        not read_preview_and_replay_configuration(configuration)[0]
+        if standard_film
+        else configuration.get("JUICER_GRAIN_PREVIEW_CONFIGURED") == "OFF"
+    )
     if (
         not source.is_absolute()
         or configuration["CMAKE_BUILD_TYPE"] != "Release"
-        or configuration["JUICER_GRAIN_PREVIEW_CONFIGURED"] != "OFF"
+        or not is_ordinary
         or link_targets - selected
         or record["schema"] != "scanner-replay-links-v1"
         or record["candidate_source"] != candidate_source_digest(candidate, payloads["candidate.patch"])
@@ -3482,7 +3541,7 @@ def build_result_members(result):
 
 def producer_preview_configuration(configuration):
     preview, replay = read_preview_and_replay_configuration(configuration)
-    if grain_preview_enabled(configuration["JUICER_GRAIN_PREVIEW"]) != preview:
+    if grain_preview_enabled(configuration.get("JUICER_GRAIN_PREVIEW")) != preview:
         raise ValueError("producer cached preview value disagrees with the effective CMake decision")
     return preview, replay
 
@@ -3589,7 +3648,7 @@ def validate_build_result(result, payloads):
             raise ValueError("invalid CMake producer configure working directory")
         testing = configuration["BUILD_TESTING"]
         python_option = "-DPython3_EXECUTABLE="
-        preview_setting = configuration["JUICER_GRAIN_PREVIEW_CONFIGURED"]
+        preview_setting = configuration.get("JUICER_GRAIN_PREVIEW_CONFIGURED")
         optional = command[5:]
         stage_option = "-DCMAKE_INSTALL_PREFIX:PATH="
         if optional and optional[-1].startswith(stage_option):
@@ -3615,7 +3674,8 @@ def validate_build_result(result, payloads):
             or (
                 optional
                 and (
-                    optional != [f"-DJUICER_GRAIN_PREVIEW:BOOL={preview_setting}"]
+                    preview_setting is None
+                    or optional != [f"-DJUICER_GRAIN_PREVIEW:BOOL={preview_setting}"]
                     or configuration["JUICER_GRAIN_PREVIEW"] != preview_setting
                 )
             )

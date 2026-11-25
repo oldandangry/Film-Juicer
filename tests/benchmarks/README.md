@@ -9,8 +9,7 @@ the GPU model, driver, preset/commit and whether other GPU processes were active
 
 Use the native Release preset with testing enabled. Build
 `JuicerOfxSpectralReplayModule` and `JuicerHalationComparisonProbe` through
-`scripts/verify.py prepare`. Keep the ordinary and Grain Preview configurations
-and staged products in their prescribed order. The replay companion copies
+`scripts/verify.py prepare`. The replay companion copies
 the configured staged Resources and links the matching test-support archive.
 
 ```sh
@@ -22,7 +21,9 @@ python -B tests/benchmarks/ofx.py spectral-seed-pilot --preset linux-release \
 The inputs bind both module hashes, their symbol identities, the compiled
 breakpoint entries and pending-readback layouts. Replay uses natural tokens
 from the staged product and reproduces them on the isolated companion. The
-ordinary pair uses Current. Preview can exercise both Current and Film v1.
+standard product can exercise Current and Film v1. The paired scanner rows
+named `preview-*` refer to the archived dual-product campaign and retain its
+module identities.
 
 `ofx.py scanner-paired` takes a native Release preset, an input manifest, a
 fresh run ID and one or more `--workloads`. Its check mode uses the same tail

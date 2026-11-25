@@ -28,7 +28,7 @@ from build_dependencies import header_consumers
 from qualification import (
     MODULE_CONFIGURATION_KEYS,
     OPTIONAL_PRODUCT_REGISTRATIONS,
-    PRODUCT_PREVIEW_KEYS,
+    FILM_V1_CONFIGURATION_KEY,
     PREVIEW_DISCOVERY,
     RECEIPT_ERRORS,
     RUST_TEST_BUILD_TARGET,
@@ -227,7 +227,7 @@ def rust_tests(args):
     contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json").read_bytes()
     bookkeeping_reads += len(contract_bytes)
     contract = json.loads(contract_bytes)
-    publication = rust_core_publication(contract) if preview and package == "core" else None
+    publication = rust_core_publication(contract) if (preview or "film_v1" in contract) and package == "core" else None
 
     source_root = Path(selected_package["manifest_path"]).parent
     doctest_sources = []
@@ -844,13 +844,11 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
     return 0 if result["status"] == "passed" else 1
 
 
-def configure_command(cmake, preset, *, cuda_free=False, testing="ON", grain_preview=None):
+def configure_command(cmake, preset, *, cuda_free=False, testing="ON"):
     command = [cmake, "--preset", preset + ("-host-tests" if cuda_free else "")]
     if cuda_free:
         command += ["-S", str(ROOT / "tests/host")]
     command += ["-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
-    if grain_preview is not None:
-        command.append("-DJUICER_GRAIN_PREVIEW:BOOL=" + grain_preview)
     return command
 
 
@@ -970,7 +968,7 @@ def native_tests(args):
                     "JUICER_NEXTEST_EXECUTABLE": nextest,
                     "Python3_EXECUTABLE": sys.executable,
                 }
-                missing_product_configuration = not cuda_free and not all(k in cache for k in PRODUCT_PREVIEW_KEYS)
+                missing_product_configuration = not cuda_free and FILM_V1_CONFIGURATION_KEY not in cache
                 if (
                     missing_product_configuration
                     or "JUICER_RUST_TESTS_REQUEST" not in cache
@@ -985,7 +983,7 @@ def native_tests(args):
                 "configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ)
             )
             cache = cache_values(build)
-            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS if key in cache}
             preview = False
             artifact_consumers = None
             if not standalone and not cuda_free:
@@ -1363,9 +1361,7 @@ def fresh_prepare(args):
             home = ROOT / "tests/host" if cuda_free else ROOT
             if cache and not Path(cache["CMAKE_HOME_DIRECTORY"]).samefile(home):
                 raise ValueError("build cache belongs to another source tree")
-            configure = configure_command(
-                cmake, args.preset, cuda_free=cuda_free, testing=args.testing, grain_preview=args.grain_preview
-            )
+            configure = configure_command(cmake, args.preset, cuda_free=cuda_free, testing=args.testing)
             stage_name = getattr(args, "stage_subdirectory", None)
             if stage_name is not None:
                 if cuda_free:
@@ -1380,7 +1376,7 @@ def fresh_prepare(args):
                 configure,
                 vctip_executable=windows_vctip(os.environ),
             )
-            if replay_links and cache_values(build).get("JUICER_GRAIN_PREVIEW_CONFIGURED") != "OFF":
+            if replay_links and read_preview_and_replay_configuration(cache_values(build))[0]:
                 raise ValueError("scanner replay links require the configured Ordinary product")
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
             if not targets:
@@ -1400,7 +1396,7 @@ def fresh_prepare(args):
                 vctip_executable=windows_vctip(os.environ),
             )
             cache = cache_values(build)
-            candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            candidate["configuration"] = {key: cache[key] for key in MODULE_CONFIGURATION_KEYS if key in cache}
             if replay_links:
                 result["scanner_replay_targets"] = sorted(replay_targets)
                 capture_scanner_replay_links(
@@ -1849,7 +1845,6 @@ def main():
     selected.add_argument("--targets", nargs="+")
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
-    prepare.add_argument("--grain-preview", choices=("ON", "OFF"), help="set the product preview option in CMake")
     prepare.add_argument("--stage-subdirectory", help="stage under a named child of the native preset stage")
     prepare.add_argument("--run-id")
     prepare.add_argument("--clean-first", action="store_true")

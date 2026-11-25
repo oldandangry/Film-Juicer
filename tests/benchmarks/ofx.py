@@ -1780,11 +1780,8 @@ def scanner_capacity(args):
     run = execution.NativeRun(ROOT, directory)
     with execution.OutputLease(ROOT, build), execution.OutputLease(ROOT) as gpu:
         configuration = verify.cache_values(build)
-        if (
-            not qualification.read_preview_and_replay_configuration(configuration)[0]
-            or configuration["BUILD_TESTING"] != "ON"
-        ):
-            raise ValueError("capacity requires the native testing-ON Preview configuration")
+        if configuration.get(qualification.FILM_V1_CONFIGURATION_KEY) != "ON" or configuration["BUILD_TESTING"] != "ON":
+            raise ValueError("capacity requires the native testing-ON Film v1 configuration")
         _, built, staged = qualification.production_module_paths(args.preset, configuration)
         module = Path(staged).resolve(strict=True)
         resources = (module.parent.parent / "Resources").resolve(strict=True)
@@ -2049,7 +2046,7 @@ def read_spectral_pilot_child(directory, settings, companion):
             or controls["GrainActive"] != [int(index > 0)]
             or controls["GlareActive"] != [0]
             or (
-                settings["variant"] == "preview"
+                (settings["variant"] == "preview" or settings.get("standard_film"))
                 and controls["GrainModel"] != ["film_v1" if active_model == "film_grain" else "current"]
             )
             or frame[inactive_model] is not None
@@ -2105,7 +2102,8 @@ def spectral_seed_pilot(args):
         configuration = verify.cache_values(build)
         preview, _ = qualification.read_preview_and_replay_configuration(configuration)
         variant = "preview" if preview else "ordinary"
-        if configuration["BUILD_TESTING"] != "ON" or (not preview and args.grain != "current"):
+        standard_film = qualification.FILM_V1_CONFIGURATION_KEY in configuration
+        if configuration["BUILD_TESTING"] != "ON" or (not (preview or standard_film) and args.grain != "current"):
             raise ValueError("spectral replay requires testing ON and matching configured grain model")
         _, built, staged = qualification.production_module_paths(args.preset, configuration)
         product = Path(staged).resolve(strict=True)
@@ -2178,6 +2176,7 @@ def spectral_seed_pilot(args):
                 settings = {
                     "mode": "replay",
                     "variant": variant,
+                    "standard_film": standard_film,
                     "grain": args.grain,
                     "route": args.route,
                     "module": str(module),

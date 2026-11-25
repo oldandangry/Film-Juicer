@@ -227,10 +227,9 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
-    const bool preview = argc == 3 && std::string_view(argv[1]) == "--grain-preview";
-    require(argc == 2 || preview, "expected [--grain-preview] descriptor manifest path");
-    const DescriptorExpectation descriptor{preview ? "Film-Juicer Grain Preview" : "Juicer", argv[argc - 1]};
-    const char* identifier = preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
+    require(argc == 2, "expected descriptor manifest path");
+    const DescriptorExpectation descriptor{"Juicer", argv[1]};
+    const char* identifier = "com.juicer.Juicer";
     JuicerTests::CaseLog log;
     const JuicerTests::Cohort lifecycle_rows("ofx.module.lifecycle", {"discovery/native_before", "discovery/empty_unload", "discovery/native_after", "load/fetch_reentry", "reload/suite_copy", "rebind/rejected", "rebind/recovery"});
     OfxPlugin* plugin = nullptr;

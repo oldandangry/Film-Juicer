@@ -549,11 +549,10 @@ and included-fixture freshness. CTest discovers/runs these built binaries withou
 invoking another build. For a focused Rust rebuild, select
 `cmake --build --preset <preset> --target juicer_rust_tests` before CTest.
 
-For native product tests with `JUICER_GRAIN_PREVIEW=ON`, both workspace packages
-resolve `grain-preview` and `test-support`. Preview OFF and CUDA-free host tests
-resolve `test-support` alone. The verifier and offline reader check these features
-against the CMake configuration and bind each selected registration to its package
-and prepared test binaries. Native preview runs that select `Rust.Core` require
+Native product tests and CUDA-free host tests resolve `test-support` for the
+test archives. Film v1 is part of both production and test-support builds. The
+verifier and offline reader bind each selected registration to its package and
+prepared test binaries. Native product runs that select `Rust.Core` require
 exactly one passing
 `state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities`.
 A `Rust.Bridge`-only run still checks both packages' features.

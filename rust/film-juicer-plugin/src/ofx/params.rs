@@ -886,7 +886,6 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     let _ = p.set_string(c"OfxParamPropHint", 0, c"Add grain to the negative.");
     p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
-    #[cfg(feature = "grain-preview")]
     {
         let p = parameters.define(c"OfxParamTypeStrChoice", c"GrainModel")?;
         p.set_string(c"OfxPropLabel", 0, c"Model")?;
@@ -901,7 +900,7 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
             (
                 c"FilmGrainChromaFraction",
                 c"Colour",
-                film_juicer_core::film::grain::preview::DEFAULT_CHROMA,
+                film_juicer_core::film::grain::film_v1::DEFAULT_CHROMA,
                 0.0,
                 1.0,
                 0.01,

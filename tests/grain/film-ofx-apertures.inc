@@ -972,7 +972,7 @@ void check_aperture(const CudaDriver& driver, const ApertureCase& witness) {
     }
 }
 
-int grain_preview_apertures() {
+int film_v1_apertures() {
     const CudaDriver driver;
     driver.check(driver.init(0), "initialize aperture CUDA driver");
     CUcontext original = nullptr;
