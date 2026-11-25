@@ -130,6 +130,13 @@ fn portra_film_envelope_and_enlarger_transmission() {
     }
     spectral_witness((16_000.0 / 4832.0) as f32, 16.0, 0.37);
     spectral_witness(1.953_125, 16.0, 0.0);
+    spectral_witness(1.953_125, 16.0, 1.0);
+    spectral_witness(1.25, 16.0, 1.0);
+    for edge in [37.5_f32, 255.0, 256.0, 1536.0] {
+        for width in [edge.next_down(), edge, edge.next_up()] {
+            spectral_witness(width, 16.0, 1.0);
+        }
+    }
 }
 
 fn spectral_witness(footprint: f32, gain: f32, colour: f32) {

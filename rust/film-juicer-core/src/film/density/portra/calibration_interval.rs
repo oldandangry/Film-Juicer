@@ -11,6 +11,7 @@ const SAMPLES: usize = GRID * GRID;
 #[derive(Clone, Copy)]
 struct Placement {
     block: [u32; 2],
+    period: [i32; 2],
     edges: [f64; 4],
 }
 
@@ -33,12 +34,17 @@ impl Placement {
         if hash & (1 << 18) != 0 {
             axes.swap(0, 1);
         }
+        let mut period = [0; 2];
         for (axis, bounds) in axes.iter_mut().enumerate() {
             let offset = 64.0 + f64::from((hash >> (8 * axis)) & 255);
-            *bounds = bounds.map(|x| x + offset);
+            if width > f64::from(super::CALIBRATED_MAX_FOOTPRINT) {
+                period[axis] = ((bounds[0] + offset) / SIDE as f64).floor() as i32;
+            }
+            *bounds = bounds.map(|x| x + (offset - f64::from(period[axis]) * SIDE as f64));
         }
         Self {
             block,
+            period,
             edges: [axes[0][0], axes[0][1], axes[1][0], axes[1][1]],
         }
     }
@@ -90,14 +96,14 @@ fn light_residuals(
     seed: u32,
     first: u32,
     last: u32,
-    limits: &mut [[f64; 2]; LEVELS],
+    limits: &mut [[f64; 2]],
 ) {
     let [left, right] = [first, last].map(|bits| f64::from(f32::from_bits(bits)));
     let a = Placement::at(left, lattice, seed);
     let b = Placement::at(right, lattice, seed);
     // Block indices are monotone. With a fixed placement the edges are
     // affine, so equal endpoint cells certify all intermediate cells.
-    if a.block != b.block || a.cell() != b.cell() {
+    if a.block != b.block || a.period != b.period || a.cell() != b.cell() {
         let mid = first + (last - first) / 2;
         light_residuals(tiles, lattice, seed, first, mid, limits);
         light_residuals(tiles, lattice, seed, mid + 1, last, limits);
@@ -123,9 +129,80 @@ fn light_residuals(
     }
 }
 
+fn calibration_seed(record: usize) -> u32 {
+    pcg(0x5a3f_1e1d ^ (200_u32 + record as u32).wrapping_mul(0x9e37_79b9))
+}
+
+fn calibration_position(sample: usize) -> [usize; 2] {
+    [
+        (sample % GRID * 7919) % 4096,
+        (sample / GRID * 104729) % 4096,
+    ]
+}
+
+fn residual_pad(first: f32, last: f32) -> f64 {
+    // The harmonic point incurs at most three Float64 unit roundoffs
+    // times the upper width. Corner slopes are at most 4096. Including
+    // interpolation gives a coordinate error below 1.5e-12 * last +
+    // 4e-13. Each wrapped prefix slope is at most 1600. Charge both
+    // axes, four corners, and twice the midpoint error in the Bernstein
+    // coefficient, plus the endpoint and division roundoffs. The frozen
+    // SAT magnitude premise is checked by the footprint certificate.
+    let width = f64::from(first);
+    (2e-8 + 4e-8 * f64::from(last)) / (width * width)
+}
+
+/// Prove that each record/level has two disjoint rounded calibration
+/// light intervals for all widths in the requested low-band interval.
+/// This discharges the archived proof's constant-field shortcut premise.
+pub(super) fn nonconstant_light_gap(bank: &PortraGrainBank, first: u32, last: u32) -> Option<f64> {
+    let pad = residual_pad(f32::from_bits(first), f32::from_bits(last));
+    let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
+    let mut minimum_gap = f64::INFINITY;
+    for (r, record) in bank.records().iter().enumerate() {
+        let mut largest_lower = [f64::NEG_INFINITY; LEVELS];
+        let mut smallest_upper = [f64::INFINITY; LEVELS];
+        let seed = calibration_seed(r);
+        let mut gap = 0.0;
+        let samples = if first == last { SAMPLES } else { 32 };
+        for i in 0..samples {
+            // 7919 is odd, visiting distinct lattice entries modulo 16384.
+            let lattice = calibration_position(i * 7919 % SAMPLES);
+            let mut residuals = [[f64::INFINITY, f64::NEG_INFINITY]; LEVELS];
+            light_residuals(
+                &tiles[r * LEVELS..(r + 1) * LEVELS],
+                lattice,
+                seed,
+                first,
+                last,
+                &mut residuals,
+            );
+            for (k, [lo, hi]) in residuals.into_iter().enumerate() {
+                let rounded =
+                    |residual: f64| f64::from(record.mean_light[k] + residual as f32).max(1e-9);
+                let (lo, hi) = (rounded(lo - pad), rounded(hi + pad));
+                largest_lower[k] = largest_lower[k].max(lo);
+                smallest_upper[k] = smallest_upper[k].min(hi);
+            }
+            gap = largest_lower
+                .into_iter()
+                .zip(smallest_upper)
+                .map(|(lo, hi)| lo - hi)
+                .fold(f64::INFINITY, f64::min);
+            if gap > 0.0 {
+                break;
+            }
+        }
+        if gap <= 0.0 {
+            return None;
+        }
+        minimum_gap = minimum_gap.min(gap);
+    }
+    Some(minimum_gap)
+}
+
 /// Lower and upper bounds on each mean word and a lower bound on each
-/// adjacent correlation word. This proof uses the calibrated placement
-/// regime, before the lower corners are moved into the first period.
+/// adjacent correlation word from the calibrated or one-wrap placement.
 pub(super) struct Normalization {
     pub mean: [[[f32; LEVELS]; 3]; 2],
     pub correlation: [[f32; LEVELS]; 3],
@@ -133,17 +210,13 @@ pub(super) struct Normalization {
 
 pub(super) fn normalize(bank: &PortraGrainBank, first: f32, last: f32) -> Normalization {
     assert!(super::MIN_PROXY_SAMPLE_FOOTPRINT <= first && first <= last);
-    assert!(last <= super::CALIBRATED_MAX_FOOTPRINT);
+    assert!(last <= super::SINGLE_WRAP_MAX_FOOTPRINT);
+    assert_eq!(
+        first <= super::CALIBRATED_MAX_FOOTPRINT,
+        last <= super::CALIBRATED_MAX_FOOTPRINT,
+    );
     assert!(last <= 2.0 * first);
-    // The harmonic point incurs at most three Float64 unit roundoffs
-    // times the upper width. Corner slopes are at most 4096. Including
-    // interpolation gives a coordinate error below 1.5e-12 * last +
-    // 4e-13. Each wrapped prefix slope is at most 1600. Charge both
-    // axes, four corners, and twice the midpoint error in the Bernstein
-    // coefficient, plus the endpoint and division roundoffs.
-    assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
-    let width = f64::from(first);
-    let residual_pad = (2e-8 + 4e-8 * f64::from(last)) / (width * width);
+    let residual_pad = residual_pad(first, last);
 
     let mut result = Normalization {
         mean: [[[0.0; LEVELS]; 3]; 2],
@@ -151,13 +224,13 @@ pub(super) fn normalize(bank: &PortraGrainBank, first: f32, last: f32) -> Normal
     };
     let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
     for (r, record) in bank.records().iter().enumerate() {
-        let seed = pcg(0x5a3f_1e1d ^ (200_u32 + r as u32).wrapping_mul(0x9e37_79b9));
+        let seed = calibration_seed(r);
         let mut fields = vec![[0.0_f64; LEVELS]; SAMPLES];
         let mut radius_squared = [0.0_f64; LEVELS];
         let mut means = [0.0_f64; LEVELS];
         let mut mean_radii = [0.0_f64; LEVELS];
         for (i, point) in fields.iter_mut().enumerate() {
-            let lattice = [(i % GRID * 7919) % 4096, (i / GRID * 104729) % 4096];
+            let lattice = calibration_position(i);
             let mut residuals = [[f64::INFINITY, f64::NEG_INFINITY]; LEVELS];
             light_residuals(
                 &tiles[r * LEVELS..(r + 1) * LEVELS],

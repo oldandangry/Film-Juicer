@@ -243,7 +243,7 @@ Dust and scratches remain under refinement. You can already add enough dirt to s
 
 In the standard **Juicer** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
 
-**Known limitation.** With Portra 400 Film v1 at Amount +3 EV, Size 0.5 µm and Colour 1, a reduced preview can render successfully while a Full-resolution render fails at a small film format. Linux OFX/CUDA tests on 96-pixel-high frames reproduced this at 8 mm and 4,832 pixels wide on both Negative Direct and Negative Print. Negative Print also failed at 8 mm and 3,840 pixels wide, and at 11.66 mm at both widths. These examples were measured with Film v1 in the archived Grain Preview effect. Current remains the default grain model.
+The archived Grain Preview effect had Full-resolution failures at small film formats with Portra 400 Film v1 at Amount +3 EV, Size 0.5 µm and Colour 1. The standard Juicer effect passed those settings on Negative Direct and Negative Print at both 8 mm and 11.66 mm, using 3,840 × 96, 4,832 × 96 and 4,832 × 2,016 Full frames in native Windows and Linux CUDA tests. Current remains the default grain model.
 
 Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Film grain suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions.
 
