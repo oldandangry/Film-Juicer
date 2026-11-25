@@ -111,6 +111,7 @@ namespace {
         std::array<double, 2> imageScale{1.0, 1.0};
     };
     constexpr GrainGeometry kEightMmProxy{{0, 0, 8192, 4096}, {0, 0, 32, 16}, {1.0 / 256, 1.0 / 256}};
+    constexpr GrainGeometry kBelowMinimumSample{{0, 0, 16384, 8192}, {0, 0, 32, 16}, {1.0 / 512, 1.0 / 512}};
     constexpr GrainGeometry kClippedQuarter{{0, 4, 4832, 12}, {0, 0, 1208, 2}, {0.25, 0.125}};
     constexpr GrainGeometry kOffsetQuarter{{0, 4, 4832, 12}, {0, 1, 1208, 3}, {0.25, 0.25}};
     constexpr OfxRectD kShiftedRegion{1, 4, 3840, 8};
@@ -933,6 +934,22 @@ namespace {
                 }
                 return words;
             };
+            const auto reject_footprint = [&](std::string_view expected) {
+                host.clear_calls();
+                const auto sourceBefore = host.image_release_count(effect, "Source");
+                const auto outputBefore = host.image_release_count(effect, "Output");
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                        "unsupported footprint was not rejected");
+                require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
+                            host.image_release_count(effect, "Output") == outputBefore + 1,
+                        "unsupported footprint did not release each image once");
+                require(std::ranges::any_of(host.calls(), [expected](const auto& call) {
+                            return call.operation == "message" && call.values.size() == 2 &&
+                                   call.values[0] == InstanceValue{std::string("FilmJuicerRenderAdmission")} &&
+                                   std::get<std::string>(call.values[1]).find(expected) != std::string::npos;
+                        }),
+                        "unsupported footprint diagnostic omitted its kind, range or physical geometry");
+            };
             if (smallFormatHighGain) {
                 constexpr double time = 0.0;
                 struct Request {
@@ -1099,6 +1116,12 @@ namespace {
                 change("GrainActive", {1});
                 const auto paused = render(0.0);
                 require(paused != clean && render(0.0) == paused, "expected active grain and an exact paused repeat");
+                if (eightMmProxy) {
+                    set_grain_geometry(host, effect, kBelowMinimumSample);
+                    reject_footprint("Film v1 unsupported sample footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.1220703125, supported_texels=0.244140625..=240000) (rendered=32x16, action_scale=");
+                    set_grain_geometry(host, effect, kEightMmProxy);
+                    require(render(0.0) == paused, "minimum-width proxy did not recover bit-exactly");
+                }
                 if (clippedQuarter) {
                     set_grain_geometry(host, effect, kOffsetQuarter);
                     change("GrainActive", {0});
@@ -1131,7 +1154,10 @@ namespace {
                     require(render(0.0) == shiftedFilm, "Film did not return to the first shifted encoding");
                     std::cout << test.id << " equivalent shifted delivered words; active seam interior\n";
                 }
-                routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"paused_repeat", true}});
+                Json row{{"case_id", test.id}, {"route", test.routeName}, {"paused_repeat", true}};
+                if (eightMmProxy)
+                    row["sample_footprint_recovered"] = true;
+                routes.push_back(std::move(row));
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
                 event.passed();
@@ -1450,25 +1476,7 @@ namespace {
                     change("GrainModel", {std::string("film_v1")});
                     select_format(0, 8.0);
                     change("FilmGrainTexelPitchUm", {4.0});
-                    host.clear_calls();
-                    const auto sourceBefore = host.image_release_count(effect, "Source");
-                    const auto outputBefore = host.image_release_count(effect, "Output");
-                    require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
-                            "unsupported footprint was not rejected");
-                    require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
-                                host.image_release_count(effect, "Output") == outputBefore + 1,
-                            "unsupported footprint did not release both images");
-                    require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& call) {
-                                if (call.operation != "message" || call.values.size() != 2 ||
-                                    call.values[0] != InstanceValue{std::string("FilmJuicerRenderAdmission")})
-                                    return false;
-                                const auto& message = std::get<std::string>(call.values[1]);
-                                return message.find("film_long_edge_mm=8") != std::string::npos &&
-                                       message.find("grain_size_um=4") != std::string::npos &&
-                                       message.find("footprint_texels=0.244") != std::string::npos &&
-                                       message.find("rendered=8192x16") != std::string::npos;
-                            }),
-                            "unsupported footprint diagnostic omitted physical geometry");
+                    reject_footprint("Film v1 unsupported rendered footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.244140625, supported_texels=0.25..=240000) (rendered=8192x16, action_scale=");
 
                     geometry(2);
                     select_format(6, 11.66);

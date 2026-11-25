@@ -808,15 +808,8 @@ namespace JuicerProcess {
 
     static bool valid_film_grain_frame(const FjFilmGrain& input, int width, int height) {
         using namespace JuicerCuda::FilmGrain;
-        constexpr double centerLimit = 262144.0 - kPlacementBlock;
-        const auto axis_supported = [pitch = static_cast<double>(input.pitch)](int origin, int size) {
-            if (size <= 0)
-                return false;
-            const auto last = static_cast<std::int64_t>(origin) + size - 1;
-            // Leave one placement block for the laying shift, seam and
-            // calibrated box edges. Wide and sub-texel edges are formed locally.
-            return last <= std::numeric_limits<int>::max() &&
-                   std::max(std::abs((origin + 0.5) * pitch), std::abs((static_cast<double>(last) + 0.5) * pitch)) < centerLimit;
+        const auto axis_supported = [renderedTexels = static_cast<double>(input.pitch)](int size) {
+            return (size - 0.5) * renderedTexels < kPlacementCenterLimit;
         };
         const bool calibrated = input.sample_step[0] == 0.0 && input.sample_step[1] == 0.0;
         if (std::ranges::any_of(input.calibrated_border, [calibrated](std::uint8_t cells) {
@@ -824,17 +817,17 @@ namespace JuicerProcess {
             }))
             return false;
         const auto& [left, top, right, bottom] = input.calibrated_border;
-        if (!std::isfinite(input.pitch) || input.pitch < kMinFootprint || input.pitch > kMaxFootprint ||
+        if (!std::isfinite(input.pitch) || input.pitch < kMinRenderedFootprint || input.pitch > kMaxFootprint ||
             !std::isfinite(input.temporal_fraction) || input.temporal_fraction < 0.F || input.temporal_fraction >= 1.F ||
             !std::isfinite(input.gain) || input.gain < 0.F ||
             !std::isfinite(input.chroma_fraction) || input.chroma_fraction < 0.F || input.chroma_fraction > 1.F ||
             width <= left + right || height <= top + bottom ||
-            !axis_supported(input.origin_x, width - left - right) ||
-            !axis_supported(input.origin_y, height - top - bottom)) {
+            !axis_supported(width - left - right) ||
+            !axis_supported(height - top - bottom)) {
             return false;
         }
         if (calibrated)
-            return true;
+            return input.sample_pitch == input.pitch;
         if (!std::isfinite(input.sample_pitch) || input.sample_pitch < kMinProxySampleFootprint ||
             input.sample_pitch > kMaxFootprint)
             return false;
@@ -845,18 +838,17 @@ namespace JuicerProcess {
         };
         const auto sample_axis_supported = [&input, width, height](Axis axis) {
             const auto index = static_cast<std::size_t>(axis);
-            const int origin = axis == Axis::X ? input.origin_x : input.origin_y;
             const int size = axis == Axis::X ? width : height;
             const double extent = input.sample_extent[index];
             const double step = input.sample_step[index];
             const double start = input.sample_origin[index];
             if (!std::isfinite(extent) || extent <= 0.0 ||
                 !std::isfinite(step) || step <= 0.0 || !std::isfinite(start) ||
-                (std::ceil(extent) - 0.5) * input.sample_pitch >= centerLimit)
+                (std::ceil(extent) - 0.5) * input.sample_pitch >= kPlacementCenterLimit)
                 return false;
 
-            const auto raw_edge = [origin, step, start](double pixel) {
-                return std::fma(origin + pixel, step, start);
+            const auto raw_edge = [step, start](double pixel) {
+                return std::fma(pixel, step, start);
             };
             if (!std::isfinite(raw_edge(0.0)) || !std::isfinite(raw_edge(size)))
                 return false;

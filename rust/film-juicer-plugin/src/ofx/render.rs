@@ -35,7 +35,7 @@ fn domain(bounds: [i32; 4]) -> Result<Domain, Status> {
 }
 struct CompleteFrameMapping {
     canonical: [f64; 4],
-    full_grid: Option<ProxyGrid>,
+    candidate_full_grid: Option<ProxyGrid>,
 }
 struct AxisSupport {
     span: [f64; 2],
@@ -150,7 +150,7 @@ fn complete_frame_mapping(
     }
     Some(CompleteFrameMapping {
         canonical,
-        full_grid: reduced.then(|| ProxyGrid {
+        candidate_full_grid: reduced.then(|| ProxyGrid {
             extent,
             step: args.scale.map(f64::recip),
             origin: std::array::from_fn(|axis| {
@@ -283,9 +283,9 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     if window[2] <= window[0] || window[3] <= window[1] {
         return Ok(());
     }
-    let full = domain(source.bounds)?;
+    let rendered_extent = domain(source.bounds)?;
     #[cfg(feature = "test-support")]
-    crate::frame_observer::record_full_domain(full);
+    crate::frame_observer::record_full_domain(rendered_extent);
     let assets = owner.loaded.runtime().assets();
     let mut input = owner.state.frame_input();
     if matches!(
@@ -336,8 +336,10 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         film_juicer_core::recipe::FilmGrainFrame::Thumbnail
     } else {
         film_juicer_core::recipe::FilmGrainFrame::Raster(Raster {
-            long_edge_px: full.width.max(full.height),
-            full_grid: film_mapping.as_ref().and_then(|mapping| mapping.full_grid),
+            rendered_long_edge_px: rendered_extent.width.max(rendered_extent.height),
+            candidate_full_grid: film_mapping
+                .as_ref()
+                .and_then(|mapping| mapping.candidate_full_grid),
         })
     };
     let film_canonical = film_mapping.map(|mapping| mapping.canonical);
@@ -366,7 +368,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
                     write!(
                         text,
                         " (rendered={}x{}, action_scale={:?})",
-                        full.width, full.height, args.scale
+                        rendered_extent.width, rendered_extent.height, args.scale
                     )
                 } else {
                     Ok(())
@@ -397,7 +399,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         );
         return Err(Status::FATAL);
     }
-    let policy = cuda::FramePolicy::prepare(state, full).map_err(|_| Status::FATAL)?;
+    let policy = cuda::FramePolicy::prepare(state, rendered_extent).map_err(|_| Status::FATAL)?;
     #[cfg(feature = "test-support")]
     policy.observe_callback(state.development().route() as u32);
     let mut effects = cuda::sys::FjEffectsGeometry {

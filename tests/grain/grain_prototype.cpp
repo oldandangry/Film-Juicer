@@ -294,8 +294,15 @@ namespace GrainPrototype {
             DeviceCarrier carrier(planeWords);
             constexpr float custom8Width = static_cast<float>(8000.0 / 4832.0 / 4.0);
             constexpr float super16Width = static_cast<float>(static_cast<double>(11.66F) * 1000.0 / 4832.0 / 4.0);
+            constexpr float period = static_cast<float>(kTileSide);
+            const float belowPeriod = std::nextafter(period, 0.F);
+            const float abovePeriod = std::nextafter(period, std::numeric_limits<float>::infinity());
             const std::array footprints{
+                JuicerCuda::FilmGrain::kMinProxySampleFootprint,
+                std::nextafter(JuicerCuda::FilmGrain::kMinProxySampleFootprint, 1.F),
+                std::nextafter(0.25F, 0.F),
                 0.25F,
+                std::nextafter(0.25F, 1.F),
                 custom8Width,
                 super16Width,
                 std::nextafter(1.0F, 0.0F),
@@ -308,9 +315,12 @@ namespace GrainPrototype {
                 static_cast<float>(36000.0 / (1208 * 0.5)),
                 static_cast<float>(36000.0 / (604 * 0.5)),
                 static_cast<float>(36000.0 / (302 * 0.5)),
+                std::nextafter(255.0F, 0.0F),
                 JuicerCuda::FilmGrain::kSingleWrapMaxFootprint,
                 std::nextafter(255.0F, 256.0F),
-                256.0F,
+                belowPeriod,
+                period,
+                abovePeriod,
                 static_cast<float>(36'000.0 / 92.0),
                 512.0F,
                 static_cast<float>(240'000.0 / 92.0),
@@ -354,14 +364,18 @@ namespace GrainPrototype {
                         }
                     }
                 }
-                if (std::fmod(footprint, 256.0F) == 0.0F) {
+                // At the adjacent Float32 widths, the oracle still measures
+                // the residual period edge. Its signed variation can round
+                // away in the delivered Float32 densities.
+                if ((footprint >= belowPeriod && footprint <= abovePeriod) ||
+                    std::fmod(footprint, period) == 0.0F) {
                     for (int record = 0; record < kRecords; ++record) {
                         const auto start = static_cast<std::size_t>(record) * planeWords;
                         for (int y = 0; y < frame.height; ++y)
                             for (int x = 0; x < frame.width; ++x)
                                 require(std::abs(actual[start + static_cast<std::size_t>(y) * stride + x] - actual[start]) <=
                                             8.0F * std::numeric_limits<float>::epsilon(),
-                                        "a whole-period average varied across the image");
+                                        "a whole-period or adjacent average varied across the image");
                     }
                 } else {
                     require(minDelta < 0.0 && maxDelta > 0.0, "proxy Film grain did not produce signed density variation");
@@ -380,6 +394,37 @@ namespace GrainPrototype {
                           << " min_delta_density=" << minDelta << " max_delta_density=" << maxDelta
                           << " subtexel_crossing_samples=" << crossings << ' ';
                 errors.report("production-proxy-footprint");
+            }
+
+            // At the upper widths only the first placement centre is supported.
+            FilmFrame pixel{0.F, 0, 0, 1, 1, 2, frame.seed, true};
+            constexpr float guard = -17.F;
+            const std::vector<float> initial{net, guard, net, guard, net, guard, guard, guard};
+            DeviceCarrier singlePixel(2);
+            constexpr float maxTexels = JuicerCuda::FilmGrain::kMaxFootprint;
+            for (const float texels : {std::nextafter(maxTexels, 0.F), maxTexels}) {
+                bank.tables.footprint = pixel.pitch = texels;
+                singlePixel.write(initial);
+                const auto actual = render_production_quad(quads, bank.tables, pixel, singlePixel);
+                Errors errors;
+                for (int record = 0; record < kRecords; ++record) {
+                    const auto at = static_cast<std::size_t>(record) * 2;
+                    const auto expected = evaluate_sample(bank, {
+                                                                    .pitch = texels,
+                                                                    .x = 0,
+                                                                    .y = 0,
+                                                                    .seed = pixel.seed,
+                                                                    .record = record,
+                                                                    .net = net,
+                                                                    .productionSubtexel = true,
+                                                                });
+                    errors.measure(static_cast<double>(actual[at]) - net, expected.delta, expected.roundingBound, 0, 0, record);
+                    require(same_words(actual[at + 1], guard), "upper-width Film grain changed row padding");
+                }
+                require(same_words(actual[6], guard) && same_words(actual[7], guard), "upper-width Film grain changed alpha or its padding");
+                require(!std::equal(actual.begin(), actual.end(), initial.begin(), same_words), "upper-width Film grain did not change the pixel");
+                std::cout << std::setprecision(12) << "footprint_texels=" << texels << ' ';
+                errors.report("production-upper-footprint");
             }
         }
 
@@ -631,8 +676,12 @@ namespace GrainPrototype {
             require(std::abs(sample.delta - expected) <= 16 * std::numeric_limits<double>::epsilon(),
                     "independent rectangle integral differs from analytic light");
             const auto constant = make_synthetic_bank(SyntheticBank::Constant, 32.F);
+            constexpr float maxTexels = JuicerCuda::FilmGrain::kMaxFootprint;
             require(evaluate_sample(constant, {128.F, -1, 0, 0, 2, 0.625F}).delta == 0,
                     "constant-light oracle changed density");
+            for (const float texels : {std::nextafter(maxTexels, 0.F), maxTexels})
+                require(evaluate_sample(constant, {texels, 0, 0, 0, 2, 0.625F}).delta == 0,
+                        "constant-light oracle changed density at an upper width");
         }
 
         // Both numerical agreement and bitwise storage identity are checked

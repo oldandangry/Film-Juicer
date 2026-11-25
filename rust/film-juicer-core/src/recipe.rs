@@ -2,6 +2,7 @@
 //! route, payload, reference, balance and identity has succeeded.
 
 use std::fmt;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::{collections::TryReserveError, error::Error as StdError};
 
@@ -313,6 +314,12 @@ impl fmt::Display for ControlError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilmGrainFootprintKind {
+    Rendered,
+    Sample,
+}
+
 #[derive(Debug)]
 pub enum PrepareError {
     Asset(AssetError),
@@ -320,9 +327,11 @@ pub enum PrepareError {
     Control(ControlError),
     FilmGrainGeometry,
     FilmGrainFootprint {
+        kind: FilmGrainFootprintKind,
         long_edge_mm: f32,
-        size_um: f32,
+        texel_pitch_um: f32,
         width_texels: f32,
+        supported_texels: RangeInclusive<f32>,
     },
     Input(input::Error),
     Optics(optics::Error),
@@ -381,13 +390,22 @@ impl fmt::Display for PrepareError {
             Self::Control(error) => error.fmt(f),
             Self::FilmGrainGeometry => f.write_str("Film v1 requires rendered frame geometry"),
             Self::FilmGrainFootprint {
+                kind,
                 long_edge_mm,
-                size_um,
+                texel_pitch_um,
                 width_texels,
+                supported_texels,
             } => {
+                let kind = match kind {
+                    FilmGrainFootprintKind::Rendered => "rendered",
+                    FilmGrainFootprintKind::Sample => "sample",
+                };
                 write!(
                     f,
-                    "Film v1 unsupported physical sampler footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={size_um}, footprint_texels={width_texels})"
+                    "Film v1 unsupported {kind} footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={texel_pitch_um}, footprint_texels={}, supported_texels={}..={})",
+                    f64::from(*width_texels),
+                    f64::from(*supported_texels.start()),
+                    f64::from(*supported_texels.end()),
                 )
             }
             Self::Input(error) => error.fmt(f),
@@ -1643,23 +1661,40 @@ fn prepare_state(
                 return Err(PrepareError::FilmGrainGeometry);
             };
             let long_edge_mm = params.camera_film_format_long_edge_mm;
-            let (footprint, sample_pitch, sampling) = raster.sampling(controls, long_edge_mm);
-            for (width_texels, minimum) in [
-                (footprint, density::portra::MIN_FOOTPRINT),
-                (sample_pitch, density::portra::MIN_PROXY_SAMPLE_FOOTPRINT),
+            let (rendered_texels, sample_texels, sampling) =
+                raster.sampling(controls, long_edge_mm);
+            for (kind, width_texels, minimum) in [
+                (
+                    FilmGrainFootprintKind::Rendered,
+                    rendered_texels,
+                    density::portra::MIN_RENDERED_FOOTPRINT,
+                ),
+                (
+                    FilmGrainFootprintKind::Sample,
+                    sample_texels,
+                    density::portra::MIN_PROXY_SAMPLE_FOOTPRINT,
+                ),
             ] {
-                if !(minimum..=density::portra::MAX_FOOTPRINT).contains(&width_texels) {
+                let supported_texels = minimum..=density::portra::MAX_FOOTPRINT;
+                if !supported_texels.contains(&width_texels) {
                     return Err(PrepareError::FilmGrainFootprint {
+                        kind,
                         long_edge_mm,
-                        size_um: controls.texel_pitch_um,
+                        texel_pitch_um: controls.texel_pitch_um,
                         width_texels,
+                        supported_texels,
                     });
                 }
             }
             let bank = assets.portra_grain_bank()?;
-            let table = assets.portra_grain_table(&bank, sample_pitch)?;
+            let table = assets.portra_grain_table(&bank, sample_texels)?;
             Ok::<_, PrepareError>(grain::film_v1::Recipe::new(
-                bank, table, controls, raster, footprint, sampling,
+                bank,
+                table,
+                controls,
+                raster,
+                rendered_texels,
+                sampling,
             ))
         })
         .transpose()?;

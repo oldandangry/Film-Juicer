@@ -4002,7 +4002,7 @@ namespace JuicerCuda::FilmGrain {
     // The arrays are paired Full extents and action steps in axis order.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::uint64_t proxy_sample_bound(const double (&extent)[2], const double (&step)[2]) noexcept {
-        constexpr double maxAxisCells = 262144.0 / kMinProxySampleFootprint;
+        constexpr double maxAxisCells = kPlacementCenterLimit / kMinProxySampleFootprint + 0.5;
         std::uint64_t bound = 1;
         for (std::size_t axis = 0; axis < 2; ++axis) {
             if (!(extent[axis] > 0.0 && extent[axis] <= maxAxisCells) ||

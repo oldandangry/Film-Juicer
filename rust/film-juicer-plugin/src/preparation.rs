@@ -2440,7 +2440,9 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
     use recipe::PrepareError as E;
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
-        E::Control(recipe::ControlError::FilmGrain) => FJ_STATUS_UNSUPPORTED_INPUT,
+        E::Control(recipe::ControlError::FilmGrain) | E::FilmGrainFootprint { .. } => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
         E::Control(
             recipe::ControlError::InputColorSpace
             | recipe::ControlError::ReconstructionMethod
@@ -2563,4 +2565,44 @@ pub(crate) fn layout_facts() -> &'static [usize] {
         FjInputHullCacheHooks => [before_build]
     );
     FACTS
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn film_grain_footprint_has_unsupported_input_category() {
+        for kind in [
+            recipe::FilmGrainFootprintKind::Rendered,
+            recipe::FilmGrainFootprintKind::Sample,
+        ] {
+            let minimum = match kind {
+                recipe::FilmGrainFootprintKind::Rendered => 0.25,
+                recipe::FilmGrainFootprintKind::Sample => f32::from_bits(0x3e7a_0000),
+            };
+            assert_eq!(
+                failure_category(&recipe::PrepareError::FilmGrainFootprint {
+                    kind,
+                    long_edge_mm: 8.0,
+                    texel_pitch_um: 4.0,
+                    width_texels: f32::from_bits(0x3dfa_0000),
+                    supported_texels: minimum..=240_000.0,
+                }),
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+        }
+        assert_eq!(
+            failure_category(&recipe::PrepareError::Minimum(
+                film_juicer_core::film::density::Error::FilmNormalization,
+            )),
+            FJ_STATUS_PREPARATION_FAILURE
+        );
+        assert_eq!(
+            failure_category(&recipe::PrepareError::Development(
+                film_juicer_core::film::Error::Allocation,
+            )),
+            FJ_STATUS_ALLOCATION_FAILURE
+        );
+    }
 }

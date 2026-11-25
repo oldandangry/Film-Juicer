@@ -486,8 +486,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjFilmGrain, bank_hash),
     offset_of!(FjFilmGrain, sums),
     offset_of!(FjFilmGrain, records),
-    offset_of!(FjFilmGrain, origin_x),
-    offset_of!(FjFilmGrain, origin_y),
     offset_of!(FjFilmGrain, seed),
     offset_of!(FjFilmGrain, next_seed),
     offset_of!(FjFilmGrain, pitch),
@@ -679,7 +677,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 626);
+        assert_eq!(FACTS.len(), 624);
     }
 
     #[test]

@@ -735,6 +735,7 @@ namespace JuicerCudaTest {
         film.bank_hash = 1;
         film.sums = {sums.data(), sums.size()};
         film.pitch = 1.F;
+        film.sample_pitch = film.pitch;
         film.gain = 1.F;
 
         std::array<char, 256> message{};
@@ -768,8 +769,7 @@ namespace JuicerCudaTest {
         // for the same submission snapshot.
         auto filmSubmission = submission;
         filmSubmission.instance_token ^= std::uint64_t{1} << 63;
-        const auto check_runtime_failure = [&](const FjPreparedHostData& candidate, const FjSubmission& identity, const std::string& prefix) {
-            const auto outcome = render(candidate, identity);
+        const auto check_runtime_failure = [&](const FjRenderOutcome& outcome, const std::string& prefix) {
             const std::string detail = prefix + " (got '" + std::string(diagnostic()) + "')";
             require_status(outcome, {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, cudaErrorInvalidValue}, detail.c_str());
             const std::string expected = prefix + ": " + cudaGetErrorString(cudaErrorInvalidValue);
@@ -778,9 +778,22 @@ namespace JuicerCudaTest {
         };
         {
             auto row = cases.case_event("malformed-film-frame");
-            film.pitch = std::numeric_limits<float>::quiet_NaN();
-            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: invalid frame");
-            film.pitch = 1.F;
+            const auto reject_frame = [&](const FjFilmGrain& malformed) {
+                auto candidate = selectedFilm;
+                candidate.film_grain = &malformed;
+                check_runtime_failure(render(candidate, filmSubmission), route + " Film grain binding failed: invalid frame");
+            };
+            auto invalidWidths = film;
+            invalidWidths.pitch = std::numeric_limits<float>::quiet_NaN();
+            reject_frame(invalidWidths);
+            invalidWidths.pitch = std::nextafter(0.25F, 0.F);
+            invalidWidths.sample_pitch = invalidWidths.pitch;
+            reject_frame(invalidWidths);
+            invalidWidths = film;
+            for (const float sampleTexels : {0.F, 0.5F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+                invalidWidths.sample_pitch = sampleTexels;
+                reject_frame(invalidWidths);
+            }
             struct GridAxis {
                 double extent = 4.0;
                 double step = 1.0;
@@ -791,15 +804,12 @@ namespace JuicerCudaTest {
             const double height = static_cast<double>(window.y2) - window.y1;
             const auto reject_grid = [&](GridAxis axis) {
                 auto malformed = film;
-                malformed.sample_pitch = 1.F;
                 malformed.sample_extent[0] = axis.extent;
                 malformed.sample_extent[1] = height;
                 malformed.sample_step[0] = axis.step;
                 malformed.sample_step[1] = 1.0;
                 malformed.sample_origin[0] = axis.origin;
-                auto candidate = selectedFilm;
-                candidate.film_grain = &malformed;
-                check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+                reject_frame(malformed);
             };
             reject_grid({.extent = std::numeric_limits<double>::infinity()});
             reject_grid({.step = std::numeric_limits<double>::quiet_NaN()});
@@ -814,8 +824,20 @@ namespace JuicerCudaTest {
             std::cout << route << " raw_film_grid=second-leading-empty rejected\n";
             reject_grid({.extent = width - 2.25});
             std::cout << route << " raw_film_grid=second-trailing-empty rejected\n";
+            auto integrated = film;
+            integrated.sample_pitch = 0.244140625F;
+            integrated.sample_step[0] = integrated.sample_step[1] = 2.0;
+            integrated.sample_extent[0] = 2.0 * width;
+            integrated.sample_extent[1] = 2.0 * height;
+            auto invalidSample = integrated;
+            for (const float sampleTexels : {0.F, std::nextafter(integrated.sample_pitch, 0.F), std::numeric_limits<float>::quiet_NaN()}) {
+                invalidSample.sample_pitch = sampleTexels;
+                reject_frame(invalidSample);
+            }
+            auto mixedStep = integrated;
+            mixedStep.sample_step[1] = 0.0;
+            reject_frame(mixedStep);
             auto batched = film;
-            batched.sample_pitch = 1.F;
             batched.sample_extent[0] = 273.0;
             batched.sample_extent[1] = 96.0;
             batched.sample_step[0] = batched.sample_step[1] = 91.0;
@@ -825,31 +847,78 @@ namespace JuicerCudaTest {
             auto candidate = selectedFilm;
             candidate.film_grain = &batched;
             const auto before = JuicerCuda::RenderTest::filmProxyReservations;
-            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            check_runtime_failure(render(candidate, filmSubmission), route + " Film grain binding failed: invalid frame");
             const auto attempts = JuicerCuda::RenderTest::filmProxyReservations - before;
             std::cout << route << " malformed-batched-film-grid workspace_reservation_attempts=" << attempts << '\n';
             require(attempts == 0, "invalid batched grid attempted to reserve Film proxy workspace");
             auto malformedBorder = film;
             malformedBorder.calibrated_border[0] = 2;
             candidate.film_grain = &malformedBorder;
-            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            check_runtime_failure(render(candidate, filmSubmission), route + " Film grain binding failed: invalid frame");
             auto mixed = batched;
             mixed.sample_origin[0] = 0.0;
             mixed.sample_extent[0] = width * mixed.sample_step[0];
             mixed.sample_extent[1] = height * mixed.sample_step[1];
             mixed.calibrated_border[0] = 1;
             candidate.film_grain = &mixed;
-            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            check_runtime_failure(render(candidate, filmSubmission), route + " Film grain binding failed: invalid frame");
             require(JuicerCuda::RenderTest::filmProxyReservations == before,
                     "invalid calibrated border attempted to reserve Film proxy workspace");
             std::cout << route << " raw_film_grid=invalid-calibrated-border rejected mixed-grid-and-border rejected\n";
             auto full = film;
+            full.pitch = full.sample_pitch = 0.25F;
             full.gain = 0.F;
             candidate.film_grain = &full;
             require_status(render(candidate, filmSubmission), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "zero-step Film frame must recover after rejecting the batched grid");
             require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame.stream)) == cudaSuccess,
                     "complete Film recovery on the caller stream");
-            std::cout << route << " raw_film_grid=zero-step-recovery passed\n";
+            integrated.gain = 0.F;
+            candidate.film_grain = &integrated;
+            require_status(render(candidate, filmSubmission), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "integrated Film frame must admit distinct widths");
+            require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame.stream)) == cudaSuccess,
+                    "complete distinct-width Film sampling on the caller stream");
+            std::cout << route << " raw_film_grid=zero-step-recovery passed distinct-width-integrated passed\n";
+
+            // The upper width is supported at the first placement centre only.
+            // Use a separate raw submission with DIR inactive for the crop.
+            auto pixelFrame = frame;
+            pixelFrame.render_window.x2 = window.x1 + 1;
+            pixelFrame.render_window.y2 = window.y1 + 1;
+            auto pixelCandidate = selectedFilm;
+            pixelCandidate.dir_couplers = {};
+            pixelCandidate.spatial_dir = {};
+            auto pixelSubmission = filmSubmission;
+            pixelSubmission.instance_token ^= std::uint64_t{1} << 62;
+            pixelSubmission.dir_hash = JuicerCuda::ResourceManager::normalize_key_u64(pixelCandidate.dir_couplers.hash);
+            auto endpoint = film;
+            endpoint.gain = 0.05F;
+            pixelCandidate.film_grain = &endpoint;
+            const auto render_pixel = [&] {
+                return render_raw_prepared(cuda, pixelFrame, pixelSubmission, pixelCandidate, {}, &error, hostPreparation);
+            };
+            constexpr float maxTexels = JuicerCuda::FilmGrain::kMaxFootprint;
+            for (const bool usesGrid : {false, true}) {
+                if (usesGrid) {
+                    endpoint.sample_extent[0] = endpoint.sample_extent[1] = 1.0;
+                    endpoint.sample_step[0] = endpoint.sample_step[1] = 1.0;
+                }
+                for (const float texels : {std::nextafter(maxTexels, 0.F), maxTexels}) {
+                    endpoint.pitch = usesGrid ? film.pitch : texels;
+                    endpoint.sample_pitch = texels;
+                    const auto outcome = render_pixel();
+                    const std::string detail = route + (usesGrid ? " sample" : " rendered") +
+                                               " footprint_texels=" + std::to_string(texels);
+                    require_status(outcome, {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, (detail + " (" + std::string(diagnostic()) + ")").c_str());
+                    require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(pixelFrame.stream)) == cudaSuccess,
+                            "complete upper-width Film sampling on the caller stream");
+                    std::cout << detail << " passed\n";
+                }
+                endpoint.sample_pitch = std::nextafter(maxTexels, std::numeric_limits<float>::infinity());
+                if (!usesGrid)
+                    endpoint.pitch = endpoint.sample_pitch;
+                check_runtime_failure(render_pixel(), route + " Film grain binding failed: invalid frame");
+            }
+            require_status(fj_cuda_retire_instance(cuda, pixelSubmission.instance_token, &error), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "retire upper-width Film instance");
             row.passed();
         }
         {
@@ -858,13 +927,13 @@ namespace JuicerCudaTest {
             malformed.temporal_fraction = 1.F;
             auto candidate = selectedFilm;
             candidate.film_grain = &malformed;
-            check_runtime_failure(candidate, filmSubmission, route + " Film grain binding failed: invalid frame");
+            check_runtime_failure(render(candidate, filmSubmission), route + " Film grain binding failed: invalid frame");
             row.passed();
         }
         {
             auto row = cases.case_event("missing-film-bank");
             JuicerCuda::RenderTest::missingFilmBank = true;
-            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain binding failed: missing frame bank");
+            check_runtime_failure(render(selectedFilm, filmSubmission), route + " Film grain binding failed: missing frame bank");
             require(!JuicerCuda::RenderTest::missingFilmBank, "missing Film bank fault reached binding");
             row.passed();
         }
@@ -872,7 +941,7 @@ namespace JuicerCudaTest {
             auto row = cases.case_event("film-launch");
             JuicerCuda::RenderTest::nullGrainPlane = true;
             // The real launch rejects the null C plane before enqueueing Film work.
-            check_runtime_failure(selectedFilm, filmSubmission, route + " Film grain launch failed");
+            check_runtime_failure(render(selectedFilm, filmSubmission), route + " Film grain launch failed");
             require(!JuicerCuda::RenderTest::nullGrainPlane, "Film launch fault reached developed density dispatch");
             row.passed();
         }
@@ -880,7 +949,7 @@ namespace JuicerCudaTest {
         {
             auto row = cases.case_event("current-launch");
             JuicerCuda::RenderTest::nullGrainPlane = true;
-            check_runtime_failure(current, submission, route + " visual grain launch failed");
+            check_runtime_failure(render(current, submission), route + " visual grain launch failed");
             require(!JuicerCuda::RenderTest::nullGrainPlane, "Current launch fault reached developed density dispatch");
             row.passed();
         }

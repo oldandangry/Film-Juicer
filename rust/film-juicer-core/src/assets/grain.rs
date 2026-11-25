@@ -8,7 +8,9 @@ use crate::hash;
 use serde::Deserialize;
 use std::{fmt, fs, path::Path, sync::Arc};
 
+const RECORDS: usize = 3;
 const LEVELS: usize = 17;
+const _: () = assert!(RECORDS == 3 && LEVELS == 17);
 const STRIDE: usize = 257;
 const TILE: usize = STRIDE * STRIDE;
 const RECORD_WORDS: usize = 3 + LEVELS;
@@ -44,12 +46,12 @@ pub struct PortraGrainRecord {
 }
 #[derive(Debug)]
 pub struct PortraGrainBank {
-    records: [PortraGrainRecord; 3],
+    records: [PortraGrainRecord; RECORDS],
     sums: Vec<f32>,
     identity: u64,
 }
 impl PortraGrainBank {
-    pub fn records(&self) -> &[PortraGrainRecord; 3] {
+    pub fn records(&self) -> &[PortraGrainRecord; RECORDS] {
         &self.records
     }
     pub fn sums(&self) -> &[f32] {
@@ -63,8 +65,8 @@ impl PortraGrainBank {
 #[cfg_attr(test, derive(Clone))]
 pub struct PortraGrainTable {
     pub footprint: f32,
-    pub mean_density: [[f32; LEVELS]; 3],
-    pub correlation: [[f32; LEVELS]; 3],
+    pub mean_density: [[f32; LEVELS]; RECORDS],
+    pub correlation: [[f32; LEVELS]; RECORDS],
     bank_identity: u64,
     version: u64,
 }
@@ -110,8 +112,8 @@ fn load_bank(root: &Path) -> Result<PortraGrainBank, PortraGrainError> {
     {
         return Err(PortraGrainError::Invalid("manifest association or version"));
     }
-    let raw = words(&dir.join("records.f32"), 3 * RECORD_WORDS)?;
-    let sums = words(&dir.join("sums.f32"), 3 * LEVELS * TILE)?;
+    let raw = words(&dir.join("records.f32"), RECORDS * RECORD_WORDS)?;
+    let sums = words(&dir.join("sums.f32"), RECORDS * LEVELS * TILE)?;
     let rh = hash::resource_f32s(&raw);
     let sh = hash::resource_f32s(&sums);
     if rh != RECORD_HASH || sh != SUMS_HASH {
@@ -254,12 +256,12 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
     let pitch = f64::from(footprint);
     let mut table = PortraGrainTable {
         footprint,
-        mean_density: [[0.0; LEVELS]; 3],
-        correlation: [[1.0; LEVELS]; 3],
+        mean_density: [[0.0; LEVELS]; RECORDS],
+        correlation: [[1.0; LEVELS]; RECORDS],
         bank_identity: bank.identity,
         version: TABLE_VERSION,
     };
-    for r in 0..3 {
+    for r in 0..RECORDS {
         let mut fields = vec![vec![0.0_f64; 128 * 128]; LEVELS];
         let positions = (0..128 * 128).map(|i| {
             let x = ((i % 128 * 7919) % 4096) as f64 * pitch;
@@ -406,17 +408,18 @@ mod tests {
                 .copied()
                 .map(f32::from_le_bytes)
                 .collect();
-            for r in 0..3 {
+            for r in 0..RECORDS {
                 for k in 0..LEVELS {
                     assert!(
-                        (table.mean_density[r][k] - expected[r * 34 + k]).abs() <= 2e-6,
+                        (table.mean_density[r][k] - expected[r * 2 * LEVELS + k]).abs() <= 2e-6,
                         "mean {footprint} {r} {k}"
                     );
                     assert!(
-                        (table.correlation[r][k] - expected[r * 34 + 17 + k]).abs() <= 2e-6,
+                        (table.correlation[r][k] - expected[r * 2 * LEVELS + LEVELS + k]).abs()
+                            <= 2e-6,
                         "correlation {footprint} {r} {k}: {} != {}",
                         table.correlation[r][k],
-                        expected[r * 34 + 17 + k]
+                        expected[r * 2 * LEVELS + LEVELS + k]
                     );
                 }
             }
@@ -426,6 +429,11 @@ mod tests {
             ));
         }
         assert!(assets.portra_grain_table(&bank, f32::NAN).is_err());
+        assert!(
+            assets
+                .portra_grain_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT.next_down())
+                .is_err()
+        );
         assert!(
             assets
                 .portra_grain_table(&bank, MAX_FOOTPRINT.next_up())
