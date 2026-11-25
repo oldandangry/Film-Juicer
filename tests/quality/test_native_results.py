@@ -1548,6 +1548,16 @@ class NativeResultTests(unittest.TestCase):
         self.write_bundle(result, payloads)
         self.assertEqual(read_native_result(self.bundle)["custom_cases"], 1)
         modules = json.loads(payloads["production-modules.json"])
+        ordinary = modules["ordinary"]["configuration"]
+        del ordinary["JUICER_GRAIN_PREVIEW"]
+        del ordinary["JUICER_GRAIN_PREVIEW_CONFIGURED"]
+        ordinary[qualification.FILM_V1_CONFIGURATION_KEY] = "ON"
+        ordinary[qualification.APERTURE_CONFIGURATION_KEY] = "OFF"
+        self.write_bundle(result, {**payloads, "production-modules.json": json.dumps(modules).encode()})
+        with self.assertRaisesRegex(ValueError, "ordinary producer has different native build settings"):
+            read_native_result(self.bundle)
+
+        modules = json.loads(payloads["production-modules.json"])
         modules["preview"]["configuration"]["JUICER_GRAIN_PREVIEW"] = "OFF"
         payloads["production-modules.json"] = json.dumps(modules).encode()
         self.write_bundle(result, payloads)

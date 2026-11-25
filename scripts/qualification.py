@@ -3767,7 +3767,7 @@ def validate_paired_modules(preset, candidate, patch, modules):
         if producer_preview_configuration(configuration)[0] != (role == "preview"):
             raise ValueError(f"paired discovery {role} producer has the wrong preview setting")
         if row["preset"] != preset or any(
-            configuration[key] != current[key]
+            configuration.get(key) != current.get(key)
             for key in MODULE_CONFIGURATION_KEYS
             if key not in (*PRODUCT_PREVIEW_KEYS[1:], APERTURE_CONFIGURATION_KEY)
         ):

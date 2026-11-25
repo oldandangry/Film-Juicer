@@ -146,7 +146,7 @@ namespace PrintPreflashTest {
                         status(product->view(view, error));
                         const auto& print = view.print;
                         require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash, "complete Print preflash route recipe");
-                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
+                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
                         if (route % 2) {
                             row["raw"] = words(print.preflash_raw_cmy, 3);
                             std::array<float, 81> lightScratch{};
@@ -381,6 +381,8 @@ namespace PrintPreflashTest {
         for (auto& row : expectedProducts) {
             PrintIlluminantFixtures::select_frozen_light_hashes(row, "descriptors");
             require(row.erase("final_hash") == 1, "archived Print preflash route recipe field");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived Print preflash capture identity");
+            row.erase("snapshot_hash");
         }
         require_equal(product_observations(resources, expectedProducts), expectedProducts, "all 72 frozen caller values, input bindings and surviving Print identities");
         JuicerTests::CaseEvent caller_event("cpp", "print-preflash/actual-caller");

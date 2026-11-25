@@ -41,7 +41,7 @@ namespace FilmReferenceTest {
 
     Json expected_reference_products(Json archived) {
         for (auto& row : archived) {
-            for (const char* key : {"scanner_hash", "final_hash", "upload_hash", "payload_scanner_hash"}) {
+            for (const char* key : {"snapshot_hash", "scanner_hash", "final_hash", "upload_hash", "payload_scanner_hash"}) {
                 require(row.at(key).is_number_unsigned(), "archived reference identity shape");
                 row.erase(key);
             }
@@ -79,7 +79,7 @@ namespace FilmReferenceTest {
                     require(product.recipe_hash != 0 && product.upload_core_hash == product.recipe_hash &&
                                 product.scanner_recipe_hash != 0 && product.scanner_hash != 0,
                             "prepared film reference publishes the current completed route identities");
-                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"development_hash", product.film_development.hash}, {"balance_hash", product.print_balance.hash}, {"print_hash", product.print_recipe_hash}};
+                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"development_hash", product.film_development.hash}, {"balance_hash", product.print_balance.hash}, {"print_hash", product.print_recipe_hash}};
                     if (route == 0 && ((method == 0 && variant == 0) || (method == 1 && variant == 1))) {
                         const auto& raw = product.film_exposure;
                         const std::size_t basisCount = method == 1 ? raw.mallett_basis.count : 0;

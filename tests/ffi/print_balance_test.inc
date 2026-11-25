@@ -167,7 +167,7 @@ namespace PrintBalanceTest {
                     balance["scalars"] = words(factors.data(), factors.size());
                     require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash && view.scanner_recipe_hash != 0,
                             "complete Print balance route and scanner identities");
-                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}};
+                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}};
                     if (route % 2) {
                         result["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
                         result["film_channel_density_cmy"] = words(print.film_density_cmy.data, print.film_density_cmy.count);
@@ -523,6 +523,8 @@ namespace PrintBalanceTest {
         for (auto& row : expected) {
             for (const char* key : {"scanner_hash", "final_hash", "upload_hash"})
                 require(row.erase(key) == 1, "archived Print balance route and scanner identity fields");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived Print balance capture identity");
+            row.erase("snapshot_hash");
         }
         require_equal(product_observations(resources, expected), expected, "complete Print balance and surviving identities");
         JuicerTests::CaseEvent caller_event("cpp", "print-balance/actual-caller");

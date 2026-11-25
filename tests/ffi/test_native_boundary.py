@@ -715,11 +715,13 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("prepare_gaussian_kernel", host)
 
     def test_native_gaussian_coefficient_producer_and_capture_access_stay_deleted(self):
-        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
-        header = (ROOT / "src/Cuda/JuicerCudaResources.h").read_text()
+        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "src/Cuda/JuicerCudaResources.h").read_text(encoding="utf-8")
         for name in ("build_gaussian_weights_cpu", "capture_native"):
             self.assertNotIn(name, source + header)
-        self.assertNotIn("capture-gaussian-kernels", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text())
+        self.assertNotIn(
+            "capture-gaussian-kernels", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text(encoding="utf-8")
+        )
         for name in ("RustGaussianBridge.cpp", "RustGaussianBridge.h"):
             self.assertFalse((ROOT / "src" / name).exists())
         retired = (
@@ -747,12 +749,12 @@ class NativeBoundary(unittest.TestCase):
             for operation in ("acquire", "view", "release"):
                 self.assertRegex(f"fj_legacy_{family}_{operation}", retired)
         self.assertNotRegex("SF_TEMP_BRIDGE_SCANNER_COLOR fj_test_gaussian_kernel_acquire", retired)
-        dispatch = (ROOT / "native/juicer_host_preparation.cpp").read_text()
+        dispatch = (ROOT / "native/juicer_host_preparation.cpp").read_text(encoding="utf-8")
         self.assertNotIn("std::exp", dispatch)
         self.assertNotIn("Hash::", dispatch)
-        fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text()
+        fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text(encoding="utf-8")
         self.assertIn("rows.size() == 188", fixture)
-        cmake = (ROOT / "tests/CMakeLists.txt").read_text()
+        cmake = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn(
             "target_compile_definitions(juicer_gaussian_test_objects PRIVATE JUICER_GAUSSIAN_TEST_HOOK=1)", cmake
         )

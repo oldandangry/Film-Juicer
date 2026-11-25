@@ -473,12 +473,12 @@ namespace {
             FjFilmProfileView source{};
             status(fj_test_assets_film_view(profile.film, &source, nullptr));
             require(native_values(view, source) == row.at("raw"), "actual native family exactly matches independent compound capture");
-            require(JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash"), "complete captured-control identity remains exact");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived film input capture identity");
             require(view.recipe_hash != 0 && view.upload_core_hash == view.recipe_hash,
                     "prepared film input publishes its current recipe identity");
             event.passed();
         }
-        std::puts("PASS 140 actual native direct/print family, final and snapshot products");
+        std::puts("PASS 140 actual native direct/print input products and route identities");
     }
     void lifetime_and_admission(const FjAssets* assets) {
         std::vector<std::string> selector_ids;

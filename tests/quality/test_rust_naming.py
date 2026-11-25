@@ -127,6 +127,9 @@ class RustNamingTests(unittest.TestCase):
         shutil.copytree(ROOT / "rust", self.workspace / "rust")
         portra_table_fixtures = Path("tests/grain/portra-table-fixtures")
         shutil.copytree(ROOT / portra_table_fixtures, self.workspace / portra_table_fixtures)
+        scanner_binding_fixture = Path("tests/scanner/color-fixtures/scanner-binding-v1.json")
+        (self.workspace / scanner_binding_fixture.parent).mkdir(parents=True)
+        shutil.copy2(ROOT / scanner_binding_fixture, self.workspace / scanner_binding_fixture)
 
     def finalize_test(self, workspace: Path) -> None:
         cls = type(self)
