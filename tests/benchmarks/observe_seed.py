@@ -28,6 +28,13 @@ REPLAY_POINTS = {
     "current_grain": "juicer_cuda_apply_visual_grain",
 }
 TAIL_POINTS = {name: REPLAY_POINTS[name] for name in ("render", "prepare", "retain", "poll", "query", "destroy_event")}
+PHOTO_MODES = ("print-photo", "current-photo")
+SCAN_ROUTES = (
+    ("NegativeDirectScan", "Direct"),
+    ("NegativePrintScan", "Print"),
+    ("PositiveDirectScan", "Direct"),
+    ("PositivePrintScan", "Print"),
+)
 settings = {}
 entries = {}
 returns = {}
@@ -35,6 +42,15 @@ frames = []
 active = {}
 errors = []
 tail_predecessor = None
+
+
+def scan_medium(tag, expected):
+    if type(tag) is not int or not 0 <= tag < len(SCAN_ROUTES):
+        raise ValueError(f"unknown native scanner route {tag}")
+    route, medium = SCAN_ROUTES[tag]
+    if route != expected:
+        raise ValueError(f"expected scanner route {expected}, observed {route}")
+    return medium
 
 
 def record(observation, **fields):
@@ -128,14 +144,22 @@ def render(frame, thread):
         "uploads": [],
         "launches": [],
     }
+    if "expected_route" in settings:
+        draw["scan_medium"] = scan_medium(draw["route"], settings["expected_route"])
     if settings.get("mode") == "tail":
         draw["native_handle"] = read(frame, argument(frame, shift) + settings["layout"]["call_scope_owner"])
         draw["bindings"] = [read(frame, submission + offset) for offset in (24, 32, 40, 48)]
+        if settings.get("replay_tokens"):
+            draw["tokens"] = [read(frame, raster + 0x90), draw["instance"], read(frame, raster + 0x98)]
+            draw["current_grain"] = None
     if settings.get("mode") == "replay":
         # FjFrame and FjPreparedHostData layouts are fixed by the native ABI.
         film = read(frame, prepared + 6704)
         draw["tokens"] = [read(frame, raster + 0x90), draw["instance"], read(frame, raster + 0x98)]
         draw["film_grain"] = [read(frame, film + offset, 4) for offset in (680, 684, 692)] if film else None
+        draw["current_grain"] = None
+    if settings.get("mode") == "current-photo":
+        draw["tokens"] = [read(frame, raster + 0x90), draw["instance"], read(frame, raster + 0x98)]
         draw["current_grain"] = None
     frames.append(draw)
     active[thread] = draw
@@ -173,7 +197,7 @@ def retain(frame, draw):
         "event": read(frame, event_ref),
         "epoch_at_production": read(frame, argument(frame, 3) + 16),
     }
-    if settings.get("mode") in ("replay", "tail"):
+    if settings.get("mode") in ("replay", "tail", *PHOTO_MODES):
         identity = argument(frame, 3)
         held["producer"] = [read(frame, identity + offset) for offset in settings["layout"]["producer"]]
     draw["retained"] = held
@@ -202,7 +226,7 @@ def poll(frame, draw):
     polled = {**owner(frame, argument(frame, 0)), "stream": stream, "queries": [], "destroyed": []}
     draw["poll"] = polled
     result = argument(frame, 2 if takes_stream else 1)
-    if settings.get("mode") in ("replay", "tail"):
+    if settings.get("mode") in ("replay", "tail", *PHOTO_MODES):
         polled["before"] = readback_range(frame, polled["resources"])
         begin, end = polled["before"]
         if begin != end:
@@ -213,7 +237,7 @@ def poll(frame, draw):
     def finished(return_frame):
         polled["success"] = register(return_frame, "rax") & 0xFF == 1
         polled["status"] = read(return_frame, result, 4)
-        if settings.get("mode") in ("replay", "tail"):
+        if settings.get("mode") in ("replay", "tail", *PHOTO_MODES):
             polled["after"] = readback_range(return_frame, polled["resources"])
         record("readback_poll", index=draw["index"], **polled)
 
@@ -255,7 +279,7 @@ def replay_density(frame, draw):
     copy_density(frame, draw, addresses, width, height, "fj_observe_replay_density")
 
 
-def copy_density(frame, draw, addresses, width, height, driver_symbol):
+def copy_density(frame, draw, addresses, width, height, driver_symbol, *, role="density"):
     thread = frame.GetThread()
     process = thread.GetProcess()
     target = process.GetTarget()
@@ -288,16 +312,17 @@ def copy_density(frame, draw, addresses, width, height, driver_symbol):
     if status.Fail() or len(data) != (count * 3 + 1) * 4 or struct.unpack_from("<I", data)[0] != 0:
         raise RuntimeError("live scanner density plane copy was incomplete")
     receipt = Path(settings["receipt"])
-    pathname = receipt.with_name(f"{receipt.stem}-density-{draw['index']}.f32")
+    pathname = receipt.with_name(f"{receipt.stem}-{role}-{draw['index']}.f32")
+    payload = data[4 : 4 + count * 4] if role == "glare" else data[4:]
     with pathname.open("xb") as output:
-        output.write(data[4:])
-    draw["density"] = {
+        output.write(payload)
+    draw[role] = {
         "file": pathname.name,
-        "sha256": hashlib.sha256(data[4:]).hexdigest(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
         "width": width,
         "height": height,
     }
-    record("live_scanner_density", index=draw["index"], **draw["density"])
+    record(f"live_scanner_{role}", index=draw["index"], **draw[role])
 
 
 def typed_field(value_type, name):
@@ -343,45 +368,86 @@ def read_cubic_grid(frame, params_name):
     }
 
 
-def observe_direct_density(frame, draw):
+def scanner_field(frame, name, field):
+    compiled_layout = settings["layout"].get("scanner_payload")
+    if compiled_layout:
+        return compiled_layout[name][field]
+    data_type = frame.GetModule().FindFirstType(f"JuicerCuda::{name}")
+    member = typed_field(data_type, field)
+    return member.GetOffsetInBytes(), member.GetType().GetByteSize()
+
+
+def observe_materialized_density(frame, draw):
     params = argument(frame, 0)
-    params_type = frame.GetModule().FindFirstType("JuicerCuda::DirectPipelineRunParams")
-    width, height = (
-        read(frame, params + typed_field(params_type, name).GetOffsetInBytes(), 4) for name in ("width", "height")
-    )
+    stage = draw["scan_medium"]
+    printing = stage == "Print"
+    params_type = f"{stage}PipelineRunParams"
+    dimensions = (scanner_field(frame, params_type, field) for field in ("width", "height"))
+    width, height = (read(frame, params + offset, size) for offset, size in dimensions)
     first_plane = 2 if settings["spectral_payload"] else 1
     addresses = [argument(frame, first_plane + lane) for lane in range(3)]
-    if (width, height) != (4832, 2016) or argument(frame, first_plane + 6) or len(set(addresses)) != 3:
-        raise RuntimeError("Direct scanner density observer requires a clear Full image with three distinct planes")
-    payload, payload_type = scan_payload(frame, "Direct")
-    correction = read(frame, payload + typed_field(payload_type, "correctionActive").GetOffsetInBytes(), 4)
-    glare = read(frame, payload + typed_field(payload_type, "glarePercent").GetOffsetInBytes())
+    geometry = tuple(settings.get("density_geometry", (4832, 2016)))
+    if (width, height) != geometry or (not printing and argument(frame, first_plane + 6)) or len(set(addresses)) != 3:
+        raise RuntimeError("scanner density observer requires the admitted image and three distinct clear planes")
+    stage_offset, _ = scanner_field(frame, params_type, "scanStage")
+    payload = params + stage_offset
+    correction_offset, correction_size = scanner_field(frame, "ScanStagePayload", "correctionActive")
+    glare_offset, glare_size = scanner_field(frame, "ScanStagePayload", "glarePercent")
+    correction = read(frame, payload + correction_offset, correction_size)
+    glare = read(frame, payload + glare_offset, glare_size)
     if correction or glare:
-        raise RuntimeError("held Direct comparison requires correction and glare off")
-    color = typed_field(payload_type, "scanColor")
-    color_address = payload + color.GetOffsetInBytes()
-    color_type = color.GetType()
+        raise RuntimeError("held scanner comparison requires correction and glare off")
+    if settings.get("mode") == "print-photo":
+        draw["correction_words"] = {"correctionActive": correction}
+        for name in ("correctionSlope", "correctionOffset"):
+            offset, size = scanner_field(frame, "ScanStagePayload", name)
+            draw["correction_words"][name] = read(frame, payload + offset, size)
+    color_offset, _ = scanner_field(frame, "ScanStagePayload", "scanColor")
+    color_address = payload + color_offset
     names = ("cat02", "xyzToRgb", "outputGamutActive", "encoding")
     draw["scan_color"] = {}
     for name in names:
-        field = typed_field(color_type, name)
-        size = field.GetType().GetByteSize()
-        draw["scan_color"][name] = [
-            read(frame, color_address + field.GetOffsetInBytes() + offset, 4) for offset in range(0, size, 4)
-        ]
+        field, size = scanner_field(frame, "ScanColorPayload", name)
+        draw["scan_color"][name] = [read(frame, color_address + field + offset, 4) for offset in range(0, size, 4)]
     if settings["spectral_payload"] and not draw["scan_color"]["outputGamutActive"][0]:
-        size = frame.GetModule().FindFirstType("JuicerCuda::ScannerSpectra").GetByteSize()
+        compiled_layout = settings["layout"].get("scanner_payload")
+        size = (
+            compiled_layout["ScannerSpectra"]["size"][1]
+            if compiled_layout
+            else frame.GetModule().FindFirstType("JuicerCuda::ScannerSpectra").GetByteSize()
+        )
         error = lldb.SBError()
         spectra = frame.GetThread().GetProcess().ReadMemory(argument(frame, 1), size, error)
         if size != 2272 or error.Fail() or len(spectra) != size:
             raise RuntimeError("cannot capture the live spectral scanner packet")
         matrices = draw["scan_color"]["cat02"] + draw["scan_color"]["xyzToRgb"]
         packet = spectra + struct.pack("<18I", *matrices)
-        filename = Path(settings["receipt"]).with_name("scanner-packet.f32")
+        name = f"scanner-packet-{draw['index']}.f32" if settings.get("mode") == "print-photo" else "scanner-packet.f32"
+        filename = Path(settings["receipt"]).with_name(name)
         with filename.open("xb") as output:
             output.write(packet)
         draw["scanner_packet"] = {"file": filename.name, "sha256": hashlib.sha256(packet).hexdigest()}
-    copy_density(frame, draw, addresses, width, height, "fj_observe_scanner_density")
+    if settings.get("mode") == "print-photo":
+        if not printing:
+            raise RuntimeError("Print photograph reached a non-Print density launcher")
+        draw["paper_planes"] = addresses
+        symbol = "fj_observe_replay_density"
+    else:
+        symbol = "fj_observe_scanner_density"
+    copy_density(frame, draw, addresses, width, height, symbol)
+
+
+def observe_photo_glare(frame, draw):
+    planes = argument(frame, 3 if settings["spectral_payload"] else 1)
+    if not planes or [read(frame, planes + offset) for offset in (0, 8, 16)] != draw["paper_planes"]:
+        raise RuntimeError("actual scanner kernel did not consume the observed paper planes")
+    glare = read(frame, planes + 24)
+    if bool(glare) != (settings["print_glare"] != "off") or "scanner_glare_pointer" in draw:
+        raise RuntimeError("unexpected pre-white glare field at the Print scanner kernel")
+    draw["scanner_glare_pointer"] = glare
+    if glare:
+        width, height = settings["density_geometry"]
+        copy_density(frame, draw, [glare] * 3, width, height, "fj_observe_replay_density", role="glare")
 
 
 def on_entry(frame, location, _):
@@ -398,10 +464,15 @@ def on_entry(frame, location, _):
             draw["launches"].append(settings["scanner_schedule"])
             record(operation, index=draw["index"], entry=settings["scanner_schedule"])
             if settings.get("cubic_grid"):
-                draw["cubic_grid"] = read_cubic_grid(frame, "Print" if draw["route"] == 1 else "Direct")
+                draw["cubic_grid"] = read_cubic_grid(frame, draw["scan_medium"])
                 record("cubic_grid", index=draw["index"], **draw["cubic_grid"])
             if settings.get("observe_density"):
-                observe_direct_density(frame, draw)
+                observe_materialized_density(frame, draw)
+            if settings.get("mode") == "print-photo" and draw["index"] < 2:
+                observe_materialized_density(frame, draw)
+        elif operation == "photo_glare":
+            if draw["index"] < 2:
+                observe_photo_glare(frame, draw)
         elif operation == "spectral_launch":
             draw["launches"].append(operation)
             record(operation, index=draw["index"])
@@ -486,7 +557,19 @@ def install(debugger):
     settings = json.loads(Path(os.environ["FJ_SCANNER_OBSERVER"]).read_text(encoding="utf-8"))
     target = debugger.GetSelectedTarget()
     module = target.AddModule(settings["module"], None, None, settings.get("symbols"))
-    bind_points(target, module, REPLAY_POINTS if settings.get("mode") == "replay" else POINTS)
+    required = POINTS
+    if settings.get("mode") == "replay":
+        required = REPLAY_POINTS
+    if settings.get("mode") == "print-photo":
+        required = {
+            **TAIL_POINTS,
+            "scanner_schedule": "juicer_cuda_print_focused_scan_linear_density_rgb",
+            "photo_glare": "scan_linear_density_rgb_kernel",
+        }
+        settings["scanner_schedule"] = required["scanner_schedule"]
+    if settings.get("mode") == "current-photo":
+        required = {**TAIL_POINTS, "current_grain": REPLAY_POINTS["current_grain"]}
+    bind_points(target, module, required)
 
 
 def stopped_predecessor(frame, ready):
@@ -646,6 +729,8 @@ def tail(debugger):
         required = TAIL_POINTS
         if settings.get("scanner_schedule"):
             required = {**required, "scanner_schedule": settings["scanner_schedule"]}
+        if settings.get("replay_tokens"):
+            required = {**required, "current_grain": REPLAY_POINTS["current_grain"]}
         bind_points(target, module, required)
         tail_predecessor = stopped_predecessor(thread.GetFrameAtIndex(0), ready)
         record("measured_predecessor", **tail_predecessor)
@@ -685,6 +770,24 @@ def finish(debugger):
     exited = process.GetState() == lldb.eStateExited
     record("inferior_exit", status=status, exited=exited, pending_returns=len(returns))
     replay = settings.get("mode") == "replay"
+    if settings.get("mode") in PHOTO_MODES:
+        observed_draw = (
+            ("density", "scanner_glare_pointer") if settings["mode"] == "print-photo" else ("current_grain",)
+        )
+        passed = (
+            status == 0
+            and exited
+            and len(frames) == 3
+            and not errors
+            and not active
+            and not returns
+            and all(row["outcome"] == [0, 0, 0, 0] for row in frames)
+            and all(all(row.get(field) is not None for field in observed_draw) for row in frames[:2])
+        )
+        report = {"status": "passed" if passed else "failed", "frames": frames, "errors": errors, "exit": status}
+        Path(settings["receipt"]).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        debugger.HandleCommand(f"quit {0 if passed else 1}")
+        return
     report = {
         "schema": "juicer-scanner-replay-observation-v2" if replay else "juicer-scanner-capacity-observation-v1",
         "frames": frames,

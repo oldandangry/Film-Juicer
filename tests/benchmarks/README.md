@@ -37,6 +37,32 @@ All modes require the pinned products, symbol layouts and qualified workload
 bindings. The product driver leaves the final measured render's owner live
 until the observer admits the single untimed reporter.
 
+Use `--mode replay` for an untimed Ordinary same-method check. Each method
+declares its matching isolated test-support `companion` in the input manifest.
+Prepare the selected Ordinary Release modules with
+`scripts/verify.py prepare --scanner-replay-links` and the explicit module
+targets. In each `build_binding`, supply the producing `result.json` as
+`producer` and its `candidate.json` and `candidate.patch` as `source` and
+`patch`. Before rendering any workload, the runner checks the snapshot and
+patch against the passing build bundle, then verifies the target's link output
+digest and the selected Rust and native link inputs from that build.
+
+The build bundle retains its generated Cargo role record and final Ninja file
+inputs, including the archives, directly linked objects and explicit linker
+controls. The replay receipt binds the sealed build result and those retained
+members by digest. If the manifest also supplies `cargo`, its bytes must match
+the retained record. Existing receipts keep their recorded evidence scope.
+The replay runner verifies the linked binary, rejects shipping/companion file
+and content aliases, and records the source, link inputs, module, symbols,
+Resources, compiled layout, observer, reader and driver identities.
+The product runs with a natural draw. The companion receives the three token
+words read from that product and replays the same workload. The driver and
+observer verify the exact completed output words, actual Current grain
+parameters or grain-off dispatch, pitched source preservation, and terminal
+readback in both runs. The materialized rows also compare the live C/M/Y words
+within each method. Replay receipts carry their own scope and cannot admit
+natural timing.
+
 In paired runs, each arm's `schedule_points` maps its compiled scanner entry
 names to the exact offset and symbol. The reporter must reach the entry for
 the admitted route and schedule once. The breakpoint is armed after timing.

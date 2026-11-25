@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -113,14 +114,19 @@ namespace {
         Module(const Module&) = delete;
         Module& operator=(const Module&) = delete;
         template <class T>
-        T symbol(const char* name) const {
+        T find_symbol(const char* name) const {
 #ifdef _WIN32
             const auto address = GetProcAddress(handle_, name);
 #else
             auto* address = dlsym(handle_, name);
 #endif
-            require(address != nullptr, std::string("missing module symbol: ") + name);
             return reinterpret_cast<T>(address);
+        }
+        template <class T>
+        T symbol(const char* name) const {
+            const auto address = find_symbol<T>(name);
+            require(address != nullptr, std::string("missing module symbol: ") + name);
+            return address;
         }
         void close() {
 #ifdef _WIN32
@@ -475,6 +481,7 @@ namespace {
     }
     struct Arguments {
         std::filesystem::path module, resources, output, previewMaterial;
+        std::filesystem::path replayFrames, replayTokens;
         std::string mode, lane, workload, campaign;
         std::string benchmarkScanner, density;
         std::string tailRun, tailArm;
@@ -509,6 +516,10 @@ namespace {
                 args.benchmarkScanner = value;
             else if (key == "--observe-density")
                 args.density = value;
+            else if (key == "--replay-frames")
+                args.replayFrames = std::filesystem::absolute(value);
+            else if (key == "--replay-tokens")
+                args.replayTokens = std::filesystem::absolute(value);
             else if (key == "--tail-run")
                 args.tailRun = value;
             else if (key == "--tail-arm")
@@ -520,12 +531,16 @@ namespace {
             else
                 throw std::runtime_error("unknown measurement argument");
         }
-        require((args.mode == "check" || args.mode == "measure") && (args.lane == "shipping" || args.lane == "observed"), "invalid mode or lane");
+        require((args.mode == "check" || args.mode == "measure") &&
+                    (args.lane == "shipping" || args.lane == "observed" || args.lane == "replay"),
+                "invalid mode or lane");
         require(std::filesystem::is_regular_file(args.module) && std::filesystem::is_directory(args.resources) && !args.output.empty(), "missing measurement input/output");
         require(args.campaign.empty() || args.campaign == "scanner-paired", "unknown measurement campaign");
         if (args.campaign == "scanner-paired")
             require(std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) != kScannerPairedRows.end(), "unknown scanner-paired workload row");
-        if (!args.previewMaterial.empty() || !args.benchmarkScanner.empty() || !args.density.empty()) {
+        const bool replayDensity = !args.replayFrames.empty() && args.density == "capture" &&
+                                   args.workload.starts_with("ordinary-") && args.workload.find("-current-") != std::string::npos;
+        if (!args.previewMaterial.empty() || !args.benchmarkScanner.empty() || (!args.density.empty() && !replayDensity)) {
             require(args.campaign == "scanner-paired" && args.workload == "preview-negative-direct-film-v1-full-36",
                     "archived comparison requires the Full 36 mm Direct Preview row");
             require(args.previewMaterial.empty() || std::filesystem::is_regular_file(args.previewMaterial), "missing Preview raster");
@@ -537,7 +552,7 @@ namespace {
         require(!anyTail || (tail_enabled(args) && !args.tailArm.empty() && !args.tailReady.empty() && !args.tailRelease.empty()),
                 "tail settings must be supplied as run, arm, ready and release together");
         if (anyTail) {
-            require(args.lane == "shipping", "tail rendezvous requires the shipping lane");
+            require(args.lane == "shipping" || args.lane == "replay", "tail rendezvous requires a product or replay lane");
             require(args.tailReady != args.tailRelease && args.tailReady != std::filesystem::absolute(args.output) &&
                         args.tailRelease != std::filesystem::absolute(args.output),
                     "tail rendezvous files must be distinct from each other and the measurement result");
@@ -546,6 +561,13 @@ namespace {
             require(!args.tailRelease.parent_path().empty() && std::filesystem::is_directory(args.tailRelease.parent_path()), "tail release parent is missing");
         }
         require(args.campaign != "scanner-paired" || tail_enabled(args), "scanner-paired requires all tail rendezvous settings");
+        require((args.lane == "replay") == !args.replayTokens.empty(), "replay lane requires a natural token receipt");
+        if (!args.replayFrames.empty() || !args.replayTokens.empty()) {
+            require(args.campaign == "scanner-paired" && args.mode == "check" &&
+                        args.workload.starts_with("ordinary-") && std::filesystem::is_directory(args.replayFrames) &&
+                        std::filesystem::is_empty(args.replayFrames),
+                    "replay requires an ordinary untimed scanner check and an empty frame directory");
+        }
         return args;
     }
     std::uint64_t output_digest(const std::vector<float>& output) {
@@ -723,11 +745,39 @@ namespace {
         const auto openStart = Clock::now();
         Module module(args.module);
         timings["module_open_ns"] = nanoseconds(openStart, Clock::now());
+        using SetTokens = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
+        if (args.campaign == "scanner-paired" && args.benchmarkScanner.empty()) {
+            const bool spectralSetter = module.find_symbol<SetTokens>("fj_spectral_replay_set_tokens") != nullptr;
+            require(spectralSetter == (args.lane == "replay"), "scanner lane token setter does not match its role");
+            require(!module.find_symbol<SetTokens>("fj_preview_replay_set_tokens") &&
+                        !module.find_symbol<SetTokens>("fj_preview_benchmark_set_tokens"),
+                    "scanner paired module exports an unexpected replay setter");
+            using MeasurementExport = int (*)(FjMeasurementRecord*);
+            const bool measurements = module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_begin") ||
+                                      module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_read") ||
+                                      module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_end");
+            require(args.lane != "shipping" || !measurements, "scanner shipping lane exports test measurement hooks");
+            report["scanner_paired"]["replay_setter"] = spectralSetter;
+            report["scanner_paired"]["measurement_exports"] = measurements;
+        }
         if (!args.benchmarkScanner.empty()) {
             using ConfigureScanner = int (*)(int, int);
             require(module.symbol<ConfigureScanner>("fj_preview_benchmark_configure_scanner")(args.benchmarkScanner == "spectral", 0) == 1,
                     "archived benchmark scanner configuration failed");
             report["scanner_paired"]["benchmark_scanner"] = args.benchmarkScanner;
+        }
+        if (!args.replayTokens.empty()) {
+            std::ifstream input(args.replayTokens);
+            require(static_cast<bool>(input), "cannot read natural scanner replay tokens");
+            const auto tokens = Json::parse(input);
+            require(tokens.is_array() && tokens.size() == 3 &&
+                        std::ranges::all_of(tokens, [](const auto& token) {
+                            return token.is_number_unsigned();
+                        }),
+                    "expected three exact natural scanner replay tokens");
+            const auto words = tokens.get<std::array<std::uint64_t, 3>>();
+            module.symbol<SetTokens>("fj_spectral_replay_set_tokens")(words[0], words[1], words[2]);
+            report["replay_tokens"] = tokens;
         }
         Observation observation(module, observed);
         using Count = int (*)();
@@ -858,6 +908,16 @@ namespace {
                 require(outcome == (step.expect_construction ? "success" : "reused"), "missing, unexpected or unpaired construction span");
             }
         };
+        auto save_replay_frame = [&](const char* filename) {
+            if (args.replayFrames.empty())
+                return;
+            const auto path = args.replayFrames / filename;
+            require(!std::filesystem::exists(path), "replay raster already exists");
+            std::ofstream file(path, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(output.data()), static_cast<std::streamsize>(bytes));
+            file.close();
+            require(static_cast<bool>(file), "cannot write the complete scanner replay raster");
+        };
         auto run_tail = [&](OfxImageEffectHandle effect) {
             const std::uint64_t ordinal = sampleCount - 1;
             const double frame = static_cast<double>(ordinal);
@@ -866,6 +926,7 @@ namespace {
                         last.status == kOfxStatOK && last.checked && last.outputValid && last.releasesValid &&
                         last.contextPreserved && last.completedNs != 0 && !host.callback_error(),
                     "tail requires the valid final timed render");
+            save_replay_frame("final.f32");
             CUcontext context = nullptr;
             driver_check(cuCtxGetCurrent(&context), "read tail context");
             const auto stopQuery = cudaEventQuery(device.stop);
@@ -933,6 +994,13 @@ namespace {
             require(reporterStatus == kOfxStatOK && !host.callback_error() && reporterOutputValid && reporterReleasesValid &&
                         reporterAfter == context && host.instance_data(effect) == instanceData,
                     "tail reporter failed");
+            save_replay_frame("reporter.f32");
+            if (!args.replayFrames.empty()) {
+                std::vector<float> returnedSource(source.size());
+                cuda_check(cudaMemcpy(returnedSource.data(), device.source, bytes, cudaMemcpyDeviceToHost), "read replay source");
+                require(std::memcmp(returnedSource.data(), source.data(), bytes) == 0, "replay altered source or its padding");
+                report["replay_source_preserved"] = true;
+            }
             report["tail_reporter"] = {{"release", release},
                                        {"token", reporterToken},
                                        {"time", static_cast<double>(reporterToken)},

@@ -146,10 +146,10 @@
     "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
     "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
-    "Ffi.Gpu.CudaRender.negative-direct": 23,
-    "Ffi.Gpu.CudaRender.negative-print": 23,
-    "Ffi.Gpu.CudaRender.positive-direct": 23,
-    "Ffi.Gpu.CudaRender.positive-print": 23,
+    "Ffi.Gpu.CudaRender.negative-direct": 24,
+    "Ffi.Gpu.CudaRender.negative-print": 24,
+    "Ffi.Gpu.CudaRender.positive-direct": 24,
+    "Ffi.Gpu.CudaRender.positive-print": 24,
     "Ffi.Gpu.PreparedStateLifetime": 53,
     "Ffi.Gpu.ProductionPreparedRender": 1
   },
@@ -204,9 +204,12 @@
   },
   "native_membership": {
     "Ffi.Gpu.CudaRender.negative-direct": {
-      "listed": 19,
-      "terminal": 134,
+      "listed": 22,
+      "terminal": 137,
       "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
@@ -222,9 +225,12 @@
       ]
     },
     "Ffi.Gpu.CudaRender.negative-print": {
-      "listed": 19,
-      "terminal": 134,
+      "listed": 22,
+      "terminal": 137,
       "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
@@ -240,9 +246,12 @@
       ]
     },
     "Ffi.Gpu.CudaRender.positive-direct": {
-      "listed": 19,
-      "terminal": 134,
+      "listed": 22,
+      "terminal": 137,
       "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],
@@ -258,9 +267,12 @@
       ]
     },
     "Ffi.Gpu.CudaRender.positive-print": {
-      "listed": 19,
-      "terminal": 134,
+      "listed": 22,
+      "terminal": 137,
       "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
         ["shipping-scan-readback", "producer"],
         ["shipping-scan-readback", "reporter"],
         ["shipping-scan-readback", "retry"],

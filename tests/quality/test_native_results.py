@@ -1927,6 +1927,21 @@ class OpticsSourceTests(unittest.TestCase):
         path.write_text("changed support\n")
         self.assertNotEqual(after[1], self.capture()[1])
 
+    def test_consumed_linker_maps_are_captured_and_detect_changed_bytes(self):
+        for name in ("tests/benchmarks/measurement.exports", "tests/benchmarks/measurement.def"):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("export original\n")
+            before, _, _ = self.capture()
+            self.assertIn(name, before["new_files_base64"])
+            self.git("add", name)
+            before, patch, _ = self.capture()
+            path.write_text("export replacement\n")
+            changed, updated, _ = self.capture()
+            self.assertIn(name, before["inputs"])
+            self.assertIn(name, changed["inputs"])
+            self.assertNotEqual(patch, updated)
+
     def test_supported_untracked_headers_are_preserved_and_compared(self):
         import base64
 

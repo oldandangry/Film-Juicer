@@ -1051,11 +1051,13 @@ namespace JuicerCudaTest {
         require_status(fj_cuda_retire_instance(cuda, instance, &error), success, "retire scanner packet overlap fixture instance");
     }
 
-    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe, const BoundScannerPacket* switchedReporter) {
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe, const BoundScannerPacket* switchedReporter, ScanReadbackFault fault) {
         const auto route = static_cast<Spektrafilm::ScanRoute>(prepared.route);
-        const bool receiver = probe == ReadbackProbe::FusedDir;
-        JuicerTests::Cohort rows(receiver ? kDirScanReadbackCaller : probe == ReadbackProbe::Plane ? kPlaneScanReadbackCaller
-                                                                                                   : kScanReadbackCaller,
+        const bool scratchOverflow = fault == ScanReadbackFault::ScratchOverflow;
+        const bool receiver = probe == ReadbackProbe::FusedDir && !scratchOverflow;
+        const auto* caller = probe == ReadbackProbe::FusedDir ? kDirScanReadbackCaller : probe == ReadbackProbe::Plane ? kPlaneScanReadbackCaller
+                                                                                                                       : kScanReadbackCaller;
+        JuicerTests::Cohort rows(scratchOverflow ? kScratchScanReadbackCaller : caller,
                                  std::vector<std::string>(kScanReadbackCases.begin(), kScanReadbackCases.end()));
         constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
         constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -1074,26 +1076,56 @@ namespace JuicerCudaTest {
         std::array<char, 1024> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
         auto baseline = submission;
-        baseline.instance_token ^= UINT64_C(0x4000000000000000);
+        baseline.instance_token ^= scratchOverflow ? UINT64_C(0x2000000000000000) : UINT64_C(0x4000000000000000);
         require(baseline.instance_token != 0, "scan readback fixture instance token");
-        require_status(render_raw_prepared(cuda, frame, baseline, prepared, {}, &error), success, "healthy scan before nonfinite injection");
         std::vector<std::byte> healthy(bytes), produced(bytes), compared(bytes);
+        const auto bindScanner = [](FjSubmission& packet, const FjPreparedHostData& state) {
+            const auto& color = state.output_color;
+            const auto gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
+            const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(state), gamut});
+            packet.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(state.recipe_hash, state.dir_couplers.hash, binding, state.auto_exposure.hash).scannerHash;
+        };
+        const std::array<float, 81> zeros{};
+        const std::array<float, 81> controlX{0x1p125f};
+        const std::array<float, 81> overflowX{0x1p127f};
+        auto baselineState = prepared;
+        std::vector<std::byte> guarded;
+        if (scratchOverflow) {
+            require(probe != ReadbackProbe::Inline, "scratch fault requires a scratch-writing schedule");
+            const FjFloatSpan zero{zeros.data(), zeros.size()};
+            baselineState.scanner_spectra = {zero, zero, zero, {controlX.data(), controlX.size()}, zero, zero, {}, 1.0f};
+            auto& color = baselineState.output_color;
+            const std::array<float, 9> identity{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+            std::ranges::copy(identity, color.cat02);
+            std::ranges::fill(color.xyz_to_rgb, 0.0f);
+            color.xyz_to_rgb[0] = 4.0f;
+            color.flags = FJ_COLOR_INPUT_IS_OUTPUT_SPACE;
+            color.gamut_cmax = {};
+            require((prepared.scanner_post.flags & FJ_POST_GLARE) == 0 &&
+                        (prepared.scanner_correction.flags & FJ_CORRECTION_ACTIVE) == 0,
+                    "scratch contrast isolates the live scan RGB matrix");
+            bindScanner(baseline, baselineState);
+            guarded.resize(bytes);
+            read_image(guarded);
+        }
+        require_status(render_raw_prepared(cuda, frame, baseline, baselineState, {}, &error), success, "healthy scan before nonfinite injection");
         read_image(healthy);
 
-        auto nonfinite = prepared;
+        auto nonfinite = baselineState;
         auto producer = baseline;
         ++producer.submission_id;
-        if (receiver) {
+        if (scratchOverflow) {
+            nonfinite.scanner_spectra.weighted_x = {overflowX.data(), overflowX.size()};
+            bindScanner(producer, nonfinite);
+            require(producer.scanner_hash != baseline.scanner_hash, "scratch overflow changes the admitted binding");
+        } else if (receiver) {
             require(static_cast<DirNonlinearMode>(nonfinite.dir_couplers.mode) == DirNonlinearMode::PositiveReceiverLangmuir &&
                         nonfinite.dir_couplers.receiver_c_ref_rgb[1] != 0.0f && nonfinite.dir_couplers.receiver_kr_rgb[1] > 0.0f,
                     "positive DIR fixture binds an active green receiver");
             nonfinite.dir_couplers.receiver_kr_rgb[1] = 0.0f;
         } else {
             nonfinite.scanner_spectra.inverse_y_normalization = std::numeric_limits<float>::infinity();
-            const auto& color = nonfinite.output_color;
-            const auto gamut = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
-            const auto binding = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(nonfinite), gamut});
-            producer.scanner_hash = JuicerCuda::ResourceManager::make_key_digests(nonfinite.recipe_hash, nonfinite.dir_couplers.hash, binding, nonfinite.auto_exposure.hash).scannerHash;
+            bindScanner(producer, nonfinite);
             require(producer.scanner_hash != submission.scanner_hash, "nonfinite scan changes the admitted binding");
         }
         const bool paper = Spektrafilm::scan_route_is_print(route);
@@ -1107,10 +1139,35 @@ namespace JuicerCudaTest {
             const auto fused = JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches();
             require_status(render_raw_prepared(cuda, frame, producer, nonfinite, {}, &error), success, "nonfinite producer finishes asynchronous submission");
             require(JuicerCuda::ScanDensityCaptureTest::plane_scan_launches() - planes == (probe == ReadbackProbe::Plane ? 1u : 0u) &&
-                        JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() - fused == (receiver || fusedInline ? 1u : 0u),
+                        JuicerCuda::ScanDensityCaptureTest::fused_dir_scan_launches() - fused == (probe == ReadbackProbe::FusedDir || fusedInline ? 1u : 0u),
                     "nonfinite producer used the expected scanner kernel entry");
             read_image(produced);
             require(produced != healthy, "nonfinite producer reaches the optical output");
+            if (scratchOverflow) {
+                const auto& window = frame.render_window;
+                const auto channels = static_cast<std::size_t>(frame.destination.components);
+                const auto pitch = static_cast<std::size_t>(frame.destination.row_bytes);
+                require(pitch % sizeof(float) == 0 && (channels == 3 || channels == 4), "scratch witness raster layout");
+                for (auto y = bounds.y1; y < bounds.y2; ++y) {
+                    const auto rowOffset = static_cast<std::size_t>(y - bounds.y1) * pitch;
+                    for (std::size_t lane = 0; lane < pitch / sizeof(float); ++lane) {
+                        const auto offset = rowOffset + lane * sizeof(float);
+                        const auto x = static_cast<std::int64_t>(bounds.x1) + static_cast<std::int64_t>(lane / channels);
+                        if (y >= window.y1 && y < window.y2 && x >= window.x1 && x < window.x2 && lane % channels < 3) {
+                            float redControl = 0.0f;
+                            float black = 0.0f;
+                            std::memcpy(&redControl, healthy.data() + offset, sizeof(float));
+                            std::memcpy(&black, produced.data() + offset, sizeof(float));
+                            require(redControl == (lane % channels == 0 ? 1.0f : 0.0f) && black == 0.0f,
+                                    "finite 2^127 RGB scratch survives and overflowing 2^129 RGB is black");
+                        } else {
+                            require(std::memcmp(produced.data() + offset, guarded.data() + offset, sizeof(float)) == 0 &&
+                                        std::memcmp(healthy.data() + offset, guarded.data() + offset, sizeof(float)) == 0,
+                                    "scratch witness preserves alpha and the destination guard");
+                        }
+                    }
+                }
+            }
             owner = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
             require(static_cast<bool>(owner), "nonfinite producer retains its exact context owner");
             const std::lock_guard<std::mutex> lock(owner->m);
@@ -1124,13 +1181,13 @@ namespace JuicerCudaTest {
                         held.identity.scannedProfileAssetVersion == version && held.identity.contextEpoch == owner->contextEpoch,
                     "actual arithmetic set the expected flags on the producing submission");
             std::cout << "scanner failure route=" << prepared.route << " plane=" << (probe == ReadbackProbe::Plane)
-                      << " fused=" << (receiver || fusedInline) << " flags=" << *held.host
+                      << " fused=" << (probe == ReadbackProbe::FusedDir || fusedInline) << " flags=" << *held.host
                       << " submission=" << held.identity.submissionId << '\n';
             row.passed();
         }
         auto reportingFrame = frame;
         reportingFrame.time_frames += 1.0;
-        const auto& reporterPrepared = switchedReporter ? switchedReporter->prepared : prepared;
+        const auto& reporterPrepared = switchedReporter ? switchedReporter->prepared : baselineState;
         auto reporter = switchedReporter ? switchedReporter->submission : baseline;
         reporter.instance_token = baseline.instance_token;
         reporter.submission_id = producer.submission_id + 1;
@@ -1174,7 +1231,7 @@ namespace JuicerCudaTest {
             auto row = rows.case_event("retry");
             auto retry = baseline;
             retry.submission_id = reporter.submission_id + 1;
-            const auto outcome = render_raw_prepared(cuda, frame, retry, prepared, {}, &error);
+            const auto outcome = render_raw_prepared(cuda, frame, retry, baselineState, {}, &error);
             const auto retryDetail = "scan retry: " + std::string(message.data(), error.length);
             require_status(outcome, success, retryDetail.c_str());
             read_image(compared);

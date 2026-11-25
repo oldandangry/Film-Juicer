@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 
@@ -13,6 +15,168 @@ import compare
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_complete_matched_field_requires_both_live_draws_and_the_terminal_readback(self):
+        self.subtest_cases = ("complete", "missing-xyz", "paper", "glare", "color", "readback")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame = root / "frame.json"
+            bounds = [0, 0, 1, 1]
+            frame.write_text(
+                json.dumps(
+                    {
+                        "output": {"bounds": bounds, "components": "OfxImageComponentRGB"},
+                        "action": {"render_window": bounds, "time": 0.0},
+                        "observe_print": True,
+                        "print_glare": "constant",
+                        "parameters": {"ScanRoute": {"values": ["PositivePrintScan"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for defect in self.subtest_cases:
+                with self.subTest(case=defect):
+                    for side in compare.SIDES:
+                        path = root / side
+                        path.mkdir(exist_ok=True)
+                        cubic = side == "reference"
+                        change = defect if not cubic else "complete"
+                        owner = {"resources": 11, "context": 12, "device": 0, "epoch": 13}
+                        host_rows, observed = [], []
+                        for index, phase in enumerate(("cold", "warm", "reporter")):
+                            tail = index == 2
+                            draw = {
+                                "pass": phase,
+                                "status": 0,
+                                "time": float(tail),
+                                "output_file": None if tail else f"{phase}.f32",
+                                **dict.fromkeys(
+                                    (
+                                        "source_preserved",
+                                        "stream_completed",
+                                        "context_preserved",
+                                        "destination_guard_checked",
+                                    ),
+                                    True,
+                                ),
+                                "source_releases": 1,
+                                "output_releases": 1,
+                            }
+                            held = {
+                                **owner,
+                                "event": 20 + index,
+                                "host": 15,
+                                "epoch_at_production": 13,
+                                "producer": [1 + int(tail), int(tail)],
+                                "success": True,
+                                "handoff": True,
+                            }
+                            observed_row = {
+                                **owner,
+                                "index": index,
+                                "route": 3,
+                                "thread": 6,
+                                "instance": 7,
+                                "time_bits": 0x3FF0000000000000 if tail else 0,
+                                "token": int(tail),
+                                "submission": 1 + int(tail),
+                                "stream": 16,
+                                "outcome": [0, 0, 0, 0],
+                                "prepare": {"stream": 16, "outcome": 0},
+                                "retained": held,
+                                "poll": {
+                                    **owner,
+                                    "stream": 16,
+                                    "before": [101, 102],
+                                    "after": [101, 101],
+                                    "entry": [15, 19 + index],
+                                    "queries": [
+                                        {
+                                            "event": 19 + index,
+                                            "status": 0,
+                                            "completed_flag": int(tail and change == "readback"),
+                                        }
+                                    ],
+                                    "destroyed": [19 + index],
+                                    "success": True,
+                                    "status": 0,
+                                },
+                            }
+                            if not tail:
+                                (path / draw["output_file"]).write_bytes(struct.pack("<fff", 0, 0, 0))
+                                density = path / f"{phase}.paper.f32"
+                                density.write_bytes(struct.pack("<fff", float(change == "paper"), 0, 0))
+                                xyz = path / f"{phase}.xyz.f64"
+                                xyz.write_bytes(struct.pack("<ddd", 0, 0, 0))
+                                glare = path / f"{phase}.glare.f32"
+                                glare.write_bytes(struct.pack("<f", 2 if change == "glare" else 1))
+                                draw["scanner_evidence"] = {
+                                    "xyz": xyz.name,
+                                    "glare_file": glare.name,
+                                    "pixels": 1,
+                                    "materialized": True,
+                                    "glare": True,
+                                    "held_cmy": False,
+                                    "dust": False,
+                                    "correction": 0,
+                                    "slope": 1.0,
+                                    "offset": 0.0,
+                                    "white": [float(change == "color"), 1.0, 1.0],
+                                    "cat02": [0.0] * 9,
+                                    "xyz_to_rgb": [0.0] * 9,
+                                }
+                                if change == "missing-xyz" and phase == "warm":
+                                    del draw["scanner_evidence"]
+                                observed_row.update(
+                                    scan_medium="Print",
+                                    launches=["juicer_cuda_print_focused_scan_linear_density_rgb"],
+                                    density={
+                                        "width": 1,
+                                        "height": 1,
+                                        "file": density.name,
+                                        "sha256": compare.execution.digest(density),
+                                    },
+                                    correction_words={
+                                        "correctionActive": 0,
+                                        "correctionSlope": 0x3F800000,
+                                        "correctionOffset": 0,
+                                    },
+                                    scan_color={
+                                        "cat02": [0] * 9,
+                                        "xyzToRgb": [0] * 9,
+                                        "outputGamutActive": [0],
+                                        "encoding": [0] * (18 + int(cubic)),
+                                    },
+                                )
+                            host_rows.append(draw)
+                            observed.append(observed_row)
+                        compare.execution.write_json(
+                            path / "replay.json",
+                            {
+                                "schema": "juicer-ofx-replay-v1",
+                                "context_restored": True,
+                                "cubic_grid": 17 if cubic else None,
+                                "parameters": {},
+                                "rows": host_rows,
+                            },
+                        )
+                        compare.execution.write_json(
+                            path / "print-scanner.json", {"status": "passed", "exit": 0, "frames": observed}
+                        )
+                    if defect == "complete":
+                        proof = compare.compare_scanner_frame(root, frame, scanner_xyz=True)["print_scanner"]
+                        self.assertEqual(proof["claim"], "matched-field")
+                        self.assertIn("pre_glare_xyz", proof)
+                    else:
+                        errors = {
+                            "missing-xyz": "missing live pre-glare XYZ",
+                            "paper": "live Print paper C/M/Y differs",
+                            "glare": "expected exact uniform one-percent glare",
+                            "color": "matched-field Print correction or color inputs differ",
+                            "readback": "exact preceding owner event and zero flag",
+                        }
+                        with self.assertRaisesRegex(ValueError, errors[defect]):
+                            compare.compare_scanner_frame(root, frame, scanner_xyz=True)
+
     def test_float_comparison(self):
         self.subtest_cases = ("signed-zero", "one-ulp", "nonfinite", "alpha")
         with tempfile.TemporaryDirectory() as directory:
@@ -128,6 +292,7 @@ class ComparisonTests(unittest.TestCase):
 
     test_float_comparison.required_subtests = True
     test_incomplete_and_wrong_scope_capture.required_subtests = True
+    test_complete_matched_field_requires_both_live_draws_and_the_terminal_readback.required_subtests = True
 
 
 if __name__ == "__main__":

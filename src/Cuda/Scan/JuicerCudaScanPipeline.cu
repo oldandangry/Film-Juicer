@@ -230,6 +230,13 @@ namespace {
         }
     }
 
+    __device__ __forceinline__ bool narrow_scan_rgb_device(const double rgb[3], float scratch[3]) {
+        scratch[0] = __double2float_rn(rgb[0]);
+        scratch[1] = __double2float_rn(rgb[1]);
+        scratch[2] = __double2float_rn(rgb[2]);
+        return device_isfinite(scratch[0]) && device_isfinite(scratch[1]) && device_isfinite(scratch[2]);
+    }
+
     __device__ __forceinline__ void mat3_mul_vec_double_device(const float m9[9], const double v3[3], double out3[3]) {
         out3[0] =
             static_cast<double>(m9[0]) * v3[0] +
@@ -1974,14 +1981,17 @@ namespace {
             copy_sample_device(observed->xyz, xyz);
         }
 #endif
+        const bool writeScratch = scan.linearRgbR && scan.linearRgbG && scan.linearRgbB;
+        float scratch[3];
         if (!success || !scanner_xyz_to_rgb(scan, scan.glarePercent, idx, xyz, rgbOut
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                                             ,
                                             observed
 #endif
-                                            )) {
+                                            ) ||
+            (writeScratch && !narrow_scan_rgb_device(rgbOut, scratch))) {
             signal_scan_error_device(scan.scanErrorFlag);
-            if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
+            if (writeScratch) {
                 scan.linearRgbR[idx] = 0.0F;
                 scan.linearRgbG[idx] = 0.0F;
                 scan.linearRgbB[idx] = 0.0F;
@@ -1998,10 +2008,10 @@ namespace {
             return;
         }
 
-        if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
-            scan.linearRgbR[idx] = static_cast<float>(rgbOut[0]);
-            scan.linearRgbG[idx] = static_cast<float>(rgbOut[1]);
-            scan.linearRgbB[idx] = static_cast<float>(rgbOut[2]);
+        if (writeScratch) {
+            scan.linearRgbR[idx] = scratch[0];
+            scan.linearRgbG[idx] = scratch[1];
+            scan.linearRgbB[idx] = scratch[2];
             return;
         }
 
@@ -2206,12 +2216,14 @@ namespace {
                     xyz[2] *= transmittance;
                 }
                 double rgbOut[3];
+                float scratch[3];
                 if (!success || !scanner_xyz_to_rgb(scan, glarePercent, idx, xyz, rgbOut
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST)
                                                     ,
                                                     observed
 #endif
-                                                    )) {
+                                                    ) ||
+                    !narrow_scan_rgb_device(rgbOut, scratch)) {
                     signal_scan_error_device(scan.scanErrorFlag);
                     outR[idx] = 0.0F;
                     outG[idx] = 0.0F;
@@ -2219,9 +2231,9 @@ namespace {
                     continue;
                 }
 
-                outR[idx] = static_cast<float>(rgbOut[0]);
-                outG[idx] = static_cast<float>(rgbOut[1]);
-                outB[idx] = static_cast<float>(rgbOut[2]);
+                outR[idx] = scratch[0];
+                outG[idx] = scratch[1];
+                outB[idx] = scratch[2];
             }
         }
     }

@@ -34,12 +34,16 @@ from qualification import (
     RUST_TEST_BUILD_TARGET,
     RUST_TEST_PATH_FLAGS,
     RUST_TEST_REGISTRATIONS,
+    SCANNER_REPLAY_ROLE_FILES,
     SOURCE_FILE_POLICY,
+    candidate_source_digest,
     collect_bundles,
     configured_product_contract,
     read_preview_and_replay_configuration,
     configured_aperture_target,
     product_artifact_consumers,
+    scanner_replay_linker_control,
+    scanner_replay_role,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -536,7 +540,7 @@ def tool_versions(args):
     return 0 if all(r["returncode"] == 0 for r in records) else 1
 
 
-def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests=False):
+def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests=False, raw_sha256_inputs=()):
     """Describe this working candidate using Git's native source identities.
 
     HEAD plus a binary working-tree patch reconstruct tracked inputs; new inputs
@@ -572,6 +576,7 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
     retained_sources = (
         {f"tests/{runtime}-contracts.json" for runtime in ("host", "gpu", "python")} if domain_tests else set()
     )
+    retained_sources.update(raw_sha256_inputs)
     explicit = {
         "CMakeLists.txt",
         "CMakePresets.json",
@@ -597,7 +602,17 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
         roots += ("tests",)
     policy = (root / source_policy).read_bytes()
     costs["source_read_bytes"] += len(policy)
-    code = set(json.loads(policy)["supportedExtensions"]) | {".rs", ".py", ".cmake", ".toml", ".lock", ".yml", ".yaml"}
+    code = set(json.loads(policy)["supportedExtensions"]) | {
+        ".rs",
+        ".py",
+        ".cmake",
+        ".toml",
+        ".lock",
+        ".yml",
+        ".yaml",
+        ".def",
+        ".exports",
+    }
     paths = [
         ":(literal)" + name
         for name in [
@@ -1220,6 +1235,57 @@ def development(args):
     return native_tests(args)
 
 
+def scanner_link_inputs(build, ninja, target, output):
+    """Read the final link edge's explicit and implicit files from configured Ninja."""
+    query = subprocess.check_output(
+        [ninja, "-t", "query", output.relative_to(build).as_posix()],
+        cwd=build,
+        encoding="utf-8",
+        timeout=None,
+    ).splitlines()
+    if len(query) < 3 or not query[1].startswith(f"  input: CXX_MODULE_LIBRARY_LINKER__{target}_"):
+        raise ValueError(f"{target} is missing its configured final link edge")
+    return [
+        (build / line.strip().removeprefix("| ")).resolve(strict=True)
+        for line in query[2 : query.index("  outputs:")]
+        if line.startswith("    ") and not line.startswith("    || ")
+    ]
+
+
+def capture_scanner_replay_links(build, directory, candidate, patch, targets, ninja):
+    role_paths = {
+        "replay-rust-artifacts.json": build / "tests/rust-artifacts.json",
+        "replay-spectral-artifacts.json": build / "tests/spectral-replay/artifacts.json",
+    }
+    roles = {}
+    for filename in sorted({SCANNER_REPLAY_ROLE_FILES[target] for target in targets}):
+        payload = role_paths[filename].read_bytes()
+        (directory / filename).write_bytes(payload)
+        roles[filename] = json.loads(payload)
+
+    links = {}
+    for target in targets:
+        artifact_roles = roles[SCANNER_REPLAY_ROLE_FILES[target]]
+        output, rust_archive, native_archive = (
+            Path(name).resolve(strict=True) for name in scanner_replay_role(target, artifact_roles)
+        )
+        inputs = scanner_link_inputs(build, ninja, target, output)
+        if not {rust_archive, native_archive} <= set(inputs):
+            raise ValueError(f"{target} Rust or native archive is absent from the final link")
+        links[target] = {
+            "output": {"path": str(output), "sha256": digest(output)},
+            "inputs": {str(path): digest(path) for path in inputs},
+        }
+    write_json(
+        directory / "scanner-replay-links.json",
+        {
+            "schema": "scanner-replay-links-v1",
+            "candidate_source": candidate_source_digest(candidate, patch),
+            "targets": links,
+        },
+    )
+
+
 def fresh_prepare(args):
     """Configure/build explicit targets without creating preparation admission."""
     from execution import NativeRun, name_component
@@ -1235,6 +1301,7 @@ def fresh_prepare(args):
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("build preparation requires its native platform")
     production_contract = getattr(args, "production_contract", False)
+    replay_links = getattr(args, "scanner_replay_links", False)
     if production_contract and (
         args.testing != "OFF"
         or not args.preset.endswith("release")
@@ -1247,6 +1314,16 @@ def fresh_prepare(args):
     started = time.perf_counter()
     cuda_free = getattr(args, "cuda_free", False)
     production_module = "bundle-archive" in (args.targets or ())
+    replay_targets = set(args.targets or ()) & SCANNER_REPLAY_ROLE_FILES.keys()
+    if production_module:
+        replay_targets.add("juicer")
+    if replay_links and (cuda_free or not args.preset.endswith("release") or not replay_targets):
+        raise ValueError("scanner replay links require explicit Ordinary native Release module targets")
+    linker_controls = {
+        control
+        for target in replay_targets
+        if replay_links and (control := scanner_replay_linker_control(target, args.preset)) is not None
+    }
     preset_build = ROOT / "out/build" / args.preset
     build = preset_build / "host-tests" if cuda_free else preset_build
     directory = (
@@ -1256,8 +1333,10 @@ def fresh_prepare(args):
         expiry = expire_diagnostics(ROOT, args.preset) if "FJ_HOST_BUNDLE" not in os.environ else None
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
-        capture_domain = production_contract or production_module
-        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
+        capture_domain = production_contract or production_module or replay_links
+        source, patch, costs = capture_native_source(
+            ROOT, "scripts/verify.py", domain_tests=capture_domain, raw_sha256_inputs=linker_controls
+        )
         if expiry is not None:
             costs["expiry"] = expiry
         costs["report_read_bytes"] = expiry["read_bytes"] if expiry is not None else 0
@@ -1301,6 +1380,8 @@ def fresh_prepare(args):
                 configure,
                 vctip_executable=windows_vctip(os.environ),
             )
+            if replay_links and cache_values(build).get("JUICER_GRAIN_PREVIEW_CONFIGURED") != "OFF":
+                raise ValueError("scanner replay links require the configured Ordinary product")
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
             if not targets:
                 raise ValueError("explicit preparation selected no build targets")
@@ -1320,6 +1401,11 @@ def fresh_prepare(args):
             )
             cache = cache_values(build)
             candidate["configuration"] = {key: cache.get(key) for key in MODULE_CONFIGURATION_KEYS}
+            if replay_links:
+                result["scanner_replay_targets"] = sorted(replay_targets)
+                capture_scanner_replay_links(
+                    build, directory, candidate, patch, result["scanner_replay_targets"], cache["CMAKE_MAKE_PROGRAM"]
+                )
             if production_module:
                 _, built, staged = production_module_paths(args.preset, candidate["configuration"])
                 write_json(directory / "production-module.json", production_module_record(built, staged))
@@ -1367,7 +1453,9 @@ def fresh_prepare(args):
             result.update(status="passed", targets=targets)
         except BaseException as error:
             result["error"] = str(error)
-        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=capture_domain)
+        final, final_patch, measured = capture_native_source(
+            ROOT, "scripts/verify.py", domain_tests=capture_domain, raw_sha256_inputs=linker_controls
+        )
         for key, value in measured.items():
             costs[key] += value
         result["candidate_unchanged"] = source == final and patch == final_patch
@@ -1771,6 +1859,11 @@ def main():
         help="run the Release OFF production closure under the build owner",
     )
     prepare.add_argument("--cuda-free", action="store_true", help="prepare selected CUDA-independent test targets")
+    prepare.add_argument(
+        "--scanner-replay-links",
+        action="store_true",
+        help="retain link provenance for selected Ordinary replay modules",
+    )
     pair = modes.add_parser("paired-discovery", help="run Ffi.Host.GrainPreviewPairedDiscovery on two build receipts")
     pair.add_argument("--preset", required=True, choices=PRESETS)
     pair.add_argument("--ordinary", required=True, type=Path, help="ordinary bundle-archive build receipt directory")

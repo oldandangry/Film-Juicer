@@ -3380,6 +3380,90 @@ def check_build_or_pair_candidate(result, candidate):
             check_receipt_shape(candidate, {"configuration": {"BUILD_TESTING": str}}, "candidate.json")
 
 
+SCANNER_REPLAY_ROLE_FILES = {
+    "juicer": "replay-rust-artifacts.json",
+    "JuicerOfxMeasurementModule": "replay-rust-artifacts.json",
+    "JuicerOfxSpectralReplayModule": "replay-spectral-artifacts.json",
+}
+
+
+def scanner_replay_linker_control(target, preset):
+    if preset.startswith("windows-"):
+        return "tests/benchmarks/measurement.def" if target == "JuicerOfxMeasurementModule" else None
+    return {
+        "juicer": "cmake/juicer.exports",
+        "JuicerOfxMeasurementModule": "tests/benchmarks/measurement.exports",
+        "JuicerOfxSpectralReplayModule": "tests/benchmarks/spectral_replay.exports",
+    }[target]
+
+
+def scanner_replay_role(target, artifacts):
+    """Read the Ordinary module and archives selected by configured CMake metadata."""
+    if target == "JuicerOfxSpectralReplayModule":
+        if artifacts["variant"] != "ordinary" or artifacts["rust_features"] != ["test-support"]:
+            raise ValueError("spectral companion must select the Ordinary test-support archive")
+        return artifacts["module"], artifacts["rust_archive"], artifacts["native_archive"]
+    role = "production" if target == "juicer" else "test-support"
+    consumer = artifacts["consumers"][target]
+    selected = artifacts["variants"][role]
+    if consumer["variant"] != role or selected["features"] != (["test-support"] if role == "test-support" else []):
+        raise ValueError(f"{target} must select the Ordinary {role} archive")
+    return consumer["binary"], selected["archive"], artifacts["native_archive"]
+
+
+def validate_scanner_replay_links(result, candidate, payloads):
+    record = json.loads(payloads["scanner-replay-links.json"])
+    paths = rust_test_path(result["preset"])
+    configuration = candidate["configuration"]
+    source = paths(configuration["CMAKE_HOME_DIRECTORY"])
+    build = source / "out" / "build" / result["preset"]
+    commands = result["commands"]
+    targets = result["scanner_replay_targets"]
+    link_targets = set(targets)
+    build_command = next((command for command in commands if command["name"] == "build"), {})
+    configure_command = next((command for command in commands if command["name"] == "configure"), {})
+    selected = set(cmake_build_targets(build_command, paths(configure_command["command"][0]), source, build) or [])
+    if "bundle-archive" in selected:
+        selected.add("juicer")
+    if (
+        not source.is_absolute()
+        or configuration["CMAKE_BUILD_TYPE"] != "Release"
+        or configuration["JUICER_GRAIN_PREVIEW_CONFIGURED"] != "OFF"
+        or link_targets - selected
+        or record["schema"] != "scanner-replay-links-v1"
+        or record["candidate_source"] != candidate_source_digest(candidate, payloads["candidate.patch"])
+        or set(record["targets"]) != link_targets
+    ):
+        raise ValueError("scanner replay links differ from the producing build and source")
+    for target in targets:
+        entry = record["targets"][target]
+        role_file = SCANNER_REPLAY_ROLE_FILES[target]
+        role = json.loads(payloads[role_file])
+        output, rust_archive, native_archive = map(paths, scanner_replay_role(target, role))
+        inputs = {paths(name): sha for name, sha in entry["inputs"].items()}
+        if (
+            any(not file.is_relative_to(build) for file in (output, rust_archive, native_archive))
+            or paths(entry["output"]["path"]) != output
+            or rust_archive == native_archive
+            or not {rust_archive, native_archive} <= inputs.keys()
+            or output in inputs
+            or not any(file.suffix in (".o", ".obj") and file.is_relative_to(build) for file in inputs)
+            or not all(file.is_absolute() and ".." not in file.parts for file in inputs)
+            or len(inputs) != len(entry["inputs"])
+            or not all(re.fullmatch(r"[0-9a-f]{64}", sha) for sha in (entry["output"]["sha256"], *inputs.values()))
+        ):
+            raise ValueError(f"{target} replay link output or consumed Rust/native inputs differ")
+        control = scanner_replay_linker_control(target, result["preset"])
+        if control:
+            identity = candidate["inputs"].get(control, {})
+            captured = identity.get("worktree_sha256", identity.get("sha256"))
+            if not captured or captured != inputs.get(source / control):
+                raise ValueError(
+                    f"{target} replay linker control digest is missing or differs from the captured source"
+                )
+    return record["targets"]
+
+
 def build_result_members(result):
     check_build_or_pair_metadata(result)
     required = {"candidate.json", "candidate.patch"}
@@ -3387,6 +3471,12 @@ def build_result_members(result):
         required.update({"production-contract.json", "production-commands.json"})
     if result.get("production_module") is True and result["status"] == "passed":
         required.update({"production-module.json", "rust-artifacts.json"})
+    if "scanner_replay_targets" in result and result["status"] == "passed":
+        targets = result["scanner_replay_targets"]
+        check_receipt_shape(targets, [str], "scanner replay targets")
+        if not targets or len(targets) != len(set(targets)) or not set(targets) <= SCANNER_REPLAY_ROLE_FILES.keys():
+            raise ValueError("unexpected scanner replay link target selection")
+        required.update({"scanner-replay-links.json", *(SCANNER_REPLAY_ROLE_FILES[target] for target in targets)})
     return _flat_members(result, required)
 
 
@@ -3574,6 +3664,8 @@ def validate_build_result(result, payloads):
             )
     elif production_contract:
         assertions.update(validate_production_contract(result["preset"], payloads))
+    if result["status"] == "passed" and "scanner_replay_targets" in result:
+        assertions["scanner_replay_links"] = validate_scanner_replay_links(result, candidate, payloads)
     return {
         "status": result["status"],
         "preset": result["preset"],

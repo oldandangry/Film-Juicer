@@ -58,6 +58,9 @@
 #endif
 
 namespace {
+#if defined(JUICER_SPECTRAL_REPLAY_CAPTURE)
+    thread_local std::vector<std::uint32_t> photoScanWords;
+#endif
     using Json = nlohmann::json;
     using ofx_test::InstanceHost;
     using ofx_test::InstanceValue;
@@ -1662,7 +1665,7 @@ namespace {
         std::size_t originOffset = 0;
     };
 
-    ReplayImage replay_image(InstanceHost& host, OfxImageEffectHandle effect, const char* clip, const Json& image) {
+    ReplayImage replay_image(InstanceHost& host, OfxImageEffectHandle effect, const char* clip, const Json& image, bool syntheticScannerFrame) {
         ReplayImage result;
         result.bounds = replay_array<int, 4>(image.at("bounds"));
         const auto width = static_cast<std::int64_t>(result.bounds[2]) - result.bounds[0];
@@ -1686,11 +1689,24 @@ namespace {
         host.set_image_property(effect, clip, kOfxImagePropRowBytes, {result.rowBytes});
         host.set_image_property(effect, clip, kOfxImageEffectPropComponents, {components});
         host.set_image_property(effect, clip, kOfxImageEffectPropPixelDepth, {image.at("depth").get<std::string>()});
-        host.set_image_property(effect, clip, kOfxImageEffectPropPreMultiplication, {image.at("premultiplication").get<std::string>()});
+        auto premultiplication = image.at("premultiplication").get<std::string>();
+        auto field = image.at("field");
+        auto uniqueId = image.at("unique_id");
+        if (syntheticScannerFrame) {
+            // A synthetic raster is unfielded and has a stable per-clip image
+            // identity. Older frozen manifests use a nonstandard opaque label.
+            if (premultiplication == "OfxImageAlphaOpaque")
+                premultiplication = kOfxImageOpaque;
+            if (field.is_null())
+                field = kOfxImageFieldNone;
+            if (uniqueId.is_null())
+                uniqueId = std::string(clip) + "-native-scanner-image";
+        }
+        host.set_image_property(effect, clip, kOfxImageEffectPropPreMultiplication, {premultiplication});
         host.set_image_property(effect, clip, kOfxImagePropPixelAspectRatio, {image.at("pixel_aspect").get<double>()});
         host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, replay_properties<double, 2>(image.at("scale")));
-        host.set_image_property(effect, clip, kOfxImagePropField, image.at("field").is_null() ? std::vector<InstanceValue>{} : std::vector<InstanceValue>{image.at("field").get<std::string>()});
-        host.set_image_property(effect, clip, kOfxImagePropUniqueIdentifier, image.at("unique_id").is_null() ? std::vector<InstanceValue>{} : std::vector<InstanceValue>{image.at("unique_id").get<std::string>()});
+        host.set_image_property(effect, clip, kOfxImagePropField, field.is_null() ? std::vector<InstanceValue>{} : std::vector<InstanceValue>{field.get<std::string>()});
+        host.set_image_property(effect, clip, kOfxImagePropUniqueIdentifier, uniqueId.is_null() ? std::vector<InstanceValue>{} : std::vector<InstanceValue>{uniqueId.get<std::string>()});
         return result;
     }
 
@@ -1755,7 +1771,9 @@ namespace {
         const auto get = module.symbol<Get>("OfxGetPlugin");
         require(count() == 1 && get(0) != nullptr, "replay plugin discovery failed");
         auto* plugin = get(0);
-        const bool preview = replayGrain || paths.module.filename() == "juicer-grain-preview.ofx";
+        const auto replayVariant = capture.value("variant", "preview");
+        require(!replayGrain || replayVariant == "ordinary" || replayVariant == "preview", "invalid scanner replay variant");
+        const bool preview = replayGrain ? replayVariant == "preview" : paths.module.filename() == "juicer-grain-preview.ofx";
         require(plugin->setHost && plugin->mainEntry && plugin->pluginIdentifier &&
                     std::string_view(plugin->pluginIdentifier) == (preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
                 "unexpected replay plugin");
@@ -1763,10 +1781,11 @@ namespace {
         DeviceBuffers device;
         Lifecycle lifecycle(plugin, host);
         require(lifecycle.load() == kOfxStatOK, "replay module load failed");
+        require(lifecycle.call(kOfxActionDescribe, host.descriptor_handle()) == kOfxStatOK, "replay module description failed");
         require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
                 "replay context description failed");
         std::vector<ofx_test::InstanceParamDefinition> definitions(ofx_test::kInstanceParameters.begin(), ofx_test::kInstanceParameters.end());
-        if (replayGrain) {
+        if (replayGrain && preview) {
             using Kind = ofx_test::InstanceParamKind;
             definitions.insert(definitions.end(), {{"GrainModel", Kind::StringChoice}, {"FilmGrainAmountEv", Kind::Double}, {"FilmGrainTexelPitchUm", Kind::Double}, {"FilmGrainChromaFraction", Kind::Double}});
         }
@@ -1785,9 +1804,24 @@ namespace {
         require(parameters.is_object(), "replay parameters must be an object");
         Json grainTokens = nullptr;
         if (paths.nativeScannerFrame) {
+            const auto glare = capture.value("print_glare", "off");
+            const bool glareOn = glare == "constant" || glare == "natural";
+            require(glareOn || glare == "off", "invalid scanner replay glare mode");
             require(parameters.at("GrainActive").at("values") == Json::array({replayGrain ? 1 : 0}) &&
-                        parameters.at("GlareActive").at("values") == Json::array({0}),
-                    "native scanner frame requires glare disabled and controlled grain");
+                        parameters.at("GlareActive").at("values") == Json::array({glareOn ? 1 : 0}),
+                    "native scanner frame requires explicitly controlled grain and glare");
+            if (glareOn) {
+                const auto& route = parameters.at("ScanRoute").at("values").at(0);
+                require(!replayGrain && (route == "NegativePrintScan" || route == "PositivePrintScan"),
+                        "native scanner glare comparison requires grain-off Print");
+                if (glare == "constant") {
+                    using Kind = ofx_test::InstanceParamKind;
+                    require(replay_values(parameters.at("GlarePercent"), Kind::Double) == std::vector<InstanceValue>{1.0} &&
+                                replay_values(parameters.at("GlareRoughness"), Kind::Double) == std::vector<InstanceValue>{0.0} &&
+                                replay_values(parameters.at("GlareBlurSigmaPx"), Kind::Double) == std::vector<InstanceValue>{0.0},
+                            "constant glare requires one percent, zero roughness and no blur");
+                }
+            }
             for (const auto& parameter : parameters.items())
                 require(declared.contains(parameter.key()), "native scanner frame requests an undeclared parameter");
             if (cubicScanner)
@@ -1801,7 +1835,7 @@ namespace {
                         }),
                     "native scanner grain replay requires three exact unsigned words");
             using TokenSetter = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
-            const auto setTokens = module.symbol<TokenSetter>(cubicScanner ? "fj_preview_benchmark_set_tokens" : "fj_spectral_replay_set_tokens");
+            const auto setTokens = module.symbol<TokenSetter>(cubicScanner && preview ? "fj_preview_benchmark_set_tokens" : "fj_spectral_replay_set_tokens");
             if (cubicScanner) {
                 using Configure = int (*)(int, int);
                 if (const auto configure = module.find_symbol<Configure>("fj_preview_benchmark_configure_scanner"))
@@ -1865,8 +1899,19 @@ namespace {
             const auto rod = replay_array<double, 4>(capture.at("source_canonical_rod"));
             host.set_clip_region(effect, "Source", OfxRectD{rod[0], rod[1], rod[2], rod[3]});
         }
-        const auto sourceImage = replay_image(host, effect, "Source", capture.at("source"));
-        const auto outputImage = replay_image(host, effect, "Output", capture.at("output"));
+        const auto sourceImage = replay_image(host, effect, "Source", capture.at("source"), paths.nativeScannerFrame);
+        const auto outputImage = replay_image(host, effect, "Output", capture.at("output"), paths.nativeScannerFrame);
+        if (paths.nativeScannerFrame) {
+            const auto outputRod = replay_array<double, 4>(capture.at("output").at("rod"));
+            host.set_clip_region(effect, "Output", OfxRectD{outputRod[0], outputRod[1], outputRod[2], outputRod[3]});
+        }
+#if defined(JUICER_SPECTRAL_REPLAY_CAPTURE)
+        if (capture.value("observe_print", false)) {
+            const auto width = static_cast<std::size_t>(outputImage.bounds[2] - outputImage.bounds[0]);
+            const auto height = static_cast<std::size_t>(outputImage.bounds[3] - outputImage.bounds[1]);
+            photoScanWords.resize(1 + 3 * width * height);
+        }
+#endif
         const auto source = read_replay_source(manifestPath.parent_path() / sourceName, sourceImage);
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create replay stream");
         require_cuda(cudaMalloc(&device.source, sourceImage.storageSize), "allocate replay source");
@@ -1880,7 +1925,13 @@ namespace {
         lifecycle.created(effect);
         Json rows = Json::array();
         constexpr std::array<unsigned char, sizeof(float)> scannerCanary{0xa5, 0xa5, 0xa5, 0xa5};
-        for (const auto* pass : {"cold", "warm"}) {
+        const bool reportLastDraw = capture.value("observe_print", false) || (replayGrain && !preview);
+        const auto frozenTime = action.at("time").get<double>();
+        for (const std::string_view pass : {"cold", "warm", "reporter"}) {
+            if (pass == "reporter" && !reportLastDraw)
+                break;
+            const auto time = frozenTime + (pass == "reporter" ? 1.0 : 0.0);
+            host.set_property(args, kOfxPropTime, {time});
             require_cuda(cudaMemcpyAsync(device.source, source.data(), source.size(), cudaMemcpyHostToDevice, device.stream), "upload replay source");
             require_cuda(cudaMemsetAsync(device.destination, paths.nativeScannerFrame ? 0xa5 : 0, outputImage.storageSize, device.stream), "clear replay output");
             require_cuda(cudaStreamSynchronize(device.stream), "complete replay upload");
@@ -1892,10 +1943,14 @@ namespace {
             driver.check(driver.get_current(&after), "inspect context after replay");
             if (status != kOfxStatOK || host.callback_error()) {
                 for (const auto& call : host.calls()) {
-                    if (call.operation == "message" || call.status != kOfxStatOK)
+                    if (call.operation == "message" && call.values.size() == 2) {
+                        std::cerr << "OFX message " << std::get<std::string>(call.values[0])
+                                  << ": " << std::get<std::string>(call.values[1]) << '\n';
+                    } else if (call.status != kOfxStatOK) {
                         std::cerr << call.operation << ' ' << call.target << ' ' << call.property << " status=" << call.status << '\n';
+                    }
                 }
-                throw std::runtime_error("replay render status " + std::to_string(status));
+                throw std::runtime_error(std::string(pass) + " replay render status " + std::to_string(status));
             }
             require(before == after, "replay changed current CUDA context");
             const auto sourceReleases = host.image_release_count(effect, "Source") - sourceBefore;
@@ -1920,8 +1975,13 @@ namespace {
             std::vector<unsigned char> sourceAfter(source.size());
             require_cuda(cudaMemcpy(sourceAfter.data(), device.source, sourceAfter.size(), cudaMemcpyDeviceToHost), "read replay source");
             require(sourceAfter == source, "replay modified source image or padding");
-            write_replay_output(paths.output / (std::string(pass) + ".f32"), outputImage, output);
-            rows.push_back({{"pass", pass}, {"status", status}, {"output_file", std::string(pass) + ".f32"}, {"source_preserved", true}, {"context_preserved", true}, {"source_releases", sourceReleases}, {"output_releases", outputReleases}, {"stream_completed", true}});
+            Json raster = nullptr;
+            if (pass != "reporter") {
+                const auto name = std::string(pass) + ".f32";
+                write_replay_output(paths.output / name, outputImage, output);
+                raster = name;
+            }
+            rows.push_back({{"pass", pass}, {"time", time}, {"status", status}, {"output_file", raster}, {"source_preserved", true}, {"context_preserved", true}, {"source_releases", sourceReleases}, {"output_releases", outputReleases}, {"stream_completed", true}, {"destination_guard_checked", paths.nativeScannerFrame}});
         }
         Json reads = Json::array();
         for (const auto& call : host.calls()) {
@@ -1985,19 +2045,21 @@ namespace {
 extern "C" FJ_REPLAY_CAPTURE_EXPORT const std::uint32_t* fj_observe_replay_density(
     const float* cyan, const float* magenta, const float* yellow, std::size_t count, cudaStream_t stream, CUcontext expectedContext) noexcept {
     constexpr auto samples = std::size_t{64} * 32;
-    thread_local std::array<std::uint32_t, samples * 3 + 1> words{};
+    thread_local std::array<std::uint32_t, samples * 3 + 1> replayWords{};
+    auto* words = photoScanWords.empty() ? replayWords.data() : photoScanWords.data();
+    const auto capacity = photoScanWords.empty() ? samples : (photoScanWords.size() - 1) / 3;
     CUcontext context = nullptr;
-    if (!cyan || !magenta || !yellow || !stream || count != samples ||
+    if (!cyan || !magenta || !yellow || !stream || count != capacity ||
         cuCtxGetCurrent(&context) != CUDA_SUCCESS || context != expectedContext) {
         words[0] = static_cast<std::uint32_t>(cudaErrorInvalidValue);
-        return words.data();
+        return words;
     }
     auto status = cudaStreamSynchronize(stream);
     const std::array planes{cyan, magenta, yellow};
     for (std::size_t lane = 0; lane < planes.size() && status == cudaSuccess; ++lane)
-        status = cudaMemcpy(words.data() + 1 + lane * samples, planes[lane], samples * sizeof(float), cudaMemcpyDeviceToHost);
+        status = cudaMemcpy(words + 1 + lane * count, planes[lane], count * sizeof(float), cudaMemcpyDeviceToHost);
     words[0] = static_cast<std::uint32_t>(status);
-    return words.data();
+    return words;
 }
 #undef FJ_REPLAY_CAPTURE_EXPORT
 #endif

@@ -1884,7 +1884,7 @@ def scanner_debugger_environment(command, environment, inputs):
     return [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], environment
 
 
-def spectral_replay_poll(predecessor, reporter):
+def spectral_replay_poll(predecessor, reporter, *, frozen_photo=False, legacy_producer=False):
     held = predecessor["retained"]
     poll = reporter["poll"]
     query = {"event": held["event"], "status": 0, "completed_flag": 0}
@@ -1893,7 +1893,10 @@ def spectral_replay_poll(predecessor, reporter):
         or not held["handoff"]
         or not held["event"]
         or not held["host"]
-        or held["producer"][:2] != [predecessor["submission"], predecessor["token"]]
+        or (
+            not (legacy_producer and held["producer"] == [])
+            and held["producer"][:2] != [predecessor["submission"], predecessor["token"]]
+        )
         or any(held[key] != poll[key] for key in ("resources", "context", "device", "epoch"))
         or predecessor["context"] != held["context"]
         or reporter["context"] != held["context"]
@@ -1901,8 +1904,10 @@ def spectral_replay_poll(predecessor, reporter):
         or reporter["stream"] != predecessor["stream"]
         or reporter["stream"] != poll["stream"]
         or reporter["prepare"] != {"stream": reporter["stream"], "outcome": 0}
-        or reporter["submission"] != predecessor["submission"] + 1
-        or reporter["token"] == predecessor["token"]
+        or (
+            reporter["submission"] != predecessor["submission"] + int(not frozen_photo)
+            or (reporter["token"] == predecessor["token"]) != frozen_photo
+        )
         or poll["before"][0] == poll["before"][1]
         or poll["after"][0] != poll["after"][1]
         or poll["entry"] != [held["host"], held["event"]]
@@ -1913,6 +1918,60 @@ def spectral_replay_poll(predecessor, reporter):
     ):
         raise ValueError("spectral replay did not consume the exact preceding owner event and zero flag")
     return {"predecessor": held, "reporter": reporter["submission"], "poll": poll}
+
+
+def print_input_verdict(observed, glare):
+    reference, candidate = (observed[side][0] for side in ("reference", "candidate"))
+    if reference["density"]["sha256"] != candidate["density"]["sha256"]:
+        raise ValueError("live Print paper C/M/Y differs")
+    matched_field = None if glare == "off" else reference["glare"]["sha256"] == candidate["glare"]["sha256"]
+    if glare == "constant" and not matched_field:
+        raise ValueError("controlled Print pre-white glare field differs")
+    return {
+        "claim": {"off": "glare-off", "constant": "matched-inputs", "natural": "natural-pattern"}[glare],
+        "paper_cmy_identical": True,
+        "pre_white_glare_identical": matched_field,
+    }
+
+
+def print_stage_inputs(capture, observed, phase, pixels, *, cubic):
+    """Bind a retained device capture to the compared draw and its live scanner inputs."""
+    if not capture or capture.get("xyz") != f"{phase}.xyz.f64":
+        raise ValueError("missing live pre-glare XYZ for the compared Print draw")
+    if (
+        capture.get("glare_file") != f"{phase}.glare.f32"
+        or capture.get("glare") is not True
+        or capture.get("pixels") != pixels
+        or capture.get("materialized") is not True
+        or capture.get("held_cmy") is not False
+        or capture.get("dust") is not False
+        or observed.get("scan_medium") != "Print"
+        or observed.get("launches") != [SCANNER_SCHEDULE_ENTRIES["print", "materialized"]]
+    ):
+        raise ValueError("live Print stage capture does not match the compared draw")
+
+    def words(values, size):
+        if len(values) != size or not all(math.isfinite(value) for value in values):
+            raise ValueError("invalid live Print stage color or correction inputs")
+        return list(struct.unpack(f"<{size}I", struct.pack(f"<{size}f", *values)))
+
+    correction = observed["correction_words"]
+    color = observed["scan_color"]
+    if (
+        correction
+        != {
+            "correctionActive": capture["correction"],
+            "correctionSlope": words([capture["slope"]], 1)[0],
+            "correctionOffset": words([capture["offset"]], 1)[0],
+        }
+        or color["cat02"] != words(capture["cat02"], 9)
+        or color["xyzToRgb"] != words(capture["xyz_to_rgb"], 9)
+        or color["outputGamutActive"] != [0]
+        or len(color["encoding"]) != 18 + int(cubic)
+    ):
+        raise ValueError("live Print stage color or correction inputs differ from the observed scan")
+    # The retired cubic output color-space index precedes the surviving encoding words.
+    return correction, words(capture["white"], 3), color["cat02"], color["xyzToRgb"], color["encoding"][int(cubic) :]
 
 
 def read_spectral_pilot_child(directory, settings, companion):
@@ -2182,7 +2241,7 @@ def spectral_seed_pilot(args):
             execution.write_json(directory / "result.json", report)
 
 
-def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry, benchmark=False):
+def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry, benchmark=False, *, lane="shipping"):
     ready = tail["ready"]
     predecessor = tail["predecessor"]
     [reporter] = tail["frames"]
@@ -2202,7 +2261,7 @@ def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry, benc
         or tail["child_exit"] != 0
         or host["status"] != "passed"
         or host["mode"] != mode
-        or host["lane"] != "shipping"
+        or host["lane"] != lane
         or host["campaign"] != "scanner-paired"
         or host["workload"] != workload
         or row["variant"] != variant
@@ -2283,12 +2342,78 @@ def read_scanner_timing_arm(host, tail, workload, mode, arm, scanner_entry, benc
     }
 
 
+def validate_distinct_replay_modules(shipping, companion):
+    left, right = (Path(arm["module"]).resolve(strict=True) for arm in (shipping, companion))
+    if left.samefile(right) or execution.digest(left) == execution.digest(right):
+        raise ValueError("shipping and replay companion must be distinct module files and contents")
+
+
+def scanner_replay_provenance(declaration, method, companion, preset):
+    binding = declaration["build_binding"]
+    if "producer" not in binding:
+        raise ValueError("scanner replay requires a build-produced link receipt")
+    producer = Path(binding["producer"]).absolute()
+    if producer.name != "result.json":
+        raise ValueError("scanner replay producer must name its build result.json")
+    raw = producer.read_bytes()
+    result = json.loads(raw)
+    verified = qualification.read_native_result(producer.parent, result_bytes=raw)
+    if result["schema"] != "native-build-v1" or verified["status"] != "passed" or verified["preset"] != preset:
+        raise ValueError("scanner replay producer is outside the passing native build scope")
+    roles = {name: result["members"][name]["sha256"] for name in ("candidate.json", "candidate.patch")}
+    for name, filename in (("source", "candidate.json"), ("patch", "candidate.patch")):
+        if execution.digest(Path(binding[name])) != roles[filename]:
+            raise ValueError("scanner replay source snapshot or patch differs from the producing build")
+
+    consumer = (
+        {"cubic": "JuicerOfxMeasurementModule", "spectral": "JuicerOfxSpectralReplayModule"}[method]
+        if companion
+        else "juicer"
+    )
+    link = verified.get("scanner_replay_links", {}).get(consumer)
+    if not link:
+        raise ValueError(f"{consumer} is missing a build-produced replay link association")
+    linked_sha256 = link["output"]["sha256"]
+    module = Path(declaration["module"]).resolve(strict=True)
+    if linked_sha256 != declaration["module_sha256"] or linked_sha256 != execution.digest(module):
+        raise ValueError(f"{consumer} link output differs from supplied module")
+    cargo_member = qualification.SCANNER_REPLAY_ROLE_FILES[consumer]
+    cargo = producer.parent / cargo_member
+    if "cargo" in binding and execution.digest(Path(binding["cargo"])) != result["members"][cargo_member]["sha256"]:
+        raise ValueError(f"{consumer} Cargo role record differs from the producing build")
+    cargo_bytes = cargo.read_bytes()
+    if hashlib.sha256(cargo_bytes).hexdigest() != result["members"][cargo_member]["sha256"]:
+        raise ValueError(f"{consumer} retained Cargo role record changed")
+    _, archive, native_archive = qualification.scanner_replay_role(consumer, json.loads(cargo_bytes))
+    link_inputs = {Path(path): digest for path, digest in link["inputs"].items()}
+    files = {
+        key: {"path": str(producer.parent / filename), "sha256": result["members"][filename]["sha256"]}
+        for key, filename in (
+            ("source", "candidate.json"),
+            ("patch", "candidate.patch"),
+            ("cargo", cargo_member),
+            ("link", "scanner-replay-links.json"),
+        )
+    }
+    for name, path in (("rust_archive", archive), ("native_archive", native_archive)):
+        files[name] = {"path": path, "sha256": link_inputs[Path(path)]}
+    return {
+        "consumer": consumer,
+        "rust_role": "test-support" if companion else "production",
+        "producer": {"path": str(producer), "sha256": hashlib.sha256(raw).hexdigest()},
+        "files": files,
+    }
+
+
 def scanner_paired(args):
     if args.preset.startswith("windows-") != (os.name == "nt"):
         raise ValueError("run scanner paired timing on its native platform")
     if len(set(args.workloads)) != len(args.workloads):
         raise ValueError("scanner paired workload membership contains duplicates")
-    driver_mode = "check" if args.mode == "check" else "measure"
+    replay = args.mode == "replay"
+    driver_mode = "check" if args.mode in ("check", "replay") else "measure"
+    if replay and (args.nsys or any(SCANNER_PAIRED_ROWS[row][0] != "ordinary" for row in args.workloads)):
+        raise ValueError("same-method replay requires ordinary workloads and no timing profiler")
     if (driver_mode == "measure") != (args.check_result is not None):
         raise ValueError("scanner paired timing requires prior check-mode evidence")
     if args.check_arm and args.mode != "check":
@@ -2305,11 +2430,15 @@ def scanner_paired(args):
         raise ValueError("held density requires a CUDA attribution trace")
     carrier = args.held_density.resolve(strict=True) if args.held_density else None
     carrier_sha256 = execution.digest(carrier) if carrier else None
-    scope = "single-arm-tail" if args.check_arm else "paired"
+    scope = "ordinary-same-method-replay" if replay else "single-arm-tail" if args.check_arm else "paired"
     build = ROOT / "out/build" / args.preset
     directory = ROOT / "out/validation" / args.preset / "results" / execution.name_component(args.run_id)
     inputs = json.loads(args.inputs.read_text(encoding="utf-8"))
     inputs_sha = execution.digest(args.inputs)
+    if replay:
+        for arm in ("cubic", "spectral"):
+            declaration = inputs["variants"]["ordinary"][arm]
+            validate_distinct_replay_modules(declaration, declaration["companion"])
     material = inputs.get("preview_material")
     material_path = Path(material["path"]).resolve(strict=True) if material else None
     if material and execution.digest(material_path) != material["sha256"]:
@@ -2339,6 +2468,8 @@ def scanner_paired(args):
         "mode": args.mode,
         "scope": scope,
         "inputs_sha256": inputs_sha,
+        "reader_sha256": execution.digest(Path(__file__)),
+        "driver_sha256": execution.digest(driver),
         "workloads": {},
         "commands": run.commands,
     }
@@ -2360,6 +2491,20 @@ def scanner_paired(args):
             raise ValueError("scanner timing observer changed since check mode")
         directory.mkdir(parents=False, exist_ok=False)
         try:
+            if replay:
+                replay_provenance = {}
+                for method in ("cubic", "spectral"):
+                    shipping = inputs["variants"]["ordinary"][method]
+                    for companion, declaration in ((False, shipping), (True, shipping["companion"])):
+                        replay_provenance[method, companion] = scanner_replay_provenance(
+                            declaration, method, companion, args.preset
+                        )
+                source, patch, _ = verify.capture_native_source(ROOT, "tests/benchmarks/ofx.py", domain_tests=True)
+                execution.write_json(directory / "harness-source.json", source)
+                (directory / "harness-source.patch").write_bytes(patch)
+                report["harness_source"] = {
+                    name: execution.digest(directory / name) for name in ("harness-source.json", "harness-source.patch")
+                }
             all_gates = True
             for workload in args.workloads:
                 variant, route, schedule, _ = SCANNER_PAIRED_ROWS[workload]
@@ -2377,10 +2522,12 @@ def scanner_paired(args):
                         raise ValueError(f"{workload} is missing the actual schedule and cubic grid qualification")
                 row_dir = directory / workload
                 row_dir.mkdir()
-                pairs = (
-                    [(args.check_arm,) if args.check_arm else ("cubic", "spectral")]
-                    if args.mode == "check"
-                    else [
+                if replay:
+                    pairs = [("cubic", "cubic"), ("spectral", "spectral")]
+                elif args.mode == "check":
+                    pairs = [(args.check_arm,) if args.check_arm else ("cubic", "spectral")]
+                else:
+                    pairs = [
                         ("cubic", "cubic"),
                         ("cubic", "cubic"),
                         ("cubic", "cubic"),
@@ -2388,14 +2535,18 @@ def scanner_paired(args):
                         ("spectral", "cubic"),
                         ("cubic", "spectral"),
                     ]
-                )
                 results = []
                 binding = None
                 for pair_index, pair in enumerate(pairs):
                     runs = []
                     for ordinal, arm in enumerate(pair):
-                        declaration = arms[arm]
+                        companion = replay and ordinal == 1
+                        declaration = arms[arm]["companion"] if companion else arms[arm]
+                        lane = "replay" if companion else "shipping"
+                        capture_density = replay and schedule == "materialized"
                         points = declaration["points"].copy()
+                        if replay:
+                            points["current_grain"] = declaration["current_grain"]
                         scanner_entry = None
                         if "schedule_points" in declaration or not args.check_arm:
                             scanner_entry = SCANNER_SCHEDULE_ENTRIES[route, schedule]
@@ -2412,6 +2563,7 @@ def scanner_paired(args):
                             or inventory(resources) != inputs["variants"][variant]["resources"]
                         ):
                             raise ValueError(f"{arm} {workload} module, symbols or Resources differ")
+                        provenance = replay_provenance[arm, companion] if replay else None
                         name = f"{pair_index}-{ordinal}-{arm}"
                         arm_dir = row_dir / name
                         arm_dir.mkdir()
@@ -2427,7 +2579,7 @@ def scanner_paired(args):
                             "--mode",
                             driver_mode,
                             "--lane",
-                            "shipping",
+                            lane,
                             "--workload",
                             workload,
                             "--module",
@@ -2450,12 +2602,21 @@ def scanner_paired(args):
                         benchmark = declaration.get("benchmark_scanner", False)
                         if benchmark:
                             command.extend(("--benchmark-scanner", arm))
-                        if carrier or args.capture_density:
+                        if carrier or args.capture_density or capture_density:
                             command.extend(("--observe-density", carrier or "capture"))
+                        if replay:
+                            frames = arm_dir / "frames"
+                            frames.mkdir()
+                            command.extend(("--replay-frames", frames))
+                            if companion:
+                                tokens = arm_dir / "tokens.json"
+                                execution.write_json(tokens, runs[0]["result"]["replay"]["tokens"])
+                                command.extend(("--replay-tokens", tokens))
                         execution.write_json(
                             settings_path,
                             {
                                 "mode": "tail",
+                                "expected_route": f"Negative{route.title()}Scan",
                                 "run": args.run_id,
                                 "arm": name,
                                 "last_ordinal": 2 if driver_mode == "check" else 40,
@@ -2470,9 +2631,14 @@ def scanner_paired(args):
                                 "points": points,
                                 "scanner_schedule": scanner_entry,
                                 "layout": declaration["layout"],
-                                "cubic_grid": args.read_cubic_grid and arm == "cubic",
-                                "observe_density": bool(carrier or args.capture_density),
+                                "cubic_grid": (args.read_cubic_grid or replay) and arm == "cubic",
+                                "observe_density": bool(carrier or args.capture_density or capture_density),
                                 "spectral_payload": arm == "spectral" and not benchmark,
+                                **(
+                                    {"replay_tokens": True, "density_geometry": SCANNER_PAIRED_ROWS[workload][3]}
+                                    if replay
+                                    else {}
+                                ),
                             },
                         )
                         command = [
@@ -2501,17 +2667,19 @@ def scanner_paired(args):
                         run.command(f"{workload}-{name}", command, env=environment)
                         host = json.loads(native_receipt.read_text(encoding="utf-8"))
                         tail = json.loads(tail_receipt.read_text(encoding="utf-8"))
-                        item = read_scanner_timing_arm(host, tail, workload, driver_mode, arm, scanner_entry, benchmark)
+                        item = read_scanner_timing_arm(
+                            host, tail, workload, driver_mode, arm, scanner_entry, benchmark, lane=lane
+                        )
                         if host["scanner_paired"].get("fixture") != ("archived-preview" if material else None):
                             raise ValueError("driver did not bind the requested Preview fixture")
-                        if args.read_cubic_grid and arm == "cubic":
+                        if (args.read_cubic_grid or replay) and arm == "cubic":
                             item["cubic_grid"] = tail["frames"][0]["cubic_grid"]
                             if (
                                 variant == "ordinary"
                                 and item["cubic_grid"]["grid"] != host["scanner_paired"]["authored_grid"]
                             ):
                                 raise ValueError("ordinary cubic launched with a different grid from the authored grid")
-                        if carrier or args.capture_density:
+                        if carrier or args.capture_density or capture_density:
                             reporter = tail["frames"][0]
                             density = reporter["density"]
                             captured_sha256 = execution.digest(arm_dir / density["file"])
@@ -2519,6 +2687,42 @@ def scanner_paired(args):
                                 raise ValueError("actual scanner density words differ from the declared carrier")
                             item["density"] = density
                             item["scan_color"] = reporter["scan_color"]
+                        if replay:
+                            reporter = tail["frames"][0]
+                            tokens = reporter["tokens"]
+                            grain = reporter["current_grain"]
+                            if (
+                                not host["replay_source_preserved"]
+                                or len(tokens) != 3
+                                or not all(type(word) is int and 0 < word < 2**64 for word in tokens)
+                                or bool(grain) != capture_density
+                                or host["scanner_paired"]["replay_setter"] is not companion
+                                or (not companion and host["scanner_paired"]["measurement_exports"])
+                                or (companion and host["replay_tokens"] != tokens)
+                            ):
+                                raise ValueError(f"{arm} {workload} did not prove source and draw identity")
+                            item["replay"] = {
+                                "tokens": tokens,
+                                "current_grain": grain,
+                                "density": item.get("density", {}).get("sha256"),
+                                "raster_sha256": {
+                                    file: execution.digest(frames / file) for file in ("final.f32", "reporter.f32")
+                                },
+                                "output_digest": [
+                                    host["tail_ready"]["output_digest"],
+                                    host["tail_reporter"]["output_digest"],
+                                ],
+                            }
+                            item["build_binding"] = {
+                                **provenance,
+                                "module": {"path": str(module), "sha256": declaration["module_sha256"]},
+                                "symbols": {"path": str(symbols), "sha256": declaration["symbols_sha256"]},
+                                "resources": {"path": str(resources), "files": arms["resources"]},
+                                "observer_declaration_sha256": execution.digest(settings_path),
+                                "layout": declaration["layout"],
+                            }
+                            if companion and item["replay"] != runs[0]["result"]["replay"]:
+                                raise ValueError(f"{arm} {workload} companion changed the exact product draw or raster")
                         if args.nsys:
                             item["cuda_trace"] = {
                                 path.name: execution.digest(path)
@@ -2543,7 +2747,7 @@ def scanner_paired(args):
                     results.append(runs)
                 paired = []
                 aa_ratios = []
-                for pair in results:
+                for pair in () if replay else results:
                     if len(pair) != 2:
                         continue
                     left, right = pair
@@ -2672,7 +2876,7 @@ def main():
     command.add_argument("--preset", required=True, choices=("windows-clang-release", "linux-release"))
     command.add_argument("--run-id", required=True)
     command.add_argument("--inputs", required=True, type=Path)
-    command.add_argument("--mode", required=True, choices=("check", "measure", "profile"))
+    command.add_argument("--mode", required=True, choices=("check", "measure", "profile", "replay"))
     command.add_argument("--workloads", required=True, nargs="+", choices=SCANNER_PAIRED_ROWS)
     command.add_argument("--check-result", type=Path)
     command.add_argument("--check-arm", choices=("spectral", "cubic"), help="qualify one held tail in check mode")

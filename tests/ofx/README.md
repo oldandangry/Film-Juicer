@@ -304,3 +304,22 @@ objects, including binary64 words. The replay records original/overridden values
 and names absent from the legacy module; its receipt hashes the override file.
 This does not mutate or relabel the original host capture. A counterfactual
 measurement is distinct from host observation or fixture acceptance.
+
+Use `--scanner-frame` with a frozen RGB or RGBA frame manifest. RGBA
+comparisons verify source alpha. For a manifest with `grain_replay` and
+`variant: "ordinary"`, supply `--current-scanner-observation` with the
+matching symbol and layout declarations for the isolated companions. Both
+arms must consume the frozen Current token and payload words.
+
+Use `--print-scanner-observation` for an `observe_print` manifest. The
+receipt records live developed paper C/M/Y, correction controls and the
+pre-white glare field. It distinguishes glare-off, matched-inputs and
+natural-pattern observations. Constant mode uses 1% with zero roughness and
+blur. A separate same-instance reporter consumes the last compared draw's
+deferred flag. The cold and warm photographs retain their original time.
+
+The complete `matched-field` claim additionally requires the live pre-glare
+XYZ capture for both compared draws in each arm, the field consumed by those
+draws and matching scanner correction and color inputs. Offline `collect`
+recomputes the complete verdict from its retained draw records and rasters.
+It reads earlier constant-glare receipts without XYZ as `matched-inputs`.

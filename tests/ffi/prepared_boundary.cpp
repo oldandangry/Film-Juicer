@@ -426,7 +426,28 @@ namespace JuicerCudaTest {
             const auto reporterDigests = JuicerCuda::ResourceManager::make_key_digests(
                 reporterState.upload_core_hash, reporterState.dir_recipe.hash, reporterState.scanner_hash, meter.hash);
             reporter.submission = {instanceToken, submission.frame_token + 1, 1, reporterDigests.uploadCoreHash, reporterDigests.dirHash, reporterDigests.scannerHash, reporterDigests.autoExposureHash};
-            check_scan_readback(runtime.cuda, context, frame, alternateSubmission, alternate, receiver ? ReadbackProbe::FusedDir : ReadbackProbe::Plane, &reporter);
+            const auto schedule = receiver ? ReadbackProbe::FusedDir : ReadbackProbe::Plane;
+            check_scan_readback(runtime.cuda, context, frame, alternateSubmission, alternate, schedule, &reporter);
+
+            alternateParams.values.glare_active = 0;
+            alternateParams.values.scanner_black_correction = 0;
+            alternateParams.values.scanner_white_correction = 0;
+            const auto scratchOwner = prepare_state(runtime.assets, alternateParams, status, diagnostic);
+            if (status.category != FJ_STATUS_SUCCESS)
+                return false;
+            FjPreparedStateView scratchState{};
+            if (scratchOwner->view(scratchState, error).category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(message.data(), error.length);
+                return false;
+            }
+            FjPreparedHostData scratch{};
+            bind_state(scratchState, scratch);
+            scratch.auto_exposure = prepared.auto_exposure;
+            scratch.spatial_dir = alternate.spatial_dir;
+            const auto scratchDigests = JuicerCuda::ResourceManager::make_key_digests(
+                scratchState.upload_core_hash, scratchState.dir_recipe.hash, scratchState.scanner_hash, meter.hash);
+            const FjSubmission scratchSubmission{instanceToken, submission.frame_token, submission.submission_id, scratchDigests.uploadCoreHash, scratchDigests.dirHash, scratchDigests.scannerHash, scratchDigests.autoExposureHash};
+            check_scan_readback(runtime.cuda, context, frame, scratchSubmission, scratch, schedule, nullptr, ScanReadbackFault::ScratchOverflow);
         }
         if (lifetime)
             check_prepared_state_lifetime(owner, runtime.assets, runtime.cuda, context, frame, submission, prepared, &error, lifetimeCase);

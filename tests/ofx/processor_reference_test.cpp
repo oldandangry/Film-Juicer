@@ -4847,8 +4847,10 @@ int main(int argc, char** argv) try {
             for (const auto id : JuicerCudaTest::kScanReadbackCases)
                 JuicerTests::list_case(JuicerCudaTest::kScanReadbackCaller, id);
             const auto* alternate = std::string_view(argv[2]).starts_with("negative-") ? JuicerCudaTest::kPlaneScanReadbackCaller : JuicerCudaTest::kDirScanReadbackCaller;
-            for (const auto id : JuicerCudaTest::kScanReadbackCases)
+            for (const auto id : JuicerCudaTest::kScanReadbackCases) {
                 JuicerTests::list_case(alternate, id);
+                JuicerTests::list_case(JuicerCudaTest::kScratchScanReadbackCaller, id);
+            }
             return 0;
         }
         if (argc == 4 && std::string_view(argv[1]) == "--state-lifetime") {

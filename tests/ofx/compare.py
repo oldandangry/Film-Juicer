@@ -7,7 +7,8 @@ import argparse
 import importlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import struct
 import sys
 
 import numpy as np
@@ -18,6 +19,7 @@ execution = importlib.import_module("execution")
 verify = importlib.import_module("verify")
 
 SIDES = ("reference", "candidate")
+OBSERVER = ROOT / "tests/benchmarks/observe_seed.py"
 CASES = tuple(
     f"{polarity}-{route}-ae-{ae}"
     for polarity in ("negative", "positive")
@@ -211,23 +213,75 @@ def scanner_frame_input(path):
     return {"path": str(path), "sha256": execution.digest(path), "source_sha256": manifest["source_sha256"]}
 
 
-def compare_scanner_frame(directory, frame):
+def benchmark_reader():
+    sys.path.insert(0, str(OBSERVER.parent))
+    try:
+        return importlib.import_module("ofx")
+    finally:
+        sys.path.pop(0)
+
+
+def verify_photo_readbacks(frames, host_rows, route_tag, *, cubic):
+    bits = [struct.unpack("<Q", struct.pack("<d", row["time"]))[0] for row in host_rows]
+    require(len(frames) == len(bits) == 3, "scanner photo readback membership")
+    cold, warm, reporter = frames
+    require(
+        all(
+            row["index"] == index
+            and row["time_bits"] == bits[index]
+            and row["route"] == route_tag
+            and row["instance"] == cold["instance"] != 0
+            and row["thread"] == cold["thread"]
+            and row["outcome"] == [0, 0, 0, 0]
+            for index, row in enumerate(frames)
+        ),
+        "scanner photo draw identity differs",
+    )
+    poll = benchmark_reader().spectral_replay_poll
+    return {
+        "cold": poll(cold, warm, frozen_photo=True, legacy_producer=cubic),
+        "warm": poll(warm, reporter, legacy_producer=cubic),
+    }
+
+
+def compare_scanner_frame(directory, frame, *, strict_guards=True, scanner_xyz=False):
     manifest = json.loads(frame.read_text(encoding="utf-8"))
     image = manifest["output"]
     x1, y1, x2, y2 = image["bounds"]
     require(manifest["action"]["render_window"] == image["bounds"], "native scanner comparison requires a full frame")
-    require(image["components"] == "OfxImageComponentRGB", "native scanner frame requires RGB")
-    shape = (y2 - y1, x2 - x1, 3)
+    components = {"OfxImageComponentRGB": 3, "OfxImageComponentRGBA": 4}.get(image["components"])
+    require(components is not None, "native scanner frame requires RGB or RGBA")
+    shape = (y2 - y1, x2 - x1, components)
+    observe_print = manifest.get("observe_print", False)
+    observe_current = manifest.get("variant") == "ordinary" and "grain_replay" in manifest
+    frozen = manifest["action"]["time"]
     reports = {side: json.loads((directory / side / "replay.json").read_text()) for side in SIDES}
+    scanner_xyz = scanner_xyz or any("scanner_evidence" in row for report in reports.values() for row in report["rows"])
+    require(
+        not scanner_xyz or observe_print and manifest.get("print_glare") == "constant", "unexpected Print XYZ capture"
+    )
     for side, report in reports.items():
         require(report["context_restored"] and report["schema"] == "juicer-ofx-replay-v1", "native replay completion")
         require(report["cubic_grid"] == (17 if side == "reference" else None), "native scanner method identity")
         require(report.get("grain_replay") == manifest.get("grain_replay"), "native replay tokens differ")
-        require([row["pass"] for row in report["rows"]] == ["cold", "warm"], "native replay membership")
+        phases = ["cold", "warm", "reporter"] if observe_print or observe_current else ["cold", "warm"]
+        require([row["pass"] for row in report["rows"]] == phases, "native replay membership")
         require(
             all(row["status"] == 0 and row["source_preserved"] and row["stream_completed"] for row in report["rows"]),
             "native scanner replay terminal status",
         )
+        if strict_guards or observe_print or observe_current:
+            require(
+                all(
+                    row["context_preserved"]
+                    and row["destination_guard_checked"]
+                    and row["source_releases"] == row["output_releases"] == 1
+                    and row["time"] == frozen + int(row["pass"] == "reporter")
+                    and row["output_file"] == (None if row["pass"] == "reporter" else f"{row['pass']}.f32")
+                    for row in report["rows"]
+                ),
+                "native scanner guards or frozen draw identity differ",
+            )
         require(
             compare_pixels(directory / side / "cold.f32", directory / side / "warm.f32", shape)["bit_identical"],
             f"{side} native replay output changed on warm render",
@@ -235,6 +289,16 @@ def compare_scanner_frame(directory, frame):
     require(reports["reference"]["parameters"] == reports["candidate"]["parameters"], "native scanner controls differ")
     files = {side: directory / side / "cold.f32" for side in SIDES}
     pixels = {side: np.memmap(path, dtype="<f4", mode="r", shape=shape) for side, path in files.items()}
+    if components == 4:
+        require(
+            all(manifest["source"][field] == image[field] for field in ("bounds", "components")),
+            "native scanner alpha check requires matching source geometry",
+        )
+        source = np.memmap(frame.parent / manifest["source_file"], dtype="<u4", mode="r", shape=shape)
+        require(
+            all(np.array_equal(raster.view("<u4")[..., 3], source[..., 3]) for raster in pixels.values()),
+            "native scanner replay changed source alpha",
+        )
     channels = []
     for channel in range(3):
         cubic, spectral = (pixels[side][..., channel] for side in SIDES)
@@ -253,13 +317,177 @@ def compare_scanner_frame(directory, frame):
                 "spectral": float(spectral[y, x]),
             }
         )
-    return {
+    comparison = {
         "status": "passed",
         "measurement_only": True,
         "shape": list(shape),
         "channels": channels,
         "parameters": reports,
     }
+    if observe_print:
+        glare = manifest.get("print_glare", "off")
+        route = manifest["parameters"]["ScanRoute"]["values"][0]
+        route_tag = {"NegativePrintScan": 1, "PositivePrintScan": 3}[route]
+        observed = {}
+        terminal = {}
+        stages, xyz_rasters = {}, {}
+        shared_inputs = None
+        pixel_count = shape[0] * shape[1]
+        for side in SIDES:
+            path = directory / side
+            report = json.loads((path / "print-scanner.json").read_text(encoding="utf-8"))
+            frames = report["frames"]
+            require(report["status"] == "passed" and report["exit"] == 0, "Print scanner observation did not complete")
+            terminal[side] = verify_photo_readbacks(frames, reports[side]["rows"], route_tag, cubic=side == "reference")
+            compared = frames[:2]
+            xyz_hash = None
+            for row, host in zip(compared, reports[side]["rows"][:2], strict=True):
+                item = row["density"]
+                require(
+                    (item["width"], item["height"]) == (shape[1], shape[0])
+                    and (path / item["file"]).stat().st_size == pixel_count * 12
+                    and execution.digest(path / item["file"]) == item["sha256"],
+                    "Print scanner paper C/M/Y readback differs",
+                )
+                if scanner_xyz:
+                    capture = host.get("scanner_evidence")
+                    stage_inputs = benchmark_reader().print_stage_inputs(
+                        capture, row, host["pass"], pixel_count, cubic=side == "reference"
+                    )
+                    if shared_inputs is None:
+                        shared_inputs = stage_inputs
+                    require(stage_inputs == shared_inputs, "matched-field Print correction or color inputs differ")
+                    xyz = path / capture["xyz"]
+                    require(xyz.is_file() and xyz.stat().st_size == pixel_count * 24, "pre-glare XYZ raster size")
+                    digest = execution.digest(xyz)
+                    if host["pass"] == "cold":
+                        xyz_hash = digest
+                        stages[side] = {**capture, "sha256": digest}
+                        xyz_rasters[side] = np.memmap(xyz, dtype="<f8", mode="r", shape=(3, *shape[:2]))
+                    else:
+                        require(digest == xyz_hash, "pre-glare XYZ changed on the warm draw")
+                    name = capture["glare_file"]
+                    row["glare"] = {"file": name, "sha256": execution.digest(path / name)}
+                    glare_present = capture["glare"]
+                else:
+                    glare_present = row["scanner_glare_pointer"] != 0
+                if glare == "off":
+                    require("glare" not in row and not glare_present, "glare off consumed a field")
+                    continue
+                field = row["glare"]
+                raster = path / field["file"]
+                require(
+                    glare_present
+                    and raster.stat().st_size == pixel_count * 4
+                    and execution.digest(raster) == field["sha256"],
+                    "Print scanner glare field readback differs",
+                )
+                if glare == "constant":
+                    require(
+                        np.all(np.memmap(raster, dtype="<f4", mode="r") == 1.0),
+                        "expected exact uniform one-percent glare",
+                    )
+            observed[side] = compared
+            for name in ("density", "glare"):
+                if name in compared[0]:
+                    require(compared[0][name]["sha256"] == compared[1][name]["sha256"], f"warm Print {name} changed")
+        comparison["print_scanner"] = {
+            **benchmark_reader().print_input_verdict(observed, glare),
+            "frames": observed,
+            "readback": terminal,
+        }
+        if scanner_xyz:
+            summary = []
+            for cubic, spectral in zip(xyz_rasters["reference"], xyz_rasters["candidate"], strict=True):
+                delta = np.abs(spectral - cubic)
+                require(np.isfinite(delta).all(), "nonfinite pre-glare XYZ delta")
+                y, x = np.unravel_index(delta.argmax(), delta.shape)
+                summary.append(
+                    {"mae": float(delta.mean()), "max": float(delta[y, x]), "worst_xy": [int(x) + x1, int(y) + y1]}
+                )
+            comparison["print_scanner"].update(
+                claim="matched-field", pre_glare_xyz={"draws": stages, "channels": summary}
+            )
+    if observe_current:
+        route = manifest["parameters"]["ScanRoute"]["values"][0]
+        require(route == "NegativeDirectScan", "seeded Ordinary photo requires Negative Direct")
+        terminal, payloads = {}, []
+        for side in SIDES:
+            report = json.loads((directory / side / "current-scanner.json").read_text(encoding="utf-8"))
+            require(report["status"] == "passed" and report["exit"] == 0, "Current grain observation did not complete")
+            frames = report["frames"]
+            terminal[side] = verify_photo_readbacks(frames, reports[side]["rows"], 0, cubic=side == "reference")
+            for row in frames[:2]:
+                require(row["tokens"] == manifest["grain_replay"], "live Current replay tokens differ")
+                require(len(row["current_grain"]) == 4, "missing live Current grain words")
+                payloads.append(row["current_grain"])
+        require(all(payload == payloads[0] for payload in payloads), "live Current grain payload differs")
+        comparison["current_scanner"] = {
+            "tokens": manifest["grain_replay"],
+            "payload_words": payloads[0],
+            "readback": terminal,
+        }
+    return comparison
+
+
+def photo_observer_command(command, *, declaration, module, output, frame, environment, mode):
+    debugger_environment = benchmark_reader().scanner_debugger_environment
+    debugger = Path(declaration["debugger"]).resolve(strict=True)
+    require(execution.digest(debugger) == declaration["debugger_sha256"], "scanner photo debugger identity")
+    require(execution.digest(module) == declaration["module_sha256"], "scanner photo module identity")
+    symbols = Path(declaration["symbols"]).resolve(strict=True) if os.name == "nt" else module
+    require(execution.digest(symbols) == declaration["symbols_sha256"], "scanner photo symbol identity")
+    manifest = json.loads(frame.read_text(encoding="utf-8"))
+    route = manifest["parameters"]["ScanRoute"]["values"][0]
+    routes = ("NegativePrintScan", "PositivePrintScan") if mode == "print" else ("NegativeDirectScan",)
+    require(route in routes, "scanner photo observer route does not match the fixture")
+    x0, y0, x1, y1 = manifest["output"]["bounds"]
+    settings = output.parent / f"{output.name}-{mode}-scanner-observer.json"
+    execution.write_json(
+        settings,
+        {
+            "mode": f"{mode}-photo",
+            "expected_route": route,
+            "module": str(module),
+            "symbols": str(symbols) if os.name == "nt" else None,
+            "uuid": declaration["uuid"],
+            "points": declaration["points"],
+            "layout": declaration["layout"],
+            "spectral_payload": declaration["method"] == "spectral",
+            "density_geometry": [x1 - x0, y1 - y0],
+            "print_glare": manifest.get("print_glare", "off"),
+            "trace": str(output.parent / f"{output.name}-{mode}-scanner.jsonl"),
+            "receipt": str(output / f"{mode}-scanner.json"),
+        },
+    )
+    environment = {**environment, "FJ_SCANNER_OBSERVER": str(settings)}
+    debugger_inputs = declaration
+    if os.name == "nt":
+        debugger_vars = declaration.get("debugger_environment", {})
+        debugger_inputs = {
+            **declaration,
+            "debugger_environment": {
+                **debugger_vars,
+                "PATH": str(module.parent) + os.pathsep + debugger_vars.get("PATH", environment.get("PATH", "")),
+            },
+        }
+    extra = [] if os.name == "nt" else ["-o", "settings set target.disable-aslr false"]
+    launch = [
+        str(debugger),
+        "--batch",
+        *extra,
+        "-o",
+        f'command script import "{OBSERVER.as_posix()}"',
+        "-o",
+        "script observe_seed.install(lldb.debugger)",
+        "-o",
+        "run",
+        "-o",
+        "script observe_seed.finish(lldb.debugger)",
+        "--",
+        *command,
+    ]
+    return debugger_environment(launch, environment, debugger_inputs)
 
 
 def run(args):
@@ -300,6 +528,7 @@ def run(args):
         (directory / "harness-source.patch").write_bytes(patch)
         inputs = {
             "probe": {"path": str(probe), "sha256": execution.digest(probe)},
+            "reader_sha256": execution.digest(Path(__file__)),
             "bundles": before,
             "modules": {
                 side: {"path": str(module), "sha256": execution.digest(module)} for side, module in modules.items()
@@ -313,6 +542,24 @@ def run(args):
             inputs["frame"] = {"path": str(frame), "members": inventory(frame)}
         if scanner_frame:
             inputs["scanner_frame"] = scanner_frame_input(scanner_frame)
+        photo_arg = args.print_scanner_observation or args.current_scanner_observation
+        photo = photo_arg.resolve(strict=True) if photo_arg else None
+        mode = "current" if args.current_scanner_observation else "print"
+        if scanner_frame:
+            spec = json.loads(scanner_frame.read_text(encoding="utf-8"))
+            require(
+                bool(spec.get("observe_print")) == bool(args.print_scanner_observation),
+                "Print observation and frame manifest must agree",
+            )
+            current = spec.get("variant") == "ordinary" and "grain_replay" in spec
+            require(
+                current == bool(args.current_scanner_observation), "Current observation and frame manifest must agree"
+            )
+        require(photo is None or scanner_frame is not None, "scanner observation requires a native frame")
+        if photo:
+            inputs["scanner_observation"] = {"path": str(photo), "sha256": execution.digest(photo), "mode": mode}
+            inputs["observer_sha256"] = execution.digest(OBSERVER)
+            photo_bindings = json.loads(photo.read_text(encoding="utf-8"))
         overrides = args.parameter_overrides.resolve(strict=True) if args.parameter_overrides else None
         require(overrides is None or frame is not None, "parameter overrides require a frame capture")
         if overrides:
@@ -359,6 +606,16 @@ def run(args):
                     ]
                 if overrides:
                     command.extend(["--parameters", str(overrides)])
+                if photo:
+                    command, environment = photo_observer_command(
+                        command,
+                        declaration=photo_bindings[side],
+                        module=modules[side],
+                        output=directory / side,
+                        frame=scanner_frame,
+                        environment=environment,
+                        mode=mode,
+                    )
                 owner.command(side, command, env=environment)
             if scanner_frame:
                 comparison = compare_scanner_frame(directory, scanner_frame)
@@ -384,6 +641,11 @@ def run(args):
             result["overrides_unchanged"] = (
                 overrides is None or execution.digest(overrides) == inputs["parameter_overrides"]["sha256"]
             )
+            if photo and (
+                execution.digest(photo) != inputs["scanner_observation"]["sha256"]
+                or execution.digest(OBSERVER) != inputs["observer_sha256"]
+            ):
+                result.update(status="failed", error="scanner observation bindings changed")
             if not all(
                 result[key]
                 for key in (
@@ -421,26 +683,57 @@ def collect(directory):
     actual.pop("result.json")
     require(actual == result["members"], "retained member identity")
     inputs = json.loads((directory / "inputs.json").read_text())
+    path_type = PureWindowsPath if result["preset"].startswith("windows-") else PurePosixPath
+    producer_root = path_type(result["commands"][0]["directory"])
+
+    def retained_path(recorded):
+        path = Path(recorded)
+        original = path_type(recorded)
+        if original.is_absolute() and original.is_relative_to(producer_root):
+            relative = original.relative_to(producer_root)
+            require(".." not in relative.parts, "unconfined retained input")
+            return ROOT.joinpath(*relative.parts)
+        return path
+
     if "parameter_overrides" in inputs:
         override = inputs["parameter_overrides"]
         require(
-            execution.digest(Path(override["path"])) == override["sha256"] and result["overrides_unchanged"],
+            execution.digest(retained_path(override["path"])) == override["sha256"] and result["overrides_unchanged"],
             "override identity",
         )
+    for key in ("print_scanner_observation", "scanner_observation"):
+        if key in inputs:
+            bound = inputs[key]
+            require(
+                execution.digest(retained_path(bound["path"])) == bound["sha256"],
+                "scanner observation bindings changed",
+            )
     if "frame" in inputs:
-        frame = Path(inputs["frame"]["path"])
+        frame = retained_path(inputs["frame"]["path"])
         require(inventory(frame) == inputs["frame"]["members"] and result["frame_unchanged"], "frame identity")
         comparison = compare_frame(directory, frame)
     elif "scanner_frame" in inputs:
-        scanner_frame = Path(inputs["scanner_frame"]["path"])
+        original = inputs["scanner_frame"]
+        scanner_frame = retained_path(original["path"])
         require(
-            scanner_frame_input(scanner_frame) == inputs["scanner_frame"] and result["scanner_frame_unchanged"],
+            {**scanner_frame_input(scanner_frame), "path": original["path"]} == original
+            and result["scanner_frame_unchanged"],
             "native scanner frame identity",
         )
-        comparison = compare_scanner_frame(directory, scanner_frame)
+        comparison = compare_scanner_frame(
+            directory,
+            scanner_frame,
+            strict_guards="reader_sha256" in inputs,
+            scanner_xyz=inputs.get("scanner_xyz", False),
+        )
     else:
         comparison = compare_captures(directory)
-    require(comparison == json.loads((directory / "comparison.json").read_text()), "comparison changed")
+    retained = json.loads((directory / "comparison.json").read_text())
+    print_scanner = retained.get("print_scanner", {})
+    # Early input-only receipts used the matched-field label before live XYZ was captured.
+    if print_scanner.get("claim") == "matched-field" and "pre_glare_xyz" not in print_scanner:
+        print_scanner["claim"] = "matched-inputs"
+    require(comparison == retained, "comparison changed")
     require(result["status"] == comparison["status"], "result status differs")
     print(json.dumps(comparison, indent=2))
     return 0 if comparison["status"] == "passed" else 1
@@ -457,6 +750,9 @@ def main():
     capture.add_argument(
         "--parameter-overrides", type=Path, help="explicit counterfactual values; capture remains immutable"
     )
+    photo = capture.add_mutually_exclusive_group()
+    photo.add_argument("--print-scanner-observation", type=Path, help="matching symbols for materialized Print input")
+    photo.add_argument("--current-scanner-observation", type=Path, help="matching symbols for seeded Ordinary Current")
     for side in SIDES:
         capture.add_argument(f"--{side}", required=True)
         capture.add_argument(f"--{side}-sha256", required=True)
