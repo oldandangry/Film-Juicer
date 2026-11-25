@@ -44,10 +44,6 @@ namespace JuicerCuda {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=normalized_density_curves";
             return false;
         }
-        if (input.densityBoundsHash == 0) {
-            diagnostic = "ResourceDescriptorMismatch phase=3B field=density_bounds";
-            return false;
-        }
         const int densitySamples = static_cast<int>(input.densitySampleCount);
         if ((input.dirMode != DirNonlinearMode::Inactive)) {
             if (input.dirHash == 0 ||
@@ -192,7 +188,6 @@ namespace JuicerCuda {
             out.filmDevelop.dirDensG = prepared.dirDensG;
             out.filmDevelop.dirDensR = prepared.dirDensR;
         }
-        out.densityBoundsHash = input.densityBoundsHash;
         return true;
     }
 

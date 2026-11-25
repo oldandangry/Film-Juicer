@@ -809,6 +809,7 @@ namespace ofx_test {
                      InstanceParamDefinition{"FilmGrainAmountEv", InstanceParamKind::Double},
                      InstanceParamDefinition{"FilmGrainTexelPitchUm", InstanceParamKind::Double},
                      InstanceParamDefinition{"FilmGrainChromaFraction", InstanceParamKind::Double},
+                     InstanceParamDefinition{"ScannerLutResolution", InstanceParamKind::Integer},
                  })
                 if (descriptor.params.contains(std::string(entry.name)))
                     parameters.push_back(entry);

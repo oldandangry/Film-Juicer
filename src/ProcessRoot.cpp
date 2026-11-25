@@ -652,17 +652,11 @@ namespace JuicerProcess {
         };
 
         struct ScanErrorFrameStage {
-            int* deviceFlag = nullptr;
-            int* hostFlag = nullptr;
+            JuicerCuda::ScanErrorBuffer buffer;
             void* eventOpaque = nullptr;
-            bool active = false;
+            bool flagUsed = false;
             bool readbackPending = false;
-            std::uint64_t dirRecipeHash = 0;
-            std::uint64_t dirDescriptorHash = 0;
-            std::uint64_t contextEpoch = 0;
-            std::string profileKey;
-            int scanRoute = 0;
-            int capturePolarity = 0;
+            JuicerCuda::ScanErrorReadbackIdentity identity;
         };
 
         struct HighlightBoostFrameStage {
@@ -695,9 +689,8 @@ namespace JuicerProcess {
         std::array<float, 9> focusedXyzToLinearSrgb{};
         bool focusedApplyInputChromaticAdapt = false;
         std::optional<Scanner::ColorRuntime> focusedScannerColor;
+        JuicerCuda::ScannerSpectra focusedScannerSpectra{};
         std::optional<Gamut::OutputGamutTransform> focusedOutputGamutTransform;
-        const JuicerCuda::Resources::DeviceScanRange* focusedScanRange = nullptr;
-        const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
         void* lastCudaStreamOpaque = nullptr;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
@@ -706,7 +699,6 @@ namespace JuicerProcess {
         std::map<void*, JuicerCuda::DeviceByteReservation>
             deviceAllocationRecords;
         JuicerCuda::CameraFilmLinearExposurePlanes scatterHalationCarrier{};
-        std::string filmProfileKey;
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
         WorkspaceDerivation requestedWorkspace;
         ScanErrorFrameStage scanErrorStage{};
@@ -719,6 +711,8 @@ namespace JuicerProcess {
         JuicerCuda::VisualGrainPreparedDensityLayersView
             preparedGrainDensityLayers{};
         JuicerCuda::PrintResourceDescriptors printDescriptors{};
+        std::array<float, 3> printPreflashRawCmy{};
+        float printNormalizer = 1.0F;
         Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
         JuicerCuda::VisualGrainPreparedGaussianView
             preparedGrainDyeCloud[3][3] = {};
@@ -809,7 +803,6 @@ namespace JuicerProcess {
         bool submit_frame_use_event(
             void* cudaStreamOpaque,
             JuicerCuda::Failure& outError);
-        void free_scan_error_stage_now() noexcept;
         void free_auto_exposure_workspace_now() noexcept;
     };
 
@@ -1905,46 +1898,18 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(JuicerCuda::Failure& outError) {
         outError = {};
-        free_scan_error_stage_now();
-
-        ScanErrorFrameStage next{};
-        if (!allocate_device_bytes(
-                reinterpret_cast<void**>(&next.deviceFlag),
-                sizeof(int),
-                "frame scan error flag",
-                outError)) {
+        cudaEvent_t event = nullptr;
+        const auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (status != cudaSuccess) {
+            JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(status), "allocate scan error event failed");
             return false;
         }
-
-        cudaError_t err =
-            cudaMallocHost(reinterpret_cast<void**>(&next.hostFlag), sizeof(int));
-        if (err != cudaSuccess) {
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(next.deviceFlag, freeError);
-            outError.status = JuicerCuda::runtime_failure_status(err);
-            outError.diagnostic = std::string("cudaMallocHost(frame scan error staging) failed: ") +
-                                  (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        auto& stage = scanErrorStage;
+        if (!JuicerCuda::acquire_scan_error_buffer(*resources, stage.buffer, outError)) {
+            (void)cudaEventDestroy(event);
             return false;
         }
-
-        cudaEvent_t ev = nullptr;
-        err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-        if (err != cudaSuccess || !ev) {
-            if (ev) {
-                cudaEventDestroy(ev);
-            }
-            cudaFreeHost(next.hostFlag);
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(next.deviceFlag, freeError);
-            outError.status = JuicerCuda::runtime_failure_status(err);
-            outError.diagnostic = std::string("cudaEventCreateWithFlags(frame scan error staging) failed: ") +
-                                  (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
-        }
-        next.eventOpaque = reinterpret_cast<void*>(ev);
-
-        next.active = true;
-        scanErrorStage = next;
+        stage.eventOpaque = event;
         return true;
     }
 
@@ -1953,7 +1918,7 @@ namespace JuicerProcess {
         JuicerCuda::Failure& outError) {
         outError = {};
         ScanErrorFrameStage& stage = scanErrorStage;
-        if (!stage.active) {
+        if (!stage.buffer.host) {
             return true;
         }
         if (!resources) {
@@ -1962,71 +1927,42 @@ namespace JuicerProcess {
         }
 
         remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        if (stage.readbackPending && stage.hostFlag && stage.eventOpaque) {
-            JuicerCuda::ScanErrorReadbackIdentity identity{};
-            identity.dirRecipeHash = stage.dirRecipeHash;
-            identity.dirDescriptorHash = stage.dirDescriptorHash;
-            identity.contextEpoch = stage.contextEpoch;
-            identity.profileKey = stage.profileKey;
-            identity.scanRoute = stage.scanRoute;
-            identity.capturePolarity = stage.capturePolarity;
-            if (!JuicerCuda::retain_scan_error_readback(
-                    *resources,
-                    stage.hostFlag,
-                    stage.eventOpaque,
-                    identity,
-                    outError)) {
-                if (outError.diagnostic.empty()) {
-                    outError.diagnostic = "frame scan-error readback retention failed";
+        auto* const stream = reinterpret_cast<cudaStream_t>(lastCudaStreamOpaque);
+        auto* const event = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
+        bool success = true;
+        bool complete = true;
+        if (stage.flagUsed) {
+            const auto recordStatus = stage.readbackPending ? cudaSuccess : cudaEventRecord(event, stream);
+            if (recordStatus == cudaSuccess) {
+                if (JuicerCuda::retain_scan_error_readback(
+                        *resources,
+                        stage.buffer.host,
+                        stage.eventOpaque,
+                        stage.identity,
+                        stage.readbackPending,
+                        outError)) {
+                    stage = {};
+                    return true;
                 }
-                return false;
+                complete = cudaEventSynchronize(event) == cudaSuccess;
+            } else {
+                JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(recordStatus), "record scan error buffer retirement failed");
+                complete = cudaStreamSynchronize(stream) == cudaSuccess;
             }
-            stage.readbackPending = false;
+            success = false;
         }
-
-        if (stage.deviceFlag) {
-            int* flag = stage.deviceFlag;
-            if (!retire_device_bytes(
-                    flag,
-                    retireStreamOpaque,
-                    "frame scan error flag",
-                    outError)) {
-                if (outError.diagnostic.empty()) {
-                    outError.diagnostic = "frame scan-error flag retire failed";
-                }
-                return false;
+        if (complete) {
+            JuicerCuda::Failure releaseError;
+            if (!JuicerCuda::release_scan_error_buffer(*resources, stage.buffer.host, releaseError) && success) {
+                outError = std::move(releaseError);
+                success = false;
             }
-            stage.deviceFlag = nullptr;
+        } else {
+            JuicerCuda::quarantine_unfenced_frame_use(*resources, stream);
         }
-
-        if (stage.hostFlag) {
-            cudaFreeHost(stage.hostFlag);
-            stage.hostFlag = nullptr;
-        }
-        if (stage.eventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
-            cudaEventDestroy(ev);
-            stage.eventOpaque = nullptr;
-        }
-        stage = ScanErrorFrameStage{};
-        return true;
-    }
-
-    void Root::PreparedCudaFrame::State::free_scan_error_stage_now() noexcept {
-        ScanErrorFrameStage& stage = scanErrorStage;
-        if (stage.deviceFlag) {
-            JuicerCuda::Failure freeError;
-            (void)free_device_bytes_now(stage.deviceFlag, freeError);
-        }
-        if (stage.hostFlag) {
-            cudaFreeHost(stage.hostFlag);
-        }
-        if (stage.eventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(stage.eventOpaque);
-            cudaEventDestroy(ev);
-        }
-        stage = ScanErrorFrameStage{};
+        (void)cudaEventDestroy(event);
+        stage = {};
+        return success;
     }
 
     bool Root::PreparedCudaFrame::State::allocate_auto_exposure_workspace(
@@ -3248,7 +3184,6 @@ namespace JuicerProcess {
         JuicerCuda::ScanErrorReadbackResult previousError{};
         if (!JuicerCuda::poll_scan_error_readbacks(
                 *_state->resources,
-                cudaStreamOpaque,
                 previousError,
                 outError)) {
             _state->set_failure(
@@ -3261,38 +3196,43 @@ namespace JuicerProcess {
                 PreparedCudaFailureStage{"scan_error_previous_readback"},
                 "CUDA scan error validation failed");
             const bool deferredDirFailure = (previousError.status & (1 << 8)) != 0;
+            const auto& producing = previousError.identity;
+            const auto producingRoute = static_cast<Spektrafilm::ScanRoute>(producing.scanRoute);
             if (deferredDirFailure) {
                 const int channels = (previousError.status >> 9) & 0x7;
                 outError.diagnostic =
                     "earlier CUDA DIR submission failed component=dir route=" +
-                    std::string(Spektrafilm::scan_route_key(
-                        static_cast<Spektrafilm::ScanRoute>(
-                            previousError.scanRoute))) +
-                    " profile=" + previousError.profileKey +
-                    " polarity=" + std::to_string(previousError.capturePolarity) +
-                    " recipe_hash=" + std::to_string(previousError.dirRecipeHash) +
+                    std::string(Spektrafilm::scan_route_key(producingRoute)) +
+                    " profile=" + producing.profileKey +
+                    " polarity=" + std::to_string(producing.capturePolarity) +
+                    " recipe_hash=" + std::to_string(producing.dirRecipeHash) +
                     " descriptor_hash=" +
-                    std::to_string(previousError.dirDescriptorHash) +
+                    std::to_string(producing.dirDescriptorHash) +
                     " context_epoch=" +
-                    std::to_string(previousError.contextEpoch) +
+                    std::to_string(producing.contextEpoch) +
                     " channel_mask=" + std::to_string(channels) +
                     " requirement=finite_defined_receiver_arithmetic";
             } else {
-                outError.diagnostic = "previous scan produced non-finite RGB";
+                const bool paper = Spektrafilm::scan_route_is_print(producingRoute);
+                outError.diagnostic =
+                    "earlier CUDA scan produced non-finite RGB route=" +
+                    std::string(Spektrafilm::scan_route_key(producingRoute)) +
+                    (paper ? " medium=paper profile=" : " medium=film profile=") +
+                    (paper ? producing.paperProfileKey : producing.profileKey) +
+                    " profile_asset_version=" + std::to_string(producing.scannedProfileAssetVersion) +
+                    " submission_id=" + std::to_string(producing.submissionId) +
+                    " frame_token=" + std::to_string(producing.frameToken) +
+                    " scanner_hash=" + std::to_string(producing.scannerHash) +
+                    " context_epoch=" + std::to_string(producing.contextEpoch);
             }
             JTRACE("CUDA", std::string("FATAL: ") + outError.diagnostic);
             return deferredDirFailure ? ScanErrorStageResult::DeferredDirFailure : ScanErrorStageResult::Failed;
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
-        stage.dirRecipeHash = _state->resources->filmDirHash;
-        stage.dirDescriptorHash = _state->spatialDirDescriptor.hash;
-        stage.contextEpoch = _state->resources->contextEpoch;
-        stage.profileKey = _state->filmProfileKey;
-        stage.scanRoute =
-            static_cast<int>(_state->scanRoute);
-        stage.capturePolarity = static_cast<int>(_state->capturePolarity);
-        outScanErrorFlag = stage.deviceFlag;
+        stage.identity.dirRecipeHash = _state->resources->filmDirHash;
+        stage.identity.dirDescriptorHash = _state->spatialDirDescriptor.hash;
+        outScanErrorFlag = stage.buffer.device;
         if (!outScanErrorFlag) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_missing"},
@@ -3302,6 +3242,7 @@ namespace JuicerProcess {
         }
 
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        stage.flagUsed = true;
         const cudaError_t flagErr = cudaMemsetAsync(outScanErrorFlag, 0, sizeof(int), stream);
         if (flagErr != cudaSuccess) {
             _state->set_failure(
@@ -3332,7 +3273,7 @@ namespace JuicerProcess {
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
-        if (scanErrorFlag != stage.deviceFlag) {
+        if (scanErrorFlag != stage.buffer.device) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_mismatch"},
                 "CUDA scan error validation failed");
@@ -3344,9 +3285,9 @@ namespace JuicerProcess {
                                     ? reinterpret_cast<cudaEvent_t>(stage.eventOpaque)
                                     : nullptr;
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
-        if (stage.hostFlag && scanEvent) {
+        if (stage.buffer.host && scanEvent) {
             cudaError_t flagErr = cudaMemcpyAsync(
-                stage.hostFlag,
+                stage.buffer.host,
                 scanErrorFlag,
                 sizeof(int),
                 cudaMemcpyDeviceToHost,
@@ -3961,8 +3902,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::FocusedPreparedView Root::PreparedCudaFrame::focused_resources() const noexcept {
         FocusedPreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
-            !_state->focusedScannerColor ||
-            !_state->focusedScanRange || !_state->focusedScanLut) {
+            !_state->focusedScannerColor) {
             return view;
         }
 
@@ -3994,13 +3934,10 @@ namespace JuicerProcess {
         view.film.finalSensitivityHash = resources.filmFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.filmDensityCurvesHash;
         view.film.dirCouplersHash = resources.filmDirHash;
-        view.scanRange = _state->focusedScanRange;
-        view.scanLut = _state->focusedScanLut;
+        view.scannerSpectra = &_state->focusedScannerSpectra;
         view.scannerColor = &*_state->focusedScannerColor;
         view.outputGamutTransform = _state->focusedOutputGamutTransform ? &*_state->focusedOutputGamutTransform : nullptr;
         view.outputGamutCmax = resources.outputGamutCmax;
-        view.densityBoundsHash = resources.routeDensityBoundsHash;
-        view.scannerDescriptorHash = resources.routeScannerDescriptorHash;
         view.selectedMethod = resources.filmRgbToRawMethod;
         const bool outputGamutExpected =
             view.scannerColor->outputGamutRecipeHash != 0;
@@ -4012,9 +3949,7 @@ namespace JuicerProcess {
                                           : !view.outputGamutTransform &&
                                                 !view.outputGamutCmax &&
                                                 resources.outputGamutRecipeHash == 0;
-        view.active = view.scanRange && view.scanLut->canonical_ready() &&
-                      view.densityBoundsHash != 0 &&
-                      view.scannerDescriptorHash != 0 && outputGamutReady;
+        view.active = outputGamutReady;
         return view;
     }
 
@@ -4183,8 +4118,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::PrintPreparedView Root::PreparedCudaFrame::print_resources() const noexcept {
         PrintPreparedView view{};
         if (!_state || !_state->resources || !Spektrafilm::scan_route_is_print(_state->scanRoute) ||
-            !_state->transaction.active || _state->transaction.committed ||
-            _state->printDescriptors.hash == 0) {
+            !_state->transaction.active || _state->transaction.committed) {
             return view;
         }
         const JuicerCuda::Resources& resources = *_state->resources;
@@ -4194,38 +4128,37 @@ namespace JuicerProcess {
         view.filmDensityTables.epsY = resources.printFilmDensityTables.epsY;
         view.filmDensityTables.baseDensityMin = resources.printFilmDensityTables.baseDensityMin;
         view.filmDensityTables.K = resources.printFilmDensityTables.K;
-        view.filmDensityTables.hasBaseline = resources.printFilmDensityTables.hasBaseline;
-        view.filmDensityTables.invYn = resources.printFilmDensityTables.invYn;
         view.printSensC = {resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd};
         view.printSensM = {resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd};
         view.printSensY = {resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd};
         view.printDcC = {resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd};
-        view.printDcM = {resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
-        view.printDcY = {resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
+        view.printDcM = {resources.printDcC.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
+        view.printDcY = {resources.printDcC.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
         view.mainIlluminant = resources.printIllumFiltered;
-        view.mainIlluminantHost =
-            resources.printIllumFilteredHostValid ? resources.printIllumFilteredHost.data() : nullptr;
         view.preflashIlluminant = resources.printPreflashIllumFiltered;
         view.spectralSampleCount = resources.printIllumK;
-        std::copy_n(resources.printPreflashRaw, 3, view.preflashRawCmy);
-        view.normalizer = resources.printBalanceNormalizer;
+        std::copy_n(_state->printPreflashRawCmy.data(), 3, view.preflashRawCmy);
+        view.normalizer = _state->printNormalizer;
         view.filmDensityTablesHash = resources.printFilmDensityTablesDescriptorHash;
         view.profileTablesHash = resources.printProfileTablesDescriptorHash;
         view.mainIlluminantHash = resources.printMainIlluminantDescriptorHash;
         view.preflashIlluminantHash = resources.printPreflashIlluminantDescriptorHash;
-        view.preflashRawHash = resources.printPreflashRawDescriptorHash;
-        view.balanceHash = resources.printBalanceDescriptorHash;
-        view.preparationHash = resources.printPreparationDescriptorHash;
         view.preflashActive = descriptors.preflashActive;
         view.active =
-            view.filmDensityTablesHash == descriptors.filmDensityTables.hash &&
-            view.profileTablesHash == descriptors.profileTables.hash &&
-            view.mainIlluminantHash == descriptors.mainIlluminant.hash &&
-            view.balanceHash == descriptors.balance.hash &&
-            view.preparationHash == descriptors.hash &&
-            (!view.preflashActive ||
-             (view.preflashIlluminantHash == descriptors.preflashIlluminant.hash &&
-              view.preflashRawHash == descriptors.preflashRaw.hash));
+            view.filmDensityTablesHash != 0 && view.filmDensityTablesHash == descriptors.filmDensityTablesHash &&
+            view.filmDensityTables.K == Spectral::kNumSamples &&
+            view.filmDensityTables.epsC && view.filmDensityTables.epsM && view.filmDensityTables.epsY &&
+            view.filmDensityTables.baseDensityMin &&
+            view.profileTablesHash != 0 && view.profileTablesHash == descriptors.profileTablesHash &&
+            view.printDcC.x && view.printDcC.y && view.printDcM.y && view.printDcY.y &&
+            view.printSensC.y && view.printSensM.y && view.printSensY.y &&
+            view.mainIlluminantHash != 0 && view.mainIlluminantHash == descriptors.mainIlluminantHash &&
+            view.mainIlluminant && view.spectralSampleCount == Spectral::kNumSamples &&
+            (view.preflashActive
+                 ? view.preflashIlluminantHash != 0 && view.preflashIlluminantHash == descriptors.preflashIlluminantHash &&
+                       view.preflashIlluminant && resources.printPreflashIllumK == Spectral::kNumSamples
+                 : !view.preflashIlluminant && view.preflashIlluminantHash == 0 &&
+                       resources.printPreflashIllumK == 0);
         return view;
     }
 
@@ -5357,6 +5290,8 @@ namespace JuicerProcess {
                 return frame;
             }
             frame._state->printDescriptors = request.print->descriptors;
+            frame._state->printPreflashRawCmy = request.print->preflashRawCmy;
+            frame._state->printNormalizer = request.print->normalizer;
         }
         if (request.identity.grainActive && !request.noise) {
             outError.diagnostic = "MissingRequiredResource phase=grain_static field=noise";
@@ -5490,8 +5425,7 @@ namespace JuicerProcess {
                 *frame._state->resources,
                 request.focused,
                 cudaStreamOpaque,
-                outError,
-                hostPreparation)) {
+                outError)) {
             recordFailure(
                 "prepare_focused_route_resources",
                 "CUDA focused route resource preparation failed");
@@ -5508,20 +5442,9 @@ namespace JuicerProcess {
                 frame.abort();
                 return frame;
             }
-            frame._state->focusedScanRange =
-                &frame._state->resources->scanPrintRange;
-            frame._state->focusedScanLut =
-                &frame._state->resources->scanPrintLut;
-        } else {
-            frame._state->focusedScanRange =
-                &frame._state->resources->scanNegativeRange;
-            frame._state->focusedScanLut =
-                &frame._state->resources->scanNegativeLut;
         }
         frame._state->capturePolarity =
             request.identity.capturePolarity;
-        frame._state->filmProfileKey =
-            request.identity.filmProfileKey;
         frame._state->scanRoute =
             request.identity.scanRoute;
         frame._state->focusedInputRgbToXyz = request.focused.inputRgbToXyz;
@@ -5529,6 +5452,13 @@ namespace JuicerProcess {
         frame._state->focusedXyzToLinearSrgb = request.focused.xyzToLinearSrgb;
         frame._state->focusedApplyInputChromaticAdapt = request.focused.applyInputChromaticAdapt;
         frame._state->focusedScannerColor = request.scannerColor;
+        const auto& tables = request.focused.scannerTables;
+        auto& spectra = frame._state->focusedScannerSpectra;
+        for (std::size_t k = 0; k < std::size(spectra.wavelengths); ++k) {
+            spectra.wavelengths[k] = {
+                tables.epsC[k], tables.epsM[k], tables.epsY[k], tables.baseDensityMin.empty() ? 0.0F : tables.baseDensityMin[k], tables.Ax[k], tables.Ay[k], tables.Az[k]};
+        }
+        spectra.inverseYNormalization = tables.invYn;
         frame._state->focusedOutputGamutTransform =
             outputGamut.enabled ? std::optional{outputGamut.transform} : std::nullopt;
         if (request.scannerPostEffects) {
@@ -5550,6 +5480,18 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
+        auto& scanIdentity = frame._state->scanErrorStage.identity;
+        const auto& admitted = frame._state->transaction;
+        scanIdentity.contextEpoch = admitted.contextEpoch;
+        scanIdentity.profileKey = request.identity.filmProfileKey;
+        scanIdentity.scanRoute = static_cast<int>(request.identity.scanRoute);
+        scanIdentity.capturePolarity = static_cast<int>(request.identity.capturePolarity);
+        scanIdentity.submissionId = admitted.snapshot.snapshotId;
+        scanIdentity.frameToken = admitted.snapshot.frameToken.value;
+        scanIdentity.scannerHash = admitted.snapshot.keyDigests.scannerHash;
+        scanIdentity.scannedProfileAssetVersion = printRoute ? request.identity.paperProfileAssetVersionToken
+                                                             : request.identity.filmProfileAssetVersionToken;
+        scanIdentity.paperProfileKey = request.identity.paperProfileKey;
         if (autoExposureBufferRequest.enabled &&
             !frame._state->allocate_auto_exposure_workspace(
                 autoExposureBufferRequest.descriptor,

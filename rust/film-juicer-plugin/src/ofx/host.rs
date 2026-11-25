@@ -13,8 +13,6 @@ use super::sys;
 mod instance_access;
 mod image;
 mod default_actions;
-
-#[cfg(feature = "grain-preview")]
 pub(super) use image::{Image, RenderArgs};
 pub(crate) use instance_access::{InstanceHandles, ParameterAccess, copy_bytes};
 
@@ -645,10 +643,7 @@ unsafe impl Sync for Descriptor {}
 static DESCRIPTOR: Descriptor = Descriptor(sys::OfxPlugin {
     pluginApi: c"OfxImageEffectPluginAPI".as_ptr(),
     apiVersion: 1,
-    #[cfg(not(feature = "grain-preview"))]
     pluginIdentifier: c"com.juicer.Juicer".as_ptr(),
-    #[cfg(feature = "grain-preview")]
-    pluginIdentifier: c"com.juicer.Juicer.GrainPreview".as_ptr(),
     pluginVersionMajor: 1,
     pluginVersionMinor: 0,
     setHost: Some(set_host),

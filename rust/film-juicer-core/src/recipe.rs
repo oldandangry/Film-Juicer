@@ -185,13 +185,11 @@ pub struct Params {
     pub highlight_boost: optics::highlight_boost::Controls,
     pub scanner_black_correction: i32,
     pub scanner_white_correction: i32,
-    pub scanner_lut_resolution: i32,
     pub output_color_space: i32,
     pub output_cctf_encoding: i32,
     pub output_gamut_compression_enabled: i32,
     pub grain: grain::Params,
-    #[cfg(feature = "grain-preview")]
-    pub film_grain: Option<grain::preview::Controls>,
+    pub film_grain: grain::film_v1::Selection,
     pub film_dust_amount: f32,
     pub film_scratch_amount: f32,
     pub gate_dust_amount: f32,
@@ -261,7 +259,6 @@ impl HalationReflectionSource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlError {
-    #[cfg(feature = "grain-preview")]
     FilmGrain,
     DirectScanner,
     PrintGamma,
@@ -281,7 +278,6 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            #[cfg(feature = "grain-preview")]
             Self::FilmGrain => {
                 "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls"
             }
@@ -322,9 +318,7 @@ pub enum PrepareError {
     Asset(AssetError),
     Development(film::Error),
     Control(ControlError),
-    #[cfg(feature = "grain-preview")]
     FilmGrainGeometry,
-    #[cfg(feature = "grain-preview")]
     FilmGrainFootprint {
         long_edge_mm: f32,
         size_um: f32,
@@ -342,7 +336,6 @@ pub enum PrepareError {
         stock: String,
     },
     Bounds(density::Error),
-    LutDescriptor(scanner::LutDescriptorError),
     SpectralBoundary(spectral::BoundaryError),
     EqualEnergy(illuminant::EqualEnergyError),
     Blackbody(illuminant::BlackbodyError),
@@ -386,9 +379,7 @@ impl fmt::Display for PrepareError {
             Self::Asset(error) => error.fmt(f),
             Self::Development(error) => error.fmt(f),
             Self::Control(error) => error.fmt(f),
-            #[cfg(feature = "grain-preview")]
             Self::FilmGrainGeometry => f.write_str("Film v1 requires rendered frame geometry"),
-            #[cfg(feature = "grain-preview")]
             Self::FilmGrainFootprint {
                 long_edge_mm,
                 size_um,
@@ -416,7 +407,6 @@ impl fmt::Display for PrepareError {
                 route,
                 stock,
             } => dir_diagnostic(error, *route, stock, f),
-            #[cfg(any(feature = "grain-preview", test))]
             Self::Bounds(
                 error @ (density::Error::FilmNormalization
                 | density::Error::FilmProjectionSpan
@@ -425,7 +415,6 @@ impl fmt::Display for PrepareError {
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
-            Self::LutDescriptor(error) => error.fmt(f),
             Self::SpectralBoundary(error) => error.fmt(f),
             Self::EqualEnergy(error) => error.fmt(f),
             Self::Blackbody(error) => error.fmt(f),
@@ -634,11 +623,11 @@ struct Contents {
     optics: optics::Recipe,
     minimum: density::Minimum,
     grain: grain::Recipe,
-    #[cfg(feature = "grain-preview")]
-    film_grain: Option<grain::preview::Recipe>,
+    film_grain: Option<grain::film_v1::Recipe>,
     effects: effects::Recipe,
     dir: dir::Recipe,
-    film_bounds: density::Bounds,
+    #[cfg(test)]
+    film_v1_bounds: Option<density::Bounds>,
     exposure_tables: spectral::Tables,
     s_inverse: [f32; 9],
     reconstruction: FilmReconstruction,
@@ -667,7 +656,6 @@ pub struct PrintState {
     profile: Arc<PrintProfile>,
     gamma: f64,
     curves: PrintDensityCurves,
-    bounds: print::Bounds,
     calibration: Calibration,
     neutral_cmy_cc: [f32; 3],
     filters: print::Filters,
@@ -680,6 +668,7 @@ pub struct PrintState {
     balance: print::Balance,
     resource_descriptors: print::ResourceDescriptors,
     correction: scanner::Correction,
+    glare_hash: u64,
     hash: u64,
 }
 pub struct Preflash {
@@ -695,17 +684,14 @@ pub enum Calibration {
 
 pub struct ScannerOutput {
     params: ScannerParams,
-    viewing_illuminant: String,
     tables: spectral::Tables,
     color: scanner::Color,
-    lut: scanner::LutDescriptor,
     post_effects: scanner::PostEffects,
     gamut: OutputGamut,
     hash: u64,
 }
 #[derive(Clone, Copy)]
 pub struct ScannerParams {
-    pub resolution: u32,
     pub output_space: color::OutputSpace,
     pub encode_cctf: bool,
     pub black_correction: bool,
@@ -765,8 +751,7 @@ impl RenderState {
     pub fn grain(&self) -> &grain::Recipe {
         &self.contents[0].grain
     }
-    #[cfg(feature = "grain-preview")]
-    pub fn film_grain(&self) -> Option<&grain::preview::Recipe> {
+    pub fn film_grain(&self) -> Option<&grain::film_v1::Recipe> {
         self.contents[0].film_grain.as_ref()
     }
     pub fn effects(&self) -> &effects::Recipe {
@@ -775,8 +760,9 @@ impl RenderState {
     pub fn dir(&self) -> &dir::Recipe {
         &self.contents[0].dir
     }
-    pub fn film_bounds(&self) -> &density::Bounds {
-        &self.contents[0].film_bounds
+    #[cfg(test)]
+    pub(crate) fn film_v1_bounds(&self) -> Option<&density::Bounds> {
+        self.contents[0].film_v1_bounds.as_ref()
     }
     pub fn exposure_tables(&self) -> &spectral::Tables {
         &self.contents[0].exposure_tables
@@ -818,6 +804,9 @@ impl DirectState {
     }
 }
 impl PrintState {
+    pub fn glare_hash(&self) -> u64 {
+        self.glare_hash
+    }
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -829,9 +818,6 @@ impl PrintState {
     }
     pub fn curves(&self) -> &PrintDensityCurves {
         &self.curves
-    }
-    pub fn bounds(&self) -> &print::Bounds {
-        &self.bounds
     }
     pub fn calibration(&self) -> Calibration {
         self.calibration
@@ -885,17 +871,11 @@ impl ScannerOutput {
     pub fn params(&self) -> &ScannerParams {
         &self.params
     }
-    pub fn viewing_illuminant(&self) -> &str {
-        &self.viewing_illuminant
-    }
     pub fn tables(&self) -> &spectral::Tables {
         &self.tables
     }
     pub fn color(&self) -> &scanner::Color {
         &self.color
-    }
-    pub fn lut(&self) -> &scanner::LutDescriptor {
-        &self.lut
     }
     pub fn post_effects(&self) -> &scanner::PostEffects {
         &self.post_effects
@@ -1220,8 +1200,7 @@ fn acquire_foundation(
 }
 
 pub(crate) fn current_grain(params: &Params) -> grain::Params {
-    #[cfg(feature = "grain-preview")]
-    if params.film_grain.is_some() {
+    if params.film_grain.controls().is_some() {
         return grain::Params {
             active: false,
             ..params.grain
@@ -1479,16 +1458,19 @@ fn output_policy(params: &Params) -> Result<(gamut::OutputTransform, u64), Prepa
     hash::update_bytes(&mut hash, &transform.contract_hash().to_le_bytes());
     Ok((transform, hash))
 }
-fn scanner_params(params: &Params, space: color::OutputSpace) -> ScannerParams {
+fn scanner_params(
+    params: &Params,
+    space: color::OutputSpace,
+    correction: scanner::Params,
+) -> ScannerParams {
     let print = print_route(params.scan_route);
     ScannerParams {
-        resolution: params.scanner_lut_resolution.clamp(17, 128) as u32,
         output_space: space,
         encode_cctf: params.output_cctf_encoding != 0,
-        black_correction: params.scanner_black_correction != 0,
-        white_correction: params.scanner_white_correction != 0,
-        black_level: params.scanner_black_level as f32,
-        white_level: params.scanner_white_level as f32,
+        black_correction: correction.black_correction,
+        white_correction: correction.white_correction,
+        black_level: correction.black_level,
+        white_level: correction.white_level,
         glare_active: print && params.glare_active,
         glare_percent: if print {
             params.glare_percent as f32
@@ -1532,6 +1514,7 @@ fn scanner_recipe_hash(
     route: ScanRoute,
     polarity: Polarity,
     viewing: &str,
+    raw_digest: u64,
     reference_hash: u64,
     gamut_hash: u64,
 ) -> u64 {
@@ -1545,7 +1528,7 @@ fn scanner_recipe_hash(
         ],
     );
     hash::update_bytes(&mut identity, viewing.as_bytes());
-    hash::update_bytes(&mut identity, &params.resolution.to_le_bytes());
+    hash::update_bytes(&mut identity, &raw_digest.to_le_bytes());
     hash::update_bytes(&mut identity, &(params.output_space as i32).to_le_bytes());
     hash::update_bytes(
         &mut identity,
@@ -1572,45 +1555,20 @@ fn scanner_recipe_hash(
     hash::update_bytes(&mut identity, &gamut_hash.to_le_bytes());
     identity
 }
-fn lut_descriptor(
-    params: &Params,
-    film: &FilmProfile,
-    film_bounds: &density::Bounds,
-    print: Option<(&PrintProfile, &print::Bounds)>,
-    viewing: &str,
-    resolution: u32,
-) -> Result<scanner::LutDescriptor, PrepareError> {
-    let common = scanner::LutDescriptorParams {
-        route: params.scan_route,
-        capture_polarity: polarity_tag(film.info().polarity()),
-        bounds_medium: u8::from(print.is_some()),
-        density_bounds_hash: print.map_or(film_bounds.hash(), |(_, bounds)| bounds.hash()),
-        viewing_illuminant: viewing.as_bytes(),
-        observer_identity: b"CIE1931_2deg_380_780_5nm",
-        resolution,
-    };
-    let input = match print {
-        Some((profile, _)) => scanner::LutDescriptorInput::Print {
-            params: common,
-            print: Some(scanner::LutSpectra {
-                channel_density_cmy: profile.tables().channel_density(),
-                base_density: profile.tables().base_density(),
-            }),
-            profile_key: params.print_profile_key.as_bytes(),
-            profile_token: profile.asset_token(),
-            bounds_source: 2,
-            output_medium: 1,
-            profile_viewing_illuminant: profile.info().viewing_illuminant().as_bytes(),
-        },
-        None => scanner::LutDescriptorInput::Direct {
-            params: common,
-            film: Some(scanner::LutSpectra {
-                channel_density_cmy: film.tables().channel_density(),
-                base_density: film.tables().base_density(),
-            }),
-        },
-    };
-    scanner::describe_lut(input).map_err(PrepareError::LutDescriptor)
+
+fn print_glare_hash(route: ScanRoute, key: &str, effects: &scanner::PostEffects) -> u64 {
+    let fields = effects.fields();
+    if !fields.glare_active() {
+        return 0;
+    }
+    let mut identity = hash::FNV_OFFSET;
+    hash::update_bytes(&mut identity, b"print-glare-v1");
+    hash::update_bytes(&mut identity, &[route_tag(route)]);
+    hash::update_bytes(&mut identity, &(key.len() as u64).to_le_bytes());
+    hash::update_bytes(&mut identity, key.as_bytes());
+    hash::update_bytes(&mut identity, &[1]);
+    update_floats(&mut identity, &fields.values()[..3]);
+    identity
 }
 fn correction_tables(tables: &spectral::Tables) -> scanner::ReferenceTables<'_> {
     scanner::ReferenceTables {
@@ -1628,7 +1586,6 @@ fn correction_tables(tables: &spectral::Tables) -> scanner::ReferenceTables<'_> 
 
 struct PrintAssembly {
     profile: Arc<PrintProfile>,
-    bounds: print::Bounds,
     curves: PrintDensityCurves,
     filters: print::Filters,
     exposure: print::Exposure,
@@ -1640,27 +1597,19 @@ struct PrintAssembly {
 
 /// Complete one direct or print host state without frame-dependent grain.
 pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareError> {
-    prepare_state(
-        assets,
-        params,
-        #[cfg(feature = "grain-preview")]
-        None,
-    )
+    prepare_state(assets, params, None)
 }
 
-/// Sampling requested for this render of the private preview.
-#[cfg(feature = "grain-preview")]
+/// Sampling requested for this Film v1 render.
 #[derive(Clone, Copy)]
-pub enum PreviewFrame {
-    Raster(grain::preview::Raster),
+pub enum FilmGrainFrame {
+    Raster(grain::film_v1::Raster),
     Thumbnail,
 }
-
-#[cfg(feature = "grain-preview")]
 pub fn prepare_for_frame(
     assets: &Assets,
     params: &Params,
-    frame: PreviewFrame,
+    frame: FilmGrainFrame,
 ) -> Result<RenderState, PrepareError> {
     prepare_state(assets, params, Some(frame))
 }
@@ -1668,14 +1617,13 @@ pub fn prepare_for_frame(
 fn prepare_state(
     assets: &Assets,
     params: &Params,
-    #[cfg(feature = "grain-preview")] frame: Option<PreviewFrame>,
+    frame: Option<FilmGrainFrame>,
 ) -> Result<RenderState, PrepareError> {
     #[cfg(feature = "test-support")]
     testing::reset();
     trace_stage!(SelectedFilm);
     let film = assets.film(&params.film_profile_key)?;
-    #[cfg(feature = "grain-preview")]
-    if let Some(controls) = params.film_grain
+    if let Some(controls) = params.film_grain.controls()
         && !controls.valid(
             &params.film_profile_key,
             params.camera_film_format_long_edge_mm,
@@ -1684,14 +1632,14 @@ fn prepare_state(
     {
         return Err(ControlError::FilmGrain.into());
     }
-    #[cfg(feature = "grain-preview")]
     let film_grain = params
         .film_grain
+        .controls()
         // Keep the authored selection for current_grain(), which disables
         // Current while Film is selected, including on a grain-free thumbnail.
-        .filter(|_| !matches!(frame, Some(PreviewFrame::Thumbnail)))
+        .filter(|_| !matches!(frame, Some(FilmGrainFrame::Thumbnail)))
         .map(|controls| {
-            let Some(PreviewFrame::Raster(raster)) = frame else {
+            let Some(FilmGrainFrame::Raster(raster)) = frame else {
                 return Err(PrepareError::FilmGrainGeometry);
             };
             let long_edge_mm = params.camera_film_format_long_edge_mm;
@@ -1710,7 +1658,7 @@ fn prepare_state(
             }
             let bank = assets.portra_grain_bank()?;
             let table = assets.portra_grain_table(&bank, sample_pitch)?;
-            Ok::<_, PrepareError>(grain::preview::Recipe::new(
+            Ok::<_, PrepareError>(grain::film_v1::Recipe::new(
                 bank, table, controls, raster, footprint, sampling,
             ))
         })
@@ -1812,36 +1760,43 @@ fn prepare_state(
             stock: film.info().stock().to_owned(),
         }
     })?;
-    #[cfg(feature = "grain-preview")]
-    let film_bounds = match &film_grain {
-        Some(grain) => grain
-            .density_allowances()
-            .ok_or(density::Error::FilmNormalization)
-            .and_then(|allowances| density::Bounds::film_v1(&acquired.development, allowances)),
-        None => density::Bounds::new(&acquired.development, &minimum),
-    };
-    #[cfg(not(feature = "grain-preview"))]
-    let film_bounds = density::Bounds::new(&acquired.development, &minimum);
-    let film_bounds = film_bounds.map_err(PrepareError::Bounds)?;
+    let film_v1_bounds = film_grain
+        .as_ref()
+        .map(|grain| grain.density_bounds(&acquired.development))
+        .transpose()
+        .map_err(PrepareError::Bounds)?;
     let profile_route_hash = profile_route_hash(params, film, selected_print.as_deref());
 
     // Route composition follows foundation, before focused payload construction.
-    let print_bounds = selected_print
-        .as_ref()
-        .map(|profile| print::Bounds::new(profile, params.scan_route, film.info().polarity()))
-        .transpose()
-        .map_err(PrepareError::PrintComposition)?;
-    let (transform, gamut_hash) = output_policy(params)?;
-    let scanner_params = scanner_params(params, transform.space());
-    #[cfg(feature = "grain-preview")]
-    let scanner_params = if film_grain.is_some() && selected_print.is_none() {
-        ScannerParams {
-            resolution: film_bounds.film_v1_scan_resolution(scanner_params.resolution),
-            ..scanner_params
-        }
-    } else {
-        scanner_params
+    let correction_params = scanner::Params {
+        route: route_tag(params.scan_route),
+        black_correction: params.scanner_black_correction != 0,
+        white_correction: params.scanner_white_correction != 0,
+        black_level: params.scanner_black_level as f32,
+        white_level: params.scanner_white_level as f32,
     };
+    let correction_required = if selected_print.is_some() {
+        correction_params.print_inputs_required()
+    } else {
+        correction_params.direct_inputs_required()
+    }
+    .map_err(PrepareError::ScannerCorrection)?;
+    let correction_film_bounds = (correction_required && film_v1_bounds.is_none())
+        .then(|| density::Bounds::new(&acquired.development, &minimum))
+        .transpose()
+        .map_err(PrepareError::Bounds)?;
+    let film_bounds = film_v1_bounds.as_ref().or(correction_film_bounds.as_ref());
+    let print_bounds = if correction_required {
+        selected_print
+            .as_deref()
+            .map(print::Bounds::new)
+            .transpose()
+            .map_err(PrepareError::PrintComposition)?
+    } else {
+        None
+    };
+    let (transform, gamut_hash) = output_policy(params)?;
+    let scanner_params = scanner_params(params, transform.space(), correction_params);
     let print = match selected_print {
         Some(profile) => {
             let curves = profile
@@ -1871,7 +1826,6 @@ fn prepare_state(
             let illuminant_key = enlarger_illuminant(params.enl_ill);
             Some(PrintAssembly {
                 profile,
-                bounds: print_bounds.expect("print bounds composed"),
                 curves,
                 filters,
                 exposure,
@@ -1883,26 +1837,6 @@ fn prepare_state(
         }
         None => None,
     };
-    let viewing = print
-        .as_ref()
-        .map_or_else(
-            || film.info().viewing_illuminant(),
-            |print| print.profile.info().viewing_illuminant(),
-        )
-        .to_owned();
-    let direct_lut = if print.is_none() {
-        Some(lut_descriptor(
-            params,
-            film,
-            &film_bounds,
-            None,
-            &viewing,
-            scanner_params.resolution,
-        )?)
-    } else {
-        None
-    };
-
     trace_stage!(FilmPayload);
     let film_illuminant = profile_illuminant(
         &acquired.illuminants,
@@ -1999,15 +1933,24 @@ fn prepare_state(
         _ => None,
     };
 
-    let (scanner_profile, viewing_kind) = match &print {
+    let (scanner_profile, viewing, viewing_kind, scanner_key, scanner_asset_token) = match &print {
         Some(print) => (
             print.profile.tables(),
+            print.profile.info().viewing_illuminant(),
             print.profile.info().viewing_illuminant_kind(),
+            params.print_profile_key.as_str(),
+            print.profile.asset_token(),
         ),
-        None => (film.tables(), film.info().viewing_illuminant_kind()),
+        None => (
+            film.tables(),
+            film.info().viewing_illuminant(),
+            film.info().viewing_illuminant_kind(),
+            params.film_profile_key.as_str(),
+            film.asset_token(),
+        ),
     };
     trace_stage!(ScannerPayload);
-    let scanner_illuminant = profile_illuminant(&acquired.illuminants, &viewing, viewing_kind)?
+    let scanner_illuminant = profile_illuminant(&acquired.illuminants, viewing, viewing_kind)?
         .ok_or(ControlError::ScannerPayload(params.scan_route))?;
     let scanner_white =
         match spectral::checked_integrate_white(acquired.observer.borrow(), &scanner_illuminant) {
@@ -2039,6 +1982,13 @@ fn prepare_state(
         active_gamut_recipe_hash: active_gamut_hash,
     })
     .map_err(PrepareError::ScannerColor)?;
+    let raw_scanner_digest = scanner_color.spectral_binding_digest(
+        route_tag(params.scan_route),
+        scanner_key,
+        scanner_asset_token,
+        &scanner_tables,
+        params.output_gamut_compression_enabled != 0,
+    );
     let boundary = if params.output_gamut_compression_enabled != 0 {
         trace_stage!(OutputBoundary);
         Some(assets.output_boundary(
@@ -2058,19 +2008,6 @@ fn prepare_state(
         boundary,
         hash: gamut_hash,
     };
-    let print_lut = print
-        .as_ref()
-        .map(|print| {
-            lut_descriptor(
-                params,
-                film,
-                &film_bounds,
-                Some((&print.profile, &print.bounds)),
-                &viewing,
-                scanner_params.resolution,
-            )
-        })
-        .transpose()?;
     let scanner_post_effects = scanner::describe_post_effects(scanner::PostEffectsParams {
         route: params.scan_route,
         glare_active: scanner_params.glare_active,
@@ -2083,16 +2020,8 @@ fn prepare_state(
     })
     .map_err(PrepareError::ScannerPostEffects)?;
 
-    let correction_params = scanner::Params {
-        route: route_tag(params.scan_route),
-        black_correction: scanner_params.black_correction,
-        white_correction: scanner_params.white_correction,
-        black_level: scanner_params.black_level,
-        white_level: scanner_params.white_level,
-    };
-    let (route, lut, scanner_bounds_hash) = match (print, print_main, print_balance) {
+    let route = match (print, print_main, print_balance) {
         (Some(print), Some((source_illuminant, main_illuminant)), Some(balance)) => {
-            let lut = print_lut.expect("print descriptor admitted before post effects");
             let resource_descriptors =
                 print::ResourceDescriptors::new(print::ResourceDescriptorInput {
                     film,
@@ -2100,9 +2029,6 @@ fn prepare_state(
                     curves: &print.curves,
                     filters: &print.filters,
                     exposure: &print.exposure,
-                    balance: &balance,
-                    film_input_hash: input.hash(),
-                    film_development_hash: acquired.development.hash(),
                     illuminant_hash: print.illuminant_hash,
                 })
                 .map_err(PrepareError::PrintComposition)?;
@@ -2126,29 +2052,39 @@ fn prepare_state(
             trace_stage!(ScannerCorrection);
             let correction = scanner::Correction::print(
                 correction_params,
-                Some(scanner::PrintInput {
-                    tables: correction_tables(&scanner_tables),
-                    film_base_density: film.tables().base_density(),
-                    film_channel_density_cmy: film.tables().channel_density(),
-                    print_sensitivity_cmy: print.profile.tables().linear_sensitivity(),
-                    filtered_main_illuminant: main_illuminant.samples(),
-                    print_base_density: print.profile.tables().base_density(),
-                    print_log_exposure: print.profile.tables().interpolation_log_exposure(),
-                    print_density_curves: print.profile.tables().density_curves(),
-                    minimum_density_cmy: *print.bounds.minimum_cmy(),
-                    inverse_span_cmy: *print.bounds.inv_span_cmy(),
-                    film_minimum_density_cmy: *film_bounds.minimum_cmy(),
-                    film_maximum_density_cmy: *film_bounds.maximum_cmy(),
-                    preflash_raw_cmy: preflash
-                        .as_ref()
-                        .map_or([0.0; 3], |preflash| *preflash.raw.cmy()),
-                    normalizer: balance.normalizer(),
-                    preflash_exposure: print.exposure.params().preflash_exposure,
-                    medium: 1,
+                print_bounds.as_ref().map(|paper_bounds| {
+                    let film_bounds = film_bounds.expect("active Print correction has film bounds");
+                    scanner::PrintInput {
+                        tables: correction_tables(&scanner_tables),
+                        film_base_density: film.tables().base_density(),
+                        film_channel_density_cmy: film.tables().channel_density(),
+                        print_sensitivity_cmy: print.profile.tables().linear_sensitivity(),
+                        filtered_main_illuminant: main_illuminant.samples(),
+                        print_base_density: print.profile.tables().base_density(),
+                        print_log_exposure: print.profile.tables().interpolation_log_exposure(),
+                        print_density_curves: print.profile.tables().density_curves(),
+                        minimum_density_cmy: *paper_bounds.minimum_cmy(),
+                        inverse_span_cmy: *paper_bounds.inv_span_cmy(),
+                        film_minimum_density_cmy: *film_bounds.minimum_cmy(),
+                        film_maximum_density_cmy: *film_bounds.maximum_cmy(),
+                        preflash_raw_cmy: preflash
+                            .as_ref()
+                            .map_or([0.0; 3], |preflash| *preflash.raw.cmy()),
+                        normalizer: balance.normalizer(),
+                        preflash_exposure: print.exposure.params().preflash_exposure,
+                        medium: 1,
+                    }
                 }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
-            let bounds_hash = print.bounds.hash();
+            let glare_hash = print_glare_hash(
+                params.scan_route,
+                &params.print_profile_key,
+                &scanner_post_effects,
+            );
+            if scanner_post_effects.fields().glare_active() && glare_hash == 0 {
+                return Err(ControlError::Identity(params.scan_route).into());
+            }
             let hash = hash::u64s(&[
                 print.filters.hash(),
                 print.exposure.hash(),
@@ -2157,80 +2093,72 @@ fn prepare_state(
                 params.print_gamma_factor.to_bits(),
                 balance.hash(),
             ]);
-            (
-                PreparedRoute::Print(PrintState {
-                    key: params.print_profile_key.clone(),
-                    profile: print.profile,
-                    gamma: params.print_gamma_factor,
-                    curves: print.curves,
-                    bounds: print.bounds,
-                    calibration: print.calibration,
-                    neutral_cmy_cc: print.neutral_cmy_cc,
-                    filters: print.filters,
-                    exposure: print.exposure,
-                    illuminant_key: print.illuminant_key,
-                    illuminant_hash: print.illuminant_hash,
-                    source_illuminant,
-                    main_illuminant,
-                    preflash,
-                    balance,
-                    resource_descriptors,
-                    correction,
-                    hash,
-                }),
-                lut,
-                bounds_hash,
-            )
+            PreparedRoute::Print(PrintState {
+                key: params.print_profile_key.clone(),
+                profile: print.profile,
+                gamma: params.print_gamma_factor,
+                curves: print.curves,
+                calibration: print.calibration,
+                neutral_cmy_cc: print.neutral_cmy_cc,
+                filters: print.filters,
+                exposure: print.exposure,
+                illuminant_key: print.illuminant_key,
+                illuminant_hash: print.illuminant_hash,
+                source_illuminant,
+                main_illuminant,
+                preflash,
+                balance,
+                resource_descriptors,
+                correction,
+                glare_hash,
+                hash,
+            })
         }
         (None, None, None) => {
             trace_stage!(ScannerCorrection);
             let correction = scanner::Correction::direct(
                 correction_params,
-                Some(scanner::DirectInput {
-                    tables: correction_tables(&scanner_tables),
-                    film_base_density: film.tables().base_density(),
-                    film_log_exposure: acquired.development.log_exposure(),
-                    film_authored_density_curves: acquired.development.authored_curves_cmy(),
-                    minimum_density_cmy: *film_bounds.minimum_cmy(),
-                    maximum_density_cmy: *film_bounds.maximum_cmy(),
-                    inverse_span_cmy: *film_bounds.inv_span_cmy(),
-                    baseline_density_cmy: *reference.baseline_density_cmy(),
-                    reference_hash: reference.hash(),
-                    medium: 0,
-                }),
+                film_bounds
+                    .filter(|_| correction_required)
+                    .map(|film_bounds| scanner::DirectInput {
+                        tables: correction_tables(&scanner_tables),
+                        film_base_density: film.tables().base_density(),
+                        film_log_exposure: acquired.development.log_exposure(),
+                        film_authored_density_curves: acquired.development.authored_curves_cmy(),
+                        minimum_density_cmy: *film_bounds.minimum_cmy(),
+                        maximum_density_cmy: *film_bounds.maximum_cmy(),
+                        inverse_span_cmy: *film_bounds.inv_span_cmy(),
+                        baseline_density_cmy: *reference.baseline_density_cmy(),
+                        reference_hash: reference.hash(),
+                        medium: 0,
+                    }),
             )
             .map_err(PrepareError::ScannerCorrection)?;
-            (
-                PreparedRoute::Direct(DirectState { correction }),
-                direct_lut.expect("direct descriptor admitted before payload"),
-                film_bounds.hash(),
-            )
+            PreparedRoute::Direct(DirectState { correction })
         }
         _ => unreachable!("print route privately owns all print construction products"),
     };
     trace_stage!(FinalIdentity);
+    let viewing = match &route {
+        PreparedRoute::Direct(_) => film.info().viewing_illuminant(),
+        PreparedRoute::Print(print) => print.profile.info().viewing_illuminant(),
+    };
     let scanner_recipe_hash = scanner_recipe_hash(
         scanner_params,
         params.scan_route,
         film.info().polarity(),
-        &viewing,
+        viewing,
+        raw_scanner_digest,
         reference.hash(),
         gamut_hash,
     );
-    let scanner_hash = hash::u64s(&[
-        scanner_bounds_hash,
-        scanner_tables.hash(),
-        u64::from(scanner_params.resolution),
-        active_gamut_hash,
-    ]);
+    let scanner_hash = hash::u64s(&[raw_scanner_digest, active_gamut_hash]);
     #[cfg(feature = "test-support")]
     let scanner_hash = testing::identity(testing::ZeroIdentity::Scanner, scanner_hash);
     let scanner = ScannerOutput {
         params: scanner_params,
-        viewing_illuminant: viewing,
         tables: scanner_tables,
         color: scanner_color,
-        lut,
         post_effects: scanner_post_effects,
         gamut,
         hash: scanner_recipe_hash,
@@ -2240,7 +2168,6 @@ fn prepare_state(
             profile_route_hash,
             input.hash(),
             acquired.development.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
         ]),
         (PreparedRoute::Direct(_), true) => hash::u64s(&[
@@ -2248,15 +2175,12 @@ fn prepare_state(
             input.hash(),
             acquired.development.hash(),
             dir.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
         ]),
         (PreparedRoute::Print(print), false) => hash::u64s(&[
             profile_route_hash,
             input.hash(),
             acquired.development.hash(),
-            film_bounds.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
             print.hash(),
         ]),
@@ -2265,8 +2189,6 @@ fn prepare_state(
             input.hash(),
             acquired.development.hash(),
             dir.hash(),
-            film_bounds.hash(),
-            scanner_bounds_hash,
             scanner_recipe_hash,
             print.hash(),
         ]),
@@ -2276,7 +2198,6 @@ fn prepare_state(
             hash = hash::u64s(&[hash, optional]);
         }
     }
-    #[cfg(feature = "grain-preview")]
     if let Some(film_grain) = &film_grain {
         hash = hash::u64s(&[hash, film_grain.hash()]);
     }
@@ -2292,11 +2213,11 @@ fn prepare_state(
         optics,
         minimum,
         grain,
-        #[cfg(feature = "grain-preview")]
         film_grain,
         effects,
         dir,
-        film_bounds,
+        #[cfg(test)]
+        film_v1_bounds,
         exposure_tables,
         s_inverse,
         reconstruction,
@@ -2423,7 +2344,6 @@ pub(crate) mod test_support {
             highlight_boost: optics::highlight_boost::Controls::default(),
             scanner_black_correction: 0,
             scanner_white_correction: 0,
-            scanner_lut_resolution: 17,
             output_color_space: 0,
             output_cctf_encoding: 1,
             output_gamut_compression_enabled: 1,
@@ -2450,8 +2370,7 @@ pub(crate) mod test_support {
                 clump_morph_period_sec: 8.0,
                 debug_view: 0,
             },
-            #[cfg(feature = "grain-preview")]
-            film_grain: None,
+            film_grain: grain::film_v1::Selection::Current,
             film_dust_amount: 0.0,
             film_scratch_amount: 0.0,
             gate_dust_amount: 0.0,
@@ -2468,6 +2387,154 @@ mod tests {
     use super::*;
     use super::test_support::{assets, params};
     use crate::test_cases::RowCases;
+
+    #[test]
+    fn scanner_recipe_binds_the_raw_digest_after_the_profile_label() {
+        let stock = assets();
+        for (route, tags) in [
+            (ScanRoute::NegativeDirect, [0_u8, 0, 0]),
+            (ScanRoute::NegativePrint, [1_u8, 1, 0]),
+            (ScanRoute::PositiveDirect, [2_u8, 0, 1]),
+            (ScanRoute::PositivePrint, [3_u8, 1, 1]),
+        ] {
+            let state = prepare(&stock, &params(route, 1)).unwrap();
+            let scanner = state.scanner();
+            let (key, token, viewing) = match state.route() {
+                PreparedRoute::Direct(_) => (
+                    state.film_key(),
+                    state.film_profile().asset_token(),
+                    state.film_profile().info().viewing_illuminant(),
+                ),
+                PreparedRoute::Print(paper) => (
+                    paper.key(),
+                    paper.profile().asset_token(),
+                    paper.profile().info().viewing_illuminant(),
+                ),
+            };
+            let raw = scanner.color().spectral_binding_digest(
+                tags[0],
+                key,
+                token,
+                scanner.tables(),
+                true,
+            );
+            let gamut = scanner.gamut().hash;
+            assert_ne!(gamut, 0);
+            let mut combined_stream = [0_u8; 16];
+            combined_stream[..8].copy_from_slice(&raw.to_le_bytes());
+            combined_stream[8..].copy_from_slice(&gamut.to_le_bytes());
+            let combined = hash::bytes(&combined_stream);
+            assert_eq!(state.scanner_hash(), combined);
+            assert_ne!(combined, raw);
+
+            let controls = scanner.params();
+            let mut suffix = Vec::new();
+            suffix.extend((controls.output_space as i32).to_le_bytes());
+            suffix.extend([
+                u8::from(controls.encode_cctf),
+                u8::from(controls.black_correction),
+                u8::from(controls.white_correction),
+            ]);
+            suffix.extend(controls.black_level.to_le_bytes());
+            suffix.extend(controls.white_level.to_le_bytes());
+            suffix.push(u8::from(controls.glare_active));
+            for word in [
+                controls.glare_percent,
+                controls.glare_roughness,
+                controls.glare_blur_sigma_px,
+                controls.lens_blur_sigma_px,
+                controls.unsharp_sigma_px,
+                controls.unsharp_amount,
+            ] {
+                suffix.extend(word.to_le_bytes());
+            }
+            suffix.extend(state.reference().hash().to_le_bytes());
+            suffix.extend(gamut.to_le_bytes());
+            let label = viewing.as_bytes();
+            let raw_bytes = raw.to_le_bytes();
+            let recipe_bytes = [tags.as_slice(), label, &raw_bytes, &suffix].concat();
+            let matches = |bytes: &[u8]| hash::bytes(bytes) == scanner.hash();
+            assert!(matches(&recipe_bytes));
+
+            let swapped = [tags.as_slice(), &raw_bytes, label, &suffix].concat();
+            assert!(!matches(&swapped));
+            let substituted = [tags.as_slice(), label, &combined.to_le_bytes(), &suffix].concat();
+            assert!(!matches(&substituted));
+            let mut mutated = recipe_bytes.clone();
+            for index in [tags.len(), tags.len() + label.len()] {
+                mutated[index] ^= 1;
+                assert!(!matches(&mutated));
+                mutated[index] ^= 1;
+                assert!(matches(&mutated));
+            }
+        }
+    }
+
+    #[test]
+    fn full_route_recipe_folds_the_surviving_owner_words() {
+        let stock = assets();
+        for (route, dir_enabled) in [
+            (ScanRoute::NegativeDirect, true),
+            (ScanRoute::NegativePrint, true),
+            (ScanRoute::PositiveDirect, false),
+            (ScanRoute::PositivePrint, false),
+        ] {
+            let mut controls = params(route, 1);
+            controls.dir_couplers.active = dir_enabled;
+            controls.grain.active = dir_enabled;
+            assert_eq!(controls.camera_exposure_compensation_ev.to_bits(), 0);
+            let mut identities = Vec::new();
+            for exposure in [0.0, 0.25, 0.0] {
+                controls.camera_exposure_compensation_ev = exposure;
+                let state = prepare(&stock, &controls).unwrap();
+                assert_eq!(state.dir().active(), dir_enabled);
+                assert_eq!(state.grain().hash() != 0, dir_enabled);
+                let mut base = Vec::new();
+                base.extend(state.profile_route_hash().to_le_bytes());
+                base.extend(state.input().hash().to_le_bytes());
+                base.extend(state.development().hash().to_le_bytes());
+                if dir_enabled {
+                    base.extend(state.dir().hash().to_le_bytes());
+                }
+                base.extend(state.scanner().hash().to_le_bytes());
+                if let PreparedRoute::Print(paper) = state.route() {
+                    base.extend(paper.hash().to_le_bytes());
+                }
+                let fold = |bytes: &[u8]| {
+                    let optional = [
+                        state.optics().hash(),
+                        state.grain().hash(),
+                        state.effects().hash(),
+                    ];
+                    let result = optional.into_iter().filter(|&word| word != 0).fold(
+                        hash::bytes(bytes),
+                        |previous, next| {
+                            let mut continuation = previous.to_le_bytes().to_vec();
+                            continuation.extend(next.to_le_bytes());
+                            hash::bytes(&continuation)
+                        },
+                    );
+                    if let Some(film_grain) = state.film_grain() {
+                        return hash::bytes(
+                            &[result.to_le_bytes(), film_grain.hash().to_le_bytes()].concat(),
+                        );
+                    }
+                    result
+                };
+                assert_eq!(fold(&base), state.hash());
+                assert_eq!(state.upload_core_hash(), state.hash());
+                for index in [0, 8, 16, 24] {
+                    base[index] ^= 1;
+                    assert_ne!(fold(&base), state.hash());
+                    base[index] ^= 1;
+                }
+                assert_eq!(fold(&base), state.hash());
+                identities.push(state.hash());
+            }
+            assert_ne!(identities[0], identities[1]);
+            assert_eq!(identities[0], identities[2]);
+        }
+    }
 
     #[test]
     fn all_routes_and_methods_complete_with_active_spatial_dir() {
@@ -2503,7 +2570,8 @@ mod tests {
                     (0, 0, 0)
                 );
                 assert_ne!(state.hash(), 0);
-                assert_ne!(state.scanner().lut().hash(), 0);
+                assert_ne!(state.scanner().hash(), 0);
+                assert_ne!(state.scanner_hash(), 0);
                 assert_ne!(state.reference().hash(), 0);
                 assert_eq!(state.reconstruction().tc_lut().is_some(), method != 1);
                 if let PreparedRoute::Print(print) = state.route() {
@@ -2613,5 +2681,68 @@ mod tests {
             state.development().log_exposure().len(),
             state.development().normalized_curves_cmy().len()
         );
+    }
+
+    #[test]
+    fn print_glare_identity_matches_reviewed_known_answers() {
+        let mut params = scanner::PostEffectsParams {
+            route: ScanRoute::NegativePrint,
+            glare_active: true,
+            glare_percent: f32::from_bits(0x3cf5_c28f),
+            glare_roughness: f32::from_bits(0x3f33_3333),
+            glare_blur_sigma_px: f32::from_bits(0x3f00_0000),
+            lens_blur_sigma_px: 0.0,
+            unsharp_sigma_px: 0.0,
+            unsharp_amount: 0.0,
+        };
+        for (route, key, expected) in [
+            (
+                ScanRoute::NegativePrint,
+                "kodak_portra_endura",
+                0xf618_c9a2_7080_fb03,
+            ),
+            (
+                ScanRoute::NegativePrint,
+                "kodak_ultra_endura",
+                0xf358_9058_de05_8d92,
+            ),
+            (
+                ScanRoute::PositivePrint,
+                "kodak_portra_endura",
+                0xecf7_7afb_fba9_bf31,
+            ),
+            (
+                ScanRoute::PositivePrint,
+                "kodak_ultra_endura",
+                0x0135_0cec_7669_ec74,
+            ),
+        ] {
+            params.route = route;
+            let original = scanner::describe_post_effects(params).unwrap();
+            assert_eq!(print_glare_hash(route, key, &original), expected);
+
+            let sharpened = scanner::describe_post_effects(scanner::PostEffectsParams {
+                unsharp_sigma_px: 0.7,
+                unsharp_amount: 0.7,
+                ..params
+            })
+            .unwrap();
+            assert_ne!(original.hash(), sharpened.hash());
+            assert_eq!(print_glare_hash(route, key, &sharpened), expected);
+
+            for inactive in [
+                scanner::PostEffectsParams {
+                    glare_active: false,
+                    ..params
+                },
+                scanner::PostEffectsParams {
+                    glare_percent: 0.0,
+                    ..params
+                },
+            ] {
+                let inactive = scanner::describe_post_effects(inactive).unwrap();
+                assert_eq!(print_glare_hash(route, key, &inactive), 0);
+            }
+        }
     }
 }

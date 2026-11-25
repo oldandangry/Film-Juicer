@@ -6,8 +6,6 @@ use crate::hash;
 use crate::profile::Polarity;
 use crate::route::ScanRoute;
 use super::Development;
-
-#[cfg(any(feature = "grain-preview", test))]
 pub(crate) mod portra;
 
 #[derive(Clone, Copy, Debug)]
@@ -24,14 +22,9 @@ pub enum Source {
 #[derive(Debug)]
 pub enum Error {
     Minimum,
-    Span {
-        channel: usize,
-    },
-    #[cfg(any(feature = "grain-preview", test))]
+    Span { channel: usize },
     FilmNormalization,
-    #[cfg(any(feature = "grain-preview", test))]
     FilmProjectionSpan,
-    #[cfg(any(feature = "grain-preview", test))]
     FilmSpectralRange,
     ZeroIdentity,
 }
@@ -44,15 +37,12 @@ impl fmt::Display for Error {
                 f,
                 "film density span requires finite positive result channel={channel}"
             ),
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmNormalization => {
                 f.write_str("Film v1 normalization falls outside the Portra density certificate")
             }
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmProjectionSpan => {
                 f.write_str("Portra Film v1 projection requires a finite CMY span within 64 D")
             }
-            #[cfg(any(feature = "grain-preview", test))]
             Self::FilmSpectralRange => {
                 f.write_str("Portra Film v1 exceeds the scanner and enlarger transmission range")
             }
@@ -97,49 +87,67 @@ impl Bounds {
             *development.maximum_cmy(),
         )
     }
-
-    #[cfg(any(feature = "grain-preview", test))]
     pub(crate) fn film_v1(development: &Development, allowances: [f32; 2]) -> Result<Self, Error> {
         let [lower, upper] = allowances;
+        let maximum_cmy = Self::film_v1_clean_maximum(development).map(|d| (d + upper).next_up());
+        Self::checked_film_v1(development, [lower; 3], maximum_cmy)
+    }
+    pub(crate) fn portra_film_v1(
+        development: &Development,
+        bank: &crate::assets::PortraGrainBank,
+        table: &crate::assets::PortraGrainTable,
+        gain: f32,
+        chroma_fraction: f32,
+    ) -> Result<Self, Error> {
+        let allowances = portra::allowances(bank, table, gain).ok_or(Error::FilmNormalization)?;
+        // Preserve the admitted Film v1 box. Where that
+        // enclosure exceeds a safeguard, test the more precise certificate.
+        let original = Self::film_v1(development, allowances);
+        if matches!(
+            original,
+            Err(Error::FilmProjectionSpan | Error::FilmSpectralRange)
+        ) {
+            if let Some([lo, hi]) = portra::density_range(
+                bank,
+                table,
+                gain,
+                chroma_fraction,
+                Self::film_v1_clean_maximum(development),
+            ) {
+                return Self::checked_film_v1(development, lo, hi);
+            }
+            if let Some(allowances) = portra::periodic_allowances(table, gain) {
+                return Self::film_v1(development, allowances);
+            }
+        }
+        original
+    }
+    pub(crate) fn film_v1_clean_maximum(development: &Development) -> [f32; 3] {
         // Development samples its normalized knots with capped linear
         // interpolation. Thinning by a factor in [0, 1] stays inside this
         // interval because it contains zero.
-        let maximum_cmy = std::array::from_fn(|channel| {
+        std::array::from_fn(|channel| {
             let maximum = development.maximum_cmy()[channel];
             let minimum = development.minimum_cmy()[channel];
-            (maximum.max(maximum - minimum) + upper).next_up()
-        });
-        if !(0.0..=64.0).contains(&(maximum_cmy.into_iter().fold(0.0, f32::max) - lower)) {
+            maximum.max(maximum - minimum)
+        })
+    }
+    fn checked_film_v1(
+        development: &Development,
+        minimum_cmy: [f32; 3],
+        maximum_cmy: [f32; 3],
+    ) -> Result<Self, Error> {
+        let lower = minimum_cmy.into_iter().fold(0.0, f32::min);
+        let upper = maximum_cmy.into_iter().fold(0.0, f32::max);
+        if !(0.0..=64.0).contains(&(f64::from(upper) - f64::from(lower))) {
             return Err(Error::FilmProjectionSpan);
         }
-        // Check the brightest spectral endpoint using the actual signed dye
-        // coefficients. A floor of -30 D leaves eight orders of Float32
-        // headroom for spectral accumulation and illumination/exposure scales.
+        let bounds = Self::from_range(development, minimum_cmy, maximum_cmy)?;
+        let lo = bounds.minimum_cmy.map(f64::from);
+        let hi = bounds.maximum_cmy.map(f64::from);
         let tables = development.profile().tables();
-        for (dyes, &base) in tables.channel_density().iter().zip(tables.base_density()) {
-            let spectral_minimum =
-                dyes.iter()
-                    .zip(maximum_cmy)
-                    .fold(f64::from(base), |sum, (&dye, max)| {
-                        sum + f64::from(dye) * f64::from(if dye >= 0.0 { lower } else { max })
-                    });
-            if spectral_minimum < -30.0 {
-                return Err(Error::FilmSpectralRange);
-            }
-        }
-        Self::from_range(development, [lower; 3], maximum_cmy)
-    }
-
-    #[cfg(any(feature = "grain-preview", test))]
-    pub(crate) fn film_v1_scan_resolution(&self, requested: u32) -> u32 {
-        let widest = self
-            .inv_span_cmy
-            .iter()
-            .map(|span| span.recip())
-            .fold(0.0, f32::max);
-        // The qualified Film grid has at most 0.26 D between nodes,
-        // including the broadest allowance at +3 EV.
-        requested.max((widest / 0.26).ceil() as u32 + 1)
+        check_spectral_floor(lo, hi, tables.channel_density(), tables.base_density())?;
+        Ok(bounds)
     }
 
     fn from_range(
@@ -235,6 +243,25 @@ impl Bounds {
         self.hash
     }
 }
+fn check_spectral_floor(
+    lo: [f64; 3],
+    hi: [f64; 3],
+    dyes: &[[f32; 3]],
+    baseline: &[f32],
+) -> Result<(), Error> {
+    for (&dyes, &base) in dyes.iter().zip(baseline) {
+        // Signed coefficients select the brightest corner of the reachable box.
+        let [c, m, y] = std::array::from_fn(|k| if dyes[k] >= 0.0 { lo[k] } else { hi[k] });
+        let density = c * f64::from(dyes[0])
+            + m * f64::from(dyes[1])
+            + y * f64::from(dyes[2])
+            + f64::from(base);
+        if density < -30.0 {
+            return Err(Error::FilmSpectralRange);
+        }
+    }
+    Ok(())
+}
 
 #[cfg(feature = "test-support")]
 pub mod test_support {
@@ -245,5 +272,42 @@ pub mod test_support {
     }
     pub(super) fn take() -> bool {
         ZERO.replace(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{assets::Assets, film};
+
+    #[test]
+    fn film_spectral_floor_covers_the_evaluated_upper_node() {
+        let assets =
+            Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let film = assets.film("kodak_portra_400").unwrap();
+        let dyes = [[-1.0, 0.0, 0.0]];
+        let baseline = [-5.0];
+        for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
+            let development = Development::new(
+                film.clone(),
+                film::Params {
+                    gamma_factor: 1.0,
+                    layers_required: false,
+                    requested_route: route,
+                },
+            )
+            .unwrap();
+            let bounds = Bounds::from_range(&development, [0.0; 3], [25.0, 4.0, 3.0]).unwrap();
+            assert!(check_spectral_floor([0.0; 3], [25.0, 4.0, 3.0], &dyes, &baseline).is_ok());
+            let lo = bounds.minimum_cmy.map(f64::from);
+            let hi = bounds.maximum_cmy.map(f64::from);
+            let result = check_spectral_floor(lo, hi, &dyes, &baseline);
+            assert_eq!(hi[0], 25.0);
+            assert!(result.is_ok());
+            assert!(matches!(
+                check_spectral_floor(lo, hi, &dyes, &[baseline[0].next_down()]),
+                Err(Error::FilmSpectralRange)
+            ));
+        }
     }
 }

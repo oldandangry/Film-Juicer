@@ -68,10 +68,11 @@ namespace JuicerCuda::ExecutorTest {
     struct ResourceFailures {
         std::optional<Failure> stbn;
         std::optional<Failure> wang;
+        std::optional<Failure> cmax;
         cudaError_t eventCreate = cudaSuccess;
         cudaError_t eventRecord = cudaSuccess;
-        unsigned lutPosition = 0;
-        unsigned lutAttempts = 0;
+        unsigned focusedPreparationAttempts = 0;
+        unsigned cmaxAttempts = 0;
         int stbnAttempts = 0;
         int wangAttempts = 0;
         int injections = 0;

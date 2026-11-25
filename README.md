@@ -25,7 +25,7 @@ Compared with v1.0.1, this is an intentional rendering-behaviour replacement. Ex
 
 The v1.1 series also adopts spektrafilm experimental's supported-colour DIR presets and nonlinear chemistry: negative film uses a saturating donor response, while positive film applies the receiver response after the complete spatial mixture. The spatial tail defaults to 200 micrometres at weight `0.03`, and the advanced controls expose donor/receiver K and tail scale/weight without adding a legacy render mode. Scanner unsharp must still be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the historical comparison and numerical validation boundary.
 
-Version 1.1.1 is a maintenance release relative to v1.1.0. It removes the obsolete **Scanner use LUT** control and makes the existing LUT-only production scanner explicit; **Scanner LUT resolution** remains available. There are no intentional broad rendering changes from v1.1.0.
+Version 1.1.1 is a maintenance release relative to v1.1.0. It removed **Scanner use LUT** and retained **Scanner LUT resolution** for the cubic scanner shipped in that release. There are no intentional broad rendering changes from v1.1.0.
 
 ## Support Film-Juicer
 
@@ -239,15 +239,15 @@ Film dust and scratches are attached to the virtual strip. Gate artifacts are at
 
 Dust and scratches remain under refinement. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
 
-#### Portra 400 Film v1 preview
+#### Portra 400 Film v1
 
-In the opt-in **Film-Juicer Grain Preview** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
+In the standard **Juicer** effect, choose **Kodak Portra 400** and either negative scan route. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
 
-**Known limitation.** With Portra 400 Film v1 at Amount +3 EV, Size 0.5 µm and Colour 1, a reduced preview can render successfully while a Full-resolution render fails at a small film format. Linux OFX/CUDA tests on 96-pixel-high frames reproduced this at 8 mm and 4,832 pixels wide on both Negative Direct and Negative Print. Negative Print also failed at 8 mm and 3,840 pixels wide, and at 11.66 mm at both widths. These examples apply to Film v1 in the opt-in preview. The ordinary effect and the preview's Current model continue to use Current grain.
+**Known limitation.** With Portra 400 Film v1 at Amount +3 EV, Size 0.5 µm and Colour 1, a reduced preview can render successfully while a Full-resolution render fails at a small film format. Linux OFX/CUDA tests on 96-pixel-high frames reproduced this at 8 mm and 4,832 pixels wide on both Negative Direct and Negative Print. Negative Print also failed at 8 mm and 3,840 pixels wide, and at 11.66 mm at both widths. These examples were measured with Film v1 in the archived Grain Preview effect. Current remains the default grain model.
 
 Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Film grain suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions.
 
-On 19 November 2026, the owner tested and accepted the Windows flagged-thumbnail package at [`4e7f533`](https://github.com/oldandangry/Film-Juicer/commit/4e7f533d2bf649d629e8dd1ca1a2a70391f213d6) in DaVinci Resolve. The individual flag, thumbnail-size and timeline recovery cases come from staged OFX tests. Later wide-proxy behavior was checked with staged OFX and linked OFX/CUDA tests and awaits its own Resolve assessment. [Preview build instructions](docs/building.md#portra-400-grain-preview)
+On 19 November 2026, the owner tested and accepted the Windows flagged-thumbnail package at [`4e7f533`](https://github.com/oldandangry/Film-Juicer/commit/4e7f533d2bf649d629e8dd1ca1a2a70391f213d6) in DaVinci Resolve. The individual flag, thumbnail-size and timeline recovery cases come from staged OFX tests. Later wide-proxy behavior was checked with staged OFX and linked OFX/CUDA tests and awaits its own Resolve assessment. [Build and project migration instructions](docs/building.md#portra-400-film-v1)
 
 ### The enlarger and print medium
 
@@ -265,7 +265,7 @@ The panels describe the same properties as the Portra figure, but for the receiv
 
 ### Scanning and finishing
 
-The scanner calculates the colour of the developed film or print under its viewing illuminant, converts it through CIE XYZ, and returns RGB in the selected output space. The CUDA renderer always uses its prepared spectral scanner LUT for this conversion. **Scanner LUT resolution** is the only scanner-evaluation control and sets its sampling density, with a cost in memory and preparation time.
+The scanner calculates the colour of the developed film or print under its viewing illuminant, converts it through CIE XYZ, and returns RGB in the selected output space. CUDA integrates the prepared 81-wavelength spectra for each developed pixel.
 
 **Scanner black correction** and **Scanner white correction** set the route's black/white normalisation. Print routes can also add **Glare**, which introduces veiling light at the scan stage. **Scanner lens blur** and **Scanner unsharp mask** provide final softness and sharpening before output encoding.
 
@@ -295,7 +295,7 @@ Spectral calculations, spatial DIR, grain, diffusion, halation, and scanner fini
 
 The v1.1 series reduces grain memory use and accelerates the scanner and halation CUDA paths. Actual gains still depend on the selected route, resolution, and enabled spatial effects.
 
-For interactive work, establish the stock, route, exposure, and print balance first, then add the spatial effects you need. Keep scanner LUT resolution at its default while establishing the look. Judge grain and other small-scale detail at the intended output resolution; a reduced preview cannot show exactly how those features will resolve in the final image.
+For interactive work, establish the stock, route, exposure, and print balance first, then add the spatial effects you need. Judge grain and other small-scale detail at the intended output resolution; a reduced preview cannot show exactly how those features will resolve in the final image.
 
 The GPU will suffer according to your ambitions.
 

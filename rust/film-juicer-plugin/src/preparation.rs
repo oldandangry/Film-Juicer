@@ -21,18 +21,15 @@ use crate::cuda::sys;
 use crate::asset_bridge::{self, Failure, FjAssets};
 #[cfg(any(test, feature = "test-support"))]
 use crate::film_recipe_bridge::{
-    FjFilmDirParams, FjVisualGrainParams, FjFilmDirView, FjFilmDensityMinimum, FjFilmDensityBounds,
-    FjFilmReference, FjVisualGrainRecipe, FjPhysicalEffectsRecipe,
+    FjFilmDirParams, FjVisualGrainParams, FjFilmDirView, FjFilmDensityMinimum, FjFilmReference,
+    FjVisualGrainRecipe, FjPhysicalEffectsRecipe,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::optics_bridge::{
     FjDiffusionParams, FjSpatialOpticsRecipe, FjDiffusionRecipe, FjLensBlurRecipe,
 };
 #[cfg(any(test, feature = "test-support"))]
-use crate::scanner_bridge::{
-    FjScannerLutDescriptor, FjScannerColor, FjScannerColorCorrection,
-    FjScannerPostEffectsDescriptor,
-};
+use crate::scanner_bridge::{FjScannerColor, FjScannerColorCorrection, FjScannerPostEffectsDescriptor};
 #[cfg(any(test, feature = "test-support"))]
 use crate::print_bridge::FjPrintBalance;
 use crate::cuda::sys::{
@@ -201,7 +198,6 @@ pub(crate) struct FjPreparationParams {
     pub(crate) scatter_halation: FjPreparationHalation,
     pub(crate) scanner_black_correction: i32,
     pub(crate) scanner_white_correction: i32,
-    pub(crate) scanner_lut_resolution: i32,
     pub(crate) output_color_space: i32,
     pub(crate) output_cctf_encoding: i32,
     pub(crate) output_gamut_compression_enabled: i32,
@@ -313,8 +309,7 @@ pub(crate) struct FjPreparedStateView {
     pub(crate) film_development: crate::cuda::sys::FjFilmDevelopment,
     pub(crate) dir_recipe: FjFilmDirView,
     pub(crate) grain_minimum: FjFilmDensityMinimum,
-    pub(crate) scanner_bounds: FjFilmDensityBounds,
-    pub(crate) enlarger_film_bounds: FjFilmDensityBounds,
+    pub(crate) grain_authored_max_cmy: [f32; 3],
     pub(crate) film_reference: FjFilmReference,
     pub(crate) optics: FjSpatialOpticsRecipe,
     pub(crate) grain: FjVisualGrainRecipe,
@@ -329,7 +324,6 @@ pub(crate) struct FjPreparedStateView {
     pub(crate) raw_midgray_bgr: u32,
     pub(crate) input_hull: FjInputHullView,
     pub(crate) output_boundary: FjOutputBoundaryView,
-    pub(crate) scanner_lut: FjScannerLutDescriptor,
     pub(crate) scanner_color: FjScannerColor,
     pub(crate) scanner_correction: FjScannerColorCorrection,
     pub(crate) scanner_post_effects: FjScannerPostEffectsDescriptor,
@@ -338,6 +332,7 @@ pub(crate) struct FjPreparedStateView {
     pub(crate) print_gamma: f64,
     pub(crate) print_filter_main_cmy_cc: [f32; 3],
     pub(crate) print_filter_preflash_cmy_cc: [f32; 3],
+    pub(crate) print_effective_preflash_cmy_cc: [f32; 3],
     pub(crate) print_normalization_mode: u32,
     pub(crate) normalize_print_exposure: u32,
     pub(crate) print_exposure_compensation: u32,
@@ -493,7 +488,6 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
         scatter_halation,
         scanner_black_correction,
         scanner_white_correction,
-        scanner_lut_resolution,
         output_color_space,
         output_cctf_encoding,
         output_gamut_compression_enabled,
@@ -583,7 +577,6 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
         },
         scanner_black_correction: *scanner_black_correction,
         scanner_white_correction: *scanner_white_correction,
-        scanner_lut_resolution: *scanner_lut_resolution,
         output_color_space: *output_color_space,
         output_cctf_encoding: *output_cctf_encoding,
         output_gamut_compression_enabled: *output_gamut_compression_enabled,
@@ -610,8 +603,7 @@ pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Param
             clump_morph_period_sec: grain.clump_morph_period_sec,
             debug_view: grain.debug_view,
         },
-        #[cfg(feature = "grain-preview")]
-        film_grain: None,
+        film_grain: film_juicer_core::film::grain::film_v1::Selection::Current,
         film_dust_amount: *film_dust_amount,
         film_scratch_amount: *film_scratch_amount,
         gate_dust_amount: *gate_dust_amount,
@@ -752,24 +744,6 @@ fn spectral_projection(tables: &spectral::Tables) -> FjPreparedSpectralView {
         has_baseline: u32::from(tables.has_baseline()),
         illuminant_hash: tables.illuminant_hash(),
         hash: tables.hash(),
-    }
-}
-#[cfg(any(test, feature = "test-support"))]
-fn film_bounds(bounds: &film::density::Bounds) -> FjFilmDensityBounds {
-    FjFilmDensityBounds {
-        route: route_tag(bounds.route()),
-        medium: 0,
-        polarity: polarity_tag(bounds.polarity()),
-        source: match bounds.source() {
-            film::density::Source::DirectFilm => 0,
-            film::density::Source::EnlargerFilm => 1,
-        },
-        minimum_cmy: *bounds.minimum_cmy(),
-        maximum_cmy: *bounds.maximum_cmy(),
-        inv_span_cmy: *bounds.inv_span_cmy(),
-        authored_minimum_cmy: *bounds.authored_minimum_cmy(),
-        authored_maximum_cmy: *bounds.authored_maximum_cmy(),
-        hash: bounds.hash(),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -1122,7 +1096,7 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
     out.grain_minimum = FjFilmDensityMinimum {
         cmy: *state.minimum().cmy(),
     };
-    out.scanner_bounds = film_bounds(state.film_bounds());
+    out.grain_authored_max_cmy = *state.development().maximum_cmy();
     let reference = state.reference();
     out.film_reference = FjFilmReference {
         baseline_raw_rgb: *reference.baseline_raw_rgb(),
@@ -1163,19 +1137,6 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
     if let Some(boundary) = scanner.gamut().boundary() {
         out.output_boundary = boundary_projection(boundary);
     }
-    let lut = scanner.lut();
-    out.scanner_lut = FjScannerLutDescriptor {
-        route: route_tag(lut.route()),
-        medium: u32::from(lut.medium()),
-        capture_polarity: u32::from(lut.capture_polarity()),
-        resolution: lut.resolution(),
-        density_bounds_hash: lut.density_bounds_hash(),
-        channel_density_hash: lut.channel_density_hash(),
-        base_density_hash: lut.base_density_hash(),
-        viewing_illuminant_hash: lut.viewing_illuminant_hash(),
-        observer_hash: lut.observer_hash(),
-        hash: lut.hash(),
-    };
     out.scanner_color = FjScannerColor {
         cat02: *color.cat02(),
         xyz_to_rgb: *color.xyz_to_rgb(),
@@ -1241,19 +1202,6 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
         let descriptors = print.resource_descriptors();
         out.print_profile_key = text(print.key());
         out.print_profile_asset_version = profile.asset_token();
-        out.enlarger_film_bounds = film_bounds(state.film_bounds());
-        out.scanner_bounds = FjFilmDensityBounds {
-            route: out.route,
-            medium: 1,
-            polarity: out.polarity,
-            source: 2,
-            minimum_cmy: *print.bounds().minimum_cmy(),
-            maximum_cmy: *print.bounds().maximum_cmy(),
-            inv_span_cmy: *print.bounds().inv_span_cmy(),
-            authored_minimum_cmy: *print.bounds().minimum_cmy(),
-            authored_maximum_cmy: *print.bounds().maximum_cmy(),
-            hash: print.bounds().hash(),
-        };
         out.print = sys::FjPrint {
             film_density_cmy: floats(film.tables().channel_density().as_flattened()),
             film_base_density: floats(film.tables().base_density()),
@@ -1271,11 +1219,6 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
                 0
             },
             main_cc_cmy: *print.filters().main_cmy_cc(),
-            preflash_cc_cmy: if print.preflash().is_some() {
-                *print.filters().preflash_cmy_cc()
-            } else {
-                [0.0; 3]
-            },
             exposure: exposure.print_exposure,
             preflash_exposure: exposure.preflash_exposure,
             preflash_raw_cmy: print
@@ -1286,13 +1229,14 @@ fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
             profile_tables_hash: descriptors.profile_tables_hash(),
             main_illuminant_hash: descriptors.main_illuminant_hash(),
             preflash_illuminant_hash: descriptors.preflash_illuminant_hash(),
-            preflash_raw_hash: descriptors.preflash_raw_hash(),
-            balance_hash: descriptors.balance_hash(),
-            hash: descriptors.hash(),
+            glare_hash: print.glare_hash(),
         };
         out.print_gamma = print.gamma();
         out.print_filter_main_cmy_cc = *print.filters().main_cmy_cc();
         out.print_filter_preflash_cmy_cc = *print.filters().preflash_cmy_cc();
+        if print.preflash().is_some() {
+            out.print_effective_preflash_cmy_cc = out.print_filter_preflash_cmy_cc;
+        }
         out.print_normalization_mode = u32::from(print.exposure().normalization_mode());
         out.normalize_print_exposure = u32::from(exposure.normalize);
         out.print_exposure_compensation = u32::from(exposure.compensate);
@@ -2496,7 +2440,6 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
     use recipe::PrepareError as E;
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
-        #[cfg(feature = "grain-preview")]
         E::Control(recipe::ControlError::FilmGrain) => FJ_STATUS_UNSUPPORTED_INPUT,
         E::Control(
             recipe::ControlError::InputColorSpace
@@ -2608,11 +2551,11 @@ pub(crate) fn layout_facts() -> &'static [usize] {
         FjOutputBoundarySource => [output_space, d65_xyz_to_native_rgb, transform_hash],
         FjHalationShape => [present, bounce_count, renormalize, reserved, bounce_decay, scatter_core_um, scatter_tail_um, scatter_tail_weight],
         FjPreparationHalation => [active, scatter_amount, scatter_spatial_scale, halation_amount, halation_spatial_scale, reflection_source, reflection_strength, first_sigma_um, shape],
-        FjPreparationParams => [print_exposure, print_preflash_exposure, print_gamma_factor, preflash_m_filter_cc, preflash_y_filter_cc, print_shadow_compensation_factor, print_shadow_compensation_density, print_shadow_compensation_transition, glare_percent, glare_roughness, glare_blur_sigma_px, camera_exposure_compensation_ev, camera_film_format_long_edge_mm, film_gamma_factor, scanner_lens_blur_sigma_px, scanner_black_level, scanner_white_level, gate_weave_amount, scanner_unsharp_mask, print_ui_ymc_cc, camera_filter_uv, camera_filter_ir, camera_diffusion, enlarger_diffusion, dir_couplers, film_profile_key, print_profile_key, spectral_upsampling_mode, ref_ill, enl_ill, normalize_print_exposure, print_exposure_compensation, input_color_space, input_cctf_decoding, input_compression_enabled, hanatos2025_adaptation_window, hanatos2025_adaptation_surface, camera_auto_exposure_enabled, camera_metering_method, scatter_halation, scanner_black_correction, scanner_white_correction, scanner_lut_resolution, output_color_space, output_cctf_encoding, output_gamut_compression_enabled, grain, film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount, scan_route, glare_active, camera_filter_override, highlight_boost_ev, highlight_protection_ev, highlight_boost_range],
+        FjPreparationParams => [print_exposure, print_preflash_exposure, print_gamma_factor, preflash_m_filter_cc, preflash_y_filter_cc, print_shadow_compensation_factor, print_shadow_compensation_density, print_shadow_compensation_transition, glare_percent, glare_roughness, glare_blur_sigma_px, camera_exposure_compensation_ev, camera_film_format_long_edge_mm, film_gamma_factor, scanner_lens_blur_sigma_px, scanner_black_level, scanner_white_level, gate_weave_amount, scanner_unsharp_mask, print_ui_ymc_cc, camera_filter_uv, camera_filter_ir, camera_diffusion, enlarger_diffusion, dir_couplers, film_profile_key, print_profile_key, spectral_upsampling_mode, ref_ill, enl_ill, normalize_print_exposure, print_exposure_compensation, input_color_space, input_cctf_decoding, input_compression_enabled, hanatos2025_adaptation_window, hanatos2025_adaptation_surface, camera_auto_exposure_enabled, camera_metering_method, scatter_halation, scanner_black_correction, scanner_white_correction, output_color_space, output_cctf_encoding, output_gamut_compression_enabled, grain, film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount, scan_route, glare_active, camera_filter_override, highlight_boost_ev, highlight_protection_ev, highlight_boost_range],
         FjPreparedSpectralView => [lambda_nm, illuminant, observer_xyz, weighted_xyz, dyes_cmy, baseline_min, baseline_mid, inv_yn, white_xyz, has_baseline, illuminant_hash, hash],
         FjPreparedInputPolicy => [meter, band_pass_active, apply_hanatos_window, apply_hanatos_surface, projection_illuminant, input_compression_active, film_format_long_edge_mm, uv, ir, hanatos_spectral_blur, nominal_white_xyz, projection_white_xyz, hanatos_window, hanatos_surface_rgb, input_hull_hash, tc_source_hash],
         FjPreparedScannerPolicy => [black_correction, white_correction, glare_active, black_level, white_level, glare_percent, glare_roughness, glare_blur_sigma_px, lens_blur_sigma_px, unsharp_sigma_px, unsharp_amount],
-        FjPreparedStateView => [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash],
+        FjPreparedStateView => [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, grain_authored_max_cmy, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash],
         FjPreparationTrace => [count, stages],
         FjOutputCacheHooks => [after_miss, after_selection],
         FjCacheMetrics => [allocations, derivations, destructions, live_bytes, peak_bytes, reentries, reentry_failures],

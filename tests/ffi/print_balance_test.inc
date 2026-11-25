@@ -33,10 +33,8 @@ namespace PrintBalanceTest {
         }
         PrintPreflashTest::cuda_ok(cudaDeviceSynchronize());
         call.contentHash = prepared.state.print_balance.hash;
-        require(call.resources->printBalanceFactorMidgray == input->factorMidgray &&
-                    call.resources->printBalanceFactorMidgrayComp == input->factorMidgrayComp &&
-                    call.resources->printBalanceNormalizer == input->normalizer,
-                "cache binds all completed balance scalars exactly");
+        require(input->normalizer == prepared.state.print_balance.normalizer,
+                "prepared input binds the held balance normalizer");
         if (call.consumeFault) {
             const auto& view = prepared.state;
             const auto raw = balance_input(view);
@@ -167,7 +165,9 @@ namespace PrintBalanceTest {
                     auto balance = project(view.print_balance);
                     const auto factors = JuicerTestSupport::captured_print_factors(view);
                     balance["scalars"] = words(factors.data(), factors.size());
-                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"final_hash", view.recipe_hash}, {"upload_hash", view.upload_core_hash}};
+                    require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash && view.scanner_recipe_hash != 0,
+                            "complete Print balance route and scanner identities");
+                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}};
                     if (route % 2) {
                         result["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
                         result["film_channel_density_cmy"] = words(print.film_density_cmy.data, print.film_density_cmy.count);
@@ -178,7 +178,7 @@ namespace PrintBalanceTest {
                         result["normalization_mode"] = view.print_normalization_mode;
                     }
                     products.push_back(result);
-                    require(products.back() == expectedProducts.at(products.size() - 1), "per-case complete print balance product");
+                    require_equal(products.back(), expectedProducts.at(products.size() - 1), "per-case complete print balance product");
                     case_event.passed();
                 }
         return products;
@@ -485,10 +485,9 @@ namespace PrintBalanceTest {
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView directView{};
         status(direct.view(directView, error));
-        require(directView.print.hash == 0 && directView.print_balance.hash == 0, "direct route omits balance and its input");
+        require(directView.print.glare_hash == 0 && directView.print_balance.hash == 0, "direct route omits balance and its input");
         struct BoundFacts {
             float normalizer = 0;
-            std::uint64_t hash = 0;
         } bound;
         const auto inspect_input = [](void* opaque, const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared, std::string& diagnostic) {
             auto& facts = *static_cast<BoundFacts*>(opaque);
@@ -498,7 +497,6 @@ namespace PrintBalanceTest {
                 return false;
             }
             facts.normalizer = input->normalizer;
-            facts.hash = input->descriptors.balance.hash;
             return true;
         };
         std::string diagnostic;
@@ -508,8 +506,8 @@ namespace PrintBalanceTest {
                 diagnostic.c_str());
         FjPreparedStateView activeView{};
         status(active.view(activeView, error));
-        require(bound.normalizer == activeView.print_balance.normalizer && bound.hash == activeView.print.balance_hash,
-                "resource assembly binds completed balance and its owning descriptor");
+        require(bound.normalizer == activeView.print_balance.normalizer,
+                "resource assembly binds the completed balance normalizer");
         const auto raw = balance_input(activeView);
         FjPrintBalance output{};
         FjPrintBalanceFailure failure{};
@@ -521,10 +519,14 @@ namespace PrintBalanceTest {
                 "unconsumed raw balance fault is one-shot and retry matches the held complete owner");
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
-        const auto actual = product_observations(resources, captured.at("products"));
-        const auto& expected = captured.at("products");
-        if (actual != expected)
-            throw std::runtime_error("print balance product first difference " + Json::diff(expected, actual).front().dump());
+        auto expected = captured.at("products");
+        for (auto& row : expected) {
+            for (const char* key : {"scanner_hash", "final_hash", "upload_hash"})
+                require(row.erase(key) == 1, "archived Print balance route and scanner identity fields");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived Print balance capture identity");
+            row.erase("snapshot_hash");
+        }
+        require_equal(product_observations(resources, expected), expected, "complete Print balance and surviving identities");
         JuicerTests::CaseEvent caller_event("cpp", "print-balance/actual-caller");
         caller(resources);
         caller_event.passed();
@@ -558,12 +560,10 @@ namespace PrintBalanceTest {
                 return contentHash;
             };
             const auto originalContentHash = prepare(original, controls);
-            const auto balanceHash = cached.printBalanceDescriptorHash;
             const auto mainHash = cached.printMainIlluminantDescriptorHash;
             auto* const main = cached.printIllumFiltered;
             const auto charged = ledger->snapshot().chargedBytes;
-            prepare(original, controls);
-            require(cached.printBalanceDescriptorHash == balanceHash && cached.printIllumFiltered == main && ledger->snapshot().chargedBytes == charged, "identical state preserves balance key, residency and allocation accounting");
+            require(prepare(original, controls) == originalContentHash && cached.printIllumFiltered == main && ledger->snapshot().chargedBytes == charged, "identical state preserves balance product, light residency and allocation accounting");
             const JuicerTests::Cohort variants("print_balance.cache_variants", 7);
             for (unsigned variant = 0; variant < 7; ++variant) {
                 auto variant_event = variants.case_event(std::to_string(variant));
@@ -586,17 +586,17 @@ namespace PrintBalanceTest {
                 if (variant == 6)
                     p.print_key = "fujifilm_crystal_archive_typeii";
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, p);
-                prepare(changed, p);
-                require((cached.printBalanceDescriptorHash == balanceHash) == (variant < 2), "balance descriptor preserves unrelated/preflash reuse and invalidates reference/gamma/main inputs");
+                const auto changedHash = prepare(changed, p);
+                if (variant < 2)
+                    require(changedHash == originalContentHash, "unrelated and preflash edits preserve the balance product");
                 if (variant < 5)
                     require((cached.printMainIlluminantDescriptorHash == mainHash) == (variant < 4), "main descriptor identity remains distinct from balance content identity");
                 if (variant < 4)
                     require(cached.printIllumFiltered == main, "balance-only changes preserve main light residency");
-                prepare(original, controls);
-                require(cached.printBalanceDescriptorHash == balanceHash, "restoring a recipe restores its exact balance descriptor");
+                require(prepare(original, controls) == originalContentHash, "restoring a recipe restores its exact balance product");
                 variant_event.passed();
             }
-            std::array<std::uint64_t, 4> contentHashes{}, descriptorHashes{};
+            std::array<std::uint64_t, 4> contentHashes{};
             const JuicerTests::Cohort modes("print_balance.cache_modes", 4);
             std::vector<std::unique_ptr<JuicerTests::CaseEvent>> mode_events;
             for (unsigned mode = 0; mode < 4; ++mode) {
@@ -606,10 +606,10 @@ namespace PrintBalanceTest {
                 p.values.print_exposure_compensation = (mode & 1u) != 0;
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, p);
                 contentHashes[mode] = prepare(changed, p);
-                descriptorHashes[mode] = cached.printBalanceDescriptorHash;
+                require(cached.printIllumFiltered == main && cached.printMainIlluminantDescriptorHash == mainHash,
+                        "balance modes share the same main light");
             }
             require(contentHashes[0] == contentHashes[1] && contentHashes[2] == contentHashes[3], "equal reference factors preserve coincident balance content identities without a mode lane");
-            require(descriptorHashes[0] != descriptorHashes[1] && descriptorHashes[2] != descriptorHashes[3], "descriptor mode dependencies remain distinct even when content identities coincide");
             for (auto& event : mode_events)
                 event->passed();
             prepare(original, controls);
@@ -620,8 +620,12 @@ namespace PrintBalanceTest {
                 changedControls.film_key = film ? "kodak_ektar_100" : controls.film_key;
                 changedControls.print_key = film ? controls.print_key : "fujifilm_crystal_archive_typeii";
                 auto changed = PrintPreflashTest::build(owner.borrow().assets, changedControls);
+                const auto filmKey = cached.printFilmDensityTablesDescriptorHash;
+                const auto paperKey = cached.printProfileTablesDescriptorHash;
                 prepare(changed, changedControls);
-                require(cached.printBalanceDescriptorHash != balanceHash, "both source tokens contribute to balance descriptor identity");
+                require((cached.printFilmDensityTablesDescriptorHash != filmKey) == film &&
+                            (cached.printProfileTablesDescriptorHash != paperKey) == !film,
+                        "stock selection changes the corresponding table slot");
                 prepare(original, controls);
                 source_event.passed();
             }

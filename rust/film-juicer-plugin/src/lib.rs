@@ -139,9 +139,10 @@ mod optics_bridge;
 )]
 mod print_bridge;
 
+#[cfg(any(test, feature = "test-support"))]
 #[allow(
     unsafe_code,
-    reason = "scanner transport checks foreign extents and scopes synchronous immutable input borrows"
+    reason = "the scanner test facade checks foreign extents and scopes synchronous immutable input borrows"
 )]
 mod scanner_bridge;
 

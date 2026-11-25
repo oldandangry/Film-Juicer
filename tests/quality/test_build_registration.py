@@ -536,7 +536,6 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
     GPU_ONLY_TARGETS = (
         "JuicerPinnedUploadTests",
         "JuicerGaussianKernelTests",
-        "JuicerScannerLutResourceTests",
         "JuicerDeferredDestroyTests",
         "JuicerCudaInspectGpuTests",
         "JuicerProfileCudaSafetyTests",
@@ -639,7 +638,6 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
             (
                 "Quality.BuildRegistration",
                 "Ofx.Host.RenderAssertions",
-                "Resource.Gpu.ScannerLut",
                 "Ffi.Gpu.CudaInspect.MultiDevice",
                 "Ffi.Gpu.ProductionPreparedRender",
                 "ScatterHalation.Gpu.HostContracts",

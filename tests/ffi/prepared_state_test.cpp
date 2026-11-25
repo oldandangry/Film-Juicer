@@ -36,8 +36,10 @@
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
 #include "prepared_state_oracle.h"
+#include "Hash.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_call_scope.h"
+#include "juicer_cuda_prepared.h"
 #include "gtest_cases.h"
 
 extern "C" const std::size_t* fj_test_prepared_state_c_facts(std::size_t*);
@@ -98,7 +100,6 @@ using FjCallPreviewFn = FjStatus (*)(void*, const FjRect*, const FjRect*, std::u
 using FjCallFrameDescriptorsFn = FjStatus (*)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
 using FjCallRenderFn = FjRenderOutcome (*)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
 using FjCallCompleteFn = FjCallCompletionResult (*)(void*, const FjCallCompletionInput*);
-using FjHostScannerLutFn = FjStatus (*)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 using FjHostGaussianFn = FjStatus (*)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 using FjPolicyEntryFn = FjStatus (*)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
 using FjTraceSubmissionFn = void (*)(void*, const FjSubmission*, std::uint32_t);
@@ -113,7 +114,6 @@ static_assert(std::is_same_v<decltype(FjCudaCallAccess::preview), FjCallPreviewF
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::frame_descriptors), FjCallFrameDescriptorsFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::render), FjCallRenderFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::complete), FjCallCompleteFn>);
-static_assert(std::is_same_v<decltype(FjHostPreparation::scanner_lut), FjHostScannerLutFn>);
 static_assert(std::is_same_v<decltype(FjHostPreparation::gaussian), FjHostGaussianFn>);
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::trace_submission), FjTraceSubmissionFn>);
 static_assert(std::is_same_v<decltype(&fj_test_prepared_state_frame_policy), FjPolicyEntryFn>);
@@ -234,6 +234,99 @@ namespace {
             throw std::runtime_error("prepared-state oracle live backing relationship mismatch");
     }
 
+    std::uint64_t expected_print_glare_hash(const FjPreparedStateView& actual) {
+        const auto& post = actual.scanner_post_effects;
+        if ((actual.route != FJ_ROUTE_NEGATIVE_PRINT && actual.route != FJ_ROUTE_POSITIVE_PRINT) || !post.glare_active)
+            return 0;
+        const std::string_view label = "print-glare-v1";
+        const auto keyLength = static_cast<std::uint64_t>(actual.print_profile_key.count);
+        const auto route = static_cast<std::uint8_t>(actual.route);
+        constexpr auto active = std::uint8_t{1};
+        const std::array controls{std::bit_cast<std::uint32_t>(post.glare_percent),
+                                  std::bit_cast<std::uint32_t>(post.glare_roughness),
+                                  std::bit_cast<std::uint32_t>(post.glare_blur_sigma_px)};
+        auto digest = Hash::kFnvOffset;
+        Hash::hash_bytes_update(digest, label.data(), label.size());
+        Hash::hash_bytes_update(digest, &route, sizeof(route));
+        Hash::hash_bytes_update(digest, &keyLength, sizeof(keyLength));
+        Hash::hash_bytes_update(digest, actual.print_profile_key.data, actual.print_profile_key.count);
+        Hash::hash_bytes_update(digest, &active, sizeof(active));
+        Hash::hash_bytes_update(digest, controls.data(), sizeof(controls));
+        return digest;
+    }
+
+    std::uint64_t expected_profile_tables_hash(const FjPreparedStateView& actual) {
+        if (actual.route != FJ_ROUTE_NEGATIVE_PRINT && actual.route != FJ_ROUTE_POSITIVE_PRINT)
+            return 0;
+        const auto sensitivity = actual.print.sensitivity_cmy;
+        const auto words = Hash::hash_float_span_with_nan_mask(sensitivity.data, sensitivity.count);
+        const auto sensitivityHash = Hash::hash_uint64_values({words.valueHash, words.nanMaskHash});
+        std::uint64_t result = Hash::kFnvOffset;
+        const std::uint32_t schema = 2;
+        const std::uint32_t curveCount = static_cast<std::uint32_t>(actual.print.log_exposure.count);
+        const std::uint32_t sampleCount = 81;
+        Hash::hash_bytes_update(result, &schema, sizeof(schema));
+        Hash::hash_bytes_update(result, &actual.print_curves_hash, sizeof(actual.print_curves_hash));
+        Hash::hash_bytes_update(result, &sensitivityHash, sizeof(sensitivityHash));
+        Hash::hash_bytes_update(result, &curveCount, sizeof(curveCount));
+        Hash::hash_bytes_update(result, &sampleCount, sizeof(sampleCount));
+        return result;
+    }
+
+    std::uint64_t expected_scanner_binding(const FjPreparedStateView& actual) {
+        FjPreparedHostData source{};
+        source.route = actual.route;
+        source.film_profile_key = actual.film_profile_key;
+        source.print_profile_key = actual.print_profile_key;
+        source.film_profile_asset_version = actual.film_profile_asset_version;
+        source.print_profile_asset_version = actual.print_profile_asset_version;
+        const auto& scanner = actual.scanner_tables;
+        source.scanner_spectra = {scanner.dyes_cmy[2], scanner.dyes_cmy[1], scanner.dyes_cmy[0], scanner.weighted_xyz[0], scanner.weighted_xyz[1], scanner.weighted_xyz[2], scanner.has_baseline ? scanner.baseline_min : FjFloatSpan{}, scanner.inv_yn};
+        source.output_color = actual.output_color;
+        const std::uint64_t gamut = (source.output_color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? source.output_color.gamut_recipe_hash : 0;
+        return Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(source), gamut});
+    }
+
+    void compare_live_identity(const Json& live, const char* key, std::uint64_t expected) {
+        SCOPED_TRACE(key);
+        PreparedStateOracle::compare({{"type", "u64"}, {"value", expected}}, live.at(key));
+    }
+
+    void prepare_live_comparison(Json& expected, Json& live, const FjPreparedStateView& actual) {
+        for (const char* key : {"scanner_lut", "scanner_bounds", "enlarger_film_bounds"})
+            ASSERT_EQ(expected.erase(key), 1U);
+        ASSERT_NE(actual.recipe_hash, 0u);
+        ASSERT_NE(actual.scanner_recipe_hash, 0u);
+        ASSERT_NE(actual.scanner_hash, 0u);
+        compare_live_identity(live, "recipe_hash", actual.recipe_hash);
+        compare_live_identity(live, "upload_core_hash", actual.recipe_hash);
+        compare_live_identity(live, "scanner_recipe_hash", actual.scanner_recipe_hash);
+        compare_live_identity(live, "scanner_hash", expected_scanner_binding(actual));
+        const bool printActive = actual.route == FJ_ROUTE_NEGATIVE_PRINT || actual.route == FJ_ROUTE_POSITIVE_PRINT;
+        const auto profileHash = expected_profile_tables_hash(actual);
+        ASSERT_EQ(profileHash != 0, printActive);
+        compare_live_identity(live.at("print"), "profile_tables_hash", profileHash);
+        compare_live_identity(live.at("print"), "glare_hash", expected_print_glare_hash(actual));
+        ASSERT_EQ(live.at("print").erase("glare_hash"), 1U);
+        for (const char* key : {"recipe_hash", "upload_core_hash", "scanner_recipe_hash", "scanner_hash"}) {
+            ASSERT_EQ(expected.erase(key), 1U);
+            ASSERT_EQ(live.erase(key), 1U);
+        }
+        ASSERT_EQ(expected.at("print").erase("profile_tables_hash"), 1U);
+        ASSERT_EQ(live.at("print").erase("profile_tables_hash"), 1U);
+        for (const char* key : {"preflash_raw_hash", "balance_hash", "hash"})
+            ASSERT_EQ(expected.at("print").erase(key), 1U);
+    }
+
+    void expect_projection_difference(const Json& expected, const Json& live, std::string_view path) {
+        try {
+            PreparedStateOracle::compare(expected, live);
+            ADD_FAILURE() << "comparison accepted the changed word at " << path;
+        } catch (const std::runtime_error& error) {
+            EXPECT_TRUE(std::string_view(error.what()).starts_with(path)) << error.what();
+        }
+    }
+
     void record_projection(const JuicerTestSupport::PreparationInput& params, const FjAssets* resourceOwner, const FjPreparedStateView& actual) {
         const auto name = projection_case(params);
         if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
@@ -242,8 +335,22 @@ namespace {
         observedProjectionCases.push_back(name);
         const auto& row = oracle_row(name);
         const auto wire = params.record();
-        PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(wire));
-        PreparedStateOracle::compare(row.at("expected"), PreparedStateOracle::view(actual));
+        auto expectedInput = row.at("input");
+        ASSERT_EQ(expectedInput.erase("scanner_lut_resolution"), 1U);
+        PreparedStateOracle::compare(expectedInput, PreparedStateOracle::params(wire));
+        auto expected = row.at("expected");
+        auto live = PreparedStateOracle::view(actual);
+        ASSERT_NO_FATAL_FAILURE(prepare_live_comparison(expected, live, actual));
+        PreparedStateOracle::compare(expected, live);
+        if (name == "PreflashAndNormalizationModes[norm=0,compensate=0]") {
+            auto damaged = live;
+            auto& magenta = damaged.at("print").at("preflash_cc_cmy").at("words").at(1);
+            ASSERT_EQ(magenta, "42870000");
+            magenta = "42870001";
+            expect_projection_difference(expected, damaged, "record.print.preflash_cc_cmy.words[1]");
+            magenta = "42870000";
+            PreparedStateOracle::compare(expected, damaged);
+        }
         Json relations = Json::array();
         // Frozen native.* labels now identify raw consumers of the same Rust cache entry.
         if (actual.input_hull.xy.count != 0) {
@@ -450,6 +557,7 @@ namespace {
         auto expected = oracle_row("NegativeDirectHanatos").at("input");
         // Baseline only changed the original default route from print to direct.
         expected.at("scan_route").at("value") = std::uint32_t{1};
+        ASSERT_EQ(expected.erase("scanner_lut_resolution"), 1U);
         PreparedStateOracle::compare(expected, PreparedStateOracle::params(record));
     }
 
@@ -497,14 +605,15 @@ namespace {
 
     TEST_F(PreparedStateProducts, OracleReaderRejectsFieldShapeWidthTagAndBackingMutations) {
         const auto params = print_params();
-        const auto expected = oracle_row("NegativePrintMallett").at("expected");
+        auto expected = oracle_row("NegativePrintMallett").at("expected");
         std::string diagnostic;
         FjStatus status{};
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView actual{};
         ASSERT_EQ(state_view(owner, actual).category, FJ_STATUS_SUCCESS);
-        const auto current = PreparedStateOracle::view(actual);
+        auto current = PreparedStateOracle::view(actual);
+        ASSERT_NO_FATAL_FAILURE(prepare_live_comparison(expected, current, actual));
         ASSERT_NO_THROW(PreparedStateOracle::compare(expected, current));
         auto damaged = expected;
         damaged.at("grain").erase("amplitude");
@@ -516,7 +625,13 @@ namespace {
         damaged.at("film_exposure").at("sensitivity_rgb")["shape"] = Json::array({81});
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         damaged = expected;
-        damaged.at("print_gamma")["bits"] = "00000000";
+        auto& gamma = damaged.at("print_gamma").at("bits");
+        ASSERT_EQ(gamma, "3ff0000000000000");
+        gamma = "3ff0000000000001";
+        expect_projection_difference(damaged, current, "record.print_gamma.bits");
+        gamma = "3ff0000000000000";
+        EXPECT_NO_THROW(PreparedStateOracle::compare(damaged, current));
+        gamma = "00000000";
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         damaged = expected;
         damaged.at("route")["value"] = 4;
@@ -922,10 +1037,13 @@ namespace {
         equal_status(state_view(linear, second), FJ_STATUS_SUCCESS);
         EXPECT_NE(first.recipe_hash, second.recipe_hash);
         EXPECT_NE(first.scanner_color.hash, second.scanner_color.hash);
-        EXPECT_EQ(first.scanner_lut.hash, second.scanner_lut.hash);
         EXPECT_EQ(first.scanner_tables.hash, second.scanner_tables.hash);
-        EXPECT_EQ(first.scanner_hash, second.scanner_hash);
-        EXPECT_EQ(first.print.hash, second.print.hash);
+        EXPECT_NE(first.scanner_hash, second.scanner_hash);
+        EXPECT_EQ(first.print.film_density_hash, second.print.film_density_hash);
+        EXPECT_EQ(first.print.profile_tables_hash, second.print.profile_tables_hash);
+        EXPECT_EQ(first.print.main_illuminant_hash, second.print.main_illuminant_hash);
+        EXPECT_EQ(first.print.preflash_illuminant_hash, second.print.preflash_illuminant_hash);
+        EXPECT_EQ(first.print.glare_hash, second.print.glare_hash);
         EXPECT_EQ(first.output_boundary.entry_identity, second.output_boundary.entry_identity);
         observe_encoding_relation(first.output_boundary.entry_identity == second.output_boundary.entry_identity);
         encodedCase.passed();
@@ -1086,11 +1204,6 @@ namespace {
     }
 
     // Exhaustive bindings make added ABI fields require an explicit clearing reader.
-    auto cleared_fields(const FjFilmDensityBounds& value) {
-        const auto& [route, medium, polarity, source, minimum_cmy, maximum_cmy, inv_span_cmy, authored_minimum_cmy, authored_maximum_cmy, hash] = value;
-        return std::tie(route, medium, polarity, source, minimum_cmy, maximum_cmy, inv_span_cmy, authored_minimum_cmy, authored_maximum_cmy, hash);
-    }
-
     auto cleared_fields(const FjFilmDensityMinimum& value) {
         const auto& [cmy] = value;
         return std::tie(cmy);
@@ -1172,8 +1285,8 @@ namespace {
     }
 
     auto cleared_fields(const FjPrint& value) {
-        const auto& [film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, preflash_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, preflash_raw_hash, balance_hash, hash] = value;
-        return std::tie(film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, preflash_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, preflash_raw_hash, balance_hash, hash);
+        const auto& [film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, glare_hash] = value;
+        return std::tie(film_density_cmy, film_base_density, sensitivity_cmy, log_exposure, density_cmy, main_illuminant, preflash_illuminant, flags, main_cc_cmy, exposure, preflash_exposure, preflash_raw_cmy, normalizer, film_density_hash, profile_tables_hash, main_illuminant_hash, preflash_illuminant_hash, glare_hash);
     }
 
     auto cleared_fields(const FjPrintBalance& value) {
@@ -1189,11 +1302,6 @@ namespace {
     auto cleared_fields(const FjScannerColorCorrection& value) {
         const auto& [route, active, black_correction, white_correction, target_black_linear, target_white_linear, reference_black_y, reference_white_y, xyz_slope, xyz_offset, exposure_scale, schema_version, hash] = value;
         return std::tie(route, active, black_correction, white_correction, target_black_linear, target_white_linear, reference_black_y, reference_white_y, xyz_slope, xyz_offset, exposure_scale, schema_version, hash);
-    }
-
-    auto cleared_fields(const FjScannerLutDescriptor& value) {
-        const auto& [route, medium, capture_polarity, resolution, density_bounds_hash, channel_density_hash, base_density_hash, viewing_illuminant_hash, observer_hash, hash] = value;
-        return std::tie(route, medium, capture_polarity, resolution, density_bounds_hash, channel_density_hash, base_density_hash, viewing_illuminant_hash, observer_hash, hash);
     }
 
     auto cleared_fields(const FjScannerPostEffectsDescriptor& value) {
@@ -1232,8 +1340,8 @@ namespace {
     }
 
     auto cleared_fields(const FjPreparedStateView& value) {
-        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
-        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, scanner_bounds, enlarger_film_bounds, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_lut, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
+        const auto& [film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, grain_authored_max_cmy, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash] = value;
+        return std::tie(film_profile_key, print_profile_key, film_profile_asset_version, print_profile_asset_version, profile_route_hash, recipe_hash, upload_core_hash, scanner_hash, route, polarity, input_policy, scanner_policy, film_exposure, film_development, dir_recipe, grain_minimum, grain_authored_max_cmy, film_reference, optics, grain, effects, exposure_tables, scanner_tables, s_inverse, midgray_dwg_rgb, raw_midgray, raw_green, midgray_scale, raw_midgray_bgr, input_hull, output_boundary, scanner_color, scanner_correction, scanner_post_effects, output_color, print, print_gamma, print_filter_main_cmy_cc, print_filter_preflash_cmy_cc, print_effective_preflash_cmy_cc, print_normalization_mode, normalize_print_exposure, print_exposure_compensation, calibration, neutral_cmy_cc, print_source_illuminant, print_balance, scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash);
     }
 
     template <class T>
@@ -1558,7 +1666,6 @@ namespace {
         const auto before = fj_test_gaussian_kernel_live_owners();
         EXPECT_EQ(fj_test_host_preparation_c_call(), 1);
         EXPECT_EQ(fj_test_gaussian_kernel_live_owners(), before);
-        EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
     }
 
     TEST_F(PreparedStateAbi, InputHullFaultsBelongToActualOwnerAndRetainedWarmEntry) {

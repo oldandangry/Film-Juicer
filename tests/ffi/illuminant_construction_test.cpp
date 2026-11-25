@@ -82,9 +82,6 @@ namespace IlluminantConstruction {
             require(tables.observer_xyz[i].count == 81 && tables.weighted_xyz[i].count == 81 && tables.dyes_cmy[i].count == 81, "prepared spectral lane extents");
         return {{"lambda", span_bits(tables.lambda_nm)}, {"K", 81}, {"delta_lambda", bits(std::array{5.0f})}, {"inv_yn", bits(std::array{tables.inv_yn})}, {"white_xyz", bits(tables.white_xyz)}, {"ref_illum_white_xyz", bits(tables.white_xyz)}, {"ax", span_bits(tables.weighted_xyz[0])}, {"ay", span_bits(tables.weighted_xyz[1])}, {"az", span_bits(tables.weighted_xyz[2])}, {"xbar", span_bits(tables.observer_xyz[0])}, {"ybar", span_bits(tables.observer_xyz[1])}, {"zbar", span_bits(tables.observer_xyz[2])}, {"illum", span_bits(tables.illuminant)}, {"eps_c", span_bits(tables.dyes_cmy[0])}, {"eps_m", span_bits(tables.dyes_cmy[1])}, {"eps_y", span_bits(tables.dyes_cmy[2])}, {"base_density_min", span_bits(tables.baseline_min)}, {"base_density_mid", span_bits(tables.baseline_mid)}, {"has_baseline", bool(tables.has_baseline)}, {"baseline_mix", bits(std::array{0.0f})}, {"illuminant_hash", tables.illuminant_hash}, {"tables_hash", tables.hash}};
     }
-    Json scanner_descriptor(const FjScannerLutDescriptor& out) {
-        return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.capture_polarity)}, {"density_bounds_hash", out.density_bounds_hash}, {"channel_density_hash", out.channel_density_hash}, {"base_density_hash", out.base_density_hash}, {"illuminant_hash", out.viewing_illuminant_hash}, {"observer_hash", out.observer_hash}, {"resolution", out.resolution}, {"hash", out.hash}};
-    }
     Json complete_result(const FjPreparedStateView& state, const JuicerTestSupport::PreparationInput& controls) {
         const auto& raw = state.film_exposure;
         const auto& policy = state.input_policy;
@@ -97,7 +94,7 @@ namespace IlluminantConstruction {
         require(raw.sensitivity_rgb.count == std::size_t{81} * 3, "prepared sensitivity shape");
         for (std::size_t row = 0; row < 81; ++row)
             sensitivity.push_back(span_bits({raw.sensitivity_rgb.data + row * 3, 3}));
-        return {{"input_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"input_adapt", bits(raw.input_xyz_adapt)}, {"xyz_to_linear_srgb", bits(raw.xyz_to_linear_srgb)}, {"source_white", bits(policy.nominal_white_xyz)}, {"projection_white", bits(policy.projection_white_xyz)}, {"config_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"config_adapt", bits(raw.input_xyz_adapt)}, {"raw_midgray", bits(state.raw_midgray)}, {"midgray_dwg", bits(state.midgray_dwg_rgb)}, {"midgray_scale_green", bits(std::array{state.midgray_scale, state.raw_green})}, {"config_whites", {bits(policy.nominal_white_xyz), bits(policy.projection_white_xyz), bits(policy.projection_white_xyz)}}, {"config_flags", {static_cast<int>(raw.input_color_space), decode, static_cast<int>(controls.values.spectral_upsampling_mode == 1), adapt, true, true}}, {"spd_s_inv", bits(state.s_inverse)}, {"baseline_raw", bits(reference.baseline_raw_rgb)}, {"compensated_raw", bits(reference.compensated_raw_rgb)}, {"baseline_density", bits(reference.baseline_density_cmy)}, {"compensated_density", bits(reference.compensated_density_cmy)}, {"print_baseline_raw", bits(balance.baseline_raw_rgb)}, {"print_compensated_raw", bits(balance.compensated_raw_rgb)}, {"print_factors", bits(JuicerTestSupport::captured_print_factors(state))}, {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, state.print_recipe_hash, state.scanner_recipe_hash, output.gamut_recipe_hash, state.recipe_hash, state.upload_core_hash, state.scanner_hash}}, {"scanner_color", color_result(state.scanner_color)}, {"scanner_tables", tables_result(state.scanner_tables)}, {"scanner_descriptor", scanner_descriptor(state.scanner_lut)}, {"gamut_entry", bits(output.native_rgb_to_d65_xyz)}, {"gamut_exit", bits(output.d65_xyz_to_native_rgb)}, {"final_sensitivity_hash", raw.sensitivity_hash}, {"final_sensitivity", sensitivity}};
+        return {{"input_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"input_adapt", bits(raw.input_xyz_adapt)}, {"xyz_to_linear_srgb", bits(raw.xyz_to_linear_srgb)}, {"source_white", bits(policy.nominal_white_xyz)}, {"projection_white", bits(policy.projection_white_xyz)}, {"config_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"config_adapt", bits(raw.input_xyz_adapt)}, {"raw_midgray", bits(state.raw_midgray)}, {"midgray_dwg", bits(state.midgray_dwg_rgb)}, {"midgray_scale_green", bits(std::array{state.midgray_scale, state.raw_green})}, {"config_whites", {bits(policy.nominal_white_xyz), bits(policy.projection_white_xyz), bits(policy.projection_white_xyz)}}, {"config_flags", {static_cast<int>(raw.input_color_space), decode, static_cast<int>(controls.values.spectral_upsampling_mode == 1), adapt, true, true}}, {"spd_s_inv", bits(state.s_inverse)}, {"baseline_raw", bits(reference.baseline_raw_rgb)}, {"compensated_raw", bits(reference.compensated_raw_rgb)}, {"baseline_density", bits(reference.baseline_density_cmy)}, {"compensated_density", bits(reference.compensated_density_cmy)}, {"print_baseline_raw", bits(balance.baseline_raw_rgb)}, {"print_compensated_raw", bits(balance.compensated_raw_rgb)}, {"print_factors", bits(JuicerTestSupport::captured_print_factors(state))}, {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, state.print_recipe_hash, state.scanner_recipe_hash, output.gamut_recipe_hash, state.recipe_hash, state.upload_core_hash, state.scanner_hash}}, {"scanner_color", color_result(state.scanner_color)}, {"scanner_tables", tables_result(state.scanner_tables)}, {"gamut_entry", bits(output.native_rgb_to_d65_xyz)}, {"gamut_exit", bits(output.d65_xyz_to_native_rgb)}, {"final_sensitivity_hash", raw.sensitivity_hash}, {"final_sensitivity", sensitivity}};
     }
 } // namespace IlluminantConstruction
 
@@ -213,7 +210,6 @@ namespace IlluminantConstruction {
         out["scatterHalationControls"] = controls_json(p.values.scatter_halation);
         out["scannerBlackCorrection"] = p.values.scanner_black_correction;
         out["scannerWhiteCorrection"] = p.values.scanner_white_correction;
-        out["scannerLutResolution"] = p.values.scanner_lut_resolution;
         out["outputColorSpace"] = p.values.output_color_space;
         out["outputCctfEncoding"] = p.values.output_cctf_encoding;
         out["outputGamutCompressionEnabled"] = p.values.output_gamut_compression_enabled;
@@ -587,7 +583,7 @@ namespace IlluminantConstruction {
             controls.values.print_preflash_exposure = route ? .1 : 0;
             controls.values.preflash_m_filter_cc = 12.5;
             controls.values.preflash_y_filter_cc = 7.25;
-            ASSERT_EQ(controls_json(controls), row["controls"]);
+            ASSERT_EQ(controls_json(controls), spectral_controls_from_archive(row.at("controls")));
             auto film = polarity ? positive : negative, print = paper;
             film["info"]["reference_illuminant"] = row["profile_reference"];
             film["info"]["viewing_illuminant"] = row["profile_viewing"];
@@ -646,16 +642,18 @@ namespace IlluminantConstruction {
                 ASSERT_EQ(fj_test_print_preflash_prepare(&input, &preflash, &failure, nullptr).category, FJ_STATUS_SUCCESS);
                 result["preflash_light"] = span_bits(productView.print.preflash_illuminant);
                 result["preflash_raw"] = bits(preflash.cmy);
-                result["print_descriptors"] = {productView.print.hash, productView.print.main_illuminant_hash, productView.print.preflash_illuminant_hash, productView.print.preflash_raw_hash, productView.print.balance_hash};
-                EXPECT_EQ(prepared.print.hash, productView.print.hash);
+                result["print_descriptors"] = {productView.print.main_illuminant_hash, productView.print.preflash_illuminant_hash};
+                EXPECT_EQ(prepared.print.glare_hash, productView.print.glare_hash);
                 EXPECT_EQ(prepared.print_balance.hash, productView.print_balance.hash);
                 ASSERT_EQ(prepared.print.main_illuminant.count, productView.print.main_illuminant.count);
                 EXPECT_EQ(std::memcmp(prepared.print.main_illuminant.data, productView.print.main_illuminant.data, prepared.print.main_illuminant.count * sizeof(float)), 0);
                 ASSERT_EQ(prepared.print.preflash_illuminant.count, productView.print.preflash_illuminant.count);
                 EXPECT_EQ(std::memcmp(prepared.print.preflash_illuminant.data, productView.print.preflash_illuminant.data, prepared.print.preflash_illuminant.count * sizeof(float)), 0);
             }
-            const bool matches = result == row["expected"];
-            EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(row["expected"], result).front().dump());
+            auto expected = expected_spectral_product(result, ArchivedSpectralProduct{row.at("expected")});
+            PrintIlluminantFixtures::select_frozen_light_hashes(expected, "print_descriptors");
+            const bool matches = result == expected;
+            EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(expected, result).front().dump());
 
             product_case.passed();
         }

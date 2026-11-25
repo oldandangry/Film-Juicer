@@ -158,7 +158,7 @@ int grain_motion_replay(const std::filesystem::path& manifestPath, const std::fi
     require_cuda(cudaSetDevice(0), "select motion CUDA device");
     auto* plugin = fj_ofx_plugin(0);
     require(plugin && plugin->pluginIdentifier &&
-                std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer.GrainPreview",
+                std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer",
             "motion probe requires the Film v1 preview");
     InstanceHost host;
     Lifecycle lifecycle(plugin, host);

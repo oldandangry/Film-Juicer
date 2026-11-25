@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <filesystem>
@@ -71,6 +72,36 @@ inline nlohmann::json load_exposure_product_fixture(const std::filesystem::path&
         throw std::runtime_error("unsupported A5 product fixture schema");
     fixture["expected_records"] = std::move(records.at("expected_records"));
     return fixture;
+}
+
+struct ArchivedSpectralProduct {
+    const nlohmann::json& record;
+};
+
+inline nlohmann::json spectral_controls_from_archive(nlohmann::json archived) {
+    if (archived.erase("scannerLutResolution") != 1)
+        throw std::runtime_error("archived spectral controls are missing the scanner grid");
+    return archived;
+}
+
+inline nlohmann::json expected_spectral_product(const nlohmann::json& observed, ArchivedSpectralProduct archived) {
+    auto expected = archived.record;
+    if (expected.erase("scanner_descriptor") != 1)
+        throw std::runtime_error("archived spectral product is missing its scanner descriptor");
+    const auto& actualHashes = observed.at("hashes");
+    auto& expectedHashes = expected.at("hashes");
+    if (!actualHashes.is_array() || !expectedHashes.is_array() || actualHashes.size() != 10 || expectedHashes.size() != 10)
+        throw std::runtime_error("spectral product hash layout changed");
+    for (std::size_t index = 0; index < actualHashes.size(); ++index) {
+        if (!actualHashes.at(index).is_number_unsigned() || !expectedHashes.at(index).is_number_unsigned())
+            throw std::runtime_error("spectral product identity is not unsigned");
+    }
+    for (const std::size_t index : {5U, 7U, 8U, 9U}) {
+        if (actualHashes.at(index) == 0)
+            throw std::runtime_error("spectral product is missing a current identity");
+        expectedHashes.at(index) = actualHashes.at(index);
+    }
+    return expected;
 }
 
 // Earlier slice fixtures retain their bytes. A5 independently replayed native

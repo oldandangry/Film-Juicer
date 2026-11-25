@@ -1,0 +1,250 @@
+{
+  "host": {
+    "schema": "native-host-contracts-v1",
+    "required": [],
+    "targets": {
+      "JuicerOfxModuleTests": {
+        "protocol": "custom",
+        "registrations": 1
+      },
+      "JuicerOfxRenderTests": {
+        "protocol": "custom",
+        "registrations": 1
+      },
+      "JuicerOfxInstanceTests": {
+        "protocol": "custom",
+        "registrations": 1
+      }
+    },
+    "grain_preview": {
+      "rust_core_publication": "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities",
+      "replaces": {
+        "Ofx.Host.Module": "Ofx.Host.GrainPreviewModule",
+        "Ofx.Host.Instance": "Ofx.Host.GrainPreviewInstance",
+        "Ofx.Host.Render": "Ofx.Host.GrainPreviewRender"
+      },
+      "targets": {
+        "JuicerProductionPreparedRenderProbe": {
+          "protocol": "custom",
+          "registrations": 1
+        }
+      },
+      "required": [
+        "Ffi.Host.GrainPreviewDiscovery",
+        "Ofx.Host.GrainPreviewModule",
+        "Ofx.Host.GrainPreviewInstance",
+        "Ofx.Host.GrainPreviewRender"
+      ],
+      "native_cohorts": {
+        "Ffi.Host.GrainPreviewDiscovery": 1,
+        "Ofx.Host.GrainPreviewModule": 3,
+        "Ofx.Host.GrainPreviewInstance": 0,
+        "Ofx.Host.GrainPreviewRender": 4
+      },
+      "native_membership": {
+        "Ffi.Host.GrainPreviewDiscovery": {
+          "listed": 1,
+          "terminal": 1,
+          "required": [
+            [
+              "grain-preview-discovery",
+              "preview-module"
+            ]
+          ]
+        },
+        "Ofx.Host.GrainPreviewModule": {
+          "listed": 8,
+          "terminal": 347,
+          "required": [
+            [
+              "ofx.module",
+              "discovery"
+            ],
+            [
+              "ofx.module",
+              "binding"
+            ],
+            [
+              "ofx.module",
+              "load"
+            ],
+            [
+              "ofx.module",
+              "describe"
+            ],
+            [
+              "ofx.module",
+              "defaults"
+            ],
+            [
+              "ofx.module",
+              "reentry"
+            ],
+            [
+              "ofx.module",
+              "reload"
+            ],
+            [
+              "ofx.module",
+              "unload"
+            ]
+          ]
+        },
+        "Ofx.Host.GrainPreviewInstance": {
+          "listed": 3,
+          "terminal": 3,
+          "required": [
+            [
+              "ofx.grain_preview.instance",
+              "create"
+            ],
+            [
+              "ofx.grain_preview.instance",
+              "types"
+            ],
+            [
+              "ofx.grain_preview.instance",
+              "destroy"
+            ]
+          ]
+        },
+        "Ofx.Host.GrainPreviewRender": {
+          "listed": 4,
+          "terminal": 94,
+          "required": [
+            [
+              "ofx.render",
+              "non_cuda"
+            ],
+            [
+              "ofx.render",
+              "images"
+            ],
+            [
+              "ofx.render",
+              "formats"
+            ],
+            [
+              "ofx.render",
+              "time"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "gpu": {
+    "targets": {
+      "JuicerProductionPreparedRenderProbe": {
+        "protocol": "custom",
+        "registrations": 2
+      }
+    },
+    "required": [
+      "Ffi.Gpu.GrainPreviewStaged"
+    ],
+    "native_cohorts": {
+      "Ffi.Gpu.GrainPreviewStaged": 1
+    },
+    "native_membership": {
+      "Ffi.Gpu.GrainPreviewStaged": {
+        "listed": 23,
+        "terminal": 23,
+        "required": [
+          [
+            "grain-preview-render",
+            "negative-direct-quarter-size-half"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-proxy-sequence"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-hd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-hd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-uhd"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-4832"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-portrait"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-smaller-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-larger-formats"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-thumbnails"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-thumbnails"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-8mm-proxy"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-8mm-proxy"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-clipped-quarter"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-clipped-quarter"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-time-endpoint"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-time-endpoint"
+          ],
+          [
+            "grain-preview-render",
+            "negative-direct-small-format-high-gain"
+          ],
+          [
+            "grain-preview-render",
+            "negative-print-small-format-high-gain"
+          ]
+        ]
+      }
+    }
+  }
+}

@@ -57,10 +57,6 @@ extern "C" FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwne
 extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
 extern "C" int fj_test_gaussian_c_call(const FjGaussianKernelInput*, const uint32_t*, size_t);
-extern "C" int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput*, const FjScannerLutDescriptor*);
-extern "C" FjStatus fj_test_scanner_lut_c_acquire(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
-extern "C" FjStatus fj_test_scanner_lut_c_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
-extern "C" FjStatus fj_test_scanner_lut_c_release(FjScannerLutOwner*, FjErrorBuffer*);
 
 namespace {
     using Json = nlohmann::json;
@@ -337,9 +333,7 @@ namespace {
 #include "print_preflash_test.inc"
 #include "print_balance_test.inc"
 #include "scanner_correction_test.inc"
-#include "scanner_lut_test.inc"
 #include "film_reference_test.inc"
-#include "scanner_lut_descriptor_test.inc"
 #include "scanner_post_effects_test.inc"
 #include "frame_geometry_test.inc"
 #include "halation_frame_test.inc"
@@ -485,7 +479,7 @@ int main(int argc, char** argv) try {
             DirFrameTest::boundary(captured.at("cases"));
         } else {
             const auto actual = DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products"), captured.at("products").get_ref<const Json::array_t&>());
-            require(actual == captured.at("products"), "complete DIR route products and final native identities");
+            DirFrameTest::compare_product_rows(actual, captured.at("products"));
         }
         case_log.finish();
         return 0;
@@ -705,54 +699,6 @@ int main(int argc, char** argv) try {
         case_log.finish();
         return 0;
     }
-    if (argc == 5 && (std::string_view(argv[3]) == "scanner-descriptor" || std::string_view(argv[3]) == "scanner-descriptor-products")) {
-        const auto manifest = read(argv[2]);
-        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
-        require(captured.at("preset") == argv[4], "descriptor native preset context");
-        const bool products = std::string_view(argv[3]) == "scanner-descriptor-products";
-        if (list_cases) {
-            const auto& rows = captured.at(products ? "products" : "cases");
-            for (const auto& row : rows) {
-                const auto id = products
-                                    ? "scanner-descriptor/product-row/" + std::to_string(row.at("route").get<unsigned>())
-                                    : row.at("id").get<std::string>();
-                JuicerTests::list_case("cpp", id);
-                const auto& input = row.at("input");
-                const unsigned missing = input.at("missing").get<unsigned>();
-                const bool retired = missing >= 1 && missing <= 3;
-                if (!retired && row.at("native").at("success").get<bool>()) {
-                    JuicerTests::list_case("c11", id + "/api-0");
-                    JuicerTests::list_case("c11", id + "/api-1");
-                }
-            }
-            if (products) {
-                for (unsigned route = 0; route < 4; ++route)
-                    JuicerTests::list_case("cpp", "scanner-descriptor/product/" + std::to_string(route));
-                for (unsigned route : {0u, 2u})
-                    JuicerTests::list_case("cpp", "scanner-descriptor/caller/" + std::to_string(route));
-            } else {
-                JuicerTests::list_case("cpp", "scanner-descriptor/boundary");
-                JuicerTests::list_case("cpp", "scanner-descriptor/lifetime");
-                JuicerTests::list_case("cpp", "scanner-descriptor/token-identity");
-                for (unsigned route : {1u, 3u})
-                    JuicerTests::list_case("scanner_lut_descriptor.print_token_route", std::to_string(route));
-            }
-            return 0;
-        }
-        layouts();
-        ScannerDescriptorTest::values(captured.at(products ? "products" : "cases"), products);
-        if (products)
-            require_equal(ScannerDescriptorTest::products(argv[1], captured.at("products")), captured.at("products"), "complete actual descriptor products and enclosing identities");
-        else {
-            ScannerDescriptorTest::boundary(captured.at("cases"));
-            ScannerDescriptorTest::lifetime(captured.at("cases"));
-            ScannerDescriptorTest::admitted_token_change_preserves_identity_and_viewing_label_mismatch_is_rejected(captured.at("cases"));
-        }
-        if (products)
-            ScannerDescriptorTest::callers(argv[1]);
-        case_log.finish();
-        return 0;
-    }
     if (argc == 4 && std::string_view(argv[3]) == "reference-primitives") {
         if (list_cases) {
             JuicerTests::list_case("cpp", "film-reference/primitives");
@@ -818,60 +764,10 @@ int main(int argc, char** argv) try {
         if (!products)
             FilmReferenceTest::boundary(argv[1], captured);
         else {
-            require(FilmReferenceTest::products(argv[1], captured.at("products")) == captured.at("products"), "complete frozen reference products and downstream identities");
+            const auto expected = FilmReferenceTest::expected_reference_products(captured.at("products"));
+            require_equal(FilmReferenceTest::products(argv[1], expected), expected, "complete frozen reference products and surviving identities");
             FilmReferenceTest::callers(argv[1]);
         }
-        case_log.finish();
-        return 0;
-    }
-    if (argc == 5 && (std::string_view(argv[3]) == "scanner-lut" || std::string_view(argv[3]) == "scanner-lut-products")) {
-        const auto manifest = read(argv[2]);
-        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
-        require(captured.at("preset") == argv[4], "scanner LUT fixture preset context");
-        const bool products = std::string_view(argv[3]) == "scanner-lut-products";
-        if (list_cases) {
-            if (products) {
-                for (const auto& row : captured.at("products")) {
-                    const auto id = row.contains("id") ? row.at("id").get<std::string>() : "route/" + std::to_string(row.at("route").get<unsigned>());
-                    JuicerTests::list_case("c11", id);
-                    JuicerTests::list_case("cpp", "scanner-lut/callback/" + id);
-                }
-                for (unsigned route = 0; route < 4; ++route)
-                    JuicerTests::list_case("cpp", "scanner-lut/product-route/" + std::to_string(route));
-            } else {
-                for (const auto& row : captured.at("cases")) {
-                    const auto& id = row.at("id").get_ref<const std::string&>();
-                    JuicerTests::list_case("c11", id);
-                    JuicerTests::list_case("cpp", "scanner-lut/callback/" + id);
-                }
-                JuicerTests::list_case("cpp", "scanner-lut/boundary");
-                for (const auto* id : {"allocation-failed", "storage-unavailable", "empty", "size-failure"})
-                    JuicerTests::list_case("scanner_lut.callback_diagnostic", id);
-                for (const auto* id : {"resolution-small", "resolution-overflow", "medium-enum", "baseline-bool", "eps-c-null", "weighted-z-count", "eps-m-pointer", "eps-y-overflow"})
-                    JuicerTests::list_case("scanner_lut.raw_input", id);
-                for (unsigned buffer = 1; buffer <= 10; ++buffer)
-                    JuicerTests::list_case("scanner_lut.allocation_fault", std::to_string(buffer));
-                for (unsigned operation = 0; operation < 3; ++operation)
-                    JuicerTests::list_case("scanner_lut.panic_operation", std::to_string(operation));
-                for (const auto* id : {"null-input", "invalid-failure-peer", "null-owner", "malformed-diagnostic", "null-view", "truncated-diagnostic", "zero-capacity-diagnostic"})
-                    JuicerTests::list_case("scanner_lut.invalid_argument", id);
-                for (const auto* id : {"disabled-baseline", "nonpositive-sample-count"})
-                    JuicerTests::list_case("scanner_lut.ignored_span", id);
-                JuicerTests::list_case("cpp", "scanner-lut/lifetime");
-            }
-            case_log.finish();
-            return 0;
-        }
-        layouts();
-        ScannerLutTest::values(captured.at(products ? "products" : "cases"));
-        ScannerLutTest::callback_values(captured.at(products ? "products" : "cases"));
-        if (!products) {
-            ScannerLutTest::boundary(captured);
-            ScannerLutTest::lifetime(captured);
-        } else {
-            ScannerLutTest::check_products(argv[1], captured);
-        }
-        std::puts("PASS scanner LUT complete words/counts, ABI, raw/facade, failures, reservation/panic and expiry");
         case_log.finish();
         return 0;
     }

@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use crate::assets::{PortraGrainBank, PortraGrainTable};
 use crate::{hash, route::ScanRoute};
-use super::super::density::portra;
+use super::super::{
+    Development,
+    density::{self, portra},
+};
 
 pub const DEFAULT_CHROMA: f64 = 1.0;
 
@@ -13,6 +16,26 @@ pub struct Controls {
     pub amount_ev: f32,
     pub texel_pitch_um: f32,
     pub chroma_fraction: f32,
+}
+
+#[derive(Clone, Copy)]
+pub enum Selection {
+    Current,
+    FilmV1Disabled,
+    FilmV1(Controls),
+}
+
+impl Selection {
+    pub fn selected(self) -> bool {
+        !matches!(self, Self::Current)
+    }
+
+    pub fn controls(self) -> Option<Controls> {
+        match self {
+            Self::FilmV1(controls) => Some(controls),
+            Self::Current | Self::FilmV1Disabled => None,
+        }
+    }
 }
 
 pub struct Recipe {
@@ -288,9 +311,18 @@ impl Recipe {
         self.chroma_fraction
     }
 
-    pub(crate) fn density_allowances(&self) -> Option<[f32; 2]> {
+    pub(crate) fn density_bounds(
+        &self,
+        development: &Development,
+    ) -> Result<density::Bounds, density::Error> {
         // Transmission averaging preserves the density enclosure of its samples.
-        portra::allowances(&self.bank, &self.table, self.gain)
+        density::Bounds::portra_film_v1(
+            development,
+            &self.bank,
+            &self.table,
+            self.gain,
+            self.chroma_fraction,
+        )
     }
 
     pub fn hash(&self) -> u64 {
@@ -300,7 +332,7 @@ impl Recipe {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, Controls, ProxyGrid, Raster, Sampling};
+    use super::{Axis, Controls, ProxyGrid, Raster, Sampling, Selection};
 
     fn realized_axis_edges(grid: ProxyGrid, axis: usize) -> Vec<f64> {
         (0..=grid.size[axis])
@@ -496,7 +528,7 @@ mod tests {
 
     #[test]
     fn paused_supported_extent_alias_keeps_table_and_bounds() {
-        use crate::recipe::{self, PreviewFrame, test_support};
+        use crate::recipe::{self, FilmGrainFrame, test_support};
         use crate::route::ScanRoute;
         use crate::state::{CaptureMode, CaptureStart, Publication, SnapshotStart};
         use std::sync::Arc;
@@ -532,7 +564,7 @@ mod tests {
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let mut params = test_support::params(route, 1);
             params.camera_film_format_long_edge_mm = 36.0;
-            params.film_grain = Some(Controls {
+            params.film_grain = Selection::FilmV1(Controls {
                 amount_ev: 0.0,
                 texel_pitch_um: 1.0,
                 chroma_fraction: 1.0,
@@ -552,12 +584,12 @@ mod tests {
                 .install(capture, write_revision, params, 1)
                 .unwrap();
             let admit = |full_grid| {
-                let frame = PreviewFrame::Raster(Raster {
+                let frame = FilmGrainFrame::Raster(Raster {
                     long_edge_px: 1208,
                     full_grid,
                 });
                 publication
-                    .admit_preview_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap()
@@ -586,7 +618,10 @@ mod tests {
                 );
                 assert_eq!(table.mean_density, expected.table().mean_density);
                 assert_eq!(table.correlation, expected.table().correlation);
-                assert_eq!(state.film_bounds().hash(), oracle.film_bounds().hash());
+                assert_eq!(
+                    state.film_v1_bounds().unwrap().hash(),
+                    oracle.film_v1_bounds().unwrap().hash()
+                );
             }
         }
     }

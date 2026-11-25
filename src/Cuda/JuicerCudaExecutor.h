@@ -6,6 +6,9 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+#include <vector>
+#endif
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -56,7 +59,7 @@ namespace JuicerCuda {
         float filmRouteCorrectionScale = 1.0f;
         float printExposure = 0.0f;
         float preflashExposure = 0.0f;
-        std::uint64_t recipeHash = 0;
+        std::uint64_t glareHash = 0;
         bool cameraAutoEnabled = false;
         const ExecutionFrame& frame;
         ResourceManager::SubmissionSnapshot& snapshot;
@@ -76,6 +79,11 @@ namespace JuicerCuda {
     };
 
 
+    bool pack_scan_color(
+        ScanColorPayload& destination,
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+        const OutputGamutRecipe& recipe);
+
     AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
         const FrameRect& sourceBounds,
         const FrameRect& meterBounds,
@@ -93,6 +101,41 @@ namespace JuicerCuda {
         bool omit_grain_plane() noexcept;
         void before_abort_query();
         void observe_film_proxy_reservation() noexcept;
+        struct PrintLaunchObservation {
+            struct PaperLane {
+                std::uintptr_t address = 0;
+                std::vector<std::uint32_t> words;
+            };
+            bool valid = false;
+            std::uintptr_t filmDensityC = 0;
+            std::uintptr_t filmDensityM = 0;
+            std::uintptr_t filmDensityY = 0;
+            std::uintptr_t filmBase = 0;
+            std::uintptr_t mainIlluminant = 0;
+            std::uintptr_t preflashIlluminant = 0;
+            std::uint64_t filmDensityHash = 0;
+            std::uint64_t profileTablesHash = 0;
+            std::uint64_t mainIlluminantHash = 0;
+            std::uint64_t preflashIlluminantHash = 0;
+            int spectralSampleCount = 0;
+            float printExposure = 1.0f;
+            float printPreflashExposure = 0.0f;
+            float printMidgrayFactor = 1.0f;
+            float printCyanTap = 0.0f;
+            PinnedUploadTest::UploadObservation uploads{};
+            float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
+            std::array<float, 81> mainLight{};
+            std::array<float, 81> preflashLight{};
+            std::array<float, 81> filmBaseWords{};
+            std::array<float, 243> filmDyes{};
+            std::array<PaperLane, 7> paperTables;
+            std::uint64_t glareSeed = 0;
+            unsigned glareLaunchCount = 0;
+            std::vector<float> glareField;
+        };
+        void set_print_launch_observer(PrintLaunchObservation* observation) noexcept;
+        void observe_print_launch(const PrintPreparedView& prepared, const PrintExposePayload& expose);
+        void complete_print_launch_observation(PrintLaunchObservation& out, std::uintptr_t stream);
     } // namespace RenderTest
 #endif
 
@@ -220,6 +263,7 @@ namespace JuicerCuda {
         DirFrameObservation dir_frame_observation() noexcept;
         void observe_dir_frame(Spektrafilm::ScanRoute route, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, bool success, const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept;
         bool inject_scan_error(Failure& failure, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult& result);
+        void observe_focused_resource_preparation() noexcept;
         bool inject_grain_upload_failure(const char* label, Failure& failure);
         bool inject_defect_event_create(cudaError_t& error) noexcept;
         bool inject_defect_event_record(cudaError_t& error) noexcept;

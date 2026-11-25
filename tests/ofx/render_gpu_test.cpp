@@ -8,15 +8,12 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <limits>
 #include <stdexcept>
 #include <cuda.h>
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <exception>
-#include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,20 +21,7 @@
 
 namespace {
     constexpr std::string_view kCaller = "ofx.gpu.render";
-    struct Route {
-        const char* id;
-        const char* route;
-        const char* profile;
-        int reconstruction;
-        int components;
-        int x;
-        int y;
-    };
-    constexpr std::array kRoutes{
-        Route{"route/negative-direct", "NegativeDirectScan", "kodak_portra_400", 0, 3, 0, 0},
-        Route{"route/negative-print", "NegativePrintScan", "kodak_portra_400", 1, 4, 0, 0},
-        Route{"route/positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 3, 11, -3},
-        Route{"route/positive-print", "NegativePrintScan", "fujifilm_provia_100f", 0, 4, 0, 0}};
+    constexpr auto kRoutes = std::span(ofx_test::kRenderReferenceCases).first<4>();
 
     constexpr std::array kBoostRows{"highlight/negative-direct", "highlight/negative-print-enlarger", "highlight/positive-direct-camera", "highlight/positive-print-composed"};
 
@@ -45,118 +29,19 @@ namespace {
         return OfxGetPlugin(0);
     }
     using Json = nlohmann::json;
-    using PrintPixels = std::map<std::string, std::vector<float>>;
-    constexpr std::array<std::size_t, 2> kPrintIndices{1, 3};
-
-    std::string preset_name() {
-        const auto name = std::filesystem::path(JUICER_PROCESSOR_RUST_PATH).filename().string();
-        constexpr std::string_view prefix = "processor-", suffix = ".dat";
-        ofx_test::require_render(name.starts_with(prefix) && name.ends_with(suffix), "processor fixture preset name");
-        const auto preset = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-        ofx_test::require_render(preset == "windows-clang-debug" || preset == "windows-clang-release" ||
-                                     preset == "linux-debug" || preset == "linux-release",
-                                 "unsupported native preset");
-        return preset;
-    }
-    std::vector<float> expected_input(const Route& route) {
-        std::vector<float> result;
-        result.reserve(std::size_t{7} * std::size_t{5} * static_cast<std::size_t>(route.components));
-        for (int y = 0; y < 5; ++y)
-            for (int x = 0; x < 7; ++x)
-                for (int c = 0; c < route.components; ++c)
-                    result.push_back(c == 3 ? 0.125f + static_cast<float>((x + y) % 4) * 0.25f
-                                            : static_cast<float>((x + 3 * y + 7 * c) % 19) / 19.0f);
-        return result;
-    }
     Json words(const std::vector<float>& values) {
         auto result = Json::array();
         for (const auto value : values)
             result.push_back(std::bit_cast<std::uint32_t>(value));
         return result;
     }
-    std::vector<float> decode_words(const Json& input, std::size_t expected) {
-        ofx_test::require_render(input.is_array() && input.size() == expected, "print reference word count");
-        std::vector<float> result;
-        result.reserve(expected);
-        for (const auto& word : input) {
-            ofx_test::require_render(word.is_number_unsigned() && word.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max(), "print reference word type");
-            result.push_back(std::bit_cast<float>(word.get<std::uint32_t>()));
-        }
-        return result;
-    }
-    Json metadata(const Route& route) {
-        return Json::array({route.id, route.route, route.profile, route.reconstruction, 7, 5, route.components, route.x, route.y, 5, 5, std::bit_cast<std::uint64_t>(37.0), std::bit_cast<std::uint64_t>(24.0), Json::array({0, 0, 0, 0, 0, 0}), words(expected_input(route))});
-    }
-    PrintPixels decode_prints(const Json& document) {
-        ofx_test::require_render(document.is_array() && document.size() == 4 &&
-                                     document[0] == "film-juicer-ofx-print-reference-v1" &&
-                                     document[1] == "d4bc2135d02ed88c91403040c4429a4fdb802a2b" &&
-                                     document[2] == preset_name() && document[3].is_array() && document[3].size() == 2,
-                                 "print reference provenance or membership");
-        PrintPixels result;
-        for (std::size_t row = 0; row < kPrintIndices.size(); ++row) {
-            const auto& route = kRoutes[kPrintIndices[row]];
-            const auto& entry = document[3][row];
-            ofx_test::require_render(entry.is_array() && entry.size() == 2 && entry[0] == metadata(route),
-                                     "print reference row order or inputs");
-            const auto input = expected_input(route);
-            auto pixels = decode_words(entry[1], input.size());
-            RenderAssertions::compare_pixels(route.id, pixels, pixels);
-            for (std::size_t i = 3; i < pixels.size(); i += 4)
-                RenderAssertions::require_same_bits("reference alpha", pixels[i], input[i]);
-            ofx_test::require_render(result.emplace(route.id, std::move(pixels)).second, "duplicate print reference row");
-        }
-        return result;
-    }
-    void check_reference_controls(const Json& document, const PrintPixels& pixels) {
-        auto altered = document;
-        altered[3][0][0][0] = "altered-row";
-        bool rejected = false;
-        try {
-            (void)decode_prints(altered);
-        } catch (const std::exception&) {
-            rejected = true;
-        }
-        ofx_test::require_render(rejected, "altered print reference row accepted");
-        altered = document;
-        std::swap(altered[3][0], altered[3][1]);
-        rejected = false;
-        try {
-            (void)decode_prints(altered);
-        } catch (const std::exception&) {
-            rejected = true;
-        }
-        ofx_test::require_render(rejected, "reordered print reference rows accepted");
-        auto damaged = pixels.at(kRoutes[kPrintIndices[0]].id);
-        damaged.front() += 1.0f;
-        rejected = false;
-        try {
-            RenderAssertions::compare_pixels("altered reference pixel", damaged, pixels.at(kRoutes[kPrintIndices[0]].id));
-        } catch (const std::exception&) {
-            rejected = true;
-        }
-        ofx_test::require_render(rejected, "altered print reference pixel accepted");
-    }
-    Json read_prints(const char* path) {
-        std::ifstream input(path, std::ios::binary);
-        ofx_test::require_render(static_cast<bool>(input), "print reference unavailable");
-        Json record;
-        input >> record;
-        input >> std::ws;
-        ofx_test::require_render(input.eof(), "extra print reference data");
-        return record;
-    }
-    void route_case(const Route& route, const std::map<std::string, std::vector<float>>& prints) {
+    void route_case(const ofx_test::RenderReferenceCase& route, const ofx_test::RenderPixels& expected) {
         ofx_test::DeviceImages images({7, 5, route.components});
         ofx_test::RenderHost fixture(candidate());
-        fixture.configure(images, {route.x, route.y});
-        fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string(route.route)});
-        fixture.host().set_value(fixture.effect(), "FilmProfileKey", {std::string(route.profile)});
-        fixture.host().set_value(fixture.effect(), "SpectralUpsampling", {route.reconstruction});
-        fixture.host().set_value(fixture.effect(), "GlareActive", {0});
+        ofx_test::configure_reference_render(fixture, images, route);
         const bool print = std::string_view(route.route) == "NegativePrintScan";
         if (print) {
-            fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropRenderWindow, {route.x, route.y, route.x + 6, route.y + 5});
+            fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropRenderWindow, {route.origin.x, route.origin.y, route.origin.x + 6, route.origin.y + 5});
             fixture.host().clear_calls();
             ofx_test::require_render(fixture.render() == kOfxStatErrFatal, "print route accepted partial frame");
             for (float sample : images.read())
@@ -167,27 +52,28 @@ namespace {
                                      }) &&
                                          fixture.host().image_release_count(fixture.effect(), "Source") == 1 && fixture.host().image_release_count(fixture.effect(), "Output") == 1,
                                      "print partial frame reached later work or retained images");
-            fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropRenderWindow, {route.x, route.y, route.x + 7, route.y + 5});
+            fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropRenderWindow, {route.origin.x, route.origin.y, route.origin.x + 7, route.origin.y + 5});
         }
         ofx_test::require_render(fixture.render() == kOfxStatOK, "route render failed");
         const auto actual = images.pixels(images.read());
         for (float value : actual)
             ofx_test::require_render(std::isfinite(value) && value >= 0.0f && value <= 1.0f, "route pixel outside finite output range");
-        if (std::string_view(route.route) == "NegativeDirectScan")
-            RenderAssertions::compare_pixels(route.id, actual, ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, std::string_view(route.id).substr(6)));
-        else {
-            RenderAssertions::compare_pixels(route.id, actual, prints.at(route.id));
-            if (std::string_view(route.id) == "route/negative-print") {
-                auto altered = prints.at(route.id);
-                altered.front() += 1.0f;
-                bool rejected = false;
-                try {
-                    RenderAssertions::compare_pixels("candidate altered reference", actual, altered);
-                } catch (const std::exception&) {
-                    rejected = true;
-                }
-                ofx_test::require_render(rejected, "candidate accepted altered print reference");
+        const auto& predicted = expected.at(route.id);
+        RenderAssertions::compare_pixels(route.id, actual, predicted);
+        if (route.components == 4)
+            for (std::size_t alpha = 3; alpha < actual.size(); alpha += 4)
+                RenderAssertions::require_same_bits("route alpha", actual[alpha], predicted[alpha]);
+        if (std::string_view(route.id) == "route/negative-print") {
+            auto altered = predicted;
+            altered.front() += 1.0F;
+            bool rejected = false;
+            try {
+                RenderAssertions::compare_pixels("candidate altered reference", actual, altered);
+            } catch (const std::runtime_error&) {
+                rejected = true;
             }
+            ofx_test::require_render(rejected, "candidate accepted altered print reference");
+            RenderAssertions::compare_pixels(route.id, actual, predicted);
         }
         const std::size_t releases = print ? 2 : 1;
         ofx_test::require_render(fixture.host().image_release_count(fixture.effect(), "Source") == releases &&
@@ -213,7 +99,7 @@ namespace {
             ofx_test::require_render(fixture.call(kOfxActionInstanceChanged, fixture.effect(), args) == kOfxStatReplyDefault,
                                      "highlight boost edit");
         };
-        set("FilmProfileKey", {std::string(route.profile)});
+        set("FilmProfileKey", {std::string(route.film)});
         set("ScanRoute", {std::string(route.route)});
         set("InputCctfDecoding", {0});
         set("CameraFilmFormatMm", {8.0});
@@ -263,7 +149,7 @@ namespace {
     }
 
     constexpr std::array kGeometryRows{"format/rgb", "format/rgba", "geometry/padding", "geometry/pitch", "geometry/bounds", "geometry/coverage", "geometry/overlap"};
-    void geometry_case(std::string_view name, const JuicerTests::Cohort& rows) {
+    void geometry_case(std::string_view name, const JuicerTests::Cohort& rows, const ofx_test::RenderPixels& expected) {
         const int components = name == "format/rgba" ? 4 : 3;
         const int x = name == "geometry/bounds" ? 11 : 0;
         const int y = name == "geometry/bounds" ? -3 : 0;
@@ -307,7 +193,7 @@ namespace {
                 ofx_test::require_render(fixture.render() == kOfxStatOK, "disjoint ranges in shared allocation rejected");
                 ofx_test::require_cuda(cudaDeviceSynchronize(), "complete disjoint render");
                 ofx_test::require_cuda(cudaMemcpy(images.destination(), bytes + images.bytes(), images.destination_bytes(), cudaMemcpyDeviceToDevice), "read shared destination");
-                RenderAssertions::compare_pixels("disjoint shared allocation", images.pixels(images.read()), ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
+                RenderAssertions::compare_pixels("disjoint shared allocation", images.pixels(images.read()), expected.at("route/negative-direct"));
                 disjoint.passed();
                 auto partial = rows.case_event("overlap/partial");
                 std::vector<float> before(images.bytes() / sizeof(float));
@@ -330,15 +216,11 @@ namespace {
             const auto actual = images.pixels(images.read());
             for (float value : actual)
                 ofx_test::require_render(std::isfinite(value) && value >= 0.0f && value <= 1.0f, "geometry pixel outside range");
-            if (components == 3) {
-                RenderAssertions::compare_pixels(std::string(name), actual, ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
-            } else {
-                std::vector<float> rgb;
-                rgb.reserve(actual.size() / 4 * 3);
-                for (std::size_t i = 0; i < actual.size(); i += 4)
-                    rgb.insert(rgb.end(), actual.begin() + static_cast<std::ptrdiff_t>(i), actual.begin() + static_cast<std::ptrdiff_t>(i + 3));
-                RenderAssertions::compare_pixels(std::string(name), rgb, ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
-            }
+            const auto& predicted = expected.at(name == "format/rgba" || name == "geometry/bounds" ? std::string(name) : "route/negative-direct");
+            RenderAssertions::compare_pixels(std::string(name), actual, predicted);
+            if (components == 4)
+                for (std::size_t alpha = 3; alpha < actual.size(); alpha += 4)
+                    RenderAssertions::require_same_bits("geometry alpha", actual[alpha], predicted[alpha]);
         }
         if (name == "format/rgba") {
             images.reset();
@@ -379,7 +261,7 @@ namespace {
                                  "geometry image release count");
     }
     constexpr std::array kStreamRows{"stream/missing", "stream/null", "stream/explicit"};
-    void stream_case(std::string_view name) {
+    void stream_case(std::string_view name, const ofx_test::RenderPixels& expected) {
         ofx_test::DeviceImages images({7, 5, 3});
         ofx_test::RenderHost fixture(candidate());
         fixture.configure(images);
@@ -389,7 +271,7 @@ namespace {
         else if (name == "stream/null")
             fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropCudaStream, {static_cast<void*>(nullptr)});
         ofx_test::require_render(fixture.render() == kOfxStatOK, "stream render failed");
-        RenderAssertions::compare_pixels(std::string(name), images.pixels(images.read()), ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
+        RenderAssertions::compare_pixels(std::string(name), images.pixels(images.read()), expected.at("route/negative-direct"));
         ofx_test::require_render(fixture.host().image_release_count(fixture.effect(), "Source") == 1 &&
                                      fixture.host().image_release_count(fixture.effect(), "Output") == 1,
                                  "stream image release count");
@@ -454,7 +336,7 @@ namespace {
             fixture.close();
         }
     }
-    void cancellation_case() {
+    void cancellation_case(const ofx_test::RenderPixels& expected) {
         ofx_test::DeviceImages images({7, 5, 3});
         ofx_test::RenderHost fixture(candidate());
         fixture.configure(images);
@@ -466,7 +348,7 @@ namespace {
             RenderAssertions::require_same_bits("cancelled destination", value, ofx_test::DeviceImages::kCanary);
         fixture.host().set_abort(false);
         ofx_test::require_render(fixture.render() == kOfxStatOK, "render after cancellation");
-        RenderAssertions::compare_pixels("render after cancellation", images.pixels(images.read()), ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, "negative-direct"));
+        RenderAssertions::compare_pixels("render after cancellation", images.pixels(images.read()), expected.at("route/negative-direct"));
         ofx_test::require_render(fixture.host().image_release_count(fixture.effect(), "Source") == 2 &&
                                      fixture.host().image_release_count(fixture.effect(), "Output") == 2,
                                  "cancellation image releases");
@@ -493,9 +375,7 @@ int main(int argc, char** argv) try {
     }
     ofx_test::require_render(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: GPU render fixture --reference file");
     JuicerTests::CaseLog log;
-    const auto record = read_prints(argv[2]);
-    const auto prints = decode_prints(record);
-    check_reference_controls(record, prints);
+    const auto expected = ofx_test::read_render_reference(argv[2], JUICER_SPECTRAL_TRACE_PRESET, true);
     std::vector<std::string> ids;
     ids.reserve(20);
     for (const auto& route : kRoutes)
@@ -515,7 +395,7 @@ int main(int argc, char** argv) try {
     JuicerTests::Cohort rows(std::string(kCaller), ids);
     for (const auto& route : kRoutes) {
         auto row = rows.case_event(route.id);
-        route_case(route, prints);
+        route_case(route, expected);
         row.passed();
     }
     for (std::size_t i = 0; i < kBoostRows.size(); ++i) {
@@ -525,12 +405,12 @@ int main(int argc, char** argv) try {
     }
     for (const auto* id : kGeometryRows) {
         auto row = rows.case_event(id);
-        geometry_case(id, rows);
+        geometry_case(id, rows, expected);
         row.passed();
     }
     for (const auto* id : kStreamRows) {
         auto row = rows.case_event(id);
-        stream_case(id);
+        stream_case(id, expected);
         row.passed();
     }
     {
@@ -540,7 +420,7 @@ int main(int argc, char** argv) try {
     }
     {
         auto row = rows.case_event("cancel/then_success");
-        cancellation_case();
+        cancellation_case(expected);
         row.passed();
     }
     for (const auto* id : {"owners/two_instances", "owners/teardown"}) {

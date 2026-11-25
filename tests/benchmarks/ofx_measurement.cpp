@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <type_traits>
 #include <vector>
@@ -26,6 +28,8 @@
 #include <psapi.h>
 #else
 #include <dlfcn.h>
+#include <sys/prctl.h>
+#include <unistd.h>
 #endif
 
 #include "ofxCore.h"
@@ -41,6 +45,8 @@ namespace {
     using Clock = std::chrono::steady_clock;
     using ofx_test::InstanceHost;
     constexpr float kDestinationCanary = -8.0f;
+    thread_local std::vector<std::uint32_t> observedDensity;
+    thread_local std::vector<std::uint32_t> heldDensity;
 
     void require(bool condition, std::string_view message) {
         if (!condition)
@@ -108,14 +114,19 @@ namespace {
         Module(const Module&) = delete;
         Module& operator=(const Module&) = delete;
         template <class T>
-        T symbol(const char* name) const {
+        T find_symbol(const char* name) const {
 #ifdef _WIN32
             const auto address = GetProcAddress(handle_, name);
 #else
             auto* address = dlsym(handle_, name);
 #endif
-            require(address != nullptr, std::string("missing module symbol: ") + name);
             return reinterpret_cast<T>(address);
+        }
+        template <class T>
+        T symbol(const char* name) const {
+            const auto address = find_symbol<T>(name);
+            require(address != nullptr, std::string("missing module symbol: ") + name);
+            return address;
         }
         void close() {
 #ifdef _WIN32
@@ -320,6 +331,34 @@ namespace {
         bool diffusion = false;
         bool aboveOnset = false;
     };
+    struct ScannerPairedRow {
+        std::string_view id;
+        bool preview;
+        bool print;
+        bool naturalGrain;
+        int width;
+        int height;
+        double filmFormatMm;
+        std::string_view grainModel;
+        double grainAmountEv;
+        double grainPitchUm;
+        std::string_view schedule;
+    };
+    constexpr std::array kScannerPairedRows{
+        ScannerPairedRow{"ordinary-negative-direct-current-1080p", false, false, true, 1920, 1080, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-direct-current-4k", false, false, true, 3840, 2160, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-print-current-1080p", false, true, true, 1920, 1080, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-print-current-4k", false, true, true, 3840, 2160, 36.0, "current", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"ordinary-negative-direct-monolithic-4k", false, false, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "monolithic"},
+        ScannerPairedRow{"ordinary-negative-direct-fused-dir-4k", false, false, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "fused-dir"},
+        ScannerPairedRow{"ordinary-negative-print-monolithic-4k", false, true, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "monolithic"},
+        ScannerPairedRow{"ordinary-negative-print-fused-dir-4k", false, true, false, 3840, 2160, 36.0, "current", 0.0, 1.0, "fused-dir"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-36", true, false, true, 4832, 2016, 36.0, "film_v1", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"preview-negative-print-film-v1-full-36", true, true, true, 4832, 2016, 36.0, "film_v1", 0.0, 1.0, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-8-high", true, false, true, 4832, 2016, 8.0, "film_v1", 3.0, 0.5, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-full-11-66-high", true, false, true, 4832, 2016, 11.66, "film_v1", 3.0, 0.5, "materialized"},
+        ScannerPairedRow{"preview-negative-direct-film-v1-quarter-8-high", true, false, true, 1208, 504, 8.0, "film_v1", 3.0, 0.5, "materialized"},
+    };
     constexpr std::array kHalationWorkloads{
         HalationWorkload{"halation-1080p-direct", 1920, 1080, false, false},
         HalationWorkload{"halation-1080p-print", 1920, 1080, true, false},
@@ -353,6 +392,7 @@ namespace {
         int index = 0;
         OfxStatus status = kOfxStatFailed;
         std::uint64_t cpuNs = 0;
+        std::uint64_t completedNs = 0;
         float streamMs = 0.0f;
         double frameTime = 0.0;
         bool streamTimed = false;
@@ -398,7 +438,10 @@ namespace {
                     break;
             }
         }
-        return {{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"frame_time", sample.frameTime}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
+        Json record{{"phase", sample.phase}, {"cycle", sample.cycle}, {"index", sample.index}, {"frame_time", sample.frameTime}, {"callback_status", sample.status}, {"callback_ns", sample.cpuNs}, {"stream_interval_ms", sample.streamTimed ? Json(sample.streamMs) : Json(nullptr)}, {"construction", construction}, {"output_checked", sample.checked}, {"output_valid", sample.checked ? Json(sample.outputValid) : Json(nullptr)}, {"releases_valid", sample.releasesValid}, {"context_preserved", sample.contextPreserved}};
+        if (sample.completedNs != 0)
+            record["completed_render_ns"] = sample.completedNs;
+        return record;
     }
     bool output_valid(const std::vector<float>& source, const std::vector<float>& initial, const std::vector<float>& output, const ofx_test::Case& test) {
         if (!ofx_test::canaries_preserved(initial, output, test) || !ofx_test::alpha_preserved(source, output, test))
@@ -437,11 +480,18 @@ namespace {
         }
     }
     struct Arguments {
-        std::filesystem::path module, resources, output;
-        std::string mode, lane, workload;
+        std::filesystem::path module, resources, output, previewMaterial;
+        std::filesystem::path replayFrames, replayTokens;
+        std::string mode, lane, workload, campaign;
+        std::string benchmarkScanner, density;
+        std::string tailRun, tailArm;
+        std::filesystem::path tailReady, tailRelease;
     };
+    bool tail_enabled(const Arguments& args) {
+        return !args.tailRun.empty();
+    }
     Arguments arguments(int argc, char** argv) {
-        require(argc == 13, "expected --mode --module --resources --lane --workload --output");
+        require(argc >= 13 && argc <= 29 && argc % 2 == 1, "expected measurement arguments and optional campaign/tail settings");
         Arguments args;
         for (int i = 1; i < argc; i += 2) {
             const std::string_view key(argv[i]);
@@ -452,23 +502,135 @@ namespace {
                 args.lane = value;
             else if (key == "--workload")
                 args.workload = value;
+            else if (key == "--campaign")
+                args.campaign = value;
             else if (key == "--module")
                 args.module = std::filesystem::absolute(value);
             else if (key == "--resources")
                 args.resources = std::filesystem::absolute(value);
             else if (key == "--output")
                 args.output = value;
+            else if (key == "--preview-material")
+                args.previewMaterial = std::filesystem::absolute(value);
+            else if (key == "--benchmark-scanner")
+                args.benchmarkScanner = value;
+            else if (key == "--observe-density")
+                args.density = value;
+            else if (key == "--replay-frames")
+                args.replayFrames = std::filesystem::absolute(value);
+            else if (key == "--replay-tokens")
+                args.replayTokens = std::filesystem::absolute(value);
+            else if (key == "--tail-run")
+                args.tailRun = value;
+            else if (key == "--tail-arm")
+                args.tailArm = value;
+            else if (key == "--tail-ready")
+                args.tailReady = std::filesystem::absolute(value);
+            else if (key == "--tail-release")
+                args.tailRelease = std::filesystem::absolute(value);
             else
                 throw std::runtime_error("unknown measurement argument");
         }
-        require((args.mode == "check" || args.mode == "measure") && (args.lane == "shipping" || args.lane == "observed"), "invalid mode or lane");
+        require((args.mode == "check" || args.mode == "measure") &&
+                    (args.lane == "shipping" || args.lane == "observed" || args.lane == "replay"),
+                "invalid mode or lane");
         require(std::filesystem::is_regular_file(args.module) && std::filesystem::is_directory(args.resources) && !args.output.empty(), "missing measurement input/output");
+        require(args.campaign.empty() || args.campaign == "scanner-paired", "unknown measurement campaign");
+        if (args.campaign == "scanner-paired")
+            require(std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) != kScannerPairedRows.end(), "unknown scanner-paired workload row");
+        const bool replayDensity = !args.replayFrames.empty() && args.density == "capture" &&
+                                   args.workload.starts_with("ordinary-") && args.workload.find("-current-") != std::string::npos;
+        if (!args.previewMaterial.empty() || !args.benchmarkScanner.empty() || (!args.density.empty() && !replayDensity)) {
+            require(args.campaign == "scanner-paired" && args.workload == "preview-negative-direct-film-v1-full-36",
+                    "archived comparison requires the Full 36 mm Direct Preview row");
+            require(args.previewMaterial.empty() || std::filesystem::is_regular_file(args.previewMaterial), "missing Preview raster");
+            require(args.benchmarkScanner.empty() || args.benchmarkScanner == "cubic" || args.benchmarkScanner == "spectral",
+                    "unknown archived scanner backend");
+            require(args.density.empty() || args.mode == "check", "live density observation requires check mode");
+        }
+        const bool anyTail = !args.tailRun.empty() || !args.tailArm.empty() || !args.tailReady.empty() || !args.tailRelease.empty();
+        require(!anyTail || (tail_enabled(args) && !args.tailArm.empty() && !args.tailReady.empty() && !args.tailRelease.empty()),
+                "tail settings must be supplied as run, arm, ready and release together");
+        if (anyTail) {
+            require(args.lane == "shipping" || args.lane == "replay", "tail rendezvous requires a product or replay lane");
+            require(args.tailReady != args.tailRelease && args.tailReady != std::filesystem::absolute(args.output) &&
+                        args.tailRelease != std::filesystem::absolute(args.output),
+                    "tail rendezvous files must be distinct from each other and the measurement result");
+            require(!std::filesystem::exists(args.tailReady) && !std::filesystem::exists(args.tailRelease), "tail rendezvous path already exists");
+            require(!args.tailReady.parent_path().empty() && std::filesystem::is_directory(args.tailReady.parent_path()), "tail ready parent is missing");
+            require(!args.tailRelease.parent_path().empty() && std::filesystem::is_directory(args.tailRelease.parent_path()), "tail release parent is missing");
+        }
+        require(args.campaign != "scanner-paired" || tail_enabled(args), "scanner-paired requires all tail rendezvous settings");
+        require((args.lane == "replay") == !args.replayTokens.empty(), "replay lane requires a natural token receipt");
+        if (!args.replayFrames.empty() || !args.replayTokens.empty()) {
+            require(args.campaign == "scanner-paired" && args.mode == "check" &&
+                        args.workload.starts_with("ordinary-") && std::filesystem::is_directory(args.replayFrames) &&
+                        std::filesystem::is_empty(args.replayFrames),
+                    "replay requires an ordinary untimed scanner check and an empty frame directory");
+        }
         return args;
+    }
+    std::uint64_t output_digest(const std::vector<float>& output) {
+        constexpr std::uint64_t offset = 0xcbf29ce484222325ULL;
+        constexpr std::uint64_t prime = 1099511628211ULL;
+        std::uint64_t digest = offset;
+        for (const float value : output) {
+            const auto bits = std::bit_cast<std::uint32_t>(value);
+            for (int shift = 0; shift < 32; shift += 8) {
+                digest ^= static_cast<std::uint8_t>(bits >> shift);
+                digest *= prime;
+            }
+        }
+        return digest;
+    }
+    std::uint64_t process_id() {
+#ifdef _WIN32
+        return static_cast<std::uint64_t>(GetCurrentProcessId());
+#else
+        return static_cast<std::uint64_t>(getpid());
+#endif
+    }
+    std::uint64_t render_thread_id() {
+#ifdef _WIN32
+        return static_cast<std::uint64_t>(GetCurrentThreadId());
+#else
+        return static_cast<std::uint64_t>(gettid());
+#endif
+    }
+    void write_ready_record(const std::filesystem::path& path, const Json& record) {
+        auto temporary = path;
+        temporary += ".tmp-" + std::to_string(process_id());
+        require(!std::filesystem::exists(temporary), "tail ready temporary already exists");
+        {
+            std::ofstream stream(temporary, std::ios::trunc);
+            require(static_cast<bool>(stream), "cannot open tail ready temporary");
+            stream << record.dump(2) << '\n';
+            stream.close();
+            require(static_cast<bool>(stream), "cannot write tail ready temporary");
+        }
+        std::filesystem::rename(temporary, path);
+    }
+    Json wait_for_release(const Arguments& args, std::uint64_t token) {
+        for (;;) {
+            std::ifstream stream(args.tailRelease);
+            if (stream) {
+                auto release = Json::parse(stream);
+                require(release.is_object() && release.at("run") == args.tailRun && release.at("arm") == args.tailArm &&
+                            release.at("pid") == process_id() && release.at("token") == token,
+                        "tail release refers to a different measured render");
+                require(release.at("action") == "release", "tail observer did not release the reporter");
+                return release;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
     void run(const Arguments& args, Json& report) {
         verify_output_guard();
         const bool observed = args.lane == "observed";
         const bool check = args.mode == "check";
+        const bool scannerPaired = args.campaign == "scanner-paired";
+        const decltype(kScannerPairedRows)::const_iterator scannerRow = scannerPaired ? std::ranges::find(kScannerPairedRows, args.workload, &ScannerPairedRow::id) : kScannerPairedRows.end();
+        require(!scannerPaired || scannerRow != kScannerPairedRows.end(), "scanner-paired row admission failed");
         const decltype(kHalationWorkloads)::const_iterator halation = std::ranges::find(kHalationWorkloads, args.workload, &HalationWorkload::id);
         const bool pairedHalation = halation != kHalationWorkloads.end();
         // G3 workload encoding is explicit so historical workload meanings remain unchanged.
@@ -493,16 +655,20 @@ namespace {
                         (parts[2] == "portra" || parts[3] == "direct"),
                     "invalid G3 route workload");
         }
-        const bool print = g3 ? parts[3] == "print" : pairedHalation ? halation->print
-                                                                     : args.workload == "negative-print" || args.workload == "negative-print-grain";
-        const bool grain = g3 ? parts[5] == "on" : args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
-        require(g3 || pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
-        const int width = check ? 7 : g3           ? (parts[1] == "hd" ? 1920 : 3840)
-                                  : pairedHalation ? halation->width
-                                                   : 6048;
-        const int height = check ? 5 : g3           ? (parts[1] == "hd" ? 1080 : 2160)
-                                   : pairedHalation ? halation->height
-                                                    : 4032;
+        const bool print = scannerPaired ? scannerRow->print : g3           ? parts[3] == "print"
+                                                           : pairedHalation ? halation->print
+                                                                            : args.workload == "negative-print" || args.workload == "negative-print-grain";
+        const bool grain = scannerPaired ? scannerRow->naturalGrain : g3 ? parts[5] == "on"
+                                                                         : args.workload == "negative-direct-grain" || args.workload == "negative-print-grain";
+        require(scannerPaired || g3 || pairedHalation || print || grain || args.workload == "negative-direct", "unknown workload");
+        const int width = scannerPaired ? scannerRow->width : check        ? 7
+                                                          : g3             ? (parts[1] == "hd" ? 1920 : 3840)
+                                                          : pairedHalation ? halation->width
+                                                                           : 6048;
+        const int height = scannerPaired ? scannerRow->height : check        ? 5
+                                                            : g3             ? (parts[1] == "hd" ? 1080 : 2160)
+                                                            : pairedHalation ? halation->height
+                                                                             : 4032;
         const ofx_test::Case test{args.workload.c_str(), print ? "negative-print" : "negative-direct", print ? "NegativePrintScan" : g3 && parts[2] == "provia" ? "PositiveDirectScan"
                                                                                                                                                                 : "NegativeDirectScan",
                                   print ? 1 : 0,
@@ -511,7 +677,10 @@ namespace {
                                   height,
                                   grain ? 1 : 0,
                                   0.0};
-        report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
+        report = {{"schema", 1}, {"status", "failed"}, {"mode", args.mode}, {"lane", args.lane}, {"campaign", args.campaign.empty() ? Json(nullptr) : Json(args.campaign)}, {"workload", args.workload}, {"width", test.width}, {"height", test.height}, {"renders", Json::array()}, {"memory", Json::array()}, {"edits", Json::array()}, {"error", nullptr}, {"drained", nullptr}};
+        if (scannerPaired) {
+            report["scanner_paired"] = {{"row_id", scannerRow->id}, {"variant", scannerRow->preview ? "preview" : "ordinary"}, {"product_id", scannerRow->preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"}, {"route", print ? "NegativePrintScan" : "NegativeDirectScan"}, {"schedule", nullptr}, {"expected_schedule", scannerRow->schedule}, {"geometry", {test.width, test.height}}, {"input_mode", scannerRow->naturalGrain ? "natural-grain" : "grain-off"}, {"natural_grain", scannerRow->naturalGrain}, {"cubic_grid", nullptr}, {"film_format_mm", scannerRow->filmFormatMm}, {"grain_model", scannerRow->grainModel}, {"grain_amount_ev", scannerRow->grainAmountEv}, {"grain_pitch_um", scannerRow->grainPitchUm}};
+        }
         const auto effectiveResources = std::filesystem::canonical(args.module.parent_path().parent_path() / "Resources");
         report["resources"] = effectiveResources.string();
         require(std::filesystem::equivalent(effectiveResources, args.resources), "declared Resources differs from module-relative Resources");
@@ -529,7 +698,32 @@ namespace {
         cuda_check(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create supplied stream");
         cuda_check(cudaEventCreate(&device.start), "create start event");
         cuda_check(cudaEventCreate(&device.stop), "create stop event");
-        const auto source = ofx_test::initial_source(test);
+        auto source = ofx_test::initial_source(test);
+        if (!args.previewMaterial.empty()) {
+            const auto rowWords = static_cast<std::size_t>(test.width) * test.components;
+            const auto rowBytes = static_cast<std::streamsize>(rowWords * sizeof(float));
+            require(std::filesystem::file_size(args.previewMaterial) == static_cast<std::uintmax_t>(rowBytes) * test.height,
+                    "Preview raster length differs from the active image");
+            std::ifstream raster(args.previewMaterial, std::ios::binary);
+            for (int y = 0; y < test.height; ++y) {
+                auto* row = source.data() + static_cast<std::size_t>(y) * (rowWords + ofx_test::kProductionPitchPadding);
+                require(static_cast<bool>(raster.read(reinterpret_cast<char*>(row), rowBytes)), "cannot read complete Preview row");
+            }
+            report["scanner_paired"]["fixture"] = "archived-preview";
+        }
+        if (scannerPaired)
+            report["source_digest"] = output_digest(source);
+        if (!args.density.empty()) {
+            const auto words = static_cast<std::size_t>(test.width) * test.height * 3;
+            observedDensity.resize(1 + words);
+            if (args.density != "capture") {
+                const auto bytes = static_cast<std::streamsize>(words * sizeof(std::uint32_t));
+                require(std::filesystem::file_size(args.density) == static_cast<std::uintmax_t>(bytes), "held density raster length differs");
+                heldDensity.resize(words);
+                std::ifstream carrier(args.density, std::ios::binary);
+                require(static_cast<bool>(carrier.read(reinterpret_cast<char*>(heldDensity.data()), bytes)), "cannot read held density raster");
+            }
+        }
         const std::vector<float> initial(source.size(), kDestinationCanary);
         std::vector<float> output(source.size());
         const auto bytes = source.size() * sizeof(float);
@@ -551,6 +745,40 @@ namespace {
         const auto openStart = Clock::now();
         Module module(args.module);
         timings["module_open_ns"] = nanoseconds(openStart, Clock::now());
+        using SetTokens = void (*)(std::uint64_t, std::uint64_t, std::uint64_t);
+        if (args.campaign == "scanner-paired" && args.benchmarkScanner.empty()) {
+            const bool spectralSetter = module.find_symbol<SetTokens>("fj_spectral_replay_set_tokens") != nullptr;
+            require(spectralSetter == (args.lane == "replay"), "scanner lane token setter does not match its role");
+            require(!module.find_symbol<SetTokens>("fj_preview_replay_set_tokens") &&
+                        !module.find_symbol<SetTokens>("fj_preview_benchmark_set_tokens"),
+                    "scanner paired module exports an unexpected replay setter");
+            using MeasurementExport = int (*)(FjMeasurementRecord*);
+            const bool measurements = module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_begin") ||
+                                      module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_read") ||
+                                      module.find_symbol<MeasurementExport>("fj_test_ofx_measurement_end");
+            require(args.lane != "shipping" || !measurements, "scanner shipping lane exports test measurement hooks");
+            report["scanner_paired"]["replay_setter"] = spectralSetter;
+            report["scanner_paired"]["measurement_exports"] = measurements;
+        }
+        if (!args.benchmarkScanner.empty()) {
+            using ConfigureScanner = int (*)(int, int);
+            require(module.symbol<ConfigureScanner>("fj_preview_benchmark_configure_scanner")(args.benchmarkScanner == "spectral", 0) == 1,
+                    "archived benchmark scanner configuration failed");
+            report["scanner_paired"]["benchmark_scanner"] = args.benchmarkScanner;
+        }
+        if (!args.replayTokens.empty()) {
+            std::ifstream input(args.replayTokens);
+            require(static_cast<bool>(input), "cannot read natural scanner replay tokens");
+            const auto tokens = Json::parse(input);
+            require(tokens.is_array() && tokens.size() == 3 &&
+                        std::ranges::all_of(tokens, [](const auto& token) {
+                            return token.is_number_unsigned();
+                        }),
+                    "expected three exact natural scanner replay tokens");
+            const auto words = tokens.get<std::array<std::uint64_t, 3>>();
+            module.symbol<SetTokens>("fj_spectral_replay_set_tokens")(words[0], words[1], words[2]);
+            report["replay_tokens"] = tokens;
+        }
         Observation observation(module, observed);
         using Count = int (*)();
         using Get = OfxPlugin* (*)(int);
@@ -558,9 +786,10 @@ namespace {
         const auto get = module.symbol<Get>("OfxGetPlugin");
         require(count() == 1, "discovery membership failed");
         auto* plugin = get(0);
+        const std::string_view expectedPluginIdentifier = scannerPaired && scannerRow->preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer";
         require(plugin && plugin->mainEntry && plugin->setHost && plugin->pluginApi &&
                     std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->pluginIdentifier &&
-                    std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer",
+                    std::string_view(plugin->pluginIdentifier) == expectedPluginIdentifier,
                 "invalid OFX descriptor or entry points");
         InstanceHost host;
         Lifecycle lifecycle(plugin, host);
@@ -623,7 +852,11 @@ namespace {
             host.clear_calls();
             require(sampleCount < samples.size(), "unexpected render beyond fixed sample storage");
             auto& sample = samples[sampleCount++];
-            if (g3) {
+            if (tail_enabled(args)) {
+                const double frame = static_cast<double>(sampleCount - 1);
+                host.set_property(host.action_args(), kOfxPropTime, {frame});
+                sample.frameTime = frame;
+            } else if (g3) {
                 const double offset = parts[7] == "half" ? 0.5 : 0.0;
                 const double frame = parts[6] == "unchanged" ? offset : (std::string_view(step.phase) == "warmup" || std::string_view(step.phase) == "cycle-warmup") ? step.index - 10.0 + offset
                                                                     : std::string_view(step.phase) == "warm"                                                         ? step.index + offset
@@ -650,8 +883,10 @@ namespace {
             sample.checked = step.readback;
             try {
                 cuda_check(streamStopStatus, "record stream stop");
-                driver_check(cuCtxGetCurrent(&after), "read context after Render");
                 cuda_check(cudaEventSynchronize(device.stop), "complete measured stream interval");
+                if (tail_enabled(args))
+                    sample.completedNs = nanoseconds(start, Clock::now());
+                driver_check(cuCtxGetCurrent(&after), "read context after Render");
                 cuda_check(cudaEventElapsedTime(&sample.streamMs, device.start, device.stop), "read stream interval");
                 sample.streamTimed = true;
                 sample.releasesValid = host.image_release_count(effect, "Source") == sourceReleases + 1 && host.image_release_count(effect, "Output") == destinationReleases + 1;
@@ -673,21 +908,128 @@ namespace {
                 require(outcome == (step.expect_construction ? "success" : "reused"), "missing, unexpected or unpaired construction span");
             }
         };
+        auto save_replay_frame = [&](const char* filename) {
+            if (args.replayFrames.empty())
+                return;
+            const auto path = args.replayFrames / filename;
+            require(!std::filesystem::exists(path), "replay raster already exists");
+            std::ofstream file(path, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(output.data()), static_cast<std::streamsize>(bytes));
+            file.close();
+            require(static_cast<bool>(file), "cannot write the complete scanner replay raster");
+        };
+        auto run_tail = [&](OfxImageEffectHandle effect) {
+            const std::uint64_t ordinal = sampleCount - 1;
+            const double frame = static_cast<double>(ordinal);
+            const auto& last = samples[ordinal];
+            require(std::string_view(last.phase) == "warm" && last.cycle == 0 && last.frameTime == frame &&
+                        last.status == kOfxStatOK && last.checked && last.outputValid && last.releasesValid &&
+                        last.contextPreserved && last.completedNs != 0 && !host.callback_error(),
+                    "tail requires the valid final timed render");
+            save_replay_frame("final.f32");
+            CUcontext context = nullptr;
+            driver_check(cuCtxGetCurrent(&context), "read tail context");
+            const auto stopQuery = cudaEventQuery(device.stop);
+            cuda_check(stopQuery, "query completed tail event");
+            const auto* instanceData = host.instance_data(effect);
+            require(instanceData != nullptr && context != nullptr, "tail render owner or context is missing");
+            int deviceOrdinal = -1;
+            cuda_check(cudaGetDevice(&deviceOrdinal), "read tail device ordinal");
+            const Json ready{{"schema", 1},
+                             {"run", args.tailRun},
+                             {"arm", args.tailArm},
+                             {"pid", process_id()},
+                             {"render_thread", render_thread_id()},
+                             {"effect", reinterpret_cast<std::uintptr_t>(effect)},
+                             {"instance_data", reinterpret_cast<std::uintptr_t>(instanceData)},
+                             {"ordinal", ordinal},
+                             {"time", frame},
+                             {"time_bits", std::bit_cast<std::uint64_t>(frame)},
+                             {"token", ordinal},
+                             {"device_ordinal", deviceOrdinal},
+                             {"context", reinterpret_cast<std::uintptr_t>(context)},
+                             {"stream", reinterpret_cast<std::uintptr_t>(device.stream)},
+                             {"stop_event", reinterpret_cast<std::uintptr_t>(device.stop)},
+                             {"stop_status", stopQuery},
+                             {"render_status", last.status},
+                             {"callback_error", host.callback_error()},
+                             {"output_guard_valid", last.outputValid},
+                             {"releases_valid", last.releasesValid},
+                             {"source_releases", host.image_release_count(effect, "Source")},
+                             {"destination_releases", host.image_release_count(effect, "Output")},
+                             {"output_digest", output_digest(output)}};
+#ifndef _WIN32
+            // LLDB launches its Linux attach helper from the parent of this
+            // standalone driver. Admit only that debugger family at the barrier.
+            const auto debuggerPid = getppid();
+            require(debuggerPid > 1 && prctl(PR_SET_PTRACER, static_cast<unsigned long>(debuggerPid), 0UL, 0UL, 0UL) == 0,
+                    "could not admit the timing driver's parent debugger");
+#endif
+            write_ready_record(args.tailReady, ready);
+            const auto release = wait_for_release(args, ordinal);
+#ifndef _WIN32
+            require(prctl(PR_SET_PTRACER, 0UL, 0UL, 0UL, 0UL) == 0, "could not clear the timing driver's debugger admission");
+#endif
+            report["tail_ready"] = ready;
+            CUcontext reporterContext = nullptr;
+            driver_check(cuCtxGetCurrent(&reporterContext), "read reporter context");
+            require(reporterContext == context && host.instance_data(effect) == instanceData, "tail reporter lost its owner or CUDA context");
+
+            cuda_check(cudaMemcpyAsync(device.destination, initial.data(), bytes, cudaMemcpyHostToDevice, device.stream), "reset reporter destination");
+            cuda_check(cudaStreamSynchronize(device.stream), "finish reporter destination reset");
+            const auto sourceReleases = host.image_release_count(effect, "Source");
+            const auto destinationReleases = host.image_release_count(effect, "Output");
+            host.clear_calls();
+            const auto reporterToken = ordinal + 1;
+            host.set_property(host.action_args(), kOfxPropTime, {static_cast<double>(reporterToken)});
+            const auto reporterStatus = lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args());
+            cuda_check(cudaEventRecord(device.stop, device.stream), "record reporter stop");
+            cuda_check(cudaEventSynchronize(device.stop), "complete reporter stream interval");
+            cuda_check(cudaMemcpy(output.data(), device.destination, bytes, cudaMemcpyDeviceToHost), "read reporter output");
+            const bool reporterOutputValid = output_valid(source, initial, output, test);
+            const bool reporterReleasesValid = host.image_release_count(effect, "Source") == sourceReleases + 1 &&
+                                               host.image_release_count(effect, "Output") == destinationReleases + 1;
+            CUcontext reporterAfter = nullptr;
+            driver_check(cuCtxGetCurrent(&reporterAfter), "read CUDA context after reporter");
+            require(reporterStatus == kOfxStatOK && !host.callback_error() && reporterOutputValid && reporterReleasesValid &&
+                        reporterAfter == context && host.instance_data(effect) == instanceData,
+                    "tail reporter failed");
+            save_replay_frame("reporter.f32");
+            if (!args.replayFrames.empty()) {
+                std::vector<float> returnedSource(source.size());
+                cuda_check(cudaMemcpy(returnedSource.data(), device.source, bytes, cudaMemcpyDeviceToHost), "read replay source");
+                require(std::memcmp(returnedSource.data(), source.data(), bytes) == 0, "replay altered source or its padding");
+                report["replay_source_preserved"] = true;
+            }
+            report["tail_reporter"] = {{"release", release},
+                                       {"token", reporterToken},
+                                       {"time", static_cast<double>(reporterToken)},
+                                       {"status", reporterStatus},
+                                       {"output_guard_valid", reporterOutputValid},
+                                       {"releases_valid", reporterReleasesValid},
+                                       {"output_digest", output_digest(output)},
+                                       {"stream", reinterpret_cast<std::uintptr_t>(device.stream)},
+                                       {"context", reinterpret_cast<std::uintptr_t>(reporterContext)},
+                                       {"effect", reinterpret_cast<std::uintptr_t>(effect)},
+                                       {"instance_data", reinterpret_cast<std::uintptr_t>(instanceData)}};
+        };
         const int warmups = check ? 1 : 10, measured = check ? 1 : 30;
-        for (int cycle = 0; cycle < (g3 ? 1 : 3); ++cycle) {
+        for (int cycle = 0; cycle < (scannerPaired || g3 ? 1 : 3); ++cycle) {
             auto* effect = host.create_effect();
             timings["author_ns"].push_back(nullptr);
             timed(timings["author_ns"].back(), [&] {
                 std::vector<std::pair<std::string, std::vector<ofx_test::InstanceValue>>> grainDefaults;
-                if (g3) {
+                if (g3 || (scannerPaired && !scannerRow->preview)) {
                     for (const auto& definition : ofx_test::kInstanceParameters)
                         if (std::string_view(definition.name).starts_with("Grain") && definition.kind != ofx_test::InstanceParamKind::PushButton)
                             grainDefaults.emplace_back(definition.name, host.value(effect, definition.name));
                 }
                 ofx_test::author_parameters(host, effect, test);
-                if (g3) {
+                if (g3 || (scannerPaired && !scannerRow->preview)) {
                     for (const auto& [name, value] : grainDefaults)
                         host.set_value(effect, name, value);
+                }
+                if (g3) {
                     host.set_value(effect, "GrainActive", {grain ? 1 : 0});
                     host.set_value(effect, "CameraFilmFormatMm", {36.0});
                     host.set_value(effect, "CouplersActive", {0});
@@ -706,6 +1048,43 @@ namespace {
                         host.set_value(effect, "GrainBlur", {0.0});
                         host.set_value(effect, "GrainBlurDyeCloudsUm", {0.0});
                         host.set_value(effect, "GrainChroma", {1.0});
+                    }
+                }
+                if (scannerPaired) {
+                    // Keep the measured format in the editable custom field.  A
+                    // named preset would overwrite 8/11.66 mm through the
+                    // instance-change callback.
+                    host.set_value(effect, "CameraFilmFormatPreset", {0});
+                    host.set_value(effect, "CameraFilmFormatMm", {scannerRow->filmFormatMm});
+                    require(host.value(effect, "CameraFilmFormatPreset") == std::vector<ofx_test::InstanceValue>{0},
+                            "scanner paired format was not left on the custom preset");
+                    require(host.value(effect, "CameraFilmFormatMm") == std::vector<ofx_test::InstanceValue>{scannerRow->filmFormatMm},
+                            "scanner paired format did not read back");
+                    report["scanner_paired"]["format_preset"] = "custom";
+                    report["scanner_paired"]["format_mm"] = scannerRow->filmFormatMm;
+                    host.set_value(effect, "GrainActive", {scannerRow->naturalGrain ? 1 : 0});
+                    if (controlTypes.contains("ScannerLutResolution")) {
+                        host.set_value(effect, "ScannerLutResolution", {17});
+                        require(host.value(effect, "ScannerLutResolution") == std::vector<ofx_test::InstanceValue>{17}, "declared cubic scanner grid is not 17");
+                        report["scanner_paired"]["authored_grid"] = 17;
+                    }
+                    if (scannerRow->preview) {
+                        require(controlTypes.contains("GrainModel"), "Preview scanner row requires GrainModel");
+                        host.set_value(effect, "GrainModel", {std::string(scannerRow->grainModel)});
+                        host.set_value(effect, "FilmGrainAmountEv", {scannerRow->grainAmountEv});
+                        host.set_value(effect, "FilmGrainTexelPitchUm", {scannerRow->grainPitchUm});
+                    } else {
+                        require(!controlTypes.contains("GrainModel"), "ordinary scanner row unexpectedly exposes GrainModel");
+                    }
+                    const double unsharp = scannerRow->schedule == "fused-dir" ? 0.7 : 0.0;
+                    host.set_value(effect, "ScannerUnsharpMask", {unsharp, unsharp});
+                    if (print)
+                        host.set_value(effect, "GlareActive", {0});
+                    if (!args.previewMaterial.empty()) {
+                        host.set_value(effect, "InputColorSpace", {1});
+                        host.set_value(effect, "CouplersActive", {0});
+                        host.set_value(effect, "GlareActive", {0});
+                        host.set_value(effect, "OutputGamutCompression", {0});
                     }
                 }
                 if (pairedHalation) {
@@ -746,6 +1125,18 @@ namespace {
             else
                 require(controls == report.at("controls"), "effective controls changed across owners");
             ofx_test::configure(host, effect, test, device);
+            if (!args.previewMaterial.empty())
+                host.set_effect_property(effect, kOfxImageEffectPropFrameRate, {24'000.0 / 1001.0});
+            if (scannerPaired && scannerRow->width == 1208) {
+                host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {0.25, 0.25});
+                for (const auto* clip : {"Source", "Output"}) {
+                    host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
+                    host.set_clip_region(effect, clip, {0.0, 0.0, 4832.0, 2016.0});
+                }
+                report["scanner_paired"]["canonical_clip_extent"] = {0, 0, 4832, 2016};
+                report["scanner_paired"]["action_render_scale"] = {0.25, 0.25};
+                report["scanner_paired"]["actual_geometry"] = {{"bounds", {0, 0, 1208, 504}}, {"canonical_clip_extent", {0, 0, 4832, 2016}}, {"render_scale", {0.25, 0.25}}};
+            }
             endpoint("after-create", cycle);
             render(effect, {.phase = cycle == 0 ? "cold" : "cycle-cold", .cycle = cycle, .expect_construction = true, .readback = true});
             endpoint("after-cold", cycle);
@@ -755,8 +1146,10 @@ namespace {
             if (cycle == 0) {
                 for (int i = 0; i < measured; ++i)
                     render(effect, {.phase = "warm", .cycle = cycle, .index = i, .readback = i == measured - 1});
+                if (tail_enabled(args))
+                    run_tail(effect);
                 endpoint("after-sample", cycle, measured);
-                if (!g3) {
+                if (!scannerPaired && !g3) {
                     constexpr std::array<double, 3> gamma{1.1, 1.0, 1.1};
                     for (std::size_t i = 0; i < gamma.size(); ++i) {
                         OfxStatus status = kOfxStatFailed;
@@ -786,7 +1179,7 @@ namespace {
             life["effects_destroyed"] = cycle + 1;
             endpoint("after-destroy", cycle);
         }
-        require(sampleCount == (g3 ? (check ? 3u : 41u) : (check ? 15u : 71u)), "incomplete render sample membership");
+        require(sampleCount == (scannerPaired || g3 ? (check ? 3u : 41u) : (check ? 15u : 71u)), "incomplete render sample membership");
         OfxStatus unload = kOfxStatFailed;
         timed(timings["unload_ns"], [&] {
             unload = lifecycle.unload();
@@ -813,6 +1206,38 @@ namespace {
         report["status"] = "passed";
     }
 } // namespace
+
+#if defined(_WIN32)
+#define FJ_DENSITY_OBSERVER_EXPORT __declspec(dllexport)
+#else
+#define FJ_DENSITY_OBSERVER_EXPORT __attribute__((used, retain, visibility("default")))
+#endif
+
+// The late-attached debugger calls this on the reporter thread before scan launch.
+extern "C" FJ_DENSITY_OBSERVER_EXPORT const std::uint32_t* fj_observe_scanner_density(
+    float* cyan, float* magenta, float* yellow, std::size_t count, cudaStream_t stream, CUcontext expectedContext) noexcept {
+    CUcontext context = nullptr;
+    if (!cyan || !magenta || !yellow || !stream || observedDensity.empty() || count != (observedDensity.size() - 1) / 3 ||
+        cuCtxGetCurrent(&context) != CUDA_SUCCESS || context != expectedContext) {
+        return nullptr;
+    }
+    const std::array planes{cyan, magenta, yellow};
+    constexpr auto wordBytes = sizeof(std::uint32_t);
+    auto status = cudaSuccess;
+    if (!heldDensity.empty()) {
+        for (std::size_t channel = 0; channel < planes.size() && status == cudaSuccess; ++channel) {
+            status = cudaMemcpyAsync(planes[channel], heldDensity.data() + channel * count, count * wordBytes, cudaMemcpyHostToDevice, stream);
+        }
+    }
+    for (std::size_t channel = 0; channel < planes.size() && status == cudaSuccess; ++channel) {
+        status = cudaMemcpyAsync(observedDensity.data() + 1 + channel * count, planes[channel], count * wordBytes, cudaMemcpyDeviceToHost, stream);
+    }
+    const auto completed = cudaStreamSynchronize(stream);
+    observedDensity[0] = static_cast<std::uint32_t>(status == cudaSuccess ? completed : status);
+    return observedDensity.data();
+}
+
+#undef FJ_DENSITY_OBSERVER_EXPORT
 
 namespace {
     int measurement_main(int argc, char** argv) {

@@ -145,7 +145,8 @@ namespace PrintPreflashTest {
                         FjPreparedStateView view{};
                         status(product->view(view, error));
                         const auto& print = view.print;
-                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
+                        require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash, "complete Print preflash route recipe");
+                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
                         if (route % 2) {
                             row["raw"] = words(print.preflash_raw_cmy, 3);
                             std::array<float, 81> lightScratch{};
@@ -158,10 +159,10 @@ namespace PrintPreflashTest {
                             row["light"] = words(lightScratch.data(), lightScratch.size());
                             row["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
                             row["print_sensitivity_cmy"] = words(print.sensitivity_cmy.data, print.sensitivity_cmy.count);
-                            row["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
+                            row["descriptors"] = {print.main_illuminant_hash, print.preflash_illuminant_hash};
                         }
                         products.push_back(row);
-                        require(products.back() == expectedProducts.at(products.size() - 1), "per-case complete print preflash product");
+                        require_equal(products.back(), expectedProducts.at(products.size() - 1), "per-case complete print preflash product");
                         case_event.passed();
                     }
         }
@@ -376,7 +377,14 @@ namespace PrintPreflashTest {
         transport_event.passed();
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
-        require(product_observations(resources, captured.at("products")) == captured.at("products"), "all 72 frozen caller values, input bindings, descriptor and final/seed identities");
+        auto expectedProducts = captured.at("products");
+        for (auto& row : expectedProducts) {
+            PrintIlluminantFixtures::select_frozen_light_hashes(row, "descriptors");
+            require(row.erase("final_hash") == 1, "archived Print preflash route recipe field");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived Print preflash capture identity");
+            row.erase("snapshot_hash");
+        }
+        require_equal(product_observations(resources, expectedProducts), expectedProducts, "all 72 frozen caller values, input bindings and surviving Print identities");
         JuicerTests::CaseEvent caller_event("cpp", "print-preflash/actual-caller");
         caller(resources);
         caller_event.passed();
@@ -417,6 +425,7 @@ namespace PrintPreflashTest {
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Failure* failure = nullptr;
         bool consumeFault = false;
+        std::array<float, 3> raw{};
     };
     bool prepare_cache(void* opaque, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
         auto& call = *static_cast<CacheCall*>(opaque);
@@ -430,6 +439,7 @@ namespace PrintPreflashTest {
             return false;
         }
         cuda_ok(cudaDeviceSynchronize());
+        call.raw = input->preflashRawCmy;
         if (call.consumeFault) {
             const auto& view = prepared.state;
             const FjPrintPreflashInput raw{view.print.film_base_density,
@@ -455,17 +465,18 @@ namespace PrintPreflashTest {
         zero(output);
         return true;
     }
-    void prepare_cache(const FjAssets* assets,
-                       JuicerTestSupport::PreparedStateHold& state,
-                       const JuicerTestSupport::PreparationInput& p,
-                       JuicerCuda::Resources& resources,
-                       JuicerCuda::Failure& failure,
-                       bool consumeFault = true) {
+    std::array<float, 3> prepare_cache(const FjAssets* assets,
+                                       JuicerTestSupport::PreparedStateHold& state,
+                                       const JuicerTestSupport::PreparationInput& p,
+                                       JuicerCuda::Resources& resources,
+                                       JuicerCuda::Failure& failure,
+                                       bool consumeFault = true) {
         CacheCall call{&resources, &failure, consumeFault};
         std::string diagnostic;
         require(FrameFixture::with_prepared_frame_inputs(
                     assets, state, frame_facts(p), &call, &prepare_cache, diagnostic),
                 diagnostic.c_str());
+        return call.raw;
     }
     void consume_fault(const FjAssets* assets, JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& p) {
         std::string diagnostic;
@@ -490,9 +501,8 @@ namespace PrintPreflashTest {
         view.active = true;
         view.preflashActive = true;
         view.spectralSampleCount = 81;
-        view.preparationHash = view.filmDensityTablesHash = view.profileTablesHash = view.mainIlluminantHash = view.preflashIlluminantHash = view.preflashRawHash = view.balanceHash = 1;
+        view.filmDensityTablesHash = view.profileTablesHash = view.mainIlluminantHash = view.preflashIlluminantHash = 1;
         view.filmDensityTables.K = 81;
-        view.filmDensityTables.hasBaseline = 1;
         view.filmDensityTables.epsC = view.filmDensityTables.epsM = view.filmDensityTables.epsY = view.filmDensityTables.baseDensityMin = samples.data();
         view.printSensC = view.printSensM = view.printSensY = {nullptr, samples.data(), 81, 0, 80};
         view.printDcC = view.printDcM = view.printDcY = {samples.data(), samples.data(), 81, 0, 80};
@@ -521,8 +531,8 @@ namespace PrintPreflashTest {
         }
         facts.expectedRaw = input->preflashRawCmy;
         facts.preflashCount = input->preflashIlluminant.size();
-        facts.descriptorHash = input->descriptors.preflashRaw.hash;
-        facts.heldHash = prepared.state.print.preflash_raw_hash;
+        facts.descriptorHash = input->descriptors.preflashIlluminantHash;
+        facts.heldHash = prepared.state.print.preflash_illuminant_hash;
         if (!facts.consumeFault)
             return true;
         const FjPrintPreflashInput raw{prepared.state.print.film_base_density,
@@ -544,8 +554,8 @@ namespace PrintPreflashTest {
         }
         facts.expectedRaw = input->preflashRawCmy;
         facts.preflashCount = input->preflashIlluminant.size();
-        facts.descriptorHash = input->descriptors.preflashRaw.hash;
-        facts.heldHash = prepared.state.print.preflash_raw_hash;
+        facts.descriptorHash = input->descriptors.preflashIlluminantHash;
+        facts.heldHash = prepared.state.print.preflash_illuminant_hash;
         const FjPrintPreflashInput raw{prepared.state.print.film_base_density,
                                        prepared.state.print.preflash_illuminant,
                                        prepared.state.print.sensitivity_cmy};
@@ -553,8 +563,8 @@ namespace PrintPreflashTest {
         FjPrintPreflashFailure failure{};
         status(fj_test_print_preflash_prepare(&raw, &output, &failure, nullptr));
         metadata(failure, FJ_PRINT_PREFLASH_REASON_NONE);
-        require(input->descriptors.preflashRaw.hash == prepared.state.print.preflash_raw_hash,
-                "raw descriptor hash matches the held prepared state");
+        require(input->descriptors.preflashIlluminantHash == prepared.state.print.preflash_illuminant_hash,
+                "preflash light identity matches the held prepared state");
         require(words(output.cmy, 3) == words(input->preflashRawCmy.data(), 3),
                 "active raw constructor recovery matches the held prepared input");
         return true;
@@ -613,7 +623,7 @@ namespace PrintPreflashTest {
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView directView{};
         status(direct.view(directView, error));
-        require(directView.print.hash == 0 && directView.print.preflash_illuminant.count == 0,
+        require(directView.print.glare_hash == 0 && directView.print.preflash_illuminant.count == 0,
                 "direct complete state omits print preflash and its input");
         status(fj_test_film_recipe_fault(11, 0));
         payload_guard();
@@ -641,16 +651,15 @@ namespace PrintPreflashTest {
         {
             JuicerCuda::Resources cached(key, 1, ledger);
             const auto prepare = [&](JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& controls, bool consumeFault = false) {
-                prepare_cache(owner.borrow().assets, state, controls, cached, failure, consumeFault);
+                return prepare_cache(owner.borrow().assets, state, controls, cached, failure, consumeFault);
             };
             const auto consume_preflash_fault = [&](JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& controls) {
                 PrintPreflashTest::consume_fault(owner.borrow().assets, state, controls);
             };
-            prepare(product, p);
-            const auto originalHash = cached.printPreflashRawDescriptorHash;
+            const auto originalRawValues = prepare(product, p);
             const auto originalLightHash = cached.printPreflashIlluminantDescriptorHash;
             auto* const originalLight = cached.printPreflashIllumFiltered;
-            const auto originalRaw = words(cached.printPreflashRaw, 3);
+            const auto originalRaw = words(originalRawValues.data(), 3);
             status(fj_test_film_recipe_fault(11, 1));
             prepare(product, p, true);
             const JuicerTests::Cohort reuse_variants("print_preflash.cache_reuse_variants", std::vector<std::string>{"5", "3", "4"});
@@ -668,15 +677,11 @@ namespace PrintPreflashTest {
                     changedControls.values.output_cctf_encoding = 0;
                 auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
-                prepare(changed, changedControls, true);
-                require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIlluminantDescriptorHash == originalLightHash && cached.printPreflashIllumFiltered == originalLight && words(cached.printPreflashRaw, 3) == originalRaw, "amount/main-only/output edits preserve raw reuse and illumination residency");
+                const auto raw = prepare(changed, changedControls, true);
+                require(cached.printPreflashIlluminantDescriptorHash == originalLightHash && cached.printPreflashIllumFiltered == originalLight && words(raw.data(), 3) == originalRaw, "amount, main-light and output edits preserve the preflash product and light residency");
                 variant_event.passed();
             }
             prepare(product, p);
-            cached.printPreflashRawDescriptorHash = 0;
-            const auto hostLight = cached.printPreflashIllumFilteredHost;
-            prepare(product, p);
-            require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIllumFiltered == originalLight && cached.printPreflashIllumFilteredHost == hostLight && words(cached.printPreflashRaw, 3) == originalRaw, "illuminant-hit/raw-miss uses retained host light and recovers");
             const JuicerTests::Cohort source_variants("print_preflash.cache_sources", 2);
             for (bool film : {true, false}) {
                 auto source_event = source_variants.case_event(film ? "1" : "0");
@@ -686,9 +691,10 @@ namespace PrintPreflashTest {
                 auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
                 consume_preflash_fault(changed, changedControls);
-                require(cached.printPreflashRawDescriptorHash == originalHash, "source identity failure preserves old committed raw key");
-                prepare(changed, changedControls);
-                require(cached.printPreflashRawDescriptorHash != originalHash, "film/print source identity contributes to raw key");
+                require(cached.printPreflashIlluminantDescriptorHash == originalLightHash && cached.printPreflashIllumFiltered == originalLight,
+                        "a failed preflash construction preserves the resident light");
+                const auto changedRaw = prepare(changed, changedControls);
+                require(words(changedRaw.data(), 3) != originalRaw, "a different capture or paper changes the preflash product");
                 prepare(product, p);
                 source_event.passed();
             }
@@ -696,8 +702,9 @@ namespace PrintPreflashTest {
             changedControls.values.preflash_m_filter_cc = 5;
             changedControls.values.preflash_y_filter_cc = -3;
             auto changed = build(owner.borrow().assets, changedControls);
-            prepare(changed, changedControls);
-            require(cached.printPreflashRawDescriptorHash != originalHash && cached.printPreflashIlluminantDescriptorHash != originalLightHash, "preflash offsets invalidate both light and raw families");
+            const auto filteredRaw = prepare(changed, changedControls);
+            require(words(filteredRaw.data(), 3) != originalRaw && cached.printPreflashIlluminantDescriptorHash != originalLightHash,
+                    "preflash filter offsets change the raw product and the resident light");
             std::vector<std::string> offset_ids;
             for (const auto& row : captured.at("products"))
                 if (row.at("route") == 1 && row.at("mode") == p.values.spectral_upsampling_mode && row.at("variant") == 2)
@@ -706,19 +713,21 @@ namespace PrintPreflashTest {
             for (const auto& row : captured.at("products"))
                 if (row.at("route") == 1 && row.at("mode") == p.values.spectral_upsampling_mode && row.at("variant") == 2) {
                     auto offset_event = offset_rows.case_event("route-1/mode-" + std::to_string(row.at("mode").get<int>()) + "/variant-2");
-                    require(words(cached.printPreflashRaw, 3) == row.at("raw"), "changed-offset cache result matches frozen actual caller");
+                    require(words(filteredRaw.data(), 3) == row.at("raw"), "changed-offset cache result matches frozen actual caller");
                     offset_event.passed();
                 }
             auto disabledControls = p;
             disabledControls.values.print_preflash_exposure = 0;
             auto disabled = build(owner.borrow().assets, disabledControls);
             status(fj_test_film_recipe_fault(11, 1));
-            prepare(disabled, disabledControls, false);
-            require(!cached.printPreflashValid && cached.printPreflashRawDescriptorHash == 0 && cached.printPreflashIlluminantDescriptorHash == 0 && words(cached.printPreflashRaw, 3) == Json::array({0, 0, 0}), "disabled route clears preflash validity/value/keys");
+            const auto disabledRaw = prepare(disabled, disabledControls, false);
+            require(!cached.printPreflashIllumFiltered && cached.printPreflashIllumK == 0 &&
+                        cached.printPreflashIlluminantDescriptorHash == 0 && words(disabledRaw.data(), 3) == Json::array({0, 0, 0}),
+                    "disable retires the preflash light and the held product supplies zero raw words");
             consume_preflash_fault(product, p);
             status(fj_test_film_recipe_fault(11, 1));
-            prepare(product, p, true);
-            require(words(cached.printPreflashRaw, 3) == originalRaw, "supplied-input path binds already-derived raw without a second constructor");
+            const auto restoredRaw = prepare(product, p, true);
+            require(words(restoredRaw.data(), 3) == originalRaw, "restored input binds the original preflash product");
             cached.contextEpoch = 0;
             status(fj_test_film_recipe_fault(11, 1));
             require(!JuicerCuda::prepare_print_resources(cached, JuicerCuda::PrintResourceInput{}, nullptr, failure), "invalid owner epoch rejects before derivation");

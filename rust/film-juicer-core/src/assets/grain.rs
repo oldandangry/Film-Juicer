@@ -60,6 +60,7 @@ impl PortraGrainBank {
     }
 }
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 pub struct PortraGrainTable {
     pub footprint: f32,
     pub mean_density: [[f32; LEVELS]; 3],

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include <string_view>
 
 #include "Cuda/JuicerCudaHostViews.h"
+#include "Hash.h"
 
 namespace {
 
@@ -157,14 +159,64 @@ namespace {
                exact_span(noise.wang_lut, lutCount, "noise.wang_lut", diagnostic);
     }
 
+} // namespace
+
+namespace JuicerCuda {
+    std::uint64_t spectral_binding_digest(const FjPreparedHostData& source) {
+        static_assert(std::endian::native == std::endian::little);
+        const bool print = source.route == FJ_ROUTE_NEGATIVE_PRINT || source.route == FJ_ROUTE_POSITIVE_PRINT;
+        const auto& key = print ? source.print_profile_key : source.film_profile_key;
+        const auto& spectra = source.scanner_spectra;
+        const auto& color = source.output_color;
+        const auto& encoding = color.encoding;
+        std::uint64_t digest = Hash::kFnvOffset;
+        const auto word = [&digest](auto value) {
+            Hash::hash_bytes_update(digest, &value, sizeof(value));
+        };
+        const auto samples = [&word](std::span<const float> values) {
+            for (const float value : values) {
+                const auto bits = std::isnan(value) ? std::uint32_t{0x7fc00000} : value == 0.0F ? std::uint32_t{0}
+                                                                                                : std::bit_cast<std::uint32_t>(value);
+                word(bits);
+            }
+        };
+        word(std::uint32_t{1});
+        word(source.route);
+        word(static_cast<std::uint64_t>(key.count));
+        Hash::hash_bytes_update(digest, key.data, key.count);
+        word(print ? source.print_profile_asset_version : source.film_profile_asset_version);
+        for (const auto& lane : {spectra.dye_c, spectra.dye_m, spectra.dye_y, spectra.weighted_x, spectra.weighted_y, spectra.weighted_z}) {
+            samples(floats(lane));
+        }
+        word(static_cast<std::uint8_t>(spectra.base_density.count != 0));
+        samples(floats(spectra.base_density));
+        samples(std::span<const float>{&spectra.inverse_y_normalization, 1});
+        samples(color.illuminant_xyz);
+        samples(color.cat02);
+        samples(color.xyz_to_rgb);
+        word(color.color_space);
+        word(color.flags);
+        word(encoding.schema);
+        word(encoding.cctf_kind);
+        const std::array coefficients{encoding.gamma, encoding.a, encoding.b, encoding.c, encoding.d, encoding.linear_cutoff};
+        samples(coefficients);
+        samples(encoding.dwg_to_output);
+        return digest;
+    }
+} // namespace JuicerCuda
+
+namespace {
     bool validate_frame_binding(const FjPreparedHostData& source, const JuicerCuda::ExecutionFrame& frame, const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot, std::string& diagnostic) {
+        const auto& color = source.output_color;
+        const std::uint64_t activeGamutHash = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0 ? color.gamut_recipe_hash : 0;
+        const auto scannerHash = Hash::hash_uint64_values({JuicerCuda::spectral_binding_digest(source), activeGamutHash});
         const auto expected = JuicerCuda::ResourceManager::make_key_digests(
-            source.recipe_hash, source.dir_couplers.hash, snapshot.keyDigests.scannerHash, source.auto_exposure.hash);
+            source.recipe_hash, source.dir_couplers.hash, scannerHash, source.auto_exposure.hash);
         const double frameFloor = std::floor(frame.timeFrames);
         if (source.recipe_hash == 0 || snapshot.instanceToken.value == 0 || snapshot.snapshotId == 0 ||
             snapshot.keyDigests.uploadCoreHash != expected.uploadCoreHash ||
             snapshot.keyDigests.dirHash != expected.dirHash ||
-            snapshot.keyDigests.scannerHash == 0 ||
+            snapshot.keyDigests.scannerHash != expected.scannerHash ||
             snapshot.keyDigests.autoExposureHash != expected.autoExposureHash ||
             !std::isfinite(frame.timeFrames) || frame.timeFrames < -0x1p63 || frame.timeFrames >= 0x1p63 ||
             snapshot.frameToken.value != static_cast<std::uint64_t>(static_cast<std::int64_t>(frameFloor))) {
@@ -184,10 +236,6 @@ namespace {
         if (!sameRect(meter.source_bounds, frame.sourceBounds) || !sameRect(meter.meter_bounds, frame.sourceBounds) ||
             meter.preview_width != metering.previewWidth || meter.preview_height != metering.previewHeight || meter.hash != metering.hash) {
             return malformed(diagnostic, "auto_exposure.frame");
-        }
-        if (source.scanner_bounds.hash == 0 || source.scanner_lut.hash == 0 ||
-            source.scanner_lut.density_bounds_hash != source.scanner_bounds.hash) {
-            return malformed(diagnostic, "scanner_bounds.identity");
         }
         if (source.spatial_dir.hash != 0 &&
             (source.spatial_dir.recipe_hash != source.dir_couplers.hash ||
@@ -221,8 +269,7 @@ namespace {
         return true;
     }
 
-    JuicerCuda::PrintResourceInput decode_print(const FjPreparedHostData& source) {
-        const FjPrint& print = source.print;
+    JuicerCuda::PrintResourceInput decode_print(const FjPrint& print) {
         JuicerCuda::PrintResourceInput out;
         out.filmChannelDensityCmy = channel_samples(print.film_density_cmy);
         out.filmBaseDensity = floats(print.film_base_density);
@@ -234,29 +281,12 @@ namespace {
         std::copy_n(print.preflash_raw_cmy, 3, out.preflashRawCmy.begin());
         out.normalizer = print.normalizer;
         auto& descriptors = out.descriptors;
-        descriptors.filmDensityTables.filmProfileAssetVersionToken = source.film_profile_asset_version;
-        descriptors.filmDensityTables.spectralSampleCount = 81;
-        descriptors.filmDensityTables.hash = print.film_density_hash;
-        descriptors.profileTables.printProfileAssetVersionToken = source.print_profile_asset_version;
-        descriptors.profileTables.densitySampleCount = static_cast<std::uint32_t>(print.log_exposure.count);
-        descriptors.profileTables.spectralSampleCount = 81;
-        descriptors.profileTables.hash = print.profile_tables_hash;
-        descriptors.mainIlluminant.hash = print.main_illuminant_hash;
-        descriptors.mainIlluminant.cmyCc = {print.main_cc_cmy[0], print.main_cc_cmy[1], print.main_cc_cmy[2]};
-        descriptors.preflashIlluminant.hash = print.preflash_illuminant_hash;
-        descriptors.preflashIlluminant.cmyCc = {print.preflash_cc_cmy[0], print.preflash_cc_cmy[1], print.preflash_cc_cmy[2]};
-        descriptors.preflashRaw.hash = print.preflash_raw_hash;
-        descriptors.preflashRaw.filmProfileAssetVersionToken = source.film_profile_asset_version;
-        descriptors.preflashRaw.printProfileAssetVersionToken = source.print_profile_asset_version;
-        descriptors.preflashRaw.filteredPreflashIlluminantHash = print.preflash_illuminant_hash;
-        descriptors.balance.filmProfileAssetVersionToken = source.film_profile_asset_version;
-        descriptors.balance.printProfileAssetVersionToken = source.print_profile_asset_version;
-        descriptors.balance.filmRawRecipeHash = source.film_exposure.hash;
-        descriptors.balance.filmDevelopRecipeHash = source.film_development.hash;
-        descriptors.balance.filteredMainIlluminantHash = print.main_illuminant_hash;
-        descriptors.balance.hash = print.balance_hash;
+        descriptors.filmDensityTablesHash = print.film_density_hash;
+        descriptors.profileTablesHash = print.profile_tables_hash;
+        descriptors.mainIlluminantHash = print.main_illuminant_hash;
+        descriptors.preflashIlluminantHash = print.preflash_illuminant_hash;
+        descriptors.mainCmyCc = {print.main_cc_cmy[0], print.main_cc_cmy[1], print.main_cc_cmy[2]};
         descriptors.preflashActive = (print.flags & FJ_PRINT_PREFLASH) != 0;
-        descriptors.hash = print.hash;
         return out;
     }
 
@@ -299,16 +329,12 @@ namespace JuicerCuda {
             for (std::size_t layer = 0; layer < 3; ++layer) {
                 focused.filmDevelop.densityCurvesLayers[layer][channel] = floats(development.density_layers[layer][channel]);
             }
-            focused.densityBounds.dataMinCmy[channel] = source.scanner_bounds.min_cmy[channel];
-            focused.densityBounds.invSpanCmy[channel] = source.scanner_bounds.inv_span_cmy[channel];
         }
         focused.dirCouplers.active = dir.mode != FJ_DIR_INACTIVE;
         focused.dirCouplers.compensatedDensityCurveAxesHash = dir.compensated_axes_hash;
         focused.dirCouplers.hash = dir.hash;
-        focused.densityBounds.hash = source.scanner_bounds.hash;
-        focused.scannerLutDescriptor = descriptors.scanner;
         const auto& spectra = source.scanner_spectra;
-        focused.scannerTables = {floats(spectra.dye_c), floats(spectra.dye_m), floats(spectra.dye_y), floats(spectra.weighted_x), floats(spectra.weighted_y), floats(spectra.weighted_z), floats(spectra.base_density), 81, spectra.inverse_y_normalization, spectra.base_density.count != 0};
+        focused.scannerTables = {floats(spectra.dye_c), floats(spectra.dye_m), floats(spectra.dye_y), floats(spectra.weighted_x), floats(spectra.weighted_y), floats(spectra.weighted_z), floats(spectra.base_density), spectra.inverse_y_normalization};
         focused.exposureSampleCount = 81;
         focused.exposureIlluminant = floats(exposure.mallett_illuminant);
         focused.filmTcLut = floats(exposure.tc_lut_rgba);
@@ -344,7 +370,6 @@ namespace JuicerCuda {
         std::copy_n(dir.receiver_kr_rgb, 3, film.receiverKrRgb.begin());
         film.dirAxesHash = dir.compensated_axes_hash;
         film.dirHash = dir.hash;
-        film.densityBoundsHash = print ? source.enlarger_film_bounds.hash : source.scanner_bounds.hash;
 
         const auto& noise = source.noise;
         const StaticNoiseInput staticNoise{bytes(noise.stbn), bytes(noise.wang_tiles), bytes(noise.wang_lut), noise.stbn_width, noise.stbn_height, noise.stbn_frames, noise.wang_width, noise.wang_height, static_cast<int>(noise.wang_tile_count), noise.wang_colors};
@@ -356,6 +381,10 @@ namespace JuicerCuda {
         identity.capturePolarity = descriptors.capturePolarity;
         identity.filmProfileKey = filmKey;
         identity.filmProfileAssetVersionToken = source.film_profile_asset_version;
+        if (print) {
+            identity.paperProfileKey = {source.print_profile_key.data, source.print_profile_key.count};
+            identity.paperProfileAssetVersionToken = source.print_profile_asset_version;
+        }
         identity.scatterHalationHash = source.optics.scatter_halation.recipe_hash;
         identity.highlightBoostHash = source.optics.highlight_boost.recipe_hash;
         identity.grainHash = source.grain.recipe_hash;
@@ -372,9 +401,9 @@ namespace JuicerCuda {
             return false;
         }
         if (print) {
-            preparation.print = decode_print(source);
+            preparation.print = decode_print(source.print);
         }
-        execute_prepared(root, {preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
+        execute_prepared(root, {preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.print.glare_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
         return true;
     }
 

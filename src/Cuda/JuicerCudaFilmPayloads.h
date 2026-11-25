@@ -46,7 +46,6 @@ namespace JuicerCuda {
         FilmRawPayload filmRaw{};
         FilmExposurePayload filmExposure{};
         FilmDevelopPayload filmDevelop{};
-        std::uint64_t densityBoundsHash = 0;
     };
 
     // Invocation-local resolved coefficients. Density tables remain in the resource input.
@@ -69,7 +68,6 @@ namespace JuicerCuda {
         std::array<float, 3> receiverKrRgb{};
         std::uint64_t dirAxesHash = 0;
         std::uint64_t dirHash = 0;
-        std::uint64_t densityBoundsHash = 0;
     };
 
     bool pack_film_payloads(

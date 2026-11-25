@@ -150,11 +150,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjDirCouplers, compensated_axes_rgb),
     offset_of!(FjDirCouplers, compensated_axes_hash),
     offset_of!(FjDirCouplers, hash),
-    size_of::<FjDensityBounds>(),
-    align_of::<FjDensityBounds>(),
-    offset_of!(FjDensityBounds, min_cmy),
-    offset_of!(FjDensityBounds, inv_span_cmy),
-    offset_of!(FjDensityBounds, hash),
     size_of::<FjScannerSpectra>(),
     align_of::<FjScannerSpectra>(),
     offset_of!(FjScannerSpectra, dye_y),
@@ -165,11 +160,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjScannerSpectra, weighted_z),
     offset_of!(FjScannerSpectra, base_density),
     offset_of!(FjScannerSpectra, inverse_y_normalization),
-    size_of::<FjScannerLut>(),
-    align_of::<FjScannerLut>(),
-    offset_of!(FjScannerLut, density_bounds_hash),
-    offset_of!(FjScannerLut, resolution),
-    offset_of!(FjScannerLut, hash),
     size_of::<FjScannerCorrection>(),
     align_of::<FjScannerCorrection>(),
     offset_of!(FjScannerCorrection, flags),
@@ -226,7 +216,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjPrint, preflash_illuminant),
     offset_of!(FjPrint, flags),
     offset_of!(FjPrint, main_cc_cmy),
-    offset_of!(FjPrint, preflash_cc_cmy),
     offset_of!(FjPrint, exposure),
     offset_of!(FjPrint, preflash_exposure),
     offset_of!(FjPrint, preflash_raw_cmy),
@@ -235,9 +224,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjPrint, profile_tables_hash),
     offset_of!(FjPrint, main_illuminant_hash),
     offset_of!(FjPrint, preflash_illuminant_hash),
-    offset_of!(FjPrint, preflash_raw_hash),
-    offset_of!(FjPrint, balance_hash),
-    offset_of!(FjPrint, hash),
+    offset_of!(FjPrint, glare_hash),
     size_of::<FjDiffusion>(),
     align_of::<FjDiffusion>(),
     offset_of!(FjDiffusion, family),
@@ -525,10 +512,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjPreparedHostData, auto_exposure),
     offset_of!(FjPreparedHostData, film_development),
     offset_of!(FjPreparedHostData, dir_couplers),
-    offset_of!(FjPreparedHostData, scanner_bounds),
-    offset_of!(FjPreparedHostData, enlarger_film_bounds),
     offset_of!(FjPreparedHostData, scanner_spectra),
-    offset_of!(FjPreparedHostData, scanner_lut),
     offset_of!(FjPreparedHostData, scanner_correction),
     offset_of!(FjPreparedHostData, scanner_post),
     offset_of!(FjPreparedHostData, output_color),
@@ -695,7 +679,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 642);
+        assert_eq!(FACTS.len(), 626);
     }
 
     #[test]

@@ -15,6 +15,7 @@ FjRenderOutcome fj_test_execute_prepared_c(const FjCudaCallAccess* access, const
 }
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,16 +48,37 @@ namespace JuicerCudaTest {
         PinnedSynchronization,
         IdleRetirement,
         DeferredDestruction,
+        SpectralPacketOverlap,
         Count
     };
 
     bool execute_prepared_state(FjRuntimeView, const JuicerTestSupport::PreparationInput&, const FjFrame&, std::uint64_t instanceToken, bool contract, bool lifetime, std::string&, StateLifetimeCase = StateLifetimeCase::SuppliedStream);
     void check_prepared_state_lifetime(std::optional<JuicerTestSupport::PreparedStateHold>&, const FjAssets*, FjCuda*, const FjCudaContext&, const FjFrame&, const FjSubmission&, FjPreparedHostData&, FjErrorBuffer*, StateLifetimeCase);
+    struct BoundScannerPacket {
+        FjPreparedHostData prepared;
+        FjSubmission submission;
+    };
+    void check_spectral_packet_overlap(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const std::array<BoundScannerPacket, 2>& packets);
 
     // Temporal grain fixtures borrow the complete state; DIR-only callers need no hold here.
     void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext);
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext);
+    inline constexpr char kScanReadbackCaller[] = "shipping-scan-readback";
+    inline constexpr char kPlaneScanReadbackCaller[] = "shipping-plane-scan-readback";
+    inline constexpr char kDirScanReadbackCaller[] = "shipping-fused-dir-readback";
+    inline constexpr char kScratchScanReadbackCaller[] = "shipping-scratch-scan-readback";
+    inline constexpr std::array<std::string_view, 3> kScanReadbackCases{"producer", "reporter", "retry"};
+    enum class ReadbackProbe : std::uint8_t {
+        Inline,
+        Plane,
+        FusedDir
+    };
+    enum class ScanReadbackFault : std::uint8_t {
+        Existing,
+        ScratchOverflow
+    };
+    void check_scan_readback(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, ReadbackProbe probe, const BoundScannerPacket* switchedReporter = nullptr, ScanReadbackFault fault = ScanReadbackFault::Existing);
 
     inline constexpr char kGrainDispatchCaller[] = "grain-dispatch";
     inline constexpr std::array<std::string_view, 6> kGrainDispatchCases{"conflicting-models", "malformed-film-frame", "invalid-film-fraction", "missing-film-bank", "film-launch", "current-launch"};
@@ -69,7 +91,10 @@ namespace JuicerCudaTest {
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         std::string& diagnostic,
         const std::string& invocationPhase,
-        bool grainDispatchContract);
+        bool grainDispatchContract,
+        const JuicerTestSupport::PreparationInput* sourceParams = nullptr);
+
+    void check_shipping_print_preflash(const std::filesystem::path& resources, const JuicerTestSupport::PreparationInput& sourceParams);
 
 } // namespace JuicerCudaTest
 #endif

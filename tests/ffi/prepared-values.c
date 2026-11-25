@@ -44,7 +44,6 @@ typedef FjStatus (*FjCallDescriptorsFn)(void*, const FjFrameMathInput*, FjNative
 typedef FjRenderOutcome (*FjCallRenderFn)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
 typedef FjCallCompletionResult (*FjCallCompleteFn)(void*, const FjCallCompletionInput*);
 typedef void (*FjTraceSubmissionFn)(void*, const FjSubmission*, uint32_t);
-typedef FjStatus (*FjHostScannerFn)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 typedef FjStatus (*FjHostGaussianFn)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 typedef FjStatus (*FjPolicyFn)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
 typedef FjCallCompletionResult (*FjHeldRenderFn)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, uint64_t, FjAbortCallback, FjErrorBuffer*);
@@ -58,7 +57,6 @@ _Static_assert(_Generic(((FjCudaCallAccess*)0)->frame_descriptors, FjCallDescrip
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->render, FjCallRenderFn: 1, default: 0), "render signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, default: 0), "complete signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->trace_submission, FjTraceSubmissionFn: 1, default: 0), "submission trace signature");
-_Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerFn: 1, default: 0), "scanner callback signature");
 _Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
 _Static_assert(_Generic(&fj_test_prepared_state_frame_policy, FjPolicyFn: 1, default: 0), "frame policy signature");
 _Static_assert(_Generic(&fj_test_prepared_state_render, FjHeldRenderFn: 1, default: 0), "held render signature");
@@ -488,12 +486,12 @@ _Static_assert(offsetof(FjScatterHalation, channels) == 40, "FjScatterHalation.c
 _Static_assert(sizeof(((FjScatterHalation*)0)->channels) / sizeof(FjHalationChannel) == 3, "FjScatterHalation.channels extent");
 _Static_assert(sizeof(FjOptics) == 3056 && _Alignof(FjOptics) == 8, "FjOptics layout");
 _Static_assert(offsetof(FjOptics, highlight_boost) == 3024, "FjOptics.highlight_boost offset");
-_Static_assert(sizeof(FjPreparedHostData) == 6832 && _Alignof(FjPreparedHostData) == 8, "FjPreparedHostData layout");
-_Static_assert(offsetof(FjPreparedHostData, spatial_dir) == 4576, "FjPreparedHostData.spatial_dir offset");
-_Static_assert(offsetof(FjPreparedHostData, grain) == 5096, "FjPreparedHostData.grain offset");
-_Static_assert(offsetof(FjPreparedHostData, effects) == 5904, "FjPreparedHostData.effects offset");
-_Static_assert(offsetof(FjPreparedHostData, noise) == 6736, "FjPreparedHostData.noise offset");
-_Static_assert(offsetof(FjPreparedHostData, film_grain) == 6824, "FjPreparedHostData.film_grain offset");
+_Static_assert(sizeof(FjPreparedHostData) == 6712 && _Alignof(FjPreparedHostData) == 8, "FjPreparedHostData layout");
+_Static_assert(offsetof(FjPreparedHostData, spatial_dir) == 4456, "FjPreparedHostData.spatial_dir offset");
+_Static_assert(offsetof(FjPreparedHostData, grain) == 4976, "FjPreparedHostData.grain offset");
+_Static_assert(offsetof(FjPreparedHostData, effects) == 5784, "FjPreparedHostData.effects offset");
+_Static_assert(offsetof(FjPreparedHostData, noise) == 6616, "FjPreparedHostData.noise offset");
+_Static_assert(offsetof(FjPreparedHostData, film_grain) == 6704, "FjPreparedHostData.film_grain offset");
 _Static_assert(FJ_HALATION_FRAME_NONE == 0, "halation NONE tag");
 _Static_assert(FJ_HALATION_FRAME_RAW == 1, "halation RAW tag");
 _Static_assert(FJ_HALATION_FRAME_PIXEL_SIZE == 2, "halation PIXEL_SIZE tag");
@@ -1682,35 +1680,6 @@ static int scanner_correction_values(void) {
     return 0;
 }
 
-_Static_assert(sizeof(FjScannerLutInput) == 160 && _Alignof(FjScannerLutInput) == 8, "LUT input layout");
-_Static_assert(sizeof(FjScannerLutView) == 104 && _Alignof(FjScannerLutView) == 8, "LUT view layout");
-_Static_assert(sizeof(FjScannerLutFailure) == 24 && _Alignof(FjScannerLutFailure) == 8, "LUT failure layout");
-_Static_assert(offsetof(FjScannerLutInput, eps_c) == 0, "FjScannerLutInput.eps_c offset");
-_Static_assert(offsetof(FjScannerLutInput, eps_m) == 16, "FjScannerLutInput.eps_m offset");
-_Static_assert(offsetof(FjScannerLutInput, eps_y) == 32, "FjScannerLutInput.eps_y offset");
-_Static_assert(offsetof(FjScannerLutInput, weighted_x) == 48, "FjScannerLutInput.weighted_x offset");
-_Static_assert(offsetof(FjScannerLutInput, weighted_y) == 64, "FjScannerLutInput.weighted_y offset");
-_Static_assert(offsetof(FjScannerLutInput, weighted_z) == 80, "FjScannerLutInput.weighted_z offset");
-_Static_assert(offsetof(FjScannerLutInput, baseline_min) == 96, "FjScannerLutInput.baseline_min offset");
-_Static_assert(offsetof(FjScannerLutInput, range_min_cmy) == 112, "FjScannerLutInput.range_min_cmy offset");
-_Static_assert(offsetof(FjScannerLutInput, inverse_span_cmy) == 124, "FjScannerLutInput.inverse_span_cmy offset");
-_Static_assert(offsetof(FjScannerLutInput, sample_count) == 136, "FjScannerLutInput.sample_count offset");
-_Static_assert(offsetof(FjScannerLutInput, inv_yn) == 140, "FjScannerLutInput.inv_yn offset");
-_Static_assert(offsetof(FjScannerLutInput, has_baseline) == 144, "FjScannerLutInput.has_baseline offset");
-_Static_assert(offsetof(FjScannerLutInput, medium) == 148, "FjScannerLutInput.medium offset");
-_Static_assert(offsetof(FjScannerLutInput, resolution) == 152, "FjScannerLutInput.resolution offset");
-_Static_assert(offsetof(FjScannerLutView, resolution) == 0, "FjScannerLutView.resolution offset");
-_Static_assert(offsetof(FjScannerLutView, log2_xyz) == 8, "FjScannerLutView.log2_xyz offset");
-_Static_assert(offsetof(FjScannerLutView, slope_c) == 24, "FjScannerLutView.slope_c offset");
-_Static_assert(offsetof(FjScannerLutView, slope_m) == 40, "FjScannerLutView.slope_m offset");
-_Static_assert(offsetof(FjScannerLutView, slope_y) == 56, "FjScannerLutView.slope_y offset");
-_Static_assert(offsetof(FjScannerLutView, cell_min) == 72, "FjScannerLutView.cell_min offset");
-_Static_assert(offsetof(FjScannerLutView, cell_max) == 88, "FjScannerLutView.cell_max offset");
-_Static_assert(offsetof(FjScannerLutFailure, reason) == 0, "FjScannerLutFailure.reason offset");
-_Static_assert(offsetof(FjScannerLutFailure, channel) == 4, "FjScannerLutFailure.channel offset");
-_Static_assert(offsetof(FjScannerLutFailure, index) == 8, "FjScannerLutFailure.index offset");
-_Static_assert(offsetof(FjScannerLutFailure, buffer) == 16, "FjScannerLutFailure.buffer offset");
-
 _Static_assert(_Generic(&fj_test_scanner_color_prepare, FjStatus (*)(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*): 1, default: 0), "OFF scanner color signature");
 _Static_assert(sizeof(FjScannerColorInput) == 40 && _Alignof(FjScannerColorInput) == 8, "OFF scanner color input");
 _Static_assert(offsetof(FjScannerColorInput, medium) == 0 && offsetof(FjScannerColorInput, output_space) == 4 && offsetof(FjScannerColorInput, apply_cctf) == 8 && offsetof(FjScannerColorInput, illuminant_xyz) == 12 && offsetof(FjScannerColorInput, illuminant_hash) == 24 && offsetof(FjScannerColorInput, active_gamut_recipe_hash) == 32, "OFF scanner color input offsets");
@@ -1820,154 +1789,6 @@ static int scanner_color_values(void) {
     return 0;
 }
 
-
-_Static_assert(_Generic(&fj_test_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "OFF descriptor signature");
-_Static_assert(sizeof(FjScannerLutDescriptorInput) == 144 && _Alignof(FjScannerLutDescriptorInput) == 8, "OFF descriptor input layout");
-_Static_assert(sizeof(FjScannerLutDescriptor) == 64 && _Alignof(FjScannerLutDescriptor) == 8, "OFF complete descriptor layout");
-_Static_assert(sizeof(FjScannerLutDescriptorFailure) == 8 && _Alignof(FjScannerLutDescriptorFailure) == 4, "OFF descriptor failure layout");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->mode, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, mode) == 0, "OFF FjScannerLutDescriptorInput.mode");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->route, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, route) == 4, "OFF FjScannerLutDescriptorInput.route");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->capture_polarity, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, capture_polarity) == 8, "OFF FjScannerLutDescriptorInput.capture_polarity");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->bounds_medium, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, bounds_medium) == 12, "OFF FjScannerLutDescriptorInput.bounds_medium");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->bounds_source, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, bounds_source) == 16, "OFF FjScannerLutDescriptorInput.bounds_source");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->output_medium, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, output_medium) == 20, "OFF FjScannerLutDescriptorInput.output_medium");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->profile_present, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, profile_present) == 24, "OFF FjScannerLutDescriptorInput.profile_present");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->resolution, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, resolution) == 28, "OFF FjScannerLutDescriptorInput.resolution");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->density_bounds_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, density_bounds_hash) == 32, "OFF FjScannerLutDescriptorInput.density_bounds_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->print_profile_token, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, print_profile_token) == 40, "OFF FjScannerLutDescriptorInput.print_profile_token");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->channel_density_cmy, FjFloatSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, channel_density_cmy) == 48, "OFF FjScannerLutDescriptorInput.channel_density_cmy");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->base_density, FjFloatSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, base_density) == 64, "OFF FjScannerLutDescriptorInput.base_density");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->viewing_illuminant, FjByteSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, viewing_illuminant) == 80, "OFF FjScannerLutDescriptorInput.viewing_illuminant");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->profile_viewing_illuminant, FjByteSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, profile_viewing_illuminant) == 96, "OFF FjScannerLutDescriptorInput.profile_viewing_illuminant");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->observer_identity, FjByteSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, observer_identity) == 112, "OFF FjScannerLutDescriptorInput.observer_identity");
-_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->print_profile_key, FjByteSpan: 1, default: 0) && offsetof(FjScannerLutDescriptorInput, print_profile_key) == 128, "OFF FjScannerLutDescriptorInput.print_profile_key");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->route, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, route) == 0, "OFF FjScannerLutDescriptor.route");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->medium, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, medium) == 4, "OFF FjScannerLutDescriptor.medium");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->capture_polarity, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, capture_polarity) == 8, "OFF FjScannerLutDescriptor.capture_polarity");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->resolution, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, resolution) == 12, "OFF FjScannerLutDescriptor.resolution");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->density_bounds_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, density_bounds_hash) == 16, "OFF FjScannerLutDescriptor.density_bounds_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->channel_density_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, channel_density_hash) == 24, "OFF FjScannerLutDescriptor.channel_density_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->base_density_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, base_density_hash) == 32, "OFF FjScannerLutDescriptor.base_density_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->viewing_illuminant_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, viewing_illuminant_hash) == 40, "OFF FjScannerLutDescriptor.viewing_illuminant_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->observer_hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, observer_hash) == 48, "OFF FjScannerLutDescriptor.observer_hash");
-_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->hash, uint64_t: 1, default: 0) && offsetof(FjScannerLutDescriptor, hash) == 56, "OFF FjScannerLutDescriptor.hash");
-_Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->reason, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorFailure, reason) == 0, "OFF FjScannerLutDescriptorFailure.reason");
-_Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->lane, uint32_t: 1, default: 0) && offsetof(FjScannerLutDescriptorFailure, lane) == 4, "OFF FjScannerLutDescriptorFailure.lane");
-
-static void descriptor_report(const char* name, FjStatus result, FjScannerLutDescriptorFailure failure, uint64_t hash) {
-    printf("SCANNER_DESCRIPTOR_CASE %s category=%u api=%u native_code=%d reason=%u lane=%u fields=10-pass hash=%llu\n", name, result.category, result.api, result.native_code, failure.reason, failure.lane, (unsigned long long)hash);
-}
-static int descriptor_envelope(FjStatus result, FjScannerLutDescriptorFailure failure, size_t i) {
-    return result.category == descriptor_envelopes[i][0] && result.api == descriptor_envelopes[i][1] && result.native_code == (int32_t)descriptor_envelopes[i][2] && failure.reason == descriptor_envelopes[i][3] && failure.lane == descriptor_envelopes[i][4];
-}
-static int scanner_descriptor_values(void) {
-    const FjScannerLutDescriptor zero = {0};
-    float channel[243], base[81];
-    FjScannerLutDescriptor out;
-    FjScannerLutDescriptorFailure failure;
-    FjScannerLutDescriptorInput first = {0};
-    for (size_t i = 0; i < sizeof(descriptor_inputs) / sizeof(descriptor_inputs[0]); ++i) {
-        memcpy(channel, descriptor_channel_words[i], sizeof channel);
-        memcpy(base, descriptor_base_words[i], sizeof base);
-        FjScannerLutDescriptorInput input = descriptor_inputs[i];
-        input.channel_density_cmy = (FjFloatSpan){channel, 243};
-        input.base_density = (FjFloatSpan){base, 81};
-        if (i == 0)
-            first = input;
-        memset(&out, 0xa5, sizeof out);
-        failure = (FjScannerLutDescriptorFailure){99, 99};
-        char message[256];
-        memset(message, 0x55, sizeof message);
-        FjErrorBuffer error = {message, sizeof message, 99};
-        FjStatus result = fj_test_scanner_lut_describe(&input, &out, &failure, &error);
-        CHECK(descriptor_envelope(result, failure, i));
-        CHECK(memcmp(&out, &descriptor_expected[i], sizeof out) == 0);
-        CHECK(error.length == strlen(descriptor_diagnostics[i]) && strcmp(message, descriptor_diagnostics[i]) == 0);
-        descriptor_report(descriptor_names[i], result, failure, out.hash);
-    }
-    memcpy(channel, descriptor_channel_words[0], sizeof channel);
-    memcpy(base, descriptor_base_words[0], sizeof base);
-    for (size_t i = 0; i < 16; ++i) {
-        FjScannerLutDescriptorInput input = first;
-        const FjScannerLutDescriptorInput* argument = &input;
-        FjScannerLutDescriptor* output = &out;
-        FjScannerLutDescriptorFailure* details = &failure;
-        char message[256];
-        memset(message, 0x55, sizeof message);
-        FjErrorBuffer error = {message, sizeof message, 99};
-        memset(&out, 0xa5, sizeof out);
-        failure = (FjScannerLutDescriptorFailure){99, 99};
-        switch (i) {
-            case 0:
-                input.mode = 2;
-                break;
-            case 1:
-                input.route = 4;
-                break;
-            case 2:
-                input.capture_polarity = 256;
-                break;
-            case 3:
-                input.bounds_medium = 256;
-                break;
-            case 4:
-                input.profile_present = 2;
-                break;
-            case 5:
-                input.channel_density_cmy.count = 242;
-                break;
-            case 6:
-                input.base_density.count = 80;
-                break;
-            case 7:
-                input.channel_density_cmy.data = NULL;
-                break;
-            case 8:
-                input.base_density.data = (const float*)(uintptr_t)1;
-                break;
-            case 9:
-                input.viewing_illuminant = (FjByteSpan){NULL, 1};
-                break;
-            case 10:
-                input.observer_identity.count = SIZE_MAX;
-                break;
-            case 11:
-                argument = NULL;
-                break;
-            case 12:
-                output = NULL;
-                break;
-            case 13:
-                details = NULL;
-                break;
-            case 14:
-                error.data = NULL;
-                error.capacity = 1;
-                break;
-            case 15:
-                input.mode = 1;
-                input.bounds_source = 256;
-                break;
-        }
-        FjStatus result = fj_test_scanner_lut_describe(argument, output, details, &error);
-        CHECK(status(result, 2));
-        if (details)
-            CHECK(failure.reason == 1 && failure.lane == 0);
-        if (output)
-            CHECK(memcmp(&out, &zero, sizeof out) == 0);
-        if (i != 14)
-            CHECK(strcmp(message, "invalid scanner LUT descriptor arguments") == 0);
-        else
-            CHECK(error.length == 0);
-        descriptor_report(descriptor_names[24 + i], result, details ? failure : (FjScannerLutDescriptorFailure){0, 0}, 0);
-    }
-    FjErrorBuffer empty = {(char*)(uintptr_t)1, 0, 99};
-    FjStatus result = fj_test_scanner_lut_describe(&first, &out, &failure, &empty);
-    CHECK(status(result, 0) && empty.length == 0 && descriptor_envelope(result, failure, 40));
-    CHECK(memcmp(&out, &descriptor_expected[0], sizeof out) == 0);
-    descriptor_report(descriptor_names[40], result, failure, out.hash);
-    return 0;
-}
 
 _Static_assert(sizeof(FjScannerPostEffectsInput) == 32 && _Alignof(FjScannerPostEffectsInput) == 4, "FjScannerPostEffectsInput layout");
 _Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->route, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsInput, route) == 0, "FjScannerPostEffectsInput.route");
@@ -3778,7 +3599,6 @@ static int prepared_state_values(FjPathView path) {
         params.scanner_white_level = .98;
         params.scanner_black_level = .01;
         params.input_compression_enabled = 1;
-        params.scanner_lut_resolution = 17;
         params.output_gamut_compression_enabled = 1;
         params.output_cctf_encoding = 1;
         params.normalize_print_exposure = params.print_exposure_compensation = 1;
@@ -3875,7 +3695,6 @@ int fj_test_prepared_values(int argc, char** argv) {
     CHECK(balance_values() == 0);
     CHECK(scanner_correction_values() == 0);
     CHECK(scanner_color_values() == 0);
-    CHECK(scanner_descriptor_values() == 0);
     CHECK(post_cases() == 0);
     CHECK(frame_values() == 0);
     CHECK(halation_frame_values() == 0);

@@ -27,9 +27,11 @@
 #include "owner_fixture.h"
 #include "ProcessRoot.h"
 #include "case_results.h"
+#include "exposure_fixture.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_owner.h"
 #include "prepared_product_fixture.h"
+#include "print_illuminant_fixture.h"
 #include "spectral_source_fixture.h"
 #include "test_asset_workspace.h"
 
@@ -178,7 +180,6 @@ namespace {
             out["scatterHalationControls"] = controls_json(p.values.scatter_halation);
             out["scannerBlackCorrection"] = p.values.scanner_black_correction;
             out["scannerWhiteCorrection"] = p.values.scanner_white_correction;
-            out["scannerLutResolution"] = p.values.scanner_lut_resolution;
             out["outputColorSpace"] = p.values.output_color_space;
             out["outputCctfEncoding"] = p.values.output_cctf_encoding;
             out["outputGamutCompressionEnabled"] = p.values.output_gamut_compression_enabled;
@@ -244,7 +245,6 @@ namespace {
             require(status.category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
             return view;
         }
-        Json scanner_descriptor(const FjScannerLutDescriptor& descriptor);
         Json publication_complete_result(const JuicerTestSupport::PreparedStateHold& product) {
             const auto view = prepared_view(product);
             const auto& raw = view.film_exposure;
@@ -275,12 +275,8 @@ namespace {
                     {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, view.print_recipe_hash, view.scanner_recipe_hash, view.output_color.gamut_recipe_hash, view.recipe_hash, view.upload_core_hash, view.scanner_hash}},
                     {"scanner_color", color_result(view.scanner_color)},
                     {"scanner_tables", tables_result(view.scanner_tables)},
-                    {"scanner_descriptor", scanner_descriptor(view.scanner_lut)},
                     {"gamut_entry", bits(view.output_color.native_rgb_to_d65_xyz, 9)},
                     {"gamut_exit", bits(view.output_color.d65_xyz_to_native_rgb, 9)}};
-        }
-        Json scanner_descriptor(const FjScannerLutDescriptor& descriptor) {
-            return {{"route", static_cast<int>(descriptor.route)}, {"medium", static_cast<int>(descriptor.medium)}, {"polarity", static_cast<int>(descriptor.capture_polarity)}, {"density_bounds_hash", descriptor.density_bounds_hash}, {"channel_density_hash", descriptor.channel_density_hash}, {"base_density_hash", descriptor.base_density_hash}, {"illuminant_hash", descriptor.viewing_illuminant_hash}, {"observer_hash", descriptor.observer_hash}, {"resolution", descriptor.resolution}, {"hash", descriptor.hash}};
         }
         Json complete_result(JuicerTestSupport::PreparedStateHold& product) {
             std::array<char, 2048> diagnostic{};
@@ -316,7 +312,6 @@ namespace {
                     {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, view.print_recipe_hash, view.scanner_recipe_hash, view.output_color.gamut_recipe_hash, view.recipe_hash, view.upload_core_hash, view.scanner_hash}},
                     {"scanner_color", color_result(view.scanner_color)},
                     {"scanner_tables", tables_result(view.scanner_tables)},
-                    {"scanner_descriptor", scanner_descriptor(view.scanner_lut)},
                     {"gamut_entry", bits(view.output_color.native_rgb_to_d65_xyz, 9)},
                     {"gamut_exit", bits(view.output_color.d65_xyz_to_native_rgb, 9)}};
         }
@@ -464,7 +459,7 @@ namespace {
                     p.values.camera_filter_ir[1] = 675;
                     p.values.camera_filter_ir[2] = 15;
                 }
-                require(controls_json(p) == row.at("controls"), "all serialized native controls preserved");
+                require(controls_json(p) == spectral_controls_from_archive(row.at("controls")), "all serialized native controls preserved");
                 std::array<char, 2048> diagnostic{};
                 FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
                 std::optional<JuicerTestSupport::PreparedStateHold> product;
@@ -510,11 +505,13 @@ namespace {
                         result["main_light"] = bits(view.print.main_illuminant.data, view.print.main_illuminant.count);
                         result["preflash_light"] = bits(view.print.preflash_illuminant.data, view.print.preflash_illuminant.count);
                         result["preflash_raw"] = bits(view.print.preflash_raw_cmy, 3);
-                        result["print_descriptors"] = {view.print.hash, view.print.main_illuminant_hash, view.print.preflash_illuminant_hash, view.print.preflash_raw_hash, view.print.balance_hash};
+                        result["print_descriptors"] = {view.print.main_illuminant_hash, view.print.preflash_illuminant_hash};
                     }
-                    const auto& expected = fixture.contains("expected_records")
+                    const auto& archived = fixture.contains("expected_records")
                                                ? fixture.at("expected_records").at(row.at("expected_record").get<std::size_t>())
                                                : row.at("expected");
+                    auto expected = expected_spectral_product(result, ArchivedSpectralProduct{archived});
+                    PrintIlluminantFixtures::select_frozen_light_hashes(expected, "print_descriptors");
                     if (result != expected) {
                         const auto diff = Json::diff(expected, result);
                         throw std::runtime_error("completed product first difference " + std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(method) + "/" + label.get<std::string>() + ": " + diff[0].dump());
@@ -1012,8 +1009,9 @@ void fj_test_tc_lut_products(const FjAssets* assets, const nlohmann::json& fixtu
         FjPreparedStateView view{};
         require(product->view(view, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
         const auto actual = complete_result(*product);
+        const auto expected = expected_spectral_product(actual, ArchivedSpectralProduct{row.at("expected")});
         for (const auto& [name, value] : actual.items())
-            require(value == row["expected"][name], "TC complete native product field: " + name);
+            require(value == expected.at(name), "TC complete native product field: " + name);
         require((view.film_exposure.tc_lut_rgba.count != 0) == (method != 1), "Mallett no-TC owner");
         if (view.film_exposure.tc_lut_rgba.count) {
             std::uint64_t hash = Hash::kFnvOffset;
@@ -1028,7 +1026,14 @@ void fj_test_tc_lut_products(const FjAssets* assets, const nlohmann::json& fixtu
             auto outputOnly = JuicerTestSupport::prepare_product(assets, changed);
             FjPreparedStateView outputView{};
             require(outputOnly.view(outputView, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
-            require(outputView.film_exposure.tc_lut_hash == key && outputView.upload_core_hash != view.upload_core_hash, "CCTF-only keeps TC identity and changes the enclosing upload identity");
+            const auto beforeTc = view.film_exposure.tc_lut_rgba;
+            const auto afterTc = outputView.film_exposure.tc_lut_rgba;
+            require(outputView.film_exposure.tc_lut_hash == key && afterTc.count == beforeTc.count &&
+                        (beforeTc.count == 0 || std::memcmp(beforeTc.data, afterTc.data, beforeTc.count * sizeof(float)) == 0),
+                    "CCTF-only preserves the TC key and table words");
+            require(outputView.scanner_hash != view.scanner_hash, "CCTF-only changes the spectral submission binding");
+            require(outputView.scanner_recipe_hash != view.scanner_recipe_hash && outputView.upload_core_hash != view.upload_core_hash,
+                    "CCTF-only changes the scanner recipe and upload identities");
             changed = p;
             changed.values.camera_exposure_compensation_ev += .25;
             auto exposureOnly = JuicerTestSupport::prepare_product(assets, changed);
@@ -1190,7 +1195,9 @@ void fj_test_input_hull_products(const FjAssets* assets, const nlohmann::json& f
         require(prepared.category == FJ_STATUS_SUCCESS && product, "actual A8 prepared state completes");
         FjPreparedStateView view{};
         require(product->view(view, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
-        require(complete_result(*product) == row["expected"], "all native A8 product fields exact");
+        const auto actual = complete_result(*product);
+        const auto expected = expected_spectral_product(actual, ArchivedSpectralProduct{row.at("expected")});
+        require(actual == expected, "all native A8 product fields exact: " + Json::diff(expected, actual).dump());
         require((view.input_hull.xy.count != 0) == row.contains("hull"), "route/method hull ownership");
         if (view.input_hull.xy.count) {
             require(view.input_hull.hash == row["hull"]["hash"] && bits(view.input_hull.center_xy, 2) == row["hull"]["center"], "actual held hull identity");

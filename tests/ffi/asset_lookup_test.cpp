@@ -148,6 +148,20 @@ namespace {
         return {state.film_reference.hash, state.scanner_recipe_hash, state.recipe_hash, reference_value(state.film_reference)};
     }
 
+    void capture_rust_identity(JuicerTestSupport::InstanceFixture& state, const JuicerTestSupport::PreparationInput& controls) {
+        FjCaptureStart capture{};
+        FjSnapshotStart snapshot{};
+        FjErrorBuffer error{};
+        std::uint32_t update = FJ_UPDATE_NONE;
+        ASSERT_EQ(state.begin_capture(FJ_CAPTURE_CHANGE, capture, error).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(capture.kind, FJ_CAPTURE_STARTED);
+        ASSERT_EQ(state.begin_snapshot(capture.capture, snapshot, error).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(snapshot.kind, FJ_SNAPSHOT_READY);
+        ASSERT_EQ(state.install_rust_capture(capture.capture, snapshot.write_revision, controls, update, error).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(update, FJ_UPDATE_APPLIED);
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).inputIdentity, JuicerTestSupport::hash_input_identity(controls));
+    }
+
     JuicerTestSupport::PreparationInput lookup_controls() {
         JuicerTestSupport::PreparationInput params;
         params.film_key = "kodak_portra_400";
@@ -427,7 +441,7 @@ namespace {
         ASSERT_NO_THROW(set_lookup_fault(0));
 
         JuicerTestSupport::InstanceFixture state;
-        JuicerTestSupport::capture(state, controls);
+        ASSERT_NO_FATAL_FAILURE(capture_rust_identity(state, controls));
         const auto initial = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(initial.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(initial.state);
@@ -436,10 +450,12 @@ namespace {
         ASSERT_NE(old_value.scanner_recipe_hash, 0u);
         ASSERT_NE(old_value.recipe_hash, 0u);
         const auto previous = JuicerTestSupport::PublicationObserver::metrics(state);
+        ASSERT_EQ(previous.inputIdentity, previous.publishedIdentity);
 
         auto changed = controls;
         changed.values.camera_exposure_compensation_ev += 0.25;
-        JuicerTestSupport::capture(state, changed);
+        ASSERT_NO_FATAL_FAILURE(capture_rust_identity(state, changed));
+        ASSERT_NE(JuicerTestSupport::PublicationObserver::metrics(state).inputIdentity, previous.inputIdentity);
         ASSERT_NO_THROW(set_lookup_fault(1));
         const auto unsupported_mode = fj_test_film_reference_lookup_fault(2);
         EXPECT_EQ(unsupported_mode.category, FJ_STATUS_UNSUPPORTED_INPUT);
@@ -456,19 +472,23 @@ namespace {
         EXPECT_EQ(after_failure.publishedIdentity, previous.publishedIdentity);
         EXPECT_EQ(published_reference(initial), old_value);
 
-        JuicerTestSupport::capture(state, controls);
+        ASSERT_NO_FATAL_FAILURE(capture_rust_identity(state, controls));
         const auto reused_old = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(reused_old.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(reused_old.state);
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused_old.state), JuicerTestSupport::PublicationObserver::backing(*initial.state));
-        EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build);
+        const auto reusedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        EXPECT_EQ(reusedMetrics.build, previous.build);
+        EXPECT_EQ(reusedMetrics.inputIdentity, previous.inputIdentity);
+        EXPECT_EQ(reusedMetrics.publishedIdentity, previous.publishedIdentity);
 
-        JuicerTestSupport::capture(state, changed);
+        ASSERT_NO_FATAL_FAILURE(capture_rust_identity(state, changed));
         const auto retry = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(retry.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(retry.state);
         auto retry_metrics = JuicerTestSupport::PublicationObserver::metrics(state);
         EXPECT_EQ(retry_metrics.inputIdentity, JuicerTestSupport::hash_input_identity(changed));
+        EXPECT_EQ(retry_metrics.publishedIdentity, retry_metrics.inputIdentity);
         EXPECT_EQ(retry_metrics.build, previous.build + 1);
         const auto reused = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(reused.kind, FJ_ADMISSION_READY);

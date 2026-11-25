@@ -11,7 +11,6 @@ extern "C" {
  * user and candidate views expire when the immediate native render returns. */
 typedef struct FjHostPreparation {
     void* user;
-    FjStatus (*scanner_lut)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
     FjStatus (*gaussian)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 } FjHostPreparation;
 

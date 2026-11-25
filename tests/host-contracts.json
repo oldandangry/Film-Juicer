@@ -1,6 +1,10 @@
 {
   "schema": "native-host-contracts-v1",
   "required": [
+    "Ofx.Host.Module",
+    "Ofx.Host.Instance",
+    "Ofx.Host.Render",
+    "Ofx.Host.FilmV1Instance",
     "Rust.Core",
     "Rust.Bridge",
     "Ffi.Host.PreparedState",
@@ -45,7 +49,7 @@
     },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
-      "registrations": 40
+      "registrations": 36
     },
     "JuicerFilmDevelopmentTests": {
       "protocol": "custom",
@@ -166,7 +170,7 @@
     },
     "JuicerOfxInstanceTests": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 2
     },
     "JuicerOfxActionTests": {
       "protocol": "custom",
@@ -256,8 +260,6 @@
     "Ffi.Host.PrintPreflash": 4,
     "Ffi.Host.ScannerColor": 1,
     "Ffi.Host.ScannerCorrection": 5,
-    "Ffi.Host.ScannerLut": 6,
-    "Ffi.Host.ScannerLutDescriptor": 3,
     "Ffi.Host.ScannerPostEffects": 3,
     "Ffi.Host.SharedFixtureLoading": 2,
     "Ffi.Host.SpectralPreparation": 2,
@@ -293,7 +295,7 @@
     "Ffi.Host.OutputColorValues": 1
   },
   "rust_cohorts": {
-    "film-juicer-core": 89,
+    "film-juicer-core": 86,
     "film-juicer-core::assets": 17,
     "film-juicer-core::calibration": 6,
     "film-juicer-core::color": 8,
@@ -423,6 +425,15 @@
     "RenderAssertions.RejectsEveryHashAndSeedLane": 1
   },
   "native_membership": {
+    "Ofx.Host.FilmV1Instance": {
+      "listed": 3,
+      "terminal": 3,
+      "required": [
+        ["ofx.film_v1.instance", "create"],
+        ["ofx.film_v1.instance", "types"],
+        ["ofx.film_v1.instance", "destroy"]
+      ]
+    },
     "Grain.Host.FilmReferenceOracle": {
       "listed": 2,
       "terminal": 2,
@@ -433,75 +444,7 @@
     "Rust.Core",
     "Rust.Bridge"
   ],
-  "grain_preview": {
-    "rust_core_publication": "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities",
-    "replaces": {
-      "Ofx.Host.Module": "Ofx.Host.GrainPreviewModule",
-      "Ofx.Host.Instance": "Ofx.Host.GrainPreviewInstance",
-      "Ofx.Host.Render": "Ofx.Host.GrainPreviewRender"
-    },
-    "targets": {
-      "JuicerProductionPreparedRenderProbe": {
-        "protocol": "custom",
-        "registrations": 1
-      }
-    },
-    "required": [
-      "Ffi.Host.GrainPreviewDiscovery",
-      "Ofx.Host.GrainPreviewModule",
-      "Ofx.Host.GrainPreviewInstance",
-      "Ofx.Host.GrainPreviewRender"
-    ],
-    "native_cohorts": {
-      "Ffi.Host.GrainPreviewDiscovery": 1,
-      "Ofx.Host.GrainPreviewModule": 3,
-      "Ofx.Host.GrainPreviewInstance": 0,
-      "Ofx.Host.GrainPreviewRender": 4
-    },
-    "native_membership": {
-      "Ffi.Host.GrainPreviewDiscovery": {
-        "listed": 1,
-        "terminal": 1,
-        "required": [
-          [
-            "grain-preview-discovery",
-            "preview-module"
-          ]
-        ]
-      },
-      "Ofx.Host.GrainPreviewModule": {
-        "listed": 8,
-        "terminal": 347,
-        "required": [
-          ["ofx.module", "discovery"],
-          ["ofx.module", "binding"],
-          ["ofx.module", "load"],
-          ["ofx.module", "describe"],
-          ["ofx.module", "defaults"],
-          ["ofx.module", "reentry"],
-          ["ofx.module", "reload"],
-          ["ofx.module", "unload"]
-        ]
-      },
-      "Ofx.Host.GrainPreviewInstance": {
-        "listed": 3,
-        "terminal": 3,
-        "required": [
-          ["ofx.grain_preview.instance", "create"],
-          ["ofx.grain_preview.instance", "types"],
-          ["ofx.grain_preview.instance", "destroy"]
-        ]
-      },
-      "Ofx.Host.GrainPreviewRender": {
-        "listed": 4,
-        "terminal": 94,
-        "required": [
-          ["ofx.render", "non_cuda"],
-          ["ofx.render", "images"],
-          ["ofx.render", "formats"],
-          ["ofx.render", "time"]
-        ]
-      }
-    }
+  "film_v1": {
+    "rust_core_publication": "state::tests::film_proxy_publication_uses_full_grid_and_encloses_its_densities"
   }
 }

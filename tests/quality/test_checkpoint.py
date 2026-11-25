@@ -1559,6 +1559,12 @@ class RustReceiptBundleTests(unittest.TestCase):
                         member = f"{runtime}-contracts.json"
                         catalog = json.loads(payloads[member])
                         source = json.loads((root / "tests" / member).read_bytes())
+                        legacy = json.loads(
+                            Path(__file__).with_name("legacy-grain-preview-contracts.json").read_bytes()
+                        )
+                        source["grain_preview"] = (
+                            legacy["host"]["grain_preview"] if runtime == "host" else legacy["gpu"]
+                        )
                         paths = {}
                         properties = [{"name": "LABELS", "value": [runtime]}]
 
@@ -1589,7 +1595,7 @@ class RustReceiptBundleTests(unittest.TestCase):
                             ]
                             target = "JuicerProductionPreparedRenderProbe"
                             name = "Ffi.Gpu.ProductionPreparedRender"
-                            catalog["targets"][target] = source["targets"][target]
+                            catalog["targets"][target] = {"protocol": "custom", "registrations": 1}
                             catalog["required"].append(name)
                             register(target, name)
                             sections.append(("grain_preview_motion_replay", replay, case == "drop-replay"))
@@ -1740,7 +1746,8 @@ class RustReceiptBundleTests(unittest.TestCase):
         }
         # This unit isolates the aperture section; staged preview has its own
         # consumer and cohort controls in the complete receipt test above.
-        catalog["grain_preview"] = full["grain_preview"]
+        legacy = json.loads(Path(__file__).with_name("legacy-grain-preview-contracts.json").read_bytes())
+        catalog["grain_preview"] = legacy["gpu"]
         merged = qualification.configured_product_contract(catalog, "gpu", config, preset)
         self.assertIn(target, merged["targets"])
         membership = merged["native_membership"][name]
@@ -1766,11 +1773,29 @@ class RustReceiptBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incorrect Windows aperture executable"):
             qualification.product_artifact_consumers(wrong, build, False, aperture_target=target)
 
+    def test_standard_film_uses_platform_apertures_and_rejects_preview_toggle(self):
+        for preset, replay, target in (
+            ("windows-clang-release", "OFF", qualification.WINDOWS_APERTURE_TARGET),
+            ("linux-release", "ON", qualification.MOTION_REPLAY_TARGET),
+        ):
+            configuration = {
+                "BUILD_TESTING": "ON",
+                qualification.FILM_V1_CONFIGURATION_KEY: "ON",
+                "JUICER_GRAIN_MOTION_REPLAY_CONFIGURED": replay,
+                qualification.APERTURE_CONFIGURATION_KEY: target,
+            }
+            self.assertEqual(qualification.configured_aperture_target(configuration, preset), target)
+            with self.assertRaisesRegex(ValueError, "invalid standard Film v1 product configuration"):
+                qualification.configured_aperture_target({**configuration, "JUICER_GRAIN_PREVIEW": "OFF"}, preset)
+            with self.assertRaisesRegex(ValueError, "configured aperture target"):
+                qualification.configured_aperture_target(
+                    {**configuration, qualification.APERTURE_CONFIGURATION_KEY: "OFF"}, preset
+                )
+
     def test_preview_host_witness_requires_own_command_and_cases(self):
         from copy import deepcopy
 
-        root = Path(verify.__file__).parent.parent
-        host = json.loads((root / "tests/host-contracts.json").read_bytes())
+        host = json.loads(Path(__file__).with_name("legacy-grain-preview-contracts.json").read_bytes())["host"]
         preset = "linux-debug"
         build = "/configured/out/build/linux-debug"
         configuration = {

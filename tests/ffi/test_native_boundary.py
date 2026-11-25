@@ -455,7 +455,7 @@ class NativeBoundary(unittest.TestCase):
         # The executor also binds the existing frame-local print-glare seed.
         # Retire color hashing everywhere while retaining that exact consumer.
         glare_seed = """Hash::hash_uint64_values(
-                {recipeHash,
+                {glareHash,
                  snapshot.frameToken.value,
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)})"""
@@ -699,7 +699,7 @@ class NativeBoundary(unittest.TestCase):
         self.assertFalse((ROOT / "src/Scanner.cpp").exists())
         header = (ROOT / "src/Scanner.h").read_text(encoding="utf-8")
         bridge = (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8")
-        retired = r"\b(?:hash_scanner_spectral_lut_descriptor|hash_nan_preserving_floats|kScannerSpectralLutSchemaVersion|DirectScannerLutInput|PrintScannerLutInput|PrintCorrectionDerivationInput|build_direct_scanner_spectral_lut_descriptor|build_print_scanner_spectral_lut_descriptor|build_direct_scanner_color_correction_descriptor|build_print_scanner_color_correction_descriptor|SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR)\b|_native_baseline"
+        retired = r"\b(?:ScannerSpectralLutDescriptor|prepare_scanner_lut|hash_scanner_spectral_lut_descriptor|hash_nan_preserving_floats|kScannerSpectralLutSchemaVersion|DirectScannerLutInput|PrintScannerLutInput|PrintCorrectionDerivationInput|build_direct_scanner_spectral_lut_descriptor|build_print_scanner_spectral_lut_descriptor|build_direct_scanner_color_correction_descriptor|build_print_scanner_color_correction_descriptor|SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR)\b|_native_baseline"
         self.assertNotRegex(header + bridge, retired)
         for text in (
             "DirectScannerLutInput input;",
@@ -709,17 +709,19 @@ class NativeBoundary(unittest.TestCase):
         ):
             self.assertRegex(text, retired)
         self.assertNotIn("Hash::", bridge)
-        reader = (ROOT / "tests/ffi/scanner_lut_descriptor_test.inc").read_text(encoding="utf-8")
-        self.assertIn("representableRows == (products ? 4u : 500u)", reader)
-        self.assertIn("retiredPointerRows == (products ? 0u : 20u)", reader)
-        self.assertIn('"null-preempts-route-255"', reader)
+        self.assertFalse((ROOT / "tests/ffi/scanner_lut_descriptor_test.inc").exists())
+        host = (ROOT / "native/juicer_host_preparation.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(host, retired)
+        self.assertIn("prepare_gaussian_kernel", host)
 
     def test_native_gaussian_coefficient_producer_and_capture_access_stay_deleted(self):
-        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
-        header = (ROOT / "src/Cuda/JuicerCudaResources.h").read_text()
+        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "src/Cuda/JuicerCudaResources.h").read_text(encoding="utf-8")
         for name in ("build_gaussian_weights_cpu", "capture_native"):
             self.assertNotIn(name, source + header)
-        self.assertNotIn("capture-gaussian-kernels", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text())
+        self.assertNotIn(
+            "capture-gaussian-kernels", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text(encoding="utf-8")
+        )
         for name in ("RustGaussianBridge.cpp", "RustGaussianBridge.h"):
             self.assertFalse((ROOT / "src" / name).exists())
         retired = (
@@ -747,12 +749,12 @@ class NativeBoundary(unittest.TestCase):
             for operation in ("acquire", "view", "release"):
                 self.assertRegex(f"fj_legacy_{family}_{operation}", retired)
         self.assertNotRegex("SF_TEMP_BRIDGE_SCANNER_COLOR fj_test_gaussian_kernel_acquire", retired)
-        dispatch = (ROOT / "native/juicer_host_preparation.cpp").read_text()
+        dispatch = (ROOT / "native/juicer_host_preparation.cpp").read_text(encoding="utf-8")
         self.assertNotIn("std::exp", dispatch)
         self.assertNotIn("Hash::", dispatch)
-        fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text()
+        fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text(encoding="utf-8")
         self.assertIn("rows.size() == 188", fixture)
-        cmake = (ROOT / "tests/CMakeLists.txt").read_text()
+        cmake = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn(
             "target_compile_definitions(juicer_gaussian_test_objects PRIVATE JUICER_GAUSSIAN_TEST_HOOK=1)", cmake
         )

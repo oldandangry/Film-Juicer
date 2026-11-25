@@ -10,8 +10,7 @@ use film_juicer_core::{
 };
 use super::host::{Callback, Status};
 use crate::cuda;
-#[cfg(feature = "grain-preview")]
-use film_juicer_core::film::grain::preview::{ProxyGrid, Raster};
+use film_juicer_core::film::grain::film_v1::{ProxyGrid, Raster, Selection};
 
 // Admission delivery is best-effort. Formatting must not introduce an
 // infallible allocation before the fallible host-message copy.
@@ -34,20 +33,14 @@ fn domain(bounds: [i32; 4]) -> Result<Domain, Status> {
     })
     .map_err(|_| Status::FATAL)
 }
-
-#[cfg(feature = "grain-preview")]
 struct CompleteFrameMapping {
     canonical: [f64; 4],
     full_grid: Option<ProxyGrid>,
 }
-
-#[cfg(feature = "grain-preview")]
 struct AxisSupport {
     span: [f64; 2],
     empty: [bool; 2],
 }
-
-#[cfg(feature = "grain-preview")]
 fn proxy_axis_support(
     bounds: [f64; 2],
     minimum: f64,
@@ -77,8 +70,6 @@ fn proxy_axis_support(
         && (!empty[1] || (count > 1.0 && edge(count - 2.0) < span[1])))
         .then_some(AxisSupport { span, empty })
 }
-
-#[cfg(feature = "grain-preview")]
 fn complete_frame_mapping(
     args: &super::host::RenderArgs,
     source: &super::host::Image<'_>,
@@ -169,8 +160,6 @@ fn complete_frame_mapping(
         }),
     })
 }
-
-#[cfg(feature = "grain-preview")]
 fn film_geometry_error(
     callback: &Callback<'_>,
     args: &super::host::RenderArgs,
@@ -200,8 +189,6 @@ fn film_geometry_error(
     }
     Status::FAILED
 }
-
-#[cfg(feature = "grain-preview")]
 fn film_time_error(callback: &Callback<'_>, time: f64) -> Status {
     let range = cuda::FILM_GRAIN_TIME_RANGE;
     let mut text = AdmissionText(String::new());
@@ -319,14 +306,12 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             None => owner.state.frame_input(),
         };
     }
-    #[cfg(feature = "grain-preview")]
-    let film_selected = input
+    let film = input
         .as_ref()
-        .is_ok_and(|input| input.film_grain_selected());
-    #[cfg(feature = "grain-preview")]
-    let film_thumbnail = film_selected && callback.thumbnail(&owner.handles);
-    #[cfg(feature = "grain-preview")]
-    let film_mapping = if film_selected && !film_thumbnail {
+        .map_or(Selection::Current, state::FrameInput::film_grain);
+    let film_active = film.controls().is_some();
+    let film_thumbnail = film_active && callback.thumbnail(&owner.handles);
+    let film_mapping = if film_active && !film_thumbnail {
         if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
             return Err(film_time_error(callback, args.time));
         }
@@ -346,28 +331,20 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     } else {
         None
     };
-    #[cfg(feature = "grain-preview")]
-    let preview_frame = if film_thumbnail {
-        film_juicer_core::recipe::PreviewFrame::Thumbnail
+
+    let film_frame = if film_thumbnail {
+        film_juicer_core::recipe::FilmGrainFrame::Thumbnail
     } else {
-        film_juicer_core::recipe::PreviewFrame::Raster(Raster {
+        film_juicer_core::recipe::FilmGrainFrame::Raster(Raster {
             long_edge_px: full.width.max(full.height),
             full_grid: film_mapping.as_ref().and_then(|mapping| mapping.full_grid),
         })
     };
-    #[cfg(feature = "grain-preview")]
     let film_canonical = film_mapping.map(|mapping| mapping.canonical);
-    #[cfg(not(feature = "grain-preview"))]
-    let film_canonical = None;
     #[cfg(feature = "test-support")]
     let input_identity = input.as_ref().map_or(0, state::FrameInput::input_identity);
     let admitted = match input {
-        Ok(input) => owner.state.admit_frame(
-            input,
-            assets,
-            #[cfg(feature = "grain-preview")]
-            preview_frame,
-        ),
+        Ok(input) => owner.state.admit_frame(input, assets, film_frame),
         Err(error) => Err(error),
     };
     let admitted = match admitted {
@@ -379,7 +356,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         Err(error) => {
             let mut text = AdmissionText(String::new());
             let diagnostic = write!(text, "{error}");
-            #[cfg(feature = "grain-preview")]
             let diagnostic = diagnostic.and_then(|()| {
                 if matches!(
                     error,
@@ -447,9 +423,10 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         let scale = source.scale;
         // Pre-resized preview images can report unit image scales. Dust and
         // scratches use the action scale when it describes the complete raster.
-        #[cfg(feature = "grain-preview")]
-        let scale = if film_canonical.is_some()
-            || complete_frame_mapping(&args, source, destination, window, canonical).is_some()
+
+        let scale = if film.selected()
+            && (film_canonical.is_some()
+                || complete_frame_mapping(&args, source, destination, window, canonical).is_some())
         {
             args.scale
         } else {

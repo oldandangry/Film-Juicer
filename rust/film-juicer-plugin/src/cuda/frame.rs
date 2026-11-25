@@ -14,10 +14,7 @@ use film_juicer_core::{
 };
 
 use super::{edge, sys};
-#[cfg(feature = "grain-preview")]
-use film_juicer_core::film::grain::preview::Sampling;
-
-#[cfg(feature = "grain-preview")]
+use film_juicer_core::film::grain::film_v1::Sampling;
 pub(super) fn film_grain(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
@@ -73,8 +70,6 @@ pub(super) fn film_grain(
         sample_origin: sampling.map_or([0.0; 2], |grid| grid.origin),
     }))
 }
-
-#[cfg(feature = "grain-preview")]
 fn film_seed_pair(time: f64, session: u64, clip: u64) -> Result<(u32, u32, f32), edge::Failure> {
     if !super::FILM_GRAIN_TIME_RANGE.contains(&time) {
         return Err(fail(
@@ -98,8 +93,6 @@ fn film_seed_pair(time: f64, session: u64, clip: u64) -> Result<(u32, u32, f32),
     };
     Ok((seed, next_seed, fraction))
 }
-
-#[cfg(feature = "grain-preview")]
 fn film_seed(session: u64, clip: u64, index: i64) -> u32 {
     let mut word = (session ^ clip.rotate_left(17)).wrapping_add(
         (index as u64)
@@ -109,78 +102,6 @@ fn film_seed(session: u64, clip: u64, index: i64) -> u32 {
     word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
     (word ^ (word >> 31)) as u32
-}
-
-#[cfg(all(test, feature = "grain-preview"))]
-mod tests {
-    use super::{film_seed_pair, sys};
-
-    fn assert_film_seed_pair(time: f64, expected: (u32, u32, u32)) {
-        let (seed, next_seed, fraction) =
-            film_seed_pair(time, 17, 23).unwrap_or_else(|error| panic!("{}", error.diagnostic));
-        assert_eq!(
-            (seed, next_seed, fraction.to_bits()),
-            expected,
-            "time={time}"
-        );
-    }
-
-    #[test]
-    fn film_seed_pair_carries_rounded_endpoints() {
-        // Independent words from the C++ reference integer mapping.
-        for (time, seed) in [
-            (0.29 * 100.0, 2_010_141_349),
-            (37.999_999_99, 857_065_782),
-            (-1e-8, 3_099_808_472),
-            (-1.000_000_01, 1_701_653_862),
-            (1.0 - 2.0_f64.powi(-25), 1_854_463_680),
-        ] {
-            assert_film_seed_pair(time, (seed, seed, 0));
-        }
-    }
-
-    #[test]
-    fn film_seed_pair_preserves_integral_and_fractional_words() {
-        let below_tie = (1.0_f64 - 2.0_f64.powi(-25)).next_down();
-        for (time, seed, next_seed, fraction) in [
-            (-1.0, 1_701_653_862, 1_701_653_862, 0),
-            (-0.5, 1_701_653_862, 3_099_808_472, 0x3f00_0000),
-            (-0.0, 3_099_808_472, 3_099_808_472, 0),
-            (0.0, 3_099_808_472, 3_099_808_472, 0),
-            (below_tie, 3_099_808_472, 1_854_463_680, 0x3f7f_ffff),
-            (1.0, 1_854_463_680, 1_854_463_680, 0),
-            (28.5, 1_138_692_069, 2_010_141_349, 0x3f00_0000),
-            (28.999_99, 1_138_692_069, 2_010_141_349, 0x3f7f_ff58),
-            (29.0, 2_010_141_349, 2_010_141_349, 0),
-            (37.375, 2_044_520_963, 857_065_782, 0x3ec0_0000),
-            (38.0, 857_065_782, 857_065_782, 0),
-        ] {
-            assert_film_seed_pair(time, (seed, next_seed, fraction));
-        }
-    }
-
-    #[test]
-    fn film_seed_pair_checks_original_time_at_both_limits() {
-        let lower = -1_000_000.0_f64;
-        let upper = 1_000_000.0_f64;
-        assert_film_seed_pair(lower, (1_360_295_736, 1_360_295_736, 0));
-        assert_film_seed_pair(upper, (134_912_488, 134_912_488, 0));
-        for time in [
-            lower.next_down(),
-            upper.next_up(),
-            f64::NAN,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-        ] {
-            let error = film_seed_pair(time, 17, 23).unwrap_err();
-            assert_eq!(error.status.category, sys::FJ_STATUS_UNSUPPORTED_INPUT);
-            assert!(
-                error.diagnostic.starts_with("Film v1 frame time"),
-                "time={time}: {}",
-                error.diagnostic,
-            );
-        }
-    }
 }
 
 fn fail(category: u32, diagnostic: impl Into<String>) -> edge::Failure {
@@ -467,4 +388,76 @@ pub(super) fn prepare(
         film_scratch: crate::film_recipe_bridge::project_scratch(effects_recipe.film_scratch()),
         gate_scratch: crate::film_recipe_bridge::project_scratch(effects_recipe.gate_scratch()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{film_seed_pair, sys};
+
+    fn assert_film_seed_pair(time: f64, expected: (u32, u32, u32)) {
+        let (seed, next_seed, fraction) =
+            film_seed_pair(time, 17, 23).unwrap_or_else(|error| panic!("{}", error.diagnostic));
+        assert_eq!(
+            (seed, next_seed, fraction.to_bits()),
+            expected,
+            "time={time}"
+        );
+    }
+
+    #[test]
+    fn film_seed_pair_carries_rounded_endpoints() {
+        // Independent words from the C++ reference integer mapping.
+        for (time, seed) in [
+            (0.29 * 100.0, 2_010_141_349),
+            (37.999_999_99, 857_065_782),
+            (-1e-8, 3_099_808_472),
+            (-1.000_000_01, 1_701_653_862),
+            (1.0 - 2.0_f64.powi(-25), 1_854_463_680),
+        ] {
+            assert_film_seed_pair(time, (seed, seed, 0));
+        }
+    }
+
+    #[test]
+    fn film_seed_pair_preserves_integral_and_fractional_words() {
+        let below_tie = (1.0_f64 - 2.0_f64.powi(-25)).next_down();
+        for (time, seed, next_seed, fraction) in [
+            (-1.0, 1_701_653_862, 1_701_653_862, 0),
+            (-0.5, 1_701_653_862, 3_099_808_472, 0x3f00_0000),
+            (-0.0, 3_099_808_472, 3_099_808_472, 0),
+            (0.0, 3_099_808_472, 3_099_808_472, 0),
+            (below_tie, 3_099_808_472, 1_854_463_680, 0x3f7f_ffff),
+            (1.0, 1_854_463_680, 1_854_463_680, 0),
+            (28.5, 1_138_692_069, 2_010_141_349, 0x3f00_0000),
+            (28.999_99, 1_138_692_069, 2_010_141_349, 0x3f7f_ff58),
+            (29.0, 2_010_141_349, 2_010_141_349, 0),
+            (37.375, 2_044_520_963, 857_065_782, 0x3ec0_0000),
+            (38.0, 857_065_782, 857_065_782, 0),
+        ] {
+            assert_film_seed_pair(time, (seed, next_seed, fraction));
+        }
+    }
+
+    #[test]
+    fn film_seed_pair_checks_original_time_at_both_limits() {
+        let lower = -1_000_000.0_f64;
+        let upper = 1_000_000.0_f64;
+        assert_film_seed_pair(lower, (1_360_295_736, 1_360_295_736, 0));
+        assert_film_seed_pair(upper, (134_912_488, 134_912_488, 0));
+        for time in [
+            lower.next_down(),
+            upper.next_up(),
+            f64::NAN,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+        ] {
+            let error = film_seed_pair(time, 17, 23).unwrap_err();
+            assert_eq!(error.status.category, sys::FJ_STATUS_UNSUPPORTED_INPUT);
+            assert!(
+                error.diagnostic.starts_with("Film v1 frame time"),
+                "time={time}: {}",
+                error.diagnostic,
+            );
+        }
+    }
 }

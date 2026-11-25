@@ -1,12 +1,6 @@
-if(JUICER_GRAIN_PREVIEW)
-    set(JUICER_BUNDLE "juicer-grain-preview.ofx.bundle")
-    set(JUICER_ARCHIVE_BASE "juicer-grain-preview")
-    set(JUICER_STAGE_PREFIX "${CMAKE_INSTALL_PREFIX}/portra-grain-preview")
-else()
-    set(JUICER_BUNDLE "juicer.ofx.bundle")
-    set(JUICER_ARCHIVE_BASE "juicer")
-    set(JUICER_STAGE_PREFIX "${CMAKE_INSTALL_PREFIX}")
-endif()
+set(JUICER_BUNDLE "juicer.ofx.bundle")
+set(JUICER_ARCHIVE_BASE "juicer")
+set(JUICER_STAGE_PREFIX "${CMAKE_INSTALL_PREFIX}")
 if(WIN32)
     set(JUICER_ARCH_DIR "Win64")
 else()
@@ -31,13 +25,8 @@ foreach(resource IN LISTS JUICER_RUNTIME_RESOURCES)
         DESTINATION "${resource_destination}")
 endforeach()
 
-if(JUICER_GRAIN_PREVIEW)
-    install(FILES Resources/grain/portra-400/manifest.json
-        Resources/grain/portra-400/records.f32 Resources/grain/portra-400/sums.f32
-        DESTINATION "${JUICER_CONTENTS}/Resources/grain/portra-400")
-    install(FILES Resources/grain/portra-400/NOTICE.md tests/grain/LICENSE.Fotufilm
-        DESTINATION "${JUICER_CONTENTS}/Legal/fotufilm")
-endif()
+install(FILES Resources/grain/portra-400/NOTICE.md tests/grain/LICENSE.Fotufilm
+    DESTINATION "${JUICER_CONTENTS}/Legal/fotufilm")
 
 install(FILES LICENSE DESTINATION "${JUICER_CONTENTS}/Legal")
 install(FILES third_party/spektrafilm/SPEKTRAFILM_LICENSE.txt third_party/spektrafilm/README.md

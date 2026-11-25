@@ -112,7 +112,6 @@ namespace ofx_test {
         author(host, effect, "ScannerWhiteCorrection", {.uiDefault = {0}, .authored = {0}});
         author(host, effect, "ScannerBlackLevel", {.uiDefault = {0.01}, .authored = {0.01}});
         author(host, effect, "ScannerWhiteLevel", {.uiDefault = {0.98}, .authored = {0.98}});
-        author(host, effect, "ScannerLutResolution", {.uiDefault = {17}, .authored = {17}});
         author(host, effect, "HalationActive", {.uiDefault = {1}, .authored = {0}});
         author(host, effect, "HalationScatterAmount", {.uiDefault = {1.0}, .authored = {1.0}});
         author(host, effect, "HalationScatterSpatialScale", {.uiDefault = {1.0}, .authored = {1.0}});

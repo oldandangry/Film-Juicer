@@ -31,7 +31,6 @@ namespace Scanner {
 } // namespace Scanner
 
 namespace JuicerCuda {
-    struct PipelineRunParams;
     namespace FilmGrain {
         struct ProxyWorkspace;
     }
@@ -115,6 +114,8 @@ namespace JuicerProcess {
             Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
             std::string_view filmProfileKey;
             std::uint64_t filmProfileAssetVersionToken = 0;
+            std::string_view paperProfileKey;
+            std::uint64_t paperProfileAssetVersionToken = 0;
             std::uint64_t scatterHalationHash = 0;
             std::uint64_t grainHash = 0;
             std::uint64_t grainDensityLayersHash = 0;
@@ -217,13 +218,10 @@ namespace JuicerProcess {
 
             struct FocusedPreparedView {
                 JuicerCuda::FilmPreparedView film{};
-                const JuicerCuda::Resources::DeviceScanRange* scanRange = nullptr;
-                const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
+                const JuicerCuda::ScannerSpectra* scannerSpectra = nullptr;
                 const Scanner::ColorRuntime* scannerColor = nullptr;
                 const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
                 const float* outputGamutCmax = nullptr;
-                std::uint64_t densityBoundsHash = 0;
-                std::uint64_t scannerDescriptorHash = 0;
                 Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
                 bool active = false;
             };

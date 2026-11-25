@@ -803,20 +803,6 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     p.set_double(c"OfxParamPropDisplayMax", 0, 1.0)?;
     p.set_string(c"OfxParamPropParent", 0, c"ScannerMath")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
-    let p = parameters.define(c"OfxParamTypeInteger", c"ScannerLutResolution")?;
-    p.set_string(c"OfxPropLabel", 0, c"Scanner LUT resolution")?;
-    p.set_int(c"OfxParamPropDefault", 0, 17)?;
-    p.set_int(c"OfxParamPropMin", 0, 17)?;
-    p.set_int(c"OfxParamPropMax", 0, 128)?;
-    p.set_int(c"OfxParamPropDisplayMin", 0, 17)?;
-    p.set_int(c"OfxParamPropDisplayMax", 0, 128)?;
-    p.set_string(c"OfxParamPropParent", 0, c"ScannerMath")?;
-    let _ = p.set_string(
-        c"OfxParamPropHint",
-        0,
-        c"Cube resolution for scanner spectral LUTs.",
-    );
-    p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
     let p = parameters.define(c"OfxParamTypeGroup", c"HalationGroup")?;
     p.set_string(c"OfxPropLabel", 0, c"Halation")?;
     let _ = p.set_int(c"OfxParamPropGroupOpen", 0, 0);
@@ -900,7 +886,6 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     let _ = p.set_string(c"OfxParamPropHint", 0, c"Add grain to the negative.");
     p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
     p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
-    #[cfg(feature = "grain-preview")]
     {
         let p = parameters.define(c"OfxParamTypeStrChoice", c"GrainModel")?;
         p.set_string(c"OfxPropLabel", 0, c"Model")?;
@@ -915,7 +900,7 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
             (
                 c"FilmGrainChromaFraction",
                 c"Colour",
-                film_juicer_core::film::grain::preview::DEFAULT_CHROMA,
+                film_juicer_core::film::grain::film_v1::DEFAULT_CHROMA,
                 0.0,
                 1.0,
                 0.01,

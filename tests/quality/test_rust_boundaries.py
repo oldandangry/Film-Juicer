@@ -55,7 +55,7 @@ class RustBoundaryTests(unittest.TestCase):
         cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
             os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
         ]
-        from execution import NativeRun, OutputLease
+        from execution import NativeRun, OutputLease, windows_vctip
 
         cls.lease = OutputLease(ROOT, cls.preset_build)
         cls.lease.__enter__()
@@ -75,6 +75,7 @@ class RustBoundaryTests(unittest.TestCase):
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
         cls.environment = quality.cargo_environment()
         cls.environment.setdefault("CARGO_INCREMENTAL", "0")
+        cls.vctip_executable = windows_vctip(cls.environment)
         cls.invocation = 0
         cls.invocation_lock = threading.Lock()
 
@@ -181,7 +182,14 @@ class RustBoundaryTests(unittest.TestCase):
         cls = type(self)
         name = f"{invocation:02d}-{self._testMethodName}-{label}".lower().replace("_", "-")
         try:
-            log = cls.native_run.command(name, command, env=self.environment, stdout_only=True, cwd=self.workspace)
+            log = cls.native_run.command(
+                name,
+                command,
+                env=self.environment,
+                stdout_only=True,
+                cwd=self.workspace,
+                vctip_executable=cls.vctip_executable,
+            )
             returncode = next(record["returncode"] for record in cls.native_run.commands if record["name"] == name)
         except subprocess.CalledProcessError as error:
             log = cls.artifacts / f"{name}.log"
@@ -878,29 +886,6 @@ class RustBoundaryTests(unittest.TestCase):
             feature_forms=(False, True),
         )
 
-    def test_scanner_descriptor_is_complete_private_readonly_and_owned(self) -> None:
-        cases = (
-            ("scanner_descriptor_complete", None),
-            ("scanner_descriptor_construction", {"E0451": ("scanner::LutDescriptor { ..descriptor }",)}),
-            ("scanner_descriptor_default", {"E0599": ("scanner::LutDescriptor::default()",)}),
-            ("scanner_descriptor_private", {"E0616": ("descriptor.route", "descriptor.hash")}),
-            ("scanner_descriptor_readonly", {"E0308": ("let _: &mut u64 = descriptor.hash()",)}),
-            ("scanner_descriptor_owned", None),
-        )
-        feature_forms = (False, True)
-        self.subtest_cases = tuple(
-            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
-            for fixture, _ in cases
-            for release in self.profiles
-            for support in feature_forms
-        )
-        self.check_fixture_cases(
-            "film-juicer-plugin/src/lib.rs",
-            "film-juicer-plugin",
-            cases=cases,
-            feature_forms=(False, True),
-        )
-
     def test_scanner_color_is_complete_private_readonly_and_owned(self) -> None:
         cases = (
             ("scanner_color_complete", None),
@@ -909,29 +894,6 @@ class RustBoundaryTests(unittest.TestCase):
             ("scanner_color_private", {"E0616": ("color.cat02", "color.hash")}),
             ("scanner_color_readonly", {"E0594": ("color.cat02()[0] = 0.0",)}),
             ("scanner_color_owned", None),
-        )
-        feature_forms = (False, True)
-        self.subtest_cases = tuple(
-            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
-            for fixture, _ in cases
-            for release in self.profiles
-            for support in feature_forms
-        )
-        self.check_fixture_cases(
-            "film-juicer-plugin/src/lib.rs",
-            "film-juicer-plugin",
-            cases=cases,
-            feature_forms=(False, True),
-        )
-
-    def test_scanner_lut_is_complete_private_readonly_and_owned(self) -> None:
-        cases = (
-            ("scanner_lut_complete", None),
-            ("scanner_lut_construction", {"E0451": ("scanner::Lut { ..lut }",)}),
-            ("scanner_lut_default", {"E0599": ("scanner::Lut::default()",)}),
-            ("scanner_lut_private", {"E0616": ("lut.resolution", "lut.log2_xyz")}),
-            ("scanner_lut_readonly", {"E0594": ("lut.log2_xyz()[0] = 0.0",)}),
-            ("scanner_lut_owned", None),
         )
         feature_forms = (False, True)
         self.subtest_cases = tuple(
@@ -1575,11 +1537,18 @@ class RustBoundaryTests(unittest.TestCase):
         cmake = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
         for name in ("juicer_scanner_lut_capture_objects", "Scanner.Host.LutNativeCapture"):
             self.assertNotIn(name, cmake)
-        fixture = (ROOT / "tests/ffi/scanner_lut_test.inc").read_text(encoding="utf-8")
-        self.assertNotIn("capture_scanner_lut", fixture)
-        retired = (
-            r"\b(?:JuicerScanner::Lut|SF_TEMP_BRIDGE_SCANNER_LUT|fj_legacy_scanner_lut_(?:acquire|view|release))\b"
+        for name in ("scanner_lut_test.inc", "scanner_lut_descriptor_test.inc"):
+            self.assertFalse((ROOT / "tests/ffi" / name).exists())
+        rust = "\n".join(
+            path.read_text(encoding="utf-8")
+            for crate in ("film-juicer-core", "film-juicer-plugin")
+            for path in (ROOT / "rust" / crate / "src").rglob("*.rs")
         )
+        self.assertNotRegex(
+            rust,
+            r"\b(?:ScannerProjection|LutDescriptor|describe_lut|film_node_spacing|scanner_lut_resolution|fj_test_scanner_lut_\w+)\b",
+        )
+        retired = r"\b(?:JuicerScanner::Lut|SF_TEMP_BRIDGE_SCANNER_LUT|ScannerSpectralLutDescriptor|prepare_scanner_lut|fj_legacy_scanner_lut_(?:acquire|view|release))\b"
         self.assertNotRegex(processing, retired)
         for token in (
             "JuicerScanner::Lut",
@@ -1589,7 +1558,7 @@ class RustBoundaryTests(unittest.TestCase):
             "fj_legacy_scanner_lut_release",
         ):
             self.assertRegex(token, retired)
-        self.assertNotRegex("SF_TEMP_BRIDGE_SCANNER_COLOR ScannerSpectralLutDescriptor", retired)
+        self.assertNotRegex("SF_TEMP_BRIDGE_SCANNER_COLOR Scanner::ColorRuntime", retired)
         self.assertFalse((ROOT / "src/Scanner.cpp").exists())
         scanner = (ROOT / "src/Scanner.h").read_text(encoding="utf-8")
         definition = r"\bColorRuntime\s+build_color_runtime\s*\([^;{}]*\)\s*\{"
@@ -1987,9 +1956,7 @@ RustBoundaryTests.test_diffusion_frame_is_complete_private_readonly_and_owned.re
 RustBoundaryTests.test_halation_frame_is_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_gaussian_is_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_scanner_post_is_complete_private_readonly_and_owned.required_subtests = True
-RustBoundaryTests.test_scanner_descriptor_is_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_scanner_color_is_complete_private_readonly_and_owned.required_subtests = True
-RustBoundaryTests.test_scanner_lut_is_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_scanner_correction_is_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_optics_are_complete_private_readonly_and_owned.required_subtests = True
 RustBoundaryTests.test_effects_are_complete_private_readonly_and_owned.required_subtests = True

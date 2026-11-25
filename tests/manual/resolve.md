@@ -64,20 +64,22 @@ This consolidation changed no production rendering or resource ownership, so
 Debug repetition, forced context reset, profiling, benchmarks, and reference
 regeneration are not acceptance gates.
 
-## LUT-only scanner cleanup
+## Spectral scanner and saved projects
 
-After installing a bundle containing the LUT-only scanner cleanup, repeat the
-four route checks above on one deterministic frame and additionally confirm:
+Repeat the four route checks above on one deterministic frame after the approved
+host installation. Verify finite output for each route.
 
-- **Scanner use LUT** is absent, while **Scanner LUT resolution** remains and
-  defaults to 17.
-- Resolution 17 renders finite output on negative/positive direct/print routes.
-- Changing one instance from 17 to 33 and back to 17 completes successfully and
-  restores the original resolution-17 output.
-- A project previously saved with `ScannerUseLUT=false` opens and renders with
-  the LUT-only scanner without a missing-parameter or resource error.
-- No selectable scanner mode produces the retired exact-path performance cost.
-
+- Open one disposable copy of the ordinary cubic project and one disposable copy
+  of the Grain Preview cubic project. Record the loaded plug-in IDs and verify
+  that each copy retains its film and paper choices, route, and unrelated
+  animated controls.
+- Confirm that the scanner grid control no longer appears or accepts keyframes.
+  Record any host message or load failure involving the saved scanner setting.
+- Render frames spanning the old scanner keyframes. Compare the unrelated
+  animated controls with the original export. Resave and reopen each disposable
+  copy, then repeat the checks.
+- Retain the hashed project originals, per-route frame captures and the owner's
+  delivered-look decision.
 Record the installed bundle hash and any unavailable saved-project or platform
 check. Repository tests cover CUDA output and resource transitions but cannot
 establish Resolve's handling of a removed OFX parameter.

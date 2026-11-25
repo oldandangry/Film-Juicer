@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -64,6 +65,7 @@ namespace JuicerCuda::PinnedUploadTest {
             }
         }
     }
+    void observe_staged_upload(const char*, std::size_t) noexcept {}
 } // namespace JuicerCuda::PinnedUploadTest
 
 namespace {
@@ -230,21 +232,22 @@ namespace {
         std::array<float, 2> axis{-2.0f, 0.0f};
         std::array<std::array<float, 3>, 2> density{{{0.25f, 0.5f, 0.75f}, {1.0f, 1.25f, 1.5f}}};
         std::array<std::array<float, 3>, Spectral::kNumSamples> spectra{};
+        std::array<std::array<float, 3>, Spectral::kNumSamples> sensitivities{};
+        std::array<float, Spectral::kNumSamples> base{};
         std::array<float, Spectral::kNumSamples> illuminant{};
         JuicerCuda::PrintResourceInput input;
 
         PrintUploadInput() {
             illuminant.fill(1.0f);
-            input.descriptors.hash = 1;
-            input.descriptors.profileTables.hash = 1;
-            input.descriptors.filmDensityTables.hash = 1;
-            input.descriptors.mainIlluminant.hash = 1;
-            input.descriptors.balance.hash = 1;
+            base.fill(1.0f);
+            input.descriptors.profileTablesHash = 1;
+            input.descriptors.filmDensityTablesHash = 1;
+            input.descriptors.mainIlluminantHash = 1;
             input.filmChannelDensityCmy = JuicerCuda::ThreeChannelSamplesView(spectra);
-            input.filmBaseDensity = illuminant;
+            input.filmBaseDensity = base;
             input.printLogExposure = axis;
             input.printDensityCurvesCmy = JuicerCuda::ThreeChannelSamplesView(density);
-            input.printSensitivityCmy = JuicerCuda::ThreeChannelSamplesView(spectra);
+            input.printSensitivityCmy = JuicerCuda::ThreeChannelSamplesView(sensitivities);
             input.mainIlluminant = illuminant;
         }
 
@@ -252,8 +255,7 @@ namespace {
             axis = {-1.5f, 0.5f};
             density[0][0] = 0.375f;
             density[1][0] = 1.125f;
-            input.descriptors.hash = hash;
-            input.descriptors.profileTables.hash = hash;
+            input.descriptors.profileTablesHash = hash;
         }
 
         std::array<float, 2> cyan_samples() const {
@@ -428,7 +430,7 @@ namespace {
         EXPECT_TRUE(staged);
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::overwriteHookError, nullptr);
         const std::array perCopy{Operation::Copy, Operation::RecordEvent, Operation::Synchronize};
-        constexpr std::size_t expectedCopies = 9;
+        constexpr std::size_t expectedCopies = 7;
         ASSERT_EQ(operations.size(), expectedCopies * perCopy.size());
         for (std::size_t copy = 0; copy < expectedCopies; ++copy) {
             EXPECT_TRUE(std::equal(perCopy.begin(), perCopy.end(), operations.begin() + static_cast<std::ptrdiff_t>(copy * perCopy.size())));
@@ -437,7 +439,6 @@ namespace {
         EXPECT_EQ(state.available, 1);
         EXPECT_EQ(state.reserved + state.inFlight + state.quarantined, 0);
         EXPECT_EQ(resources->printProfileTablesDescriptorHash, 2u);
-        EXPECT_EQ(resources->printPreparationDescriptorHash, 2u);
         EXPECT_EQ(ledger->snapshot().chargedBytes, before.chargedBytes);
         EXPECT_EQ(ledger->snapshot().recordCount, before.recordCount);
         expect_print_curve(retained, print.axis, print.cyan_samples());
@@ -490,8 +491,7 @@ namespace {
             const auto expectedCode = failAxis || failSamplesCopy ? cudaErrorInvalidValue : cudaErrorMemoryAllocation;
             expect_status({FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, expectedCode});
             EXPECT_NE(failure.diagnostic.find(failAxis ? "dcC.x upload failed" : "dcC.y upload failed"), std::string::npos);
-            EXPECT_EQ(resources->printProfileTablesDescriptorHash, 1u);
-            EXPECT_EQ(resources->printPreparationDescriptorHash, 1u);
+            EXPECT_EQ(resources->printProfileTablesDescriptorHash, 0u);
             EXPECT_FALSE(resources->frameUseFenceQuarantined);
             const auto staging = JuicerCuda::PinnedUploadTest::snapshot(key);
             EXPECT_EQ(staging.reserved + staging.quarantined, 0);
@@ -508,10 +508,124 @@ namespace {
             ASSERT_TRUE(JuicerCuda::prepare_print_resources(*resources, nextPrint.input, stream, failure)) << failure.diagnostic;
             require_cuda(cudaStreamSynchronize(stream));
             EXPECT_EQ(resources->printProfileTablesDescriptorHash, 2u);
-            EXPECT_EQ(resources->printPreparationDescriptorHash, 2u);
             EXPECT_EQ(ledger->snapshot().chargedBytes, before.chargedBytes);
             EXPECT_EQ(ledger->snapshot().recordCount, before.recordCount);
             expect_print_curve(retained, nextPrint.axis, nextPrint.cyan_samples());
+            row.passed();
+        }
+    }
+
+    TEST_F(PinnedUpload, PartialPrintTableOverwriteRequiresFullRefillOfA) {
+        JuicerTests::GtestCohort cases("partial-print-table-overwrite", {"paper", "film"});
+        PrintUploadInput original;
+        PrintUploadInput changed;
+        changed.change_curve(2);
+        changed.input.descriptors.filmDensityTablesHash = 2;
+        for (auto& values : changed.spectra) {
+            values = {0.25F, 0.5F, 0.75F};
+        }
+        changed.base.fill(1.125F);
+        for (auto& values : changed.sensitivities) {
+            values = {0.125F, 0.25F, 0.5F};
+        }
+        const std::array<float, Spectral::kNumSamples> originalFilmCyan{};
+        auto changedFilmCyan = originalFilmCyan;
+        changedFilmCyan.fill(changed.spectra[0][0]);
+        ASSERT_NE(originalFilmCyan, changedFilmCyan);
+
+        const auto expect_words = [](const float* device, std::span<const float> expected) {
+            std::vector<float> words(expected.size());
+            require_cuda(cudaMemcpy(words.data(), device, expected.size_bytes(), cudaMemcpyDeviceToHost));
+            EXPECT_TRUE(std::equal(words.begin(), words.end(), expected.begin()));
+        };
+        const auto expect_lanes = [&](const std::array<const float*, 3>& devices, const auto& expected) {
+            for (std::size_t channel = 0; channel < devices.size(); ++channel) {
+                std::vector<float> lane;
+                lane.reserve(expected.size());
+                for (const auto& sample : expected) {
+                    lane.push_back(sample[channel]);
+                }
+                expect_words(devices[channel], lane);
+            }
+        };
+        for (bool paper : {true, false}) {
+            auto row = cases.case_event(paper ? "paper" : "film");
+            auto next = changed.input;
+            if (paper) {
+                next.descriptors.filmDensityTablesHash = original.input.descriptors.filmDensityTablesHash;
+                next.filmChannelDensityCmy = original.input.filmChannelDensityCmy;
+                next.filmBaseDensity = original.input.filmBaseDensity;
+            } else {
+                next.descriptors.profileTablesHash = original.input.descriptors.profileTablesHash;
+                next.printLogExposure = original.input.printLogExposure;
+                next.printDensityCurvesCmy = original.input.printDensityCurvesCmy;
+                next.printSensitivityCmy = original.input.printSensitivityCmy;
+            }
+            ASSERT_TRUE(JuicerCuda::prepare_print_resources(*resources, original.input, stream, failure)) << failure.diagnostic;
+            require_cuda(cudaStreamSynchronize(stream));
+            const auto& key = paper ? resources->printProfileTablesDescriptorHash : resources->printFilmDensityTablesDescriptorHash;
+            const float* const originalCyan = paper ? resources->printDcC.y : resources->printFilmDensityTables.epsC;
+            const float* const originalAxis = paper ? resources->printDcC.x : nullptr;
+            if (paper)
+                expect_words(originalCyan, original.cyan_samples());
+            else
+                expect_words(originalCyan, originalFilmCyan);
+            const std::size_t failAt = paper ? 3 : 2;
+            std::size_t copies = 0;
+            ASSERT_FALSE(prepare_print_observing(next, [&](Operation operation) {
+                if (operation == Operation::Copy && ++copies == failAt) {
+                    require_cuda(cudaStreamSynchronize(stream));
+                    EXPECT_EQ(key, 0u);
+                    if (paper) {
+                        EXPECT_EQ(resources->printDcC.x, originalAxis);
+                        EXPECT_EQ(resources->printDcM.x, nullptr);
+                        EXPECT_EQ(resources->printDcY.x, nullptr);
+                        EXPECT_EQ(resources->printDcC.y, originalCyan);
+                        EXPECT_NE(changed.cyan_samples(), original.cyan_samples());
+                        expect_words(originalAxis, changed.axis);
+                        expect_words(resources->printDcC.y, changed.cyan_samples());
+                    } else {
+                        EXPECT_EQ(resources->printFilmDensityTables.epsC, originalCyan);
+                        expect_words(originalCyan, changedFilmCyan);
+                    }
+                    inject(operation, cudaErrorInvalidValue);
+                }
+            }));
+            expect_status({FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, cudaErrorInvalidValue});
+            EXPECT_EQ(key, 0u);
+            EXPECT_EQ(paper ? resources->printFilmDensityTablesDescriptorHash : resources->printProfileTablesDescriptorHash, 1u);
+            EXPECT_EQ(resources->printMainIlluminantDescriptorHash, 1u);
+
+            const auto check = [&](const JuicerCuda::PrintResourceInput& input, std::size_t expectedCopies) {
+                std::size_t copyCalls = 0;
+                EXPECT_TRUE(prepare_print_observing(input, [&](Operation operation) {
+                    if (operation == Operation::Copy) {
+                        ++copyCalls;
+                    }
+                })) << failure.diagnostic;
+                EXPECT_EQ(copyCalls, expectedCopies);
+                require_cuda(cudaStreamSynchronize(stream));
+            };
+            const auto readback = [&](const PrintUploadInput& fixture) {
+                if (paper) {
+                    expect_words(resources->printDcC.x, fixture.axis);
+                    expect_lanes({resources->printDcC.y, resources->printDcM.y, resources->printDcY.y}, fixture.density);
+                    expect_lanes({resources->printSensC.y, resources->printSensM.y, resources->printSensY.y}, fixture.sensitivities);
+                } else {
+                    const auto& film = resources->printFilmDensityTables;
+                    expect_lanes({film.epsC, film.epsM, film.epsY}, fixture.spectra);
+                    expect_words(film.baseDensityMin, fixture.base);
+                }
+            };
+            const std::size_t transferCount = paper ? 7 : 4;
+            check(original.input, transferCount);
+            EXPECT_EQ(key, 1u);
+            readback(original);
+            check(next, transferCount);
+            EXPECT_EQ(key, 2u);
+            readback(changed);
+            check(next, 0);
+            readback(changed);
             row.passed();
         }
     }
@@ -523,8 +637,7 @@ namespace {
         const auto curve = resources->printDcC;
         const auto epoch = resources->contextEpoch;
         const auto before = ledger->snapshot();
-        print.input.descriptors.hash = 2;
-        print.input.descriptors.profileTables.hash = 2;
+        print.input.descriptors.profileTablesHash = 2;
         print.axis = {-1.75f, 0.25f};
 
         JuicerCuda::PinnedUploadTest::calls = {};
@@ -567,8 +680,7 @@ namespace {
         const auto before = ledger->snapshot();
         float* const illuminant = resources->printIllumFiltered;
         print.illuminant.fill(2.0f);
-        print.input.descriptors.hash = 2;
-        print.input.descriptors.mainIlluminant.hash = 2;
+        print.input.descriptors.mainIlluminantHash = 2;
         const std::vector<std::string> operations{"allocate", "create-event", "copy"};
         JuicerTests::GtestCohort faults("operation", operations);
         const std::array faultOperations{Operation::Allocate, Operation::CreateEvent, Operation::Copy};
@@ -603,8 +715,7 @@ namespace {
         const auto before = ledger->snapshot();
         float* const illuminant = resources->printIllumFiltered;
         print.illuminant.fill(3.0f);
-        print.input.descriptors.hash = 2;
-        print.input.descriptors.mainIlluminant.hash = 2;
+        print.input.descriptors.mainIlluminantHash = 2;
         inject(Operation::RecordEvent, cudaErrorInvalidValue);
         inject(Operation::Synchronize, cudaErrorContextIsDestroyed);
         ASSERT_FALSE(JuicerCuda::prepare_print_resources(*resources, print.input, stream, failure));
@@ -612,7 +723,7 @@ namespace {
         EXPECT_TRUE(resources->frameUseFenceQuarantined);
         EXPECT_EQ(resources->unfencedFrameUseStreamOpaque, stream);
         EXPECT_EQ(resources->printIllumFiltered, illuminant);
-        EXPECT_EQ(resources->printMainIlluminantDescriptorHash, 1u);
+        EXPECT_EQ(resources->printMainIlluminantDescriptorHash, 0u);
         const auto staging = JuicerCuda::PinnedUploadTest::snapshot(key);
         EXPECT_EQ(staging.reserved, 0);
         EXPECT_EQ(staging.quarantined, 1);

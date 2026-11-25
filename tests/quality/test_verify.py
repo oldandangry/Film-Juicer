@@ -89,8 +89,6 @@ class PublicCliTests(unittest.TestCase):
                     "JuicerRouteBridgeTests",
                     "--testing",
                     "ON",
-                    "--grain-preview",
-                    "OFF",
                     "--run-id",
                     "prepare-one",
                 ],
@@ -102,11 +100,6 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.preset, "linux-debug")
         self.assertEqual(args.targets, ["JuicerRouteBridgeTests"])
         self.assertEqual(args.testing, "ON")
-        self.assertEqual(args.grain_preview, "OFF")
-        self.assertIn(
-            "-DJUICER_GRAIN_PREVIEW:BOOL=OFF",
-            verify.configure_command("cmake", args.preset, grain_preview=args.grain_preview),
-        )
         self.assertFalse(any("JUICER_GRAIN_PREVIEW" in arg for arg in verify.configure_command("cmake", args.preset)))
         self.assertEqual(args.run_id, "prepare-one")
 
@@ -790,7 +783,6 @@ class CloseoutCliTests(unittest.TestCase):
             files=None,
             testing="ON",
             cuda_free=False,
-            grain_preview="ON",
         )
         environment = dict(os.environ)
         environment.pop("FJ_HOST_BUNDLE", None)
@@ -809,7 +801,7 @@ class CloseoutCliTests(unittest.TestCase):
         ):
             self.assertEqual(verify.fresh_prepare(args), 1)
         self.assertEqual(events, ["expiry", "configure"])
-        self.assertIn("-DJUICER_GRAIN_PREVIEW:BOOL=ON", native.command.call_args.args[1])
+        self.assertNotIn("-DJUICER_GRAIN_PREVIEW:BOOL=ON", native.command.call_args.args[1])
         self.assertEqual(finish.call_args.args[3]["report_read_bytes"], 17)
 
     def test_removed_receipt_and_recovery_options_are_rejected(self):

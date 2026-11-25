@@ -1,6 +1,6 @@
 //! Complete scanner output preparation; no pixel execution or retained input.
 
-use crate::{color, hash};
+use crate::{color, hash, spectral};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug)]
@@ -127,6 +127,54 @@ impl Color {
     pub fn hash(&self) -> u64 {
         self.hash
     }
+
+    pub(crate) fn spectral_binding_digest(
+        &self,
+        route: u8,
+        profile_key: &str,
+        asset_token: u64,
+        tables: &spectral::Tables,
+        gamut_enabled: bool,
+    ) -> u64 {
+        let mut digest = hash::FNV_OFFSET;
+        hash::update_bytes(&mut digest, &1_u32.to_le_bytes());
+        hash::update_bytes(&mut digest, &u32::from(route).to_le_bytes());
+        hash::update_bytes(&mut digest, &(profile_key.len() as u64).to_le_bytes());
+        hash::update_bytes(&mut digest, profile_key.as_bytes());
+        hash::update_bytes(&mut digest, &asset_token.to_le_bytes());
+        for lane in tables.dyes_cmy().iter().chain(tables.weighted_xyz()) {
+            hash::update_resource_f32s(&mut digest, lane);
+        }
+        hash::update_bytes(&mut digest, &[u8::from(tables.has_baseline())]);
+        if tables.has_baseline() {
+            hash::update_resource_f32s(&mut digest, tables.baseline_min());
+        }
+        hash::update_resource_f32s(&mut digest, &[tables.inv_yn()]);
+        hash::update_resource_f32s(&mut digest, &self.illuminant_xyz);
+        hash::update_resource_f32s(&mut digest, &self.cat02);
+        hash::update_resource_f32s(&mut digest, &self.xyz_to_rgb);
+        let flags = u32::from(self.apply_cctf)
+            | (u32::from(self.input_is_output_space()) << 1)
+            | (u32::from(gamut_enabled) << 2);
+        hash::update_bytes(&mut digest, &u32::from(self.output_space).to_le_bytes());
+        hash::update_bytes(&mut digest, &flags.to_le_bytes());
+        hash::update_bytes(&mut digest, &1_u32.to_le_bytes());
+        let cctf = self.cctf;
+        hash::update_bytes(&mut digest, &(cctf.kind as u32).to_le_bytes());
+        hash::update_resource_f32s(
+            &mut digest,
+            &[
+                cctf.gamma,
+                cctf.a,
+                cctf.b,
+                cctf.c,
+                cctf.d,
+                cctf.linear_cutoff,
+            ],
+        );
+        hash::update_resource_f32s(&mut digest, &self.dwg_to_output);
+        digest
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +185,81 @@ mod tests {
 
     fn words(values: &[f32]) -> Value {
         json!(values.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
+    }
+
+    fn input_words<const N: usize>(value: &Value) -> [f32; N] {
+        let words = value.as_array().unwrap();
+        assert_eq!(words.len(), N);
+        std::array::from_fn(|i| f32::from_bits(u32::try_from(words[i].as_u64().unwrap()).unwrap()))
+    }
+
+    #[test]
+    fn shared_spectral_binding_known_answers() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/scanner/color-fixtures/scanner-binding-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(fixture["schema"], "scanner-binding-fixture-v1");
+        let rows = fixture["vectors"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "scanner-spectral-binding",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for row in rows {
+            let case = cases.case(row["id"].as_str().unwrap());
+            assert_eq!(row["schema_word"], 1);
+            assert_eq!(row["encoding_schema"], 1);
+            assert_eq!(row["encoding_kind"], 3);
+            let lanes = row["lanes"].as_array().unwrap();
+            assert_eq!(lanes.len(), 6);
+            let tables = spectral::Tables::for_scanner_binding_test(
+                std::array::from_fn(|index| input_words(&lanes[index])),
+                (!row["base"].is_null()).then(|| input_words(&row["base"])),
+                f32::from_bits(u32::try_from(row["inverse_y"].as_u64().unwrap()).unwrap()),
+            );
+            let flags = row["flags"].as_u64().unwrap();
+            assert_eq!(flags & 2, 2);
+            let [gamma, a, b, c, d, linear_cutoff] = input_words(&row["coefficients"]);
+            let color = Color {
+                cat02: input_words(&row["cat02"]),
+                xyz_to_rgb: input_words(&row["xyz_to_rgb"]),
+                illuminant_xyz: input_words(&row["white"]),
+                output_space: u8::try_from(row["output_space"].as_u64().unwrap()).unwrap(),
+                apply_cctf: flags & 1 != 0,
+                cctf: color::Cctf {
+                    kind: color::CctfKind::Bt2020,
+                    gamma,
+                    a,
+                    b,
+                    c,
+                    d,
+                    linear_cutoff,
+                },
+                dwg_to_output: input_words(&row["dwg_to_output"]),
+                active_gamut_recipe_hash: 0,
+                hash: 0,
+            };
+            let hex = row["canonical_le_hex"].as_str().unwrap();
+            let bytes: Vec<_> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let expected = row["digest_u64"].as_u64().unwrap();
+            assert_eq!(hash::bytes(&bytes), expected);
+            assert_eq!(
+                color.spectral_binding_digest(
+                    u8::try_from(row["route"].as_u64().unwrap()).unwrap(),
+                    row["key"].as_str().unwrap(),
+                    row["asset_token"].as_u64().unwrap(),
+                    &tables,
+                    flags & 4 != 0,
+                ),
+                expected
+            );
+            case.passed();
+        }
+        cases.finish();
     }
     #[test]
     fn independent_complete_values_and_owned_results() {

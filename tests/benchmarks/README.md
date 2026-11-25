@@ -5,6 +5,99 @@ scatter/halation command below needs its Release target prepared first;
 `highlight-check` prepares its production check through the shared verifier. Record
 the GPU model, driver, preset/commit and whether other GPU processes were active.
 
+### Scanner replay and paired timing
+
+Use the native Release preset with testing enabled. Build
+`JuicerOfxSpectralReplayModule` and `JuicerHalationComparisonProbe` through
+`scripts/verify.py prepare`. The replay companion copies
+the configured staged Resources and links the matching test-support archive.
+
+```sh
+python -B tests/benchmarks/ofx.py spectral-seed-pilot --preset linux-release \
+  --inputs <symbol-and-layout-inputs.json> --run-id replay-negative-direct \
+  --route negative-direct --grain current
+```
+
+The inputs bind both module hashes, their symbol identities, the compiled
+breakpoint entries and pending-readback layouts. Replay uses natural tokens
+from the staged product and reproduces them on the isolated companion. The
+standard product can exercise Current and Film v1. The paired scanner rows
+named `preview-*` refer to the archived dual-product campaign and retain its
+module identities.
+
+`ofx.py scanner-paired` takes a native Release preset, an input manifest, a
+fresh run ID and one or more `--workloads`. Its check mode uses the same tail
+rendezvous as measure mode. Measure mode requires the corresponding check
+receipt and retains the raw A/A and reordered cubic/spectral timing samples,
+with median and linearly interpolated p90 for each arm. A/A ratios are the
+second cubic arm divided by the first. A/B ratios are spectral divided by cubic.
+For a full-length diagnostic trace, use `--mode profile --nsys <executable>`
+with the same unprofiled check receipt. Profile mode retains the same render
+sequence and a CUDA trace per arm. The 5% timing gate applies in measure mode.
+All modes require the pinned products, symbol layouts and qualified workload
+bindings. The product driver leaves the final measured render's owner live
+until the observer admits the single untimed reporter.
+
+Use `--mode replay` for an untimed Ordinary same-method check. Each method
+declares its matching isolated test-support `companion` in the input manifest.
+Prepare the selected Ordinary Release modules with
+`scripts/verify.py prepare --scanner-replay-links` and the explicit module
+targets. In each `build_binding`, supply the producing `result.json` as
+`producer` and its `candidate.json` and `candidate.patch` as `source` and
+`patch`. Before rendering any workload, the runner checks the snapshot and
+patch against the passing build bundle, then verifies the target's link output
+digest and the selected Rust and native link inputs from that build.
+
+The build bundle retains its generated Cargo role record and final Ninja file
+inputs, including the archives, directly linked objects and explicit linker
+controls. The replay receipt binds the sealed build result and those retained
+members by digest. If the manifest also supplies `cargo`, its bytes must match
+the retained record. Existing receipts keep their recorded evidence scope.
+The replay runner verifies the linked binary, rejects shipping/companion file
+and content aliases, and records the source, link inputs, module, symbols,
+Resources, compiled layout, observer, reader and driver identities.
+The product runs with a natural draw. The companion receives the three token
+words read from that product and replays the same workload. The driver and
+observer verify the exact completed output words, actual Current grain
+parameters or grain-off dispatch, pitched source preservation, and terminal
+readback in both runs. The materialized rows also compare the live C/M/Y words
+within each method. Replay receipts carry their own scope and cannot admit
+natural timing.
+
+In paired runs, each arm's `schedule_points` maps its compiled scanner entry
+names to the exact offset and symbol. The reporter must reach the entry for
+the admitted route and schedule once. The breakpoint is armed after timing.
+
+For a Full 36 mm Direct Preview comparison with the archived fixture, bind the
+tightly packed RGB raster with `preview_material.path` and
+`preview_material.sha256` in the paired manifest. Declare
+`benchmark_scanner: true` only for an archived benchmark arm that exports the
+backend selector. The driver leaves both arms' OFX tokens natural.
+
+`--read-cubic-grid` reads the six buffer bindings and effective grid at the
+reporter launch. For an archived module without native payload type information,
+the matching-symbol manifest can provide each route's compiled `cubic_scan_stage`
+offset under the arm's `layout`. The ordinary reader also requires the effective
+grid to equal the authored grid. For the Full 36 mm Direct Preview row,
+`--capture-density` saves the reporter's exact planar Float32 C/M/Y, and
+`--held-density <raster>` stages and verifies those words on each arm's supplied
+stream before its reporter reaches the real scanner kernel. The held comparison
+requires `--nsys <executable>` and check mode. Read the CUDA kernel interval
+from the retained SQLite trace for the reporter. The three preceding check
+renders keep their natural inputs. Profiled receipts cannot admit measure mode.
+
+For this row with correction, glare and gamut compression off, the spectral
+reporter also saves `scanner-packet.f32` with the live spectra and the two
+color matrices. To separate the arithmetic and check costs, prepare
+`JuicerScannerCostBenchmark` with the native Release verifier and run
+`ofx.py scanner-cost --preset <preset> --run-id <id> --density <raster> --packet <packet>`.
+The benchmark interleaves both precisions, with and without intermediate
+result checks, and with wavelength validity determined per pixel or once
+before timing. The supported input is the held Full 36 mm raster. It records
+per-launch CUDA event times and differences in the pre-encoding output.
+
+### Scatter and halation
+
 For the retained scatter/halation measurement on Linux:
 
 ```sh

@@ -57,7 +57,9 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
     message(FATAL_ERROR "Use a Debug or Release Ninja preset")
 endif()
 
-option(JUICER_GRAIN_PREVIEW "Build the private Portra grain preview" OFF)
+unset(JUICER_GRAIN_PREVIEW CACHE)
+unset(JUICER_GRAIN_PREVIEW_CONFIGURED CACHE)
+set(JUICER_FILM_V1_CONFIGURED ON CACHE INTERNAL "The standard product includes Film v1")
 
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
@@ -88,12 +90,6 @@ set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 add_library(juicer MODULE native/ofx_exports.cpp)
 target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
-if(JUICER_GRAIN_PREVIEW)
-    set_target_properties(juicer PROPERTIES OUTPUT_NAME "juicer-grain-preview")
-    set(JUICER_GRAIN_PREVIEW_CONFIGURED ON CACHE INTERNAL "Configured product preview")
-else()
-    set(JUICER_GRAIN_PREVIEW_CONFIGURED OFF CACHE INTERNAL "Configured product preview")
-endif()
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
     # not need separable compilation. Resolve it once at the final module.
@@ -141,7 +137,7 @@ if(BUILD_TESTING)
         tests/film/effects-frame-fixtures tests/grain/frame-fixtures
         tests/dir/frame-fixtures tests/diffusion/frame-fixtures
         tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
-        tests/scanner/post-effects-fixtures tests/scanner/descriptor-fixtures)
+        tests/scanner/post-effects-fixtures)
     set(probe_fixture_inputs)
     foreach(directory IN LISTS probe_fixture_directories)
         file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS
@@ -195,10 +191,10 @@ include(CTest)
 
 # The witness links its density tap as the Film stage owner, so the direct
 # implementation is not extracted from juicer_core. The executor, CUDA sampler
-# and Rust preview are the same production objects used by the OFX module.
+# and Rust recipe are the same production objects used by the OFX module.
 set(juicer_motion_replay_configured OFF)
 set(juicer_grain_aperture_target OFF)
-if(BUILD_TESTING AND JUICER_GRAIN_PREVIEW)
+if(BUILD_TESTING)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(juicer_grain_aperture_target JuicerGrainMotionReplay)
         set(aperture_directory "${CMAKE_BINARY_DIR}/grain-motion")
@@ -226,10 +222,8 @@ if(juicer_grain_aperture_target)
         LINKER_LANGUAGE CXX CUDA_RESOLVE_DEVICE_SYMBOLS ON
         RUNTIME_OUTPUT_DIRECTORY "${aperture_directory}/bin")
     if(WIN32)
-        set(aperture_resource_names ${JUICER_RUNTIME_RESOURCES}
-            grain/portra-400/manifest.json grain/portra-400/records.f32 grain/portra-400/sums.f32)
         set(aperture_resources)
-        foreach(resource IN LISTS aperture_resource_names)
+        foreach(resource IN LISTS JUICER_RUNTIME_RESOURCES)
             set(input "${PROJECT_SOURCE_DIR}/Resources/${resource}")
             set(output "${aperture_directory}/Resources/${resource}")
             get_filename_component(directory "${output}" DIRECTORY)

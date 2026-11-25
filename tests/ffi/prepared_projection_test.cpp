@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <cstdlib>
@@ -6,11 +7,14 @@
 #include <utility>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "prepared_descriptors.h"
 #include "prepared_product_fixture.h"
@@ -22,9 +26,75 @@
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
 #include "gtest_cases.h"
+#include "juicer_cuda_prepared.h"
 
 namespace {
     FjPreparedHostData make_fixed_input();
+
+    template <std::size_t N>
+    void read_binding_words(const nlohmann::json& source, std::span<float, N> output) {
+        const auto words = source.get<std::array<std::uint32_t, N>>();
+        std::ranges::transform(words, output.begin(), [](std::uint32_t value) {
+            return std::bit_cast<float>(value);
+        });
+    }
+
+    std::uint64_t fixture_binding_digest(const nlohmann::json& row) {
+        FjPreparedHostData source{};
+        source.route = row.at("route");
+        const bool print = source.route == FJ_ROUTE_NEGATIVE_PRINT || source.route == FJ_ROUTE_POSITIVE_PRINT;
+        const auto& key = row.at("key").get_ref<const std::string&>();
+        auto& profileKey = print ? source.print_profile_key : source.film_profile_key;
+        profileKey.data = key.data();
+        profileKey.count = key.size();
+        (print ? source.print_profile_asset_version : source.film_profile_asset_version) = row.at("asset_token");
+        std::array<std::array<float, 81>, 6> lanes{};
+        std::array<float, 81> base{};
+        auto& spectra = source.scanner_spectra;
+        const std::array spanSlots{&spectra.dye_c, &spectra.dye_m, &spectra.dye_y, &spectra.weighted_x, &spectra.weighted_y, &spectra.weighted_z};
+        for (std::size_t i = 0; i < lanes.size(); ++i) {
+            read_binding_words(row.at("lanes").at(i), std::span{lanes[i]});
+            *spanSlots[i] = {lanes[i].data(), lanes[i].size()};
+        }
+        if (!row.at("base").is_null()) {
+            read_binding_words(row.at("base"), std::span{base});
+            spectra.base_density = {base.data(), base.size()};
+        }
+        spectra.inverse_y_normalization = std::bit_cast<float>(row.at("inverse_y").get<std::uint32_t>());
+        auto& color = source.output_color;
+        color.color_space = row.at("output_space");
+        color.flags = row.at("flags");
+        read_binding_words(row.at("white"), std::span{color.illuminant_xyz});
+        read_binding_words(row.at("cat02"), std::span{color.cat02});
+        read_binding_words(row.at("xyz_to_rgb"), std::span{color.xyz_to_rgb});
+        std::array<float, 6> coefficients{};
+        read_binding_words(row.at("coefficients"), std::span{coefficients});
+        const auto [gamma, a, b, c, d, cutoff] = coefficients;
+        color.encoding = {row.at("encoding_schema"), row.at("encoding_kind"), gamma, a, b, c, d, cutoff, {}};
+        read_binding_words(row.at("dwg_to_output"), std::span{color.encoding.dwg_to_output});
+        return JuicerCuda::spectral_binding_digest(source);
+    }
+
+    TEST(PreparedProjection, SharedSpectralBindingKnownAnswers) {
+        std::ifstream stream(FJ_SCANNER_BINDING_FIXTURE);
+        ASSERT_TRUE(stream);
+        const auto fixture = nlohmann::json::parse(stream);
+        ASSERT_EQ(fixture.at("schema"), "scanner-binding-fixture-v1");
+        const auto& rows = fixture.at("vectors");
+        ASSERT_EQ(rows.size(), 9U);
+        const auto original = fixture_binding_digest(rows.at(0));
+        ASSERT_EQ(rows.at(0).at("id"), "direct-absent-base");
+        for (const auto& row : rows) {
+            SCOPED_TRACE(row.at("id").get<std::string>());
+            ASSERT_EQ(row.at("schema_word"), 1U);
+            const auto actual = fixture_binding_digest(row);
+            EXPECT_EQ(actual, row.at("digest_u64").get<std::uint64_t>());
+            if (row.at("id") == "direct-absent-base" || row.at("id") == "canonical-equivalent")
+                EXPECT_EQ(actual, original);
+            else
+                EXPECT_NE(actual, original);
+        }
+    }
 
     TEST(PreparedProjection, SnapshotAdapterPreservesIntegerFlagsWidthsAndKeyBorrows) {
         ASSERT_STREQ(std::getenv("JUICER_TEST_PRESET_NAME"), FJ_PREPARED_STATE_PRESET);
@@ -424,7 +494,6 @@ namespace {
         FjPreparedHostData input{};
         input.route = FJ_ROUTE_NEGATIVE_PRINT;
         input.capture_polarity = FJ_POLARITY_NEGATIVE;
-        input.scanner_lut = {101, 17, 102};
         input.scanner_correction = {FJ_CORRECTION_ACTIVE, 1.25f, -0.125f, 0.75f};
         input.scanner_post = {
             FJ_POST_GLARE, 2.5f, 0.375f, 1.25f, 4, 0.75f, 2, 1.5f, 5, 0.625f, 103};
@@ -652,13 +721,12 @@ namespace {
             std::uint32_t polarity;
             Spektrafilm::ScanRoute nativeRoute;
             Spektrafilm::ProfilePolarity nativePolarity;
-            Scanner::ScannedMediumKind medium;
         };
         const RouteCase cases[] = {
-            {FJ_ROUTE_NEGATIVE_DIRECT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Film},
-            {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Print},
-            {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Film},
-            {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Print}};
+            {FJ_ROUTE_NEGATIVE_DIRECT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ProfilePolarity::Negative},
+            {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative},
+            {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive},
+            {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive}};
         const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
         JuicerTests::GtestCohort cohort("route-polarity-medium", ids);
         for (const auto& item : cases) {
@@ -673,8 +741,6 @@ namespace {
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
             EXPECT_EQ(actual.route, item.nativeRoute);
             EXPECT_EQ(actual.capturePolarity, item.nativePolarity);
-            EXPECT_EQ(actual.scanner.medium, item.medium);
-            EXPECT_EQ(actual.scanner.polarity, item.nativePolarity);
             EXPECT_FALSE(actual.diffusion);
             EXPECT_FALSE(actual.halation);
             EXPECT_FALSE(actual.grain);
@@ -689,9 +755,6 @@ namespace {
         JuicerCuda::PreparedDescriptors actual;
         std::string diagnostic;
         ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
-        EXPECT_EQ(actual.scanner.densityBoundsHash, 101u);
-        EXPECT_EQ(actual.scanner.lutResolution, 17u);
-        EXPECT_EQ(actual.scanner.hash, 102u);
         EXPECT_TRUE(actual.correction.active);
         EXPECT_FLOAT_EQ(actual.correction.xyzSlope, 1.25f);
         EXPECT_FLOAT_EQ(actual.correction.xyzOffset, -0.125f);
@@ -912,9 +975,6 @@ namespace {
         JuicerCuda::PreparedDescriptors source{};
         source.route = Spektrafilm::ScanRoute::PositiveDirectScan;
         source.capturePolarity = Spektrafilm::ProfilePolarity::Positive;
-        source.scanner.densityBoundsHash = 601;
-        source.scanner.lutResolution = 33;
-        source.scanner.hash = 602;
         source.correction.active = true;
         source.correction.xyzOffset = -0.0625f;
         source.post.glareBlurRadius = 7;
@@ -974,9 +1034,6 @@ namespace {
         JuicerCudaTest::encode_prepared_descriptors(source, actual);
         EXPECT_EQ(actual.route, FJ_ROUTE_POSITIVE_DIRECT);
         EXPECT_EQ(actual.capture_polarity, FJ_POLARITY_POSITIVE);
-        EXPECT_EQ(actual.scanner_lut.density_bounds_hash, 601u);
-        EXPECT_EQ(actual.scanner_lut.resolution, 33u);
-        EXPECT_EQ(actual.scanner_lut.hash, 602u);
         EXPECT_EQ(actual.scanner_correction.flags, FJ_CORRECTION_ACTIVE);
         EXPECT_FLOAT_EQ(actual.scanner_correction.xyz_offset, -0.0625f);
         EXPECT_EQ(actual.scanner_post.glare_blur_radius, 7);
@@ -1295,7 +1352,6 @@ namespace {
             EXPECT_EQ(actual.grainPayload.recipeHash, 0u);
             EXPECT_EQ(actual.grainPayload.densityLayersHash, 0u);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
-            EXPECT_EQ(actual.scanner.hash, 0u);
             caseEvent.passed();
         }
     }

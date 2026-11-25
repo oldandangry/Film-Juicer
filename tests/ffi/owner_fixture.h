@@ -74,6 +74,7 @@ namespace JuicerTestSupport {
         FjStatus capture_is_current(std::uint64_t ticket, std::uint32_t& current, FjErrorBuffer& error) const;
         FjStatus begin_snapshot(std::uint64_t ticket, FjSnapshotStart& out, FjErrorBuffer& error);
         FjStatus install(std::uint64_t ticket, std::uint64_t revision, const PreparationInput& input, std::uint64_t identity, std::uint32_t& update, FjErrorBuffer& error);
+        FjStatus install_rust_capture(std::uint64_t ticket, std::uint64_t revision, const PreparationInput& input, std::uint32_t& update, FjErrorBuffer& error);
         FjStatus invalidate(std::uint64_t ticket, std::uint32_t failure, FjStringView diagnostic, std::uint32_t& update, FjErrorBuffer& error);
         FjStatus admit(const FjAssets* assets, std::uint32_t& kind, std::optional<PreparedStateHold>& out, FjErrorBuffer& error);
         FjStatus begin_host_write(std::uint64_t ticket, std::uint32_t& kind, std::optional<HostWriteFixture>& out, FjErrorBuffer& error);

@@ -539,14 +539,6 @@ namespace JuicerCuda {
             (source.scanner_post.flags & ~FJ_POST_GLARE) != 0) {
             return invalid_descriptor(diagnostic, "scanner.flags");
         }
-        decoded.scanner.route = decoded.route;
-        decoded.scanner.medium = Spektrafilm::scan_route_is_print(decoded.route)
-                                     ? Scanner::ScannedMediumKind::Print
-                                     : Scanner::ScannedMediumKind::Film;
-        decoded.scanner.polarity = decoded.capturePolarity;
-        decoded.scanner.densityBoundsHash = source.scanner_lut.density_bounds_hash;
-        decoded.scanner.lutResolution = source.scanner_lut.resolution;
-        decoded.scanner.hash = source.scanner_lut.hash;
         decoded.correction.route = decoded.route;
         decoded.correction.active = (source.scanner_correction.flags & FJ_CORRECTION_ACTIVE) != 0;
         decoded.correction.xyzSlope = source.scanner_correction.xyz_slope;

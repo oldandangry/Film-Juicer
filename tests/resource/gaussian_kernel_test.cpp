@@ -172,7 +172,13 @@ namespace {
         equal(snapshot(r), empty);
         require(fj_test_gaussian_kernel_acquires() == coldAcquires && fj_test_gaussian_kernel_live_owners() == 0,
                 "cold null Gaussian preparation visits no callback and retains no Rust owner");
-        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "key witness seed");
+        const bool preparedOnMiss = JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
+            return ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure, preparation);
+        });
+        require(preparedOnMiss && fj_test_gaussian_kernel_acquires() == coldAcquires + 1 &&
+                    fj_test_gaussian_kernel_live_owners() == 0,
+                "cold Gaussian slot acquires and releases its Rust owner");
+        download(r.scannerLensBlurKernel, expected);
         const auto old = r.scannerLensBlurKernel;
         const auto initial = snapshot(r);
         const auto warmAcquires = fj_test_gaussian_kernel_acquires();

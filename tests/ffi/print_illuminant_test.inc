@@ -15,7 +15,7 @@ namespace PrintIlluminantTest {
     void metadata(const FjPrintIlluminantFailure& failure, std::uint32_t reason, std::uint32_t sample = UINT32_MAX);
     void zero(const FjIlluminant& out);
     struct PreparedPrintFacts {
-        std::uint64_t printHash = 0;
+        std::uint64_t mainIlluminantHash = 0;
         std::size_t preflashCount = 0;
     };
     bool inspect_prepared_print(void* opaque,
@@ -27,7 +27,7 @@ namespace PrintIlluminantTest {
             diagnostic = "prepared print state has no complete resource input";
             return false;
         }
-        facts.printHash = input->descriptors.hash;
+        facts.mainIlluminantHash = input->descriptors.mainIlluminantHash;
         facts.preflashCount = input->preflashIlluminant.size();
         return true;
     }
@@ -278,7 +278,11 @@ namespace PrintIlluminantTest {
                 for (unsigned variant = 0; variant < 6; ++variant)
                     product_ids.emplace_back("print-illuminant/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
         JuicerTests::Cohort product_rows("print_illuminant.recipe_tuple", product_ids);
-        for (const auto& expected : captured.at("products")) {
+        for (auto expected : captured.at("products")) {
+            PrintIlluminantFixtures::select_frozen_light_hashes(expected, "descriptors");
+            require(expected.erase("final_hash") == 1, "archived Print illuminant route recipe field");
+            require(expected.at("snapshot_hash").is_number_unsigned(), "archived Print illuminant capture identity");
+            expected.erase("snapshot_hash");
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
             const unsigned variant = expected.at("variant");
@@ -312,13 +316,14 @@ namespace PrintIlluminantTest {
             FjPreparedStateView view{};
             status(product->view(view, error));
             const auto& print = view.print;
-            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
+            require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash, "complete Print illuminant route recipe");
+            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
             if (route % 2) {
                 actual["main"] = words(print.main_illuminant.data, print.main_illuminant.count);
                 const auto& mainCmy = print.main_cc_cmy;
                 actual["main_cmy"] = words(mainCmy, 3);
                 if ((print.flags & FJ_PRINT_PREFLASH) != 0) {
-                    actual["preflash_cmy"] = words(print.preflash_cc_cmy, 3);
+                    actual["preflash_cmy"] = words(view.print_effective_preflash_cmy_cc, 3);
                 } else {
                     require(p.values.print_preflash_exposure == 0 && p.values.preflash_m_filter_cc == 0 && p.values.preflash_y_filter_cc == 0 &&
                                 std::all_of(std::begin(p.values.print_ui_ymc_cc), std::end(p.values.print_ui_ymc_cc), [](double value) {
@@ -329,9 +334,9 @@ namespace PrintIlluminantTest {
                         return std::bit_cast<std::uint32_t>(value) == 0;
                     };
                     require(print.preflash_illuminant.data == nullptr && print.preflash_illuminant.count == 0 &&
-                                print.preflash_illuminant_hash == 0 && print.preflash_raw_hash == 0 &&
+                                print.preflash_illuminant_hash == 0 &&
                                 zero(print.preflash_exposure) &&
-                                std::all_of(std::begin(print.preflash_cc_cmy), std::end(print.preflash_cc_cmy), zero) &&
+                                std::all_of(std::begin(view.print_effective_preflash_cmy_cc), std::end(view.print_effective_preflash_cmy_cc), zero) &&
                                 std::all_of(std::begin(print.preflash_raw_cmy), std::end(print.preflash_raw_cmy), zero),
                             "inactive preflash projection is absent/zero before capture metadata mapping");
                     actual["preflash_cmy"] = words(mainCmy, 3);
@@ -350,7 +355,7 @@ namespace PrintIlluminantTest {
                 // is an empty span in FjPrint and the original scratch stayed +0.
                 actual["preflash"] = words(preflashScratch.data(), preflashScratch.size());
                 actual["raw"] = words(print.preflash_raw_cmy, 3);
-                actual["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
+                actual["descriptors"] = {print.main_illuminant_hash, print.preflash_illuminant_hash};
             }
             if (actual != expected)
                 throw std::runtime_error("print illuminant product route=" + std::to_string(route) +
@@ -407,7 +412,7 @@ namespace PrintIlluminantTest {
         require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
                     owner.borrow().assets, disabled, PrintPreflashTest::frame_facts(controls), &disabledFacts, &inspect_prepared_print, diagnostic),
                 diagnostic.c_str());
-        require(disabledFacts.printHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash omits constructor input");
+        require(disabledFacts.mainIlluminantHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash leaves only the main light");
         // The complete disabled input must leave the raw-constructor fault armed.
         consume_stage10(literalCases);
         publication_event.passed();
@@ -418,7 +423,7 @@ namespace PrintIlluminantTest {
         require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
                     owner.borrow().assets, active, PrintPreflashTest::frame_facts(controls), &activeFacts, &inspect_prepared_print, diagnostic),
                 diagnostic.c_str());
-        require(activeFacts.printHash != 0 && activeFacts.preflashCount == 81,
+        require(activeFacts.mainIlluminantHash != 0 && activeFacts.preflashCount == 81,
                 "active preflash input is supplied from the completed held state");
         consume_stage10(literalCases);
     }

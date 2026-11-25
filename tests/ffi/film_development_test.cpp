@@ -252,9 +252,11 @@ namespace {
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
             FjPreparedStateView view{};
             status(product.view(view, error));
-            require(JuicerTestSupport::hash_input_identity(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "independent complete snapshot/final identity");
+            require(row.at("snapshot_hash").is_number_unsigned(), "archived film development capture identity");
+            require(view.recipe_hash != 0 && view.upload_core_hash == view.recipe_hash && view.scanner_recipe_hash != 0,
+                    "prepared development publishes its current recipe and scanner identities");
             require(view.film_profile_asset_version == row.at("profile_token") && view.film_development.hash == row.at("development").at("hash"), "profile/development identities survive actual consumers");
-            require(view.scanner_recipe_hash == row.at("scanner_hash") && view.film_reference.hash == row.at("reference_hash"), "scanner/reference completion precedes success");
+            require(view.film_reference.hash == row.at("reference_hash"), "film reference completion precedes success");
             ++count;
             event.passed();
         }

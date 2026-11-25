@@ -6,39 +6,12 @@
 /* Completed Rust values consumed by the synchronous native call. Every span
  * borrows that call; native staging owns queued reads before return. These
  * records contain no native preparation or application-policy owner. */
-#define FJ_SCANNER_LUT_REASON_NONE UINT32_C(0)
-#define FJ_SCANNER_LUT_REASON_RAW UINT32_C(1)
-#define FJ_SCANNER_LUT_REASON_RESOLUTION UINT32_C(2)
-#define FJ_SCANNER_LUT_REASON_SIZE UINT32_C(3)
-#define FJ_SCANNER_LUT_REASON_ALLOCATION UINT32_C(4)
-#define FJ_SCANNER_LUT_REASON_NONFINITE UINT32_C(5)
-#define FJ_SCANNER_LUT_REASON_PANIC UINT32_C(6)
 #define FJ_GAUSSIAN_KERNEL_NONE UINT32_C(0)
 #define FJ_GAUSSIAN_KERNEL_RAW UINT32_C(1)
 #define FJ_GAUSSIAN_KERNEL_RADIUS UINT32_C(2)
 #define FJ_GAUSSIAN_KERNEL_SIGMA UINT32_C(3)
 #define FJ_GAUSSIAN_KERNEL_ALLOCATION UINT32_C(4)
 #define FJ_GAUSSIAN_KERNEL_PANIC UINT32_C(5)
-
-typedef struct FjScannerLutInput {
-    FjFloatSpan eps_c, eps_m, eps_y;
-    FjFloatSpan weighted_x, weighted_y, weighted_z, baseline_min;
-    float range_min_cmy[3], inverse_span_cmy[3];
-    int32_t sample_count;
-    float inv_yn;
-    uint32_t has_baseline, medium, resolution;
-} FjScannerLutInput;
-
-typedef struct FjScannerLutView {
-    uint32_t resolution;
-    FjFloatSpan log2_xyz, slope_c, slope_m, slope_y, cell_min, cell_max;
-} FjScannerLutView;
-
-typedef struct FjScannerLutFailure {
-    uint32_t reason, channel;
-    uint64_t index;
-    uint32_t buffer;
-} FjScannerLutFailure;
 
 typedef struct FjGaussianKernelInput {
     int32_t radius;

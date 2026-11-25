@@ -13,7 +13,8 @@
     "ScatterHalation.Gpu.Lifecycle",
     "Ffi.Gpu.CudaInspect",
     "Ffi.Gpu.CudaInspect.MultiDevice",
-    "Ffi.Gpu.ProductionPreparedRender"
+    "Ffi.Gpu.ProductionPreparedRender",
+    "Ffi.Gpu.FilmV1Staged"
   ],
   "targets": {
     "JuicerOfxRenderGpuTests": {
@@ -22,7 +23,7 @@
     },
     "JuicerOfxRenderTraceTests": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 5
     },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
@@ -34,10 +35,6 @@
     },
     "JuicerGaussianKernelTests": {
       "protocol": "custom",
-      "registrations": 1
-    },
-    "JuicerScannerLutResourceTests": {
-      "protocol": "gtest",
       "registrations": 1
     },
     "JuicerDeferredDestroyTests": {
@@ -54,15 +51,15 @@
     },
     "JuicerProcessorReferenceProbe": {
       "protocol": "custom",
-      "registrations": 4
+      "registrations": 7
     },
     "JuicerPreparedBoundaryProbe": {
       "protocol": "custom",
-      "registrations": 12
+      "registrations": 14
     },
     "JuicerExecutorFailureOrderProbe": {
       "protocol": "custom",
-      "registrations": 9
+      "registrations": 10
     },
     "JuicerAdapterTraceProbe": {
       "protocol": "custom",
@@ -98,7 +95,7 @@
     },
     "JuicerProductionPreparedRenderProbe": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 2
     }
   },
   "native_cohorts": {
@@ -117,14 +114,22 @@
     "ScatterHalation.Gpu.Lifecycle": 5,
     "Ofx.Gpu.Render": 1,
     "Ofx.Gpu.RenderTrace": 1,
+    "Ofx.Gpu.ScannerReferenceInputs": 1,
+    "Ofx.Gpu.RenderReferenceInputs": 1,
+    "Ofx.Gpu.PrintGlareLaunches": 1,
+    "Ofx.Gpu.RetainedHighGainReference": 1,
     "Ofx.Gpu.ProcessorReference": 1,
+    "Ofx.Gpu.ProcessorReferenceInputs": 1,
+    "Ofx.Gpu.ProcessorScannerReferenceInputs": 1,
     "Ofx.Gpu.SequentialOwners": 1,
     "Ofx.Gpu.CutoverContract": 8,
     "Ofx.Gpu.AcceptedCudaCaptures": 1,
+    "Ofx.Gpu.AcceptedCleanReferenceInputs": 1,
     "Ofx.Gpu.NoiseSourceLifetime": 4,
     "Ofx.Gpu.WorkspaceTransitions": 2,
+    "Ofx.Gpu.WorkspaceReferenceInputs": 2,
     "Ofx.Gpu.ExecutorFailureOrder": 1,
-    "Ofx.Gpu.ResourceFailure.ScannerLut": 1,
+    "Ofx.Gpu.ResourceFailure.OutputGamut": 1,
     "Ofx.Gpu.ResourceFailure.DefectFence": 1,
     "Ofx.Gpu.ResourceFailure.GrainUpload": 1,
     "Ofx.Gpu.EffectsFrame": 1,
@@ -142,10 +147,13 @@
     "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
     "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
-    "Ffi.Gpu.CudaRender.negative-direct": 21,
-    "Ffi.Gpu.CudaRender.negative-print": 21,
+    "Ffi.Gpu.CudaRender.negative-direct": 24,
+    "Ffi.Gpu.CudaRender.negative-print": 24,
+    "Ffi.Gpu.CudaRender.positive-direct": 24,
+    "Ffi.Gpu.CudaRender.positive-print": 24,
     "Ffi.Gpu.PreparedStateLifetime": 53,
-    "Ffi.Gpu.ProductionPreparedRender": 1
+    "Ffi.Gpu.ProductionPreparedRender": 1,
+    "Ffi.Gpu.FilmV1Staged": 1
   },
   "gtest_cohorts": {
     "InspectGpu.AllocationCoverageIncludesFullSourceAndDestinationBounds": 1,
@@ -153,16 +161,11 @@
     "PinnedUpload.OverwriteReturnsReservationsOnAllocationEventAndCopyFailure": 1,
     "PinnedUpload.FrameUseRegistrationIsExcludedAtBothCurveCopySeams": 1,
     "PinnedUpload.CurveAxisSubmissionDeterminesSamplesFailurePrecedence": 1,
+    "PinnedUpload.PartialPrintTableOverwriteRequiresFullRefillOfA": 1,
     "PinnedUpload.FailedStagedCopyReturnsReservationAndNeverBorrowsCallerStorage": 1,
     "PinnedUpload.ReservationDiagnosticFailurePreservesNativeStatus": 1,
     "PinnedUpload.CopyDiagnosticFailureReturnsReservationAndPreservesNativeStatus": 1,
     "PinnedUpload.CompletionDiagnosticFailurePreservesQuarantineAndContextLoss": 1,
-    "ScannerLut.ColdWarmAndCallbackFault": 4,
-    "ScannerLut.BothOwnerRechecks": 2,
-    "ScannerLut.SixUploadFailures": 2,
-    "ScannerLut.OrderedRetirementFailures": 2,
-    "ScannerLut.LaterGamutFailure": 1,
-    "ScannerLut.AsyncBackingAndTeardown": 1,
     "ProfileCudaSafety.SingletonDuplicateAndInfiniteDomains": 1,
     "ProfileCudaSafety.ClampsBeforeFloatToIndexConversion": 1,
     "ProfileCudaSafety.NonfiniteLutContentsAndNarrowingCoordinatesUseRealConsumers": 1,
@@ -184,28 +187,111 @@
     "GrainScratch.SurvivesResolutionChangesQueuedAbortAndContextRetirement": 1,
     "GrainScratch.AdmittedTierPreservesGrainBindingAndOutput": 1,
     "ScannerOutput.TransferFunctionsMatchDoubleOracle": 4,
-    "ScannerOutput.EncodingFollowsBlurUnsharpWeaveAndGateAttenuation": 1,
+    "ScannerOutput.EncodingFollowsBlurUnsharpWeaveAndGateAttenuation": 2,
     "ScannerRoutes.CorrectionRoutes": 1,
     "ScannerRoutes.GamutSwitchKeepsPreparedRenderingStable": 1,
     "ScannerRoutes.PostConstructorResourcesReuseRebuildRejectAndRecover": 1,
     "ScannerRoutes.FusedAndSeparateOutputMatchOnAllFourRoutes": 1,
-    "ScannerRoutes.RequiredLutFailuresAreReportedByBothScannerCallers": 3,
+    "ScannerRoutes.NonfiniteSpectralOutputIsReportedByBothScannerCallers": 3,
+    "ScannerRoutes.SpectralPlaneMatchesIndependentFloat64Reference": 1,
     "ScannerRoutes.DeferredDirFailureComesFromReadbackBits": 1,
-    "ScannerRoutes.ResolutionTransitionRestoresLutContentAndOutput": 1,
+    "ScannerRoutes.HeldOutputEncodingsRestoreSpectralBindingAndPixels": 1,
     "ScannerRoutes.PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges": 1,
-    "ScannerRoutes.LutConstructionFailuresPreserveCategoryAndCache": 1,
-    "ScannerRoutes.LutIdentityTracksSelectedProfileBoundsAndIlluminant": 1,
-    "ScannerRoutes.WholeNativeLutProductsSurviveActualPreparedUpload": 1
+    "ScannerRoutes.SpectralBindingTracksTheSelectedMedium": 1,
+    "ScannerRoutes.WholeSpectralPacketMatchesTheHeldPreparedMedium": 1
   },
   "excluded_gtest": {
     "ExposureCache.DISABLED_SixKTiming": "Explicit CUDA-event timing benchmark; never part of ordinary CTest.",
     "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
   },
   "native_membership": {
-    "Ffi.Gpu.CudaRender.negative-direct": {
-      "listed": 13,
-      "terminal": 128,
+    "Ffi.Gpu.FilmV1Staged": {
+      "listed": 23,
+      "terminal": 23,
       "required": [
+        [
+          "film-v1-render",
+          "negative-direct-quarter-size-half"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-proxy-sequence"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-hd"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-hd"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-uhd"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-uhd"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-4832"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-4832"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-portrait"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-smaller-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-smaller-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-larger-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-larger-formats"
+        ],
+        [
+          "film-v1-render",
+          "negative-direct-thumbnails"
+        ],
+        [
+          "film-v1-render",
+          "negative-print-thumbnails"
+        ],
+        ["film-v1-render", "negative-direct-8mm-proxy"],
+        ["film-v1-render", "negative-print-8mm-proxy"],
+        ["film-v1-render", "negative-direct-clipped-quarter"],
+        ["film-v1-render", "negative-print-clipped-quarter"],
+        ["film-v1-render", "negative-direct-time-endpoint"],
+        ["film-v1-render", "negative-print-time-endpoint"],
+        ["film-v1-render", "negative-direct-small-format-high-gain"],
+        ["film-v1-render", "negative-print-small-format-high-gain"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.negative-direct": {
+      "listed": 22,
+      "terminal": 137,
+      "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["shipping-plane-scan-readback", "producer"],
+        ["shipping-plane-scan-readback", "reporter"],
+        ["shipping-plane-scan-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],
@@ -215,9 +301,60 @@
       ]
     },
     "Ffi.Gpu.CudaRender.negative-print": {
-      "listed": 13,
-      "terminal": 128,
+      "listed": 22,
+      "terminal": 137,
       "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["shipping-plane-scan-readback", "producer"],
+        ["shipping-plane-scan-readback", "reporter"],
+        ["shipping-plane-scan-readback", "retry"],
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.positive-direct": {
+      "listed": 22,
+      "terminal": 137,
+      "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["shipping-fused-dir-readback", "producer"],
+        ["shipping-fused-dir-readback", "reporter"],
+        ["shipping-fused-dir-readback", "retry"],
+        ["grain-dispatch", "conflicting-models"],
+        ["grain-dispatch", "malformed-film-frame"],
+        ["grain-dispatch", "invalid-film-fraction"],
+        ["grain-dispatch", "missing-film-bank"],
+        ["grain-dispatch", "film-launch"],
+        ["grain-dispatch", "current-launch"]
+      ]
+    },
+    "Ffi.Gpu.CudaRender.positive-print": {
+      "listed": 22,
+      "terminal": 137,
+      "required": [
+        ["shipping-scratch-scan-readback", "producer"],
+        ["shipping-scratch-scan-readback", "reporter"],
+        ["shipping-scratch-scan-readback", "retry"],
+        ["shipping-scan-readback", "producer"],
+        ["shipping-scan-readback", "reporter"],
+        ["shipping-scan-readback", "retry"],
+        ["shipping-fused-dir-readback", "producer"],
+        ["shipping-fused-dir-readback", "reporter"],
+        ["shipping-fused-dir-readback", "retry"],
         ["grain-dispatch", "conflicting-models"],
         ["grain-dispatch", "malformed-film-frame"],
         ["grain-dispatch", "invalid-film-fraction"],
@@ -247,9 +384,10 @@
       ]
     },
     "Ffi.Gpu.PreparedStateLifetime": {
-      "listed": 31,
-      "terminal": 333,
+      "listed": 32,
+      "terminal": 334,
       "required": [
+        ["state_lifetime", "negative-print/spectral-packet-overlap"],
         [
           "production-state-contract",
           "negative-direct/cold"
@@ -267,94 +405,6 @@
           "negative-print/warm"
         ]
       ]
-    }
-  },
-  "grain_preview": {
-    "targets": {
-      "JuicerProductionPreparedRenderProbe": {
-        "protocol": "custom",
-        "registrations": 2
-      }
-    },
-    "required": [
-      "Ffi.Gpu.GrainPreviewStaged"
-    ],
-    "native_cohorts": {
-      "Ffi.Gpu.GrainPreviewStaged": 1
-    },
-    "native_membership": {
-      "Ffi.Gpu.GrainPreviewStaged": {
-        "listed": 21,
-        "terminal": 21,
-        "required": [
-          [
-            "grain-preview-render",
-            "negative-direct-quarter-size-half"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-proxy-sequence"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-hd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-hd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-uhd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-uhd"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-4832"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-4832"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-portrait"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-smaller-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-smaller-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-larger-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-larger-formats"
-          ],
-          [
-            "grain-preview-render",
-            "negative-direct-thumbnails"
-          ],
-          [
-            "grain-preview-render",
-            "negative-print-thumbnails"
-          ],
-          ["grain-preview-render", "negative-direct-8mm-proxy"],
-          ["grain-preview-render", "negative-print-8mm-proxy"],
-          ["grain-preview-render", "negative-direct-clipped-quarter"],
-          ["grain-preview-render", "negative-print-clipped-quarter"],
-          ["grain-preview-render", "negative-direct-time-endpoint"],
-          ["grain-preview-render", "negative-print-time-endpoint"]
-        ]
-      }
     }
   },
   "grain_preview_motion_replay": {

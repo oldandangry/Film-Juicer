@@ -78,7 +78,6 @@ const REQUIRED: &[(&CStr, Kind)] = &[
     (c"ScannerWhiteCorrection", Kind::Boolean),
     (c"ScannerBlackLevel", Kind::Double),
     (c"ScannerWhiteLevel", Kind::Double),
-    (c"ScannerLutResolution", Kind::Integer),
     (c"PrintExposure", Kind::Double),
     (c"PrintPreflash", Kind::Double),
     (c"PrintExposureCompensation", Kind::Boolean),
@@ -103,13 +102,9 @@ const REQUIRED: &[(&CStr, Kind)] = &[
     (c"HalationHighlightProtectionEv", Kind::Double),
     (c"HalationHighlightBoostRange", Kind::Double),
     (c"GrainActive", Kind::Boolean),
-    #[cfg(feature = "grain-preview")]
     (c"GrainModel", Kind::StringChoice),
-    #[cfg(feature = "grain-preview")]
     (c"FilmGrainAmountEv", Kind::Double),
-    #[cfg(feature = "grain-preview")]
     (c"FilmGrainTexelPitchUm", Kind::Double),
-    #[cfg(feature = "grain-preview")]
     (c"FilmGrainChromaFraction", Kind::Double),
     (c"GrainSublayersActive", Kind::Boolean),
     (c"GrainPreset", Kind::Choice),
@@ -184,7 +179,6 @@ pub(crate) struct InstanceHandles {
     parameters: Vec<Parameter>,
     // Retained source/output handles remain host-owned until terminal Destroy.
     pub(in crate::ofx::host) clips: [sys::OfxImageClipHandle; 2],
-    #[cfg(feature = "grain-preview")]
     pub(in crate::ofx::host) clip_properties: [sys::OfxPropertySetHandle; 2],
     _local: PhantomData<Rc<()>>,
 }
@@ -546,7 +540,6 @@ impl Callback<'_> {
             properties,
             parameters: acquired,
             clips,
-            #[cfg(feature = "grain-preview")]
             clip_properties,
             _local: PhantomData,
         })

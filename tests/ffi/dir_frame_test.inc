@@ -18,6 +18,56 @@ namespace DirFrameTest {
         return {{"input", input}, {"success", success}, {"native", JuicerTestSupport::dir_frame_fields(out)}};
     }
 
+    Json product_differences(const Json& actual, const Json& expected) {
+        const auto surviving = [](Json row) {
+            require(row.at("recipe_hash").is_number_unsigned(), "DIR route aggregate has an unsigned identity");
+            row.erase("recipe_hash");
+            return row;
+        };
+        if (!actual.is_array())
+            return Json::diff(surviving(expected), surviving(actual));
+        Json actualRows = Json::array(), expectedRows = Json::array();
+        for (const auto& row : actual)
+            actualRows.push_back(surviving(row));
+        for (const auto& row : expected)
+            expectedRows.push_back(surviving(row));
+        return Json::diff(expectedRows, actualRows);
+    }
+
+    void compare_product_rows(const Json& actual, const Json& expected) {
+        require(product_differences(actual, expected).empty(), "complete ordered DIR route product array matches frozen descriptors");
+        auto changed = expected;
+        const auto selected = std::find_if(changed.begin(), changed.end(), [](const Json& row) {
+            return row.at("input").at("name") == "0/pixel-8";
+        });
+        require(selected != changed.end(), "DIR array contains the Negative Direct pixel product");
+        const auto path = "/" + std::to_string(selected - changed.begin()) + "/input/hash";
+        auto& hash = selected->at("input").at("hash");
+        const auto original = hash.get<std::uint64_t>();
+        hash = original ^ std::uint64_t{1};
+        const auto differences = product_differences(actual, changed);
+        require(differences.size() == 1 && differences.at(0).at("path") == path, "DIR array comparison rejects only the changed DIR input hash");
+        hash = original;
+        require(product_differences(actual, changed).empty(), "DIR array comparison passes after restoring the input hash");
+    }
+
+    void compare_product_row(const Json& actual, const Json& expected) {
+        auto differences = product_differences(actual, expected);
+        if (!differences.empty())
+            throw std::runtime_error("completed DIR route product differs: " + differences.front().dump());
+        if (expected.at("input").at("name") == "0/pixel-8") {
+            require(actual.at("recipe_hash") != expected.at("recipe_hash"), "the current route aggregate differs from the archived aggregate");
+            auto changed = expected;
+            auto& hash = changed.at("input").at("hash");
+            const auto original = hash.get<std::uint64_t>();
+            hash = original ^ std::uint64_t{1};
+            differences = product_differences(actual, changed);
+            require(differences.size() == 1 && differences.at(0).at("path") == "/input/hash", "DIR row comparison rejects only the changed DIR input hash");
+            hash = original;
+            require(product_differences(actual, changed).empty(), "DIR row comparison passes after restoring the input hash");
+        }
+    }
+
     Json products(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
@@ -51,7 +101,7 @@ namespace DirFrameTest {
                 auto row = replacement_case(input);
                 row["route"] = route;
                 row["recipe_hash"] = view.recipe_hash;
-                require_equal(row, expectedRows.at(expectedIndex++), "completed DIR route product row matches captured fixture");
+                compare_product_row(row, expectedRows.at(expectedIndex++));
                 rows.push_back(std::move(row));
                 caseEvent.passed();
             }

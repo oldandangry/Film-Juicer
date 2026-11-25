@@ -15,8 +15,8 @@
 namespace {
     constexpr std::string_view kCaller = "ofx.instance";
     constexpr const char* kCases[]{"reference", "create", "handles", "actions", "parameters", "edits", "reentry", "destroy"};
-    constexpr std::string_view kPreviewCaller = "ofx.grain_preview.instance";
-    constexpr const char* kPreviewCases[]{"create", "types", "destroy"};
+    constexpr std::string_view kFilmCaller = "ofx.film_v1.instance";
+    constexpr const char* kFilmCases[]{"create", "types", "destroy"};
     using ofx_test::InstanceCall;
     using ofx_test::InstanceHost;
     void require(bool condition, const char* message) {
@@ -34,21 +34,56 @@ namespace {
         return result;
     }
     using ofx_test::reference::advanced_halation_parameter;
-    std::vector<InstanceCall> legacy_halation_calls(std::vector<InstanceCall> calls, bool create = false) {
+    constexpr std::string_view kArchivedScannerGrid = "ScannerLutResolution";
+    constexpr std::string_view kArchivedScannerGridGetter = "param_get/ScannerLutResolution";
+    constexpr std::string_view kIntegerControl = "HalationBounceCount";
+    std::vector<InstanceCall> historical_instance_calls(std::vector<InstanceCall> calls, bool create = false) {
         std::erase_if(calls, [&](const InstanceCall& c) {
             if (c.operation == "param_handle")
                 return advanced_halation_parameter(c.property);
             if (c.operation == "param_properties" || c.operation == "param_get" ||
                 (c.operation == "get_string" && c.property == kOfxParamPropType))
-                return advanced_halation_parameter(c.target) || (create && c.operation == "param_get" && c.target == "HalationActive");
+                return advanced_halation_parameter(c.target) ||
+                       (c.operation == "param_get" && c.target == (create ? "HalationActive" : "GrainModel"));
             constexpr std::string_view presentation = ".presentation";
             return c.operation == "set_int" && c.property == kOfxParamPropEnabled && c.target.ends_with(presentation) &&
                    advanced_halation_parameter(std::string_view(c.target).substr(0, c.target.size() - presentation.size()));
         });
         return calls;
     }
+    constexpr std::array<std::string_view, 4> kFilmParameters{
+        "GrainModel", "FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"};
+    constexpr std::array<std::string_view, 21> kCurrentVisibility{
+        "GrainSublayersActive", "GrainPreset", "GrainAmplitude", "GrainBlur", "GrainSharpness", "GrainChroma", "GrainTexture", "GrainResetAdvanced", "GrainParticleAreaUm2", "GrainParticleScaleMaster", "GrainParticleScaleLayersMaster", "GrainDensityMinMaster", "GrainUniformityMaster", "GrainBlurDyeCloudsUm", "GrainSizeMixWeight", "GrainSizeMixWeightMid", "GrainSizeMixScale", "GrainMicroStructure", "GrainDebugView", "GrainClumpTemporalMix", "GrainClumpMorphPeriodSec"};
+    bool film_parameter(std::string_view name) {
+        return std::find(kFilmParameters.begin(), kFilmParameters.end(), name) != kFilmParameters.end();
+    }
+    void project_legacy_grain_calls(std::vector<InstanceCall>& calls) {
+        std::erase_if(calls, [](const InstanceCall& c) {
+            if (c.operation == "param_handle")
+                return film_parameter(c.property);
+            if (c.operation == "param_get" || c.operation == "param_properties" ||
+                (c.operation == "get_string" && c.property == kOfxParamPropType))
+                return film_parameter(c.target);
+            constexpr std::string_view presentation = ".presentation";
+            if (c.operation != "set_int" || c.property != kOfxParamPropSecret || !c.target.ends_with(presentation))
+                return false;
+            const auto name = std::string_view(c.target).substr(0, c.target.size() - presentation.size());
+            return film_parameter(name) ||
+                   std::find(kCurrentVisibility.begin(), kCurrentVisibility.end(), name) != kCurrentVisibility.end();
+        });
+    }
     bool constructor_census(const std::vector<InstanceCall>& calls, bool legacy = false) {
-        const auto params = handles(calls, "param_handle");
+        auto params = handles(calls, "param_handle");
+        if (!legacy) {
+            const auto first = std::find(params.begin(), params.end(), kFilmParameters.front());
+            if (params.end() - first <= static_cast<std::ptrdiff_t>(kFilmParameters.size()))
+                return false;
+            const auto next = first + static_cast<std::ptrdiff_t>(kFilmParameters.size());
+            if (*next != "GrainSublayersActive" || !std::equal(kFilmParameters.begin(), kFilmParameters.end(), first))
+                return false;
+            params.erase(first, next);
+        }
         const auto clips = handles(calls, "clip_handle");
         if (clips.size() != ofx_test::kInstanceClips.size())
             return false;
@@ -61,8 +96,10 @@ namespace {
         }
         return i == params.size() && std::equal(clips.begin(), clips.end(), ofx_test::kInstanceClips.begin());
     }
-    bool create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected) {
-        actual = legacy_halation_calls(std::move(actual), true);
+    bool create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected, bool full_grain = false) {
+        actual = historical_instance_calls(std::move(actual), true);
+        if (!full_grain)
+            project_legacy_grain_calls(actual);
         const auto publication = [](const InstanceCall& call) {
             return call.operation == "set_pointer" && call.property == kOfxPropInstanceData &&
                    call.values.size() == 1 && std::holds_alternative<void*>(call.values[0]) &&
@@ -95,7 +132,8 @@ namespace {
         return ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected);
     }
     bool failed_create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected) {
-        actual = legacy_halation_calls(std::move(actual), true);
+        actual = historical_instance_calls(std::move(actual), true);
+        project_legacy_grain_calls(actual);
         const auto is_write = [](const InstanceCall& call) {
             return call.operation == "set_pointer" && call.property == kOfxPropInstanceData;
         };
@@ -153,8 +191,19 @@ namespace {
         auto append = [&](HandleFault value) {
             if (expected) {
                 const auto& r = expected->at(results.size());
+                if (value.name == kIntegerControl) {
+                    require(r.name == kArchivedScannerGrid && value.injected == r.injected && value.status == r.status &&
+                                !value.calls.empty() && value.calls.back().operation == "get_string" &&
+                                value.calls.back().target == kIntegerControl && value.calls.back().property == kOfxParamPropType &&
+                                !value.params.empty() && value.params.back() == kIntegerControl,
+                            "integer type fault stops at the live type query");
+                    results.push_back(std::move(value));
+                    return;
+                }
                 auto legacy_params = value.params;
-                std::erase_if(legacy_params, advanced_halation_parameter);
+                std::erase_if(legacy_params, [](const auto& name) {
+                    return advanced_halation_parameter(name) || film_parameter(name);
+                });
                 require(value.name == r.name && value.injected == r.injected && value.status == r.status && legacy_params == r.params, "handle fault membership");
                 require(value.status == kOfxStatOK ? create_equivalent(value.calls, r.calls) : failed_create_equivalent(value.calls, r.calls), "handle fault full continuation");
                 auto shortened = value.calls;
@@ -212,7 +261,7 @@ namespace {
                     append({operation, status, actual, std::move(seen), std::move(calls)});
                 }
             });
-        const std::array typed_names{"Exposure", "CameraAutoExposure", "CameraFilmFormatPreset", "FilmProfileKey", "ScannerLutResolution", "ScannerUnsharpMask", "CouplersLangmuirDonorKRgb", "GrainResetAdvanced"};
+        const std::array typed_names{"Exposure", "CameraAutoExposure", "CameraFilmFormatPreset", "FilmProfileKey", "HalationBounceCount", "ScannerUnsharpMask", "CouplersLangmuirDonorKRgb", "GrainResetAdvanced"};
         const std::array typed_ids{"double", "boolean", "choice", "string_choice", "integer", "double2", "double3", "push_button"};
         with_row(rows, "type", [&] {
             for (std::size_t index = 0; index < typed_names.size(); ++index)
@@ -292,7 +341,7 @@ namespace {
         std::vector<InstanceCall> calls;
     };
     bool same_action(const ActionObservation& actual, const ActionObservation& expected) {
-        return actual.status == expected.status && ofx_test::reference::calls(legacy_halation_calls(actual.calls)) == ofx_test::reference::calls(expected.calls);
+        return actual.status == expected.status && ofx_test::reference::calls(historical_instance_calls(actual.calls)) == ofx_test::reference::calls(expected.calls);
     }
     ActionObservation run_action(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const ActionScenario& scenario) {
         auto* args = scenario.null_args ? nullptr : host.change_args({scenario.reason, scenario.type, scenario.name}, scenario.time);
@@ -326,7 +375,7 @@ namespace {
         ControlScenario{"set", "param_set/CameraFilmFormatMm", "CameraFilmFormatPreset"},
         ControlScenario{"get_boolean", "param_get/CameraAutoExposure", "Exposure"},
         ControlScenario{"get_choice", "param_get/CameraMeteringMethod", "Exposure"},
-        ControlScenario{"get_integer", "param_get/ScannerLutResolution", "Exposure"},
+        ControlScenario{"get_integer", "param_get/HalationBounceCount", "Exposure"},
         ControlScenario{"get_pair", "param_get/ScannerUnsharpMask", "Exposure"},
         ControlScenario{"get_triplet", "param_get/GrainParticleScale", "Exposure"},
         ControlScenario{"get_string", "param_get/FilmProfileKey", "Exposure"},
@@ -352,6 +401,11 @@ namespace {
             require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "control fault create");
             host.set_value(effect, "GrainActive", {1});
             host.set_value(effect, "CameraAutoExposure", {1});
+            const bool halation_integer = std::string_view(scenario.id) == "get_integer";
+            if (halation_integer) {
+                host.set_value(effect, "HalationActive", {1});
+                host.set_value(effect, "HalationBounceCount", {4});
+            }
             for (int status = kOfxStatOK; status <= kOfxStatReplyDefault; ++status) {
                 const auto id = std::string(scenario.id) + "/status_" + std::to_string(status);
                 with_row(rows, id.c_str(), [&] {
@@ -367,8 +421,24 @@ namespace {
                                 return c.operation == operation.substr(0, slash) && (c.target == operation.substr(slash + 1) || c.property == operation.substr(slash + 1)) && c.status == status;
                             }),
                             "control fault targeted operation");
-                    if (expected)
-                        require(same_effect_trace(observation, expected->at(observations.size())), "actual callback get/set full status continuation");
+                    if (expected) {
+                        const auto& archived = expected->at(observations.size());
+                        if (halation_integer) {
+                            require(archived.operation == kArchivedScannerGridGetter && archived.injected == status &&
+                                        result == archived.status,
+                                    "live integer getter returns the exact OFX status");
+                            const auto bounce = std::find_if(observation.calls.begin(), observation.calls.end(), [](const auto& call) {
+                                return call.operation == "param_get" && call.target == kIntegerControl;
+                            });
+                            const bool continued = std::any_of(std::next(bounce), observation.calls.end(), [](const auto& call) {
+                                return call.operation == "param_get" && call.target == "HalationBounceDecay";
+                            });
+                            require(continued == (result == kOfxStatReplyDefault && (status == kOfxStatOK || status >= kOfxStatReplyYes)),
+                                    "live integer getter continuation");
+                        } else {
+                            require(same_effect_trace(observation, archived), "actual callback get/set full status continuation");
+                        }
+                    }
                     observations.push_back(std::move(observation));
                 });
             }
@@ -377,7 +447,7 @@ namespace {
         return observations;
     }
     bool same_effect_trace(const ControlFault& actual, const ControlFault& expected) {
-        const auto legacy = legacy_halation_calls(actual.calls);
+        const auto legacy = historical_instance_calls(actual.calls);
         if (std::string_view(actual.operation) != expected.operation || actual.injected != expected.injected || actual.status != expected.status || legacy.size() != expected.calls.size())
             return false;
         for (std::size_t i = 0; i < legacy.size(); ++i) {
@@ -403,7 +473,7 @@ namespace {
     };
     const std::array kTypedScenarios{
         TypedScenario{"get_scalar", "param_get", "Exposure", "Exposure", false},
-        TypedScenario{"get_integer", "param_get", "ScannerLutResolution", "Exposure", false},
+        TypedScenario{"get_integer", "param_get", "HalationBounceCount", "Exposure", false},
         TypedScenario{"get_boolean", "param_get", "CameraAutoExposure", "Exposure", false},
         TypedScenario{"get_choice", "param_get", "CameraMeteringMethod", "Exposure", false},
         TypedScenario{"get_pair", "param_get", "ScannerUnsharpMask", "Exposure", false},
@@ -422,8 +492,15 @@ namespace {
         require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "typed consumer create");
         host.set_value(effect, "GrainActive", {1});
         host.set_value(effect, "CameraAutoExposure", {1});
+        const auto original_active = host.value(effect, "HalationActive");
+        const auto original_bounces = host.value(effect, kIntegerControl);
         for (const auto& scenario : kTypedScenarios)
             with_row(rows, scenario.id, [&] {
+                const bool halation_integer = std::string_view(scenario.target) == kIntegerControl;
+                if (halation_integer) {
+                    host.set_value(effect, "HalationActive", {1});
+                    host.set_value(effect, scenario.target, {4});
+                }
                 if (std::string_view(scenario.changed) == "CameraFilmFormatPreset")
                     host.set_value(effect, scenario.changed, {1});
                 host.clear_calls();
@@ -455,8 +532,20 @@ namespace {
                 }
                 if (std::string_view(scenario.id) == "set_string_copy")
                     require(host.value(effect, scenario.target) == found->values, "candidate string setter retained copied bytes");
-                if (expected)
-                    require(same_effect_trace(observation, expected->at(observations.size())), "typed actual callback continuation");
+                if (expected) {
+                    const auto& archived = expected->at(observations.size());
+                    if (halation_integer) {
+                        require(archived.operation == scenario.id && result == archived.status &&
+                                    found->values == std::vector<ofx_test::InstanceValue>{4},
+                                "live integer getter preserves the authored value");
+                    } else {
+                        require(same_effect_trace(observation, archived), "typed actual callback continuation");
+                    }
+                }
+                if (halation_integer) {
+                    host.set_value(effect, "HalationActive", original_active);
+                    host.set_value(effect, kIntegerControl, original_bounces);
+                }
                 observations.push_back(std::move(observation));
             });
         require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "typed consumer destroy");
@@ -756,6 +845,30 @@ namespace {
         r.reentry_status = record[20].get<int>();
         if (r.faults.size() != 113 || r.controls.size() != kControlScenarios.size() * 15 || r.contexts.size() != kContextScenarios.size() || r.actions.size() != kActionScenarios.size() || r.nested_changes.size() != 2 || encode(r) != record)
             throw std::runtime_error("instance reference membership");
+        const auto retire_grid_calls = [](auto& calls) {
+            return std::erase_if(calls, [](const auto& call) {
+                return (call.operation == "param_handle" && call.property == kArchivedScannerGrid) ||
+                       call.target == kArchivedScannerGrid || call.target == "ScannerLutResolution.presentation";
+            });
+        };
+        require(retire_grid_calls(r.create) == 3 && retire_grid_calls(r.ordinary_create) == 3,
+                "archived scanner grid constructor boundaries");
+        for (auto& fault : r.faults) {
+            std::erase(fault.params, kArchivedScannerGrid);
+            retire_grid_calls(fault.calls);
+        }
+        for (auto* calls : {&r.begin, &r.change, &r.end, &r.edit, &r.reentry, &r.destroy})
+            retire_grid_calls(*calls);
+        for (auto* group : {&r.controls, &r.typed})
+            for (auto& observation : *group)
+                retire_grid_calls(observation.calls);
+        for (auto& context : r.contexts)
+            retire_grid_calls(context.calls);
+        for (auto& edit : r.edits)
+            retire_grid_calls(edit.calls);
+        for (auto* group : {&r.actions, &r.nested_changes})
+            for (auto& observation : *group)
+                retire_grid_calls(observation.calls);
         return r;
     }
     void reference_record_case(const Reference& r) {
@@ -872,7 +985,7 @@ namespace {
             require(!create_equivalent(extended, reference.create), "constructor late stop negative control");
             require(std::count_if(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "param_properties";
-                    }) == static_cast<std::ptrdiff_t>(ofx_test::kInstanceParameters.size()),
+                    }) == static_cast<std::ptrdiff_t>(ofx_test::kInstanceParameters.size() + kFilmParameters.size()),
                     "second parameter properties acquired");
             require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "get_string" && c.target == "GrainChroma" && c.property == kOfxParamPropType;
@@ -935,7 +1048,7 @@ namespace {
             host.clear_calls();
             require(call(plugin, kOfxActionBeginInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.begin_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.begin), "begin action");
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.change), "change action");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && ofx_test::reference::calls(historical_instance_calls(host.calls())) == ofx_test::reference::calls(reference.change), "change action");
             require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "set_string" && c.target == "GrainChroma.presentation" && c.property == kOfxParamPropHint && c.values == std::vector<ofx_test::InstanceValue>{std::string("returned hint")};
                     }),
@@ -961,7 +1074,7 @@ namespace {
             auto row = edit_rows.case_event("camera_preset");
             host.set_value(effect, "CameraFilmFormatPreset", {1});
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.edit), "camera preset continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && ofx_test::reference::calls(historical_instance_calls(host.calls())) == ofx_test::reference::calls(reference.edit), "camera preset continuation");
             require(host.value(effect, "CameraFilmFormatMm") == reference.edited_value, "camera preset value");
             row.passed();
         }
@@ -972,7 +1085,7 @@ namespace {
             host.reenter_next("param_set/CameraFilmFormatMm", [&] {
                 require(change(plugin, host, effect, kOfxChangePluginEdited, "CameraFilmFormatMm") == reference.change_status, "candidate nested change");
             });
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.reentry), "nested edit continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && ofx_test::reference::calls(historical_instance_calls(host.calls())) == ofx_test::reference::calls(reference.reentry), "nested edit continuation");
             row.passed();
         }
         require(reference.edits.size() == edit_scenarios().size(), "edit membership");
@@ -984,7 +1097,7 @@ namespace {
                 host.set_value(effect, scenario.name, scenario.authored);
             host.clear_calls();
             require(change(plugin, host, effect, kOfxChangeUserEdited, scenario.name) == expected.status, "edit status");
-            require(ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(expected.calls) && ofx_test::reference::values(host.value(effect, scenario.observed)) == ofx_test::reference::values(expected.value), "edit continuation");
+            require(ofx_test::reference::calls(historical_instance_calls(host.calls())) == ofx_test::reference::calls(expected.calls) && ofx_test::reference::values(host.value(effect, scenario.observed)) == ofx_test::reference::values(expected.value), "edit continuation");
             row.passed();
         }
         edit_test.passed();
@@ -1008,7 +1121,7 @@ namespace {
                 nested = change(plugin, host, effect, reason, "Exposure");
             });
             const auto status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-            require(nested == reference.change_status && status == reference.nested_changes[i].status && ofx_test::reference::calls(legacy_halation_calls(host.calls())) == ofx_test::reference::calls(reference.nested_changes[i].calls), "nested user/time continuation");
+            require(nested == reference.change_status && status == reference.nested_changes[i].status && ofx_test::reference::calls(historical_instance_calls(host.calls())) == ofx_test::reference::calls(reference.nested_changes[i].calls), "nested user/time continuation");
             row.passed();
         }
         {
@@ -1083,7 +1196,7 @@ namespace {
         require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "candidate unload");
     }
 
-    void preview_constructor(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
+    void film_constructor(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
         constexpr std::array parameters{
             std::pair{"GrainModel", kOfxParamTypeStrChoice},
             std::pair{"FilmGrainAmountEv", kOfxParamTypeDouble},
@@ -1091,100 +1204,100 @@ namespace {
             std::pair{"FilmGrainChromaFraction", kOfxParamTypeDouble},
         };
         auto expected = reference.create;
-        require(!expected.empty() && expected.back().operation == "effect_properties", "preview initialization boundary");
+        require(!expected.empty() && expected.back().operation == "effect_properties", "Film v1 initialization boundary");
         const auto scope = expected.back().target;
         const auto next = std::find_if(expected.begin(), expected.end(), [](const auto& entry) {
             return entry.operation == "param_handle" && entry.property == "GrainSublayersActive";
         });
-        require(next != expected.end(), "preview constructor insertion boundary");
+        require(next != expected.end(), "Film v1 constructor insertion boundary");
         const auto param_set = next->target;
-        std::vector<InstanceCall> preview_calls;
+        std::vector<InstanceCall> film_calls;
         for (const auto& parameter : parameters) {
             const auto* name = parameter.first;
-            preview_calls.push_back({"param_handle", param_set, name, 0, {}, {}});
-            preview_calls.push_back({"get_string", name, kOfxParamPropType, 0, {}, scope});
-            preview_calls.push_back({"param_properties", name, {}, 0, {}, scope});
+            film_calls.push_back({"param_handle", param_set, name, 0, {}, {}});
+            film_calls.push_back({"get_string", name, kOfxParamPropType, 0, {}, scope});
+            film_calls.push_back({"param_properties", name, {}, 0, {}, scope});
         }
-        expected.insert(next, preview_calls.begin(), preview_calls.end());
+        expected.insert(next, film_calls.begin(), film_calls.end());
         // Initialize the Current model before the final instance check.
         std::vector<InstanceCall> visibility{{"param_get", "GrainModel", {}, 0, {std::string("current")}, scope}};
         for (const char* name : {"FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"})
             visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {1}, scope});
-        for (const char* name : {"GrainSublayersActive", "GrainPreset", "GrainAmplitude", "GrainBlur", "GrainSharpness", "GrainChroma", "GrainTexture", "GrainResetAdvanced", "GrainParticleAreaUm2", "GrainParticleScaleMaster", "GrainParticleScaleLayersMaster", "GrainDensityMinMaster", "GrainUniformityMaster", "GrainBlurDyeCloudsUm", "GrainSizeMixWeight", "GrainSizeMixWeightMid", "GrainSizeMixScale", "GrainMicroStructure", "GrainDebugView", "GrainClumpTemporalMix", "GrainClumpMorphPeriodSec"})
+        for (const auto name : kCurrentVisibility)
             visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {0}, scope});
         expected.insert(std::prev(expected.end()), visibility.begin(), visibility.end());
 
         plugin->setHost(host.binding());
-        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "preview load");
-        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "preview context");
+        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "Film v1 load");
+        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "Film v1 context");
         auto* effect = host.create_effect();
         {
-            JuicerTests::CaseEvent test(kPreviewCaller, "create");
+            JuicerTests::CaseEvent test(kFilmCaller, "create");
             for (const auto& [name, type] : parameters)
                 host.set_parameter_type(effect, name, type);
             host.set_parameter_presentation(effect, "GrainChroma", kOfxParamPropHint, {std::string("returned hint")});
             host.return_string_on_failure_next("get_string/OfxParamPropHint", kOfxStatFailed);
             host.clear_calls();
-            require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK && host.instance_data(effect), "preview create and publish");
-            require(create_equivalent(host.calls(), expected), "preview constructor continuation");
+            require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK && host.instance_data(effect), "Film v1 create and publish");
+            require(create_equivalent(host.calls(), expected, true), "Film v1 constructor continuation");
             auto altered = host.calls();
-            const auto first = std::find(altered.begin(), altered.end(), preview_calls.front());
-            require(first != altered.end() && first != altered.begin(), "preview constructor call boundary");
+            const auto first = std::find(altered.begin(), altered.end(), film_calls.front());
+            require(first != altered.end() && first != altered.begin(), "Film v1 constructor call boundary");
             const auto index = first - altered.begin();
             altered.erase(first);
-            require(!create_equivalent(altered, expected), "constructor accepted a missing preview call");
+            require(!create_equivalent(altered, expected, true), "constructor accepted a missing Film v1 call");
             altered = host.calls();
             std::iter_swap(altered.begin() + index, altered.begin() + index - 1);
-            require(!create_equivalent(altered, expected), "constructor accepted a misplaced preview call");
+            require(!create_equivalent(altered, expected, true), "constructor accepted a misplaced Film v1 call");
             altered = host.calls();
             altered.front().operation = "altered";
-            require(!create_equivalent(altered, expected), "constructor accepted a changed ordinary call");
+            require(!create_equivalent(altered, expected, true), "constructor accepted a changed ordinary call");
             test.passed();
         }
         {
-            JuicerTests::CaseEvent test(kPreviewCaller, "destroy");
+            JuicerTests::CaseEvent test(kFilmCaller, "destroy");
             host.clear_calls();
-            require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK && !host.instance_data(effect), "preview destroy and detach");
-            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "preview destroy continuation");
+            require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK && !host.instance_data(effect), "Film v1 destroy and detach");
+            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "Film v1 destroy continuation");
             test.passed();
         }
         {
-            JuicerTests::CaseEvent test(kPreviewCaller, "types");
+            JuicerTests::CaseEvent test(kFilmCaller, "types");
             for (const auto& parameter : parameters) {
                 host.set_parameter_type(effect, parameter.first, kOfxParamTypeInteger);
                 host.clear_calls();
-                require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatFailed && !host.instance_data(effect), "preview parameter type failure and rollback");
-                require(!host.calls().empty() && host.calls().back() == InstanceCall{"get_string", parameter.first, kOfxParamPropType, 0, {}, scope}, "preview parameter type terminal");
+                require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatFailed && !host.instance_data(effect), "Film v1 parameter type failure and rollback");
+                require(!host.calls().empty() && host.calls().back() == InstanceCall{"get_string", parameter.first, kOfxParamPropType, 0, {}, scope}, "Film v1 parameter type terminal");
                 host.set_parameter_type(effect, parameter.first, parameter.second);
             }
             test.passed();
         }
-        require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "preview unload");
+        require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "Film v1 unload");
     }
 } // namespace
 
 int main(int argc, char** argv) try {
-    const bool preview = argc > 1 && std::string_view(argv[1]) == "--grain-preview";
+    const bool film = argc > 1 && std::string_view(argv[1]) == "--film-v1";
     if (JuicerTests::list_requested(argc, argv)) {
-        if (preview) {
-            for (const auto* id : kPreviewCases)
-                JuicerTests::list_case(kPreviewCaller, id);
+        if (film) {
+            for (const auto* id : kFilmCases)
+                JuicerTests::list_case(kFilmCaller, id);
         } else {
             for (const auto* id : kCases)
                 JuicerTests::list_case(kCaller, id);
         }
         return 0;
     }
-    require(argc == (preview ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: instance fixture [--grain-preview] --reference file");
+    require(argc == (film ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: instance fixture [--film-v1] --reference file");
     JuicerTests::CaseLog log;
     auto* candidate = OfxGetPlugin(0);
     require(candidate && candidate->pluginIdentifier &&
-                std::string_view(candidate->pluginIdentifier) == (preview ? "com.juicer.Juicer.GrainPreview" : "com.juicer.Juicer"),
+                std::string_view(candidate->pluginIdentifier) == "com.juicer.Juicer",
             "instance descriptor variant");
     const auto expected = decode(ofx_test::reference::read(argv[argc - 1], "instance"));
     InstanceHost candidate_host;
-    if (preview) {
-        preview_constructor(candidate, candidate_host, expected);
+    if (film) {
+        film_constructor(candidate, candidate_host, expected);
     } else {
         reference_record_case(expected);
         candidate_cohort(candidate, candidate_host, expected);

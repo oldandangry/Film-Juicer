@@ -90,15 +90,6 @@ pub(crate) struct FjCallCompletionResult {
 #[derive(Clone, Copy)]
 pub(super) struct FjHostPreparation {
     pub(super) user: *mut c_void,
-    pub(super) scanner_lut: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const crate::scanner_bridge::FjScannerLutInput,
-            *mut crate::scanner_bridge::FjScannerLutView,
-            *mut crate::scanner_bridge::FjScannerLutFailure,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
     pub(super) gaussian: Option<
         unsafe extern "C" fn(
             *mut c_void,

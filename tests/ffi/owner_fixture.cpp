@@ -188,6 +188,11 @@ namespace JuicerTestSupport {
         const FjPreparationParams record = input.record();
         return fj_test_instance_install(owner_, ticket, revision, &record, identity, &update, &error);
     }
+    FjStatus InstanceFixture::install_rust_capture(std::uint64_t ticket, std::uint64_t revision, const PreparationInput& input, std::uint32_t& update, FjErrorBuffer& error) {
+        update = FJ_UPDATE_NONE;
+        const FjPreparationParams record = input.record();
+        return fj_test_instance_install_rust_capture(owner_, ticket, revision, &record, &update, &error);
+    }
     FjStatus InstanceFixture::invalidate(std::uint64_t ticket, std::uint32_t failure, FjStringView diagnostic, std::uint32_t& update, FjErrorBuffer& error) {
         update = FJ_UPDATE_NONE;
         return fj_test_instance_invalidate(owner_, ticket, failure, diagnostic, &update, &error);

@@ -285,13 +285,13 @@ pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, Capt
     p.camera_auto_exposure_enabled = i32::from(controls.integer(c"CameraAutoExposure")? != 0);
     p.camera_metering_method = controls.integer(c"CameraMeteringMethod")?;
     p.grain = capture_grain(controls)?;
-    #[cfg(feature = "grain-preview")]
     {
+        use grain::film_v1::{Controls as FilmControls, Selection};
         let model = controls.string_bytes(c"GrainModel")?;
         p.film_grain = match model.as_slice() {
-            b"current" => None,
-            b"film_v1" if !p.grain.active => None,
-            b"film_v1" => Some(grain::preview::Controls {
+            b"current" => Selection::Current,
+            b"film_v1" if !p.grain.active => Selection::FilmV1Disabled,
+            b"film_v1" => Selection::FilmV1(FilmControls {
                 amount_ev: controls.double(c"FilmGrainAmountEv")? as f32,
                 texel_pitch_um: controls.double(c"FilmGrainTexelPitchUm")? as f32,
                 chroma_fraction: controls.double(c"FilmGrainChromaFraction")? as f32,
@@ -315,7 +315,6 @@ pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, Capt
     let black = controls.double(c"ScannerBlackLevel")?;
     let white = controls.double(c"ScannerWhiteLevel")?;
     (p.scanner_black_level, p.scanner_white_level) = scanner::capture_levels(black, white);
-    p.scanner_lut_resolution = controls.integer(c"ScannerLutResolution")?;
     p.output_color_space = controls.integer(c"OutputColorSpace")?;
     p.output_cctf_encoding = i32::from(controls.integer(c"OutputCctfEncoding")? != 0);
     p.output_gamut_compression_enabled =
@@ -353,7 +352,6 @@ pub(super) fn initialize(controls: &Controls<'_>) -> Result<(), Status> {
     refresh_route_ui(controls)?;
     update_halation(controls)?;
     update_highlight_boost(controls)?;
-    #[cfg(feature = "grain-preview")]
     update_grain_model(controls)?;
     Ok(())
 }
@@ -389,8 +387,6 @@ fn update_highlight_boost(controls: &Controls<'_>) -> Result<(), Status> {
     controls.set_enabled(c"HalationHighlightProtectionEv", active)?;
     controls.set_enabled(c"HalationHighlightBoostRange", active)
 }
-
-#[cfg(feature = "grain-preview")]
 fn update_grain_model(controls: &Controls<'_>) -> Result<(), Status> {
     let model = controls.string_bytes(c"GrainModel")?;
     let film = match model.as_slice() {
@@ -627,7 +623,6 @@ pub(super) fn change(
         controls.begin_read()?;
     }
     refresh_route_ui(controls)?;
-    #[cfg(feature = "grain-preview")]
     if name == b"GrainModel" {
         update_grain_model(controls)?;
     }

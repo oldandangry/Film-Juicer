@@ -24,7 +24,7 @@ namespace {
     using ofx_test::Definition;
     constexpr std::string_view kCaller = "ofx.context";
     constexpr std::array kCases{"reference", "filter", "contexts", "acquisitions", "definitions", "properties", "catalog", "reentry"};
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 128> kExpected{{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 127> kExpected{{
         {"InputGroup", kOfxParamTypeGroup},
         {"Exposure", kOfxParamTypeDouble},
         {"CameraMeteringMethod", kOfxParamTypeChoice},
@@ -75,7 +75,6 @@ namespace {
         {"ScannerWhiteCorrection", kOfxParamTypeBoolean},
         {"ScannerBlackLevel", kOfxParamTypeDouble},
         {"ScannerWhiteLevel", kOfxParamTypeDouble},
-        {"ScannerLutResolution", kOfxParamTypeInteger},
         {"HalationGroup", kOfxParamTypeGroup},
         {"HalationActive", kOfxParamTypeBoolean},
         {"HalationScatterAmount", kOfxParamTypeDouble},
@@ -237,7 +236,7 @@ namespace {
         require(found != host.definitions.end(), "missing definition " + std::string(name));
         return *found;
     }
-    void advanced_halation_projection(const ContextHost& actual, ContextHost& legacy) {
+    void historical_descriptor_projection(const ContextHost& actual, ContextHost& legacy) {
         using ofx_test::Value;
         constexpr std::array<std::pair<std::string_view, std::string_view>, 14> advanced{{
             {"HalationAdvancedGroup", kOfxParamTypeGroup},
@@ -318,12 +317,48 @@ namespace {
         check_scalar("HalationHighlightProtectionEv", 4.0, 20.0, 10.0, 0.5);
         check_scalar("HalationHighlightBoostRange", 0.3, 1.0, 1.0, 0.05);
 
+        constexpr std::array<std::pair<std::string_view, std::string_view>, 4> film_grain{{
+            {"GrainModel", kOfxParamTypeStrChoice},
+            {"FilmGrainAmountEv", kOfxParamTypeDouble},
+            {"FilmGrainTexelPitchUm", kOfxParamTypeDouble},
+            {"FilmGrainChromaFraction", kOfxParamTypeDouble},
+        }};
+        const auto grain_first = std::find_if(after, actual.definitions.end(), [](const auto& d) {
+            return d.name == "GrainActive";
+        });
+        require(actual.definitions.end() - grain_first > static_cast<std::ptrdiff_t>(film_grain.size()),
+                "Film v1 declaration position");
+        const auto grain = grain_first + 1;
+        const auto grain_after = grain + static_cast<std::ptrdiff_t>(film_grain.size());
+        for (std::size_t i = 0; i < film_grain.size(); ++i) {
+            const auto& d = grain[static_cast<std::ptrdiff_t>(i)];
+            require(d.name == film_grain[i].first && d.type == film_grain[i].second &&
+                        d.properties.at(kOfxParamPropParent) == std::vector<Value>{std::string("GrainGroup")} &&
+                        d.properties.at(kOfxParamPropEvaluateOnChange) == std::vector<Value>{1},
+                    "Film v1 declaration");
+        }
+        require(grain->properties.at(kOfxParamPropDefault) == std::vector<Value>{std::string("current")} &&
+                    grain->properties.at(kOfxParamPropChoiceEnum) ==
+                        std::vector<Value>{std::string("current"), std::string("film_v1")},
+                "grain model values");
+        const auto check_grain = [](const auto& p, double initial, double min, double max) {
+            require(p.at(kOfxParamPropDefault) == std::vector<Value>{initial} &&
+                        p.at(kOfxParamPropMin) == std::vector<Value>{min} &&
+                        p.at(kOfxParamPropMax) == std::vector<Value>{max} &&
+                        p.at(kOfxParamPropSecret) == std::vector<Value>{1},
+                    "Film v1 control defaults and bounds");
+        };
+        check_grain(grain[1].properties, 0.0, -3.0, 3.0);
+        check_grain(grain[2].properties, 1.0, 0.5, 4.0);
+        check_grain(grain[3].properties, 1.0, 0.0, 1.0);
+
         const auto& active = definition(actual, "HalationActive");
         constexpr auto previous_hint = "Add profile-derived scatter and halation to the negative raw exposure.";
         require(active.properties.at(kOfxParamPropHint) == std::vector<Value>{std::string("Enable in-emulsion scatter and back-reflection in the capture film.")},
                 "halation enable hint");
         legacy.definitions.assign(actual.definitions.begin(), first);
-        legacy.definitions.insert(legacy.definitions.end(), after, actual.definitions.end());
+        legacy.definitions.insert(legacy.definitions.end(), after, grain);
+        legacy.definitions.insert(legacy.definitions.end(), grain_after, actual.definitions.end());
         const auto active_index = static_cast<std::size_t>(&active - actual.definitions.data());
         legacy.definitions[active_index].properties[kOfxParamPropHint] = {std::string(previous_hint)};
 
@@ -332,14 +367,22 @@ namespace {
         const auto first_token = static_cast<int>(first - actual.definitions.begin()) + first_definition_token;
         const auto after_token = first_token + static_cast<int>(advanced.size());
         const auto active_token = static_cast<int>(active_index) + first_definition_token;
+        const auto grain_token = static_cast<int>(grain - actual.definitions.begin()) + first_definition_token;
+        const auto grain_after_token = grain_token + static_cast<int>(film_grain.size());
         for (auto call : actual.calls) {
+            const auto defines = [&](const auto& d) {
+                return d.first == call.property;
+            };
             if ((call.target >= first_token && call.target < after_token) ||
-                (call.operation == "param_define" && std::any_of(advanced.begin(), advanced.end(), [&](const auto& d) {
-                     return d.first == call.property;
-                 })))
+                (call.target >= grain_token && call.target < grain_after_token) ||
+                (call.operation == "param_define" &&
+                 (std::any_of(advanced.begin(), advanced.end(), defines) ||
+                  std::any_of(film_grain.begin(), film_grain.end(), defines))))
                 continue;
             if (call.target == active_token && call.property == kOfxParamPropHint)
                 call.value = std::string(previous_hint);
+            if (call.target >= grain_after_token)
+                call.target -= static_cast<int>(film_grain.size());
             if (call.target >= after_token)
                 call.target -= static_cast<int>(advanced.size());
             legacy.calls.push_back(std::move(call));
@@ -421,6 +464,28 @@ namespace {
         }
         test.passed();
     }
+    void retire_scanner_grid_from_reference(ContextHost& archive) {
+        constexpr auto control = "ScannerLutResolution";
+        const auto definition = std::find_if(archive.definitions.begin(), archive.definitions.end(), [](const auto& row) {
+            return row.name == control;
+        });
+        require(definition != archive.definitions.end() && definition->type == kOfxParamTypeInteger,
+                "archived scanner grid definition");
+        require(std::count_if(archive.definitions.begin(), archive.definitions.end(), [](const auto& row) {
+                    return row.name == control;
+                }) == 1,
+                "archived scanner grid definition count");
+        constexpr int first_definition_token = 7;
+        const auto token = static_cast<int>(definition - archive.definitions.begin()) + first_definition_token;
+        archive.definitions.erase(definition);
+        require(std::erase_if(archive.calls, [&](const auto& call) {
+                    return call.target == token || (call.operation == "param_define" && call.property == control);
+                }) == 10,
+                "archived scanner grid call count");
+        for (auto& call : archive.calls)
+            if (call.target > token)
+                --call.target;
+    }
     void filter_case(OfxPlugin* plugin, const ContextHost& reference) {
         JuicerTests::CaseEvent test(kCaller, "filter");
         const JuicerTests::Cohort rows("ofx.context.filter", {"equal", "repeat", "string_choice_sequence"});
@@ -429,7 +494,7 @@ namespace {
             auto row = rows.case_event("equal");
             require(describe(plugin, first) == kOfxStatOK && !first.callback_error, "candidate filter");
             ContextHost legacy;
-            advanced_halation_projection(first, legacy);
+            historical_descriptor_projection(first, legacy);
             check_census(legacy);
             require(same(reference, legacy), "candidate legacy descriptors differ from reference");
             auto altered = ofx_test::reference::context(reference);
@@ -599,7 +664,7 @@ namespace {
     }
     void definitions_case(OfxPlugin* plugin, const ContextHost& baseline) {
         JuicerTests::CaseEvent test(kCaller, "definitions");
-        const std::vector<std::string> kinds{"InputGroup", "Exposure", "CameraMeteringMethod", "CameraAutoExposure", "FilmProfileKey", "CouplersLangmuirDonorKRgb", "CouplersGammaInterlayerRToGb", "ScannerLutResolution", "GrainResetAdvanced"};
+        const std::vector<std::string> kinds{"InputGroup", "Exposure", "CameraMeteringMethod", "CameraAutoExposure", "FilmProfileKey", "CouplersLangmuirDonorKRgb", "CouplersGammaInterlayerRToGb", "HalationBounceCount", "GrainResetAdvanced"};
         auto ids = matrix_rows("param", {"InputGroup"});
         for (const auto& name : kinds)
             ids.push_back("kind/" + name);
@@ -847,6 +912,7 @@ int main(int argc, char** argv) try {
     require(candidate, "candidate descriptor");
     ContextHost oracle;
     ofx_test::reference::context(ofx_test::reference::read(argv[2], "context"), oracle);
+    retire_scanner_grid_from_reference(oracle);
     reference_case(oracle, oracle.startup);
     ContextHost binding;
     candidate->setHost(binding.binding());

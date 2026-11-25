@@ -136,33 +136,31 @@ statically and localizes those implementation symbols at the OFX C boundary so
 host libraries cannot interpose an incompatible libstdc++ implementation. See
 [Linux installation](linux.md) for host requirements.
 
-## Portra 400 grain preview
+## Portra 400 Film v1
 
-The preview has its own OFX identifier, `com.juicer.Juicer.GrainPreview`. To
-stage the Windows Release preview from the current checkout, use an x64
-developer shell and enable the `JUICER_GRAIN_PREVIEW` CMake option, which
-defaults to OFF.
-
-```sh
-cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=ON -DBUILD_TESTING=OFF
-cmake --build --preset windows-clang-release --target bundle-archive
-```
-
-The archive target writes `juicer-grain-preview.ofx.bundle` and
-`juicer-grain-preview-Win64.tar.gz` under
-`out/stage/windows-clang-release/portra-grain-preview/`. The bundle contains
-the Portra 400 grain bank and its notices. To return the same configure cache
-to the standard plug-in, configure again with preview OFF.
+The standard Film-Juicer bundle includes the spectral scanner, the Portra 400
+Film v1 grain model, and the grain bank and notices. It uses the established
+OFX identifier, `com.juicer.Juicer`. The grain model defaults to **Current**.
+Use the normal Release preset and archive target. This example stages Windows
+Release to a named directory so an existing staged bundle stays available.
 
 ```sh
-cmake --preset windows-clang-release -DJUICER_GRAIN_PREVIEW=OFF
+python -B scripts/verify.py prepare --preset windows-clang-release \
+  --testing OFF --targets bundle-archive --stage-subdirectory film-v1
 ```
 
-The verifier's `prepare` command accepts `--grain-preview ON` and
-`--grain-preview OFF`. Omit the switch to keep the configured value.
-The [Film v1 preview notes](../README.md#portra-400-film-v1-preview)
-identify the accepted Windows package and describe the reproduced Full-resolution
-limitation.
+The named stage contains `juicer.ofx.bundle` and `juicer-Win64.tar.gz`
+under `out/stage/windows-clang-release/film-v1/`. Use `linux-release` for the
+Linux bundle. See the [Film v1 settings and limits](../README.md#portra-400-film-v1).
+
+Archived Grain Preview projects use `com.juicer.Juicer.GrainPreview`. On a
+project copy, open the project with its archived plug-in available and record
+the preview node's settings, keyframes and connections. Add the regular Juicer
+effect, reproduce those settings and animations, and compare at proxy and Full
+resolution before removing the preview node from the copy. Keep the source
+project export and its corresponding bundle for recovery. Standard Juicer nodes
+keep their existing identifier and start with **Current** when they have no
+saved grain-model value.
 
 ## Public test suite
 

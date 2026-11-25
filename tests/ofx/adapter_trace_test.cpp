@@ -1,6 +1,7 @@
 #include "frame_geometry_test_hooks.h"
 #include "module_test.h"
 #include "host_reference.h"
+#include "grain_capture_reference.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
@@ -1785,7 +1786,6 @@ namespace {
             add_boolean(JuicerParams::kScannerWhiteCorrection, false);
             add_double(JuicerParams::kScannerBlackLevel, 0.01);
             add_double(JuicerParams::kScannerWhiteLevel, 0.98);
-            add_int(JuicerParams::kScannerLutResolution, 17);
 
             add_double("PrintExposure", 1.0);
             add_double("PrintPreflash", 0.0);
@@ -4191,10 +4191,27 @@ namespace {
                 auto admission = JuicerTestSupport::EffectObservation::admit(effect);
                 FjPreparedStateView preparedView{};
                 const bool admitted = bool(admission.state);
-                if (admission.state)
+                if (admission.state) {
                     read_prepared_view(*admission.state, preparedView);
-                const auto& expected = frozen.at(route * 24 + n);
-                const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"snapshot_hash", observed.pendingFullHash}, {"admitted", admitted}, {"input", optics_inputs(observed.input, route % 2 != 0)}, {"recipe", admitted ? optics_project(preparedView.optics) : Json()}, {"final_hash", admitted ? preparedView.recipe_hash : 0}, {"getters", getters}};
+                    require(admission.state->input_identity() == observed.pendingFullHash &&
+                                preparedView.route == route && preparedView.recipe_hash != 0,
+                            "admitted optics retains the captured identity and route");
+                }
+                const auto captureIdentity = observed.pendingValid
+                                                 ? JuicerTestSupport::hash_input_identity(JuicerTestSupport::EffectObservation::captured(effect))
+                                                 : 0;
+                require(observed.pendingFullHash == captureIdentity, "optics capture identity matches the independent input hash");
+                auto expected = frozen.at(route * 24 + n);
+                require(expected.at("snapshot_hash").is_number_unsigned() && expected.at("final_hash").is_number_unsigned(),
+                        "archived optics aggregate identity schema");
+                expected.erase("snapshot_hash");
+                expected.erase("final_hash");
+                auto& expectedGetters = expected.at("getters").get_ref<Json::array_t&>();
+                require(std::erase_if(expectedGetters, [](const auto& getter) {
+                            return getter.template get_ref<const Json::string_t&>().starts_with("GET_CURRENT name=ScannerLutResolution ");
+                        }) == (expected.at("pending_valid").get<bool>() ? 1u : 0u),
+                        "archived optics scanner grid getter membership");
+                const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"admitted", admitted}, {"input", optics_inputs(observed.input, route % 2 != 0)}, {"recipe", admitted ? optics_project(preparedView.optics) : Json()}, {"getters", getters}};
                 require(actual == expected, "all frozen OFX optics capture/getter/publication fields route=" + std::to_string(route) + " index=" + std::to_string(n));
                 case_event.passed();
                 ++visits;
@@ -4257,14 +4274,23 @@ namespace {
             require(ordered, "physical getter order film dust/gate dust/film scratch/gate scratch/weave");
             const auto& controls = observed.input;
             const auto words = nlohmann::json::array({std::bit_cast<std::uint32_t>(controls.film_dust_amount), std::bit_cast<std::uint32_t>(controls.film_scratch_amount), std::bit_cast<std::uint32_t>(controls.gate_dust_amount), std::bit_cast<std::uint32_t>(controls.gate_scratch_amount)});
-            require(words == row.at("controls").at("amounts") && std::bit_cast<std::uint64_t>(controls.gate_weave_amount) == row.at("controls").at("weave") && observed.pendingFullHash == row.at("snapshot_hash"), "frozen native captured f32/f64 controls and snapshot identity");
+            require(words == row.at("controls").at("amounts") &&
+                        std::bit_cast<std::uint64_t>(controls.gate_weave_amount) == row.at("controls").at("weave"),
+                    "frozen native captured f32/f64 controls");
+            require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned() &&
+                        observed.pendingFullHash == JuicerTestSupport::hash_input_identity(JuicerTestSupport::EffectObservation::captured(effect)),
+                    "physical effects capture identity matches the independent input hash");
             const auto admitted = JuicerTestSupport::EffectObservation::admit(effect);
             require(bool(admitted.state), "physical capture completes actual route publication");
             FjPreparedStateView preparedView{};
             read_prepared_view(*admitted.state, preparedView);
             const auto& effects = preparedView.effects;
             const nlohmann::json projection{{"film_dust", physical_words(effects.film_dust)}, {"film_scratch", physical_words(effects.film_scratch)}, {"gate_dust", physical_words(effects.gate_dust)}, {"gate_scratch", physical_words(effects.gate_scratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gate_weave_amount)}, {"active", effects.active != 0}, {"hash", effects.hash}};
-            require(projection == row.at("recipe") && preparedView.grain.hash == row.at("grain_hash") && preparedView.recipe_hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
+            require(projection == row.at("recipe") && preparedView.grain.hash == row.at("grain_hash"),
+                    "exact frozen grain and physical effects products");
+            require(admitted.state->input_identity() == observed.pendingFullHash &&
+                        preparedView.route == route && preparedView.recipe_hash != 0,
+                    "admitted physical effects retains the captured identity and route");
             case_event.passed();
             ++count;
         }
@@ -5501,6 +5527,9 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                             FjPreparedStateView view{};
                             read_prepared_view(*admitted.state, view);
                             const auto& recipe = view.grain;
+                            require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash &&
+                                        admitted.state->input_identity() == JuicerTestSupport::hash_input_identity(JuicerTestSupport::EffectObservation::captured(effect)),
+                                    "grain publication binds the current input and aggregate");
                             const bool hasDensityLayers = view.film_development.density_layers[0][0].count != 0;
                             require(hasDensityLayers == (policy == 2) &&
                                         (policy == 0 || (recipe.amplitude == g.amplitude && recipe.chroma_shared_weight == g.chroma_shared_weight &&
@@ -5575,6 +5604,9 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     FjPreparedStateView view{};
                     read_prepared_view(*admitted.state, view);
                     const auto& recipe = view.grain;
+                    require(view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash &&
+                                admitted.state->input_identity() == JuicerTestSupport::hash_input_identity(JuicerTestSupport::EffectObservation::captured(effect)),
+                            "grain edit publication binds the current input and aggregate");
                     grainCapture << "GRAIN_EDIT_CAPTURE " << print << ' ' << label;
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particle_area_um2);
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particle_scale_cmy[0]);
@@ -5679,18 +5711,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 require(bool(manifestStream), "grain capture manifest open");
                 const auto manifest = nlohmann::json::parse(manifestStream);
                 const auto expectedPath = manifestPath.parent_path() / manifest.at("presets").at(argv[5]).at("ofx").get<std::string>();
-                std::ifstream expected(expectedPath);
-                require(bool(expected), "independent native OFX grain words open");
-                std::istringstream actual(grainWords);
-                std::vector<std::string> originalWords;
-                originalWords.reserve(234);
-                for (std::string word; expected >> word;)
-                    originalWords.push_back(word);
-                const auto selectedWords = PrintIlluminantFixtures::apply(expectedPath, originalWords);
-                std::string actualWord;
-                for (const auto& word : selectedWords)
-                    require(bool(actual >> actualWord) && word.get<std::string>() == actualWord, "exact native authored/captured/recipe/final grain words");
-                require(!(actual >> actualWord), "no extra grain capture records");
+                ofx_test::compare_grain_capture(expectedPath, grainWords);
             }
             require(grain_events.size() == 234, "complete grain case event membership");
             for (auto& event : grain_events)

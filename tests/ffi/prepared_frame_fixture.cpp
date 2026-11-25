@@ -220,44 +220,14 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.mainIlluminant = span(source.main_illuminant);
             out.preflashIlluminant = span(source.preflash_illuminant);
             std::copy_n(source.preflash_raw_cmy, 3, out.preflashRawCmy.begin());
-            out.factorMidgray = view.print_balance.factor_midgray;
-            out.factorMidgrayComp = view.print_balance.factor_midgray_comp;
             out.normalizer = source.normalizer;
-
             auto& descriptors = out.descriptors;
-            descriptors.filmDensityTables.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.filmDensityTables.spectralSampleCount = 81;
-            descriptors.filmDensityTables.hash = source.film_density_hash;
-            descriptors.profileTables.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.profileTables.densitySampleCount =
-                static_cast<std::uint32_t>(source.log_exposure.count);
-            descriptors.profileTables.spectralSampleCount = 81;
-            descriptors.profileTables.hash = source.profile_tables_hash;
-            descriptors.mainIlluminant.hash = source.main_illuminant_hash;
-            descriptors.mainIlluminant.cmyCc = {
-                source.main_cc_cmy[0], source.main_cc_cmy[1], source.main_cc_cmy[2]};
-            descriptors.preflashIlluminant.hash = source.preflash_illuminant_hash;
-            descriptors.preflashIlluminant.cmyCc = {
-                source.preflash_cc_cmy[0], source.preflash_cc_cmy[1], source.preflash_cc_cmy[2]};
-            descriptors.preflashRaw.hash = source.preflash_raw_hash;
-            descriptors.preflashRaw.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.preflashRaw.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.preflashRaw.filteredPreflashIlluminantHash =
-                source.preflash_illuminant_hash;
-            descriptors.balance.filmProfileAssetVersionToken =
-                view.film_profile_asset_version;
-            descriptors.balance.printProfileAssetVersionToken =
-                view.print_profile_asset_version;
-            descriptors.balance.filmRawRecipeHash = view.film_exposure.hash;
-            descriptors.balance.filmDevelopRecipeHash = view.film_development.hash;
-            descriptors.balance.filteredMainIlluminantHash = source.main_illuminant_hash;
-            descriptors.balance.hash = source.balance_hash;
+            descriptors.filmDensityTablesHash = source.film_density_hash;
+            descriptors.profileTablesHash = source.profile_tables_hash;
+            descriptors.mainIlluminantHash = source.main_illuminant_hash;
+            descriptors.preflashIlluminantHash = source.preflash_illuminant_hash;
+            descriptors.mainCmyCc = {source.main_cc_cmy[0], source.main_cc_cmy[1], source.main_cc_cmy[2]};
             descriptors.preflashActive = (source.flags & FJ_PRINT_PREFLASH) != 0;
-            descriptors.hash = source.hash;
         }
 
         void fill_output_gamut(const FjOutputColor& source, OutputGamutRecipe& out) {
@@ -281,6 +251,9 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             std::copy_n(source.xyz_to_rgb, 9, out.xyzToRgb);
             std::copy_n(source.illuminant_xyz, 3, out.illuminantXYZ);
             out.preparedEncoding = source.encoding;
+            out.encoding.colorSpace = static_cast<OutputEncoding::ColorSpace>(source.output_space);
+            out.encoding.applyCctfEncoding = (source.flags & FJ_COLOR_ENCODE_CCTF) != 0;
+            out.encoding.inputIsOutputSpace = (source.flags & FJ_COLOR_INPUT_IS_OUTPUT_SPACE) != 0;
             out.outputGamutRecipeHash = source.active_gamut_recipe_hash;
             out.hash = source.hash;
         }
@@ -291,7 +264,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             const auto& development = view.film_development;
             const auto& dir = view.dir_recipe;
             const auto& scanner = view.scanner_tables;
-            const auto& bounds = view.scanner_bounds;
             out.route = static_cast<Spektrafilm::ScanRoute>(view.route);
             out.filmRaw = {static_cast<Spektrafilm::RgbToRawMethod>(exposure.method),
                            channel_samples(exposure.sensitivity_rgb),
@@ -309,26 +281,12 @@ namespace JuicerCudaTest::PreparedFrameFixture {
                 for (std::size_t layer = 0; layer < 3; ++layer)
                     out.filmDevelop.densityCurvesLayers[layer][channel] =
                         span(development.density_layers[layer][channel]);
-                out.densityBounds.dataMinCmy[channel] = bounds.minimum_cmy[channel];
-                out.densityBounds.invSpanCmy[channel] = bounds.inv_span_cmy[channel];
             }
             out.dirCouplers.active = dir.mode != FJ_DIR_INACTIVE;
             out.dirCouplers.compensatedDensityCurveAxesHash = dir.compensated_axes_hash;
             out.dirCouplers.hash = dir.hash;
-            out.densityBounds.hash = bounds.hash;
-            out.scannerLutDescriptor.route = static_cast<Spektrafilm::ScanRoute>(view.route);
-            out.scannerLutDescriptor.medium = Spektrafilm::scan_route_is_print(out.route)
-                                                  ? Scanner::ScannedMediumKind::Print
-                                                  : Scanner::ScannedMediumKind::Film;
-            out.scannerLutDescriptor.polarity = static_cast<Spektrafilm::ProfilePolarity>(view.polarity);
-            out.scannerLutDescriptor.densityBoundsHash = view.scanner_lut.density_bounds_hash;
-            out.scannerLutDescriptor.lutResolution = view.scanner_lut.resolution;
-            out.scannerLutDescriptor.hash = view.scanner_lut.hash;
-            out.scannerLutDescriptor.channelDensityHash = view.scanner_lut.channel_density_hash;
-            out.scannerLutDescriptor.baseDensityHash = view.scanner_lut.base_density_hash;
-            out.scannerLutDescriptor.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
-            out.scannerLutDescriptor.observerHash = view.scanner_lut.observer_hash;
-            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), span(scanner.baseline_min), 81, scanner.inv_yn, scanner.has_baseline != 0};
+            const auto base = scanner.has_baseline ? span(scanner.baseline_min) : std::span<const float>{};
+            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), base, scanner.inv_yn};
             out.exposureSampleCount = 81;
             out.exposureIlluminant = span(exposure.mallett_illuminant);
             out.filmTcLut = span(exposure.tc_lut_rgba);
@@ -367,10 +325,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             }
             out.dirAxesHash = dir.compensated_axes_hash;
             out.dirHash = dir.hash;
-            out.densityBoundsHash = Spektrafilm::scan_route_is_print(
-                                        static_cast<Spektrafilm::ScanRoute>(view.route))
-                                        ? view.enlarger_film_bounds.hash
-                                        : view.scanner_bounds.hash;
         }
 
     } // namespace
@@ -437,8 +391,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         std::copy_n(grain.particle_scale_cmy, 3, grainInput.particle_scale_cmy);
         std::copy_n(grain.particle_scale_layers, 3, grainInput.particle_scale_layers);
         std::copy_n(grain.particle_density_min_cmy, 3, grainInput.particle_density_min_cmy);
-        const auto& selectedBounds = (view.route & 1u) ? view.enlarger_film_bounds : view.scanner_bounds;
-        std::copy_n(selectedBounds.maximum_cmy, 3, grainInput.authored_max_cmy);
+        std::copy_n(view.grain_authored_max_cmy, 3, grainInput.authored_max_cmy);
         grainInput.correlation_sigma_px = grain.correlation_sigma_px;
         grainInput.dye_cloud_blur_um = grain.dye_cloud_blur_um;
         grainInput.size_mix_scale = grain.size_mix_scale;
@@ -531,16 +484,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         descriptors.route = static_cast<Spektrafilm::ScanRoute>(view.route);
         descriptors.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(view.polarity);
         const bool print = Spektrafilm::scan_route_is_print(descriptors.route);
-        descriptors.scanner.route = descriptors.route;
-        descriptors.scanner.medium = print ? Scanner::ScannedMediumKind::Print : Scanner::ScannedMediumKind::Film;
-        descriptors.scanner.polarity = descriptors.capturePolarity;
-        descriptors.scanner.densityBoundsHash = view.scanner_lut.density_bounds_hash;
-        descriptors.scanner.channelDensityHash = view.scanner_lut.channel_density_hash;
-        descriptors.scanner.baseDensityHash = view.scanner_lut.base_density_hash;
-        descriptors.scanner.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
-        descriptors.scanner.observerHash = view.scanner_lut.observer_hash;
-        descriptors.scanner.lutResolution = view.scanner_lut.resolution;
-        descriptors.scanner.hash = view.scanner_lut.hash;
         const auto& correction = view.scanner_correction;
         descriptors.correction.route = descriptors.route;
         descriptors.correction.active = correction.active != 0;
@@ -612,6 +555,10 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         identity.capturePolarity = descriptors.capturePolarity;
         identity.filmProfileKey = {view.film_profile_key.data, view.film_profile_key.count};
         identity.filmProfileAssetVersionToken = view.film_profile_asset_version;
+        if (print) {
+            identity.paperProfileKey = {view.print_profile_key.data, view.print_profile_key.count};
+            identity.paperProfileAssetVersionToken = view.print_profile_asset_version;
+        }
         identity.scatterHalationHash = view.optics.scatter_halation.hash;
         identity.grainHash = view.grain.hash;
         identity.grainDensityLayersHash = view.film_development.density_layers_hash;

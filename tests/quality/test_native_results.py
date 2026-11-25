@@ -7,7 +7,7 @@ import hashlib
 import json
 import io
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import signal
 import time
@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import execution
+import qualification
 from qualification import (
     OPTICS_FUNCTION,
     OPTICS_TESTS,
@@ -390,6 +391,89 @@ class NativeResultTests(unittest.TestCase):
         payloads["production-commands.json"] = commands_data
         return result, payloads
 
+    def production_v3_fixture(self, preset="linux-release", root=None):
+        result, payloads = self.production_v2_fixture(preset)
+        root = (
+            PureWindowsPath(root or "C:/checkout")
+            if preset.startswith("windows-")
+            else PurePosixPath(root or "/checkout")
+        )
+        arch = "Win64" if preset.startswith("windows-") else "Linux-x86-64"
+        stage = root / "out" / "stage" / preset / "juicer.ofx.bundle" / "Contents" / arch / "juicer.ofx"
+        build = root / "out" / "build" / preset / "juicer.ofx"
+        binaries = build.parent / "tests" / "bin"
+        paths = {
+            "module": str(stage),
+            "build-module": str(build),
+            "ofx": str(binaries / ("JuicerProductionOfxProbe" + (".exe" if preset.startswith("windows-") else ""))),
+            "cuda": str(
+                binaries / ("JuicerProductionCudaAbiProbe" + (".exe" if preset.startswith("windows-") else ""))
+            ),
+            "render": str(
+                binaries / ("JuicerProductionPreparedRenderProbe" + (".exe" if preset.startswith("windows-") else ""))
+            ),
+            "fixture": str(root / "tests" / "ofx" / "fixtures" / "spectral-v1" / f"ordinary-{preset}.json"),
+            "pdb": str(build.with_suffix(".pdb")),
+            "native-symbols": str(root / "rust" / "target" / preset / "libfilm_juicer_native.a"),
+            "rust-symbols": str(root / "rust" / "target" / preset / "libfilm_juicer_core.a"),
+        }
+
+        def replace(value):
+            if isinstance(value, str):
+                return paths.get(value, value)
+            if isinstance(value, list):
+                return [replace(item) for item in value]
+            if isinstance(value, dict):
+                return {key: replace(item) for key, item in value.items()}
+            return value
+
+        report = replace(self.production_report(payloads))
+        commands = replace(json.loads(payloads["production-commands.json"]))
+        command_names = (
+            "native-symbols",
+            "rust-symbols",
+            "module-exports",
+            "module-symbols",
+            "ofx-probe-build",
+            "ofx-probe",
+            "cuda-abi-probe-build",
+            "cuda-abi-probe",
+            "module-probe",
+            "prepared-render",
+        )
+        for row, name in zip(commands, command_names, strict=True):
+            row["name"] = name
+        for row, name in zip(report["scanned"], command_names[:4], strict=True):
+            row["name"] = name
+        report["build_inputs"] = {paths.get(key, key): value for key, value in report["build_inputs"].items()}
+        report["probes"][0]["name"] = "ofx"
+        report["probes"][1]["name"] = "cuda-abi"
+        pin = "f" * 64
+        collector = str(root / "tests" / "ffi" / "production_contract.py")
+        fixture = paths["fixture"]
+        report["schema"] = "production-contract-v3"
+        report["collector"] = collector
+        report["consumed_inputs"].pop("fixture", None)
+        report["consumed_inputs"][fixture] = {"sha256_before": pin, "sha256_after": pin}
+        report["consumed_inputs"][collector] = {"sha256_before": "e" * 64, "sha256_after": "e" * 64}
+        prepared = report["prepared_render"]
+        prepared["module"] = paths["module"]
+        prepared["fixture"] = fixture
+        prepared["fixture_sha256"] = pin
+        resources = (
+            str(PureWindowsPath(paths["module"]).parent.parent / "Resources")
+            if preset.startswith("windows-")
+            else str(PurePosixPath(paths["module"]).parent.parent / "Resources")
+        )
+        expected_command = [paths["render"], paths["module"], resources, fixture, preset]
+        prepared["command"] = expected_command
+        by_name = {row["name"]: row for row in commands}
+        by_name["prepared-render"]["command"] = expected_command
+        report["commands"]["sha256"] = hashlib.sha256(json.dumps(commands).encode()).hexdigest()
+        payloads["production-contract.json"] = json.dumps(report).encode()
+        payloads["production-commands.json"] = json.dumps(commands).encode()
+        return result, payloads
+
     def write_bundle(self, result, payloads, *, omitted=frozenset()):
         members = {}
         for name, data in payloads.items():
@@ -594,6 +678,62 @@ class NativeResultTests(unittest.TestCase):
                 result, payloads = self.production_v2_fixture(preset)
                 summary = read_native_result(self.bundle, result_bytes=self.write_bundle(result, payloads))
                 self.assertEqual(summary["prepared_render_cases"], 4)
+
+    def test_completed_v3_production_report_accepts_relocated_windows_and_linux_sources(self):
+        sources = {"linux-release": "/relocated/source", "windows-clang-release": "D:/relocated/source"}
+        self.subtest_cases = tuple(sources)
+        for preset, root in sources.items():
+            with self.subTest(case=preset):
+                with patch.dict(qualification.SPECTRAL_PRODUCTION_FIXTURE_SHA256, {preset: "f" * 64}, clear=True):
+                    result, payloads = self.production_v3_fixture(preset, root)
+                    summary = read_native_result(self.bundle, result_bytes=self.write_bundle(result, payloads))
+                    self.assertEqual(summary["prepared_render_cases"], 4)
+
+    def test_production_v3_rejects_unreviewed_path_digest_and_argv_variants(self):
+        self.subtest_cases = (
+            "wrong-resource",
+            "wrong-fixture-digest",
+            "self-consistent-fixture",
+            "stale-supplement",
+            "wrong-preset",
+            "argv-mismatch",
+        )
+        with patch.dict(qualification.SPECTRAL_PRODUCTION_FIXTURE_SHA256, {"linux-release": "f" * 64}, clear=True):
+            for case in self.subtest_cases:
+                with self.subTest(case=case):
+                    result, payloads = self.production_v3_fixture("linux-release")
+                    report = self.production_report(payloads)
+                    prepared = report["prepared_render"]
+                    commands = json.loads(payloads["production-commands.json"])
+                    logged = next(row for row in commands if row["name"] == "prepared-render")
+                    if case == "wrong-resource":
+                        prepared["command"][2] = "/relocated/source/Resources-other"
+                    elif case == "wrong-fixture-digest":
+                        prepared["fixture_sha256"] = "a" * 64
+                        fixture = prepared["fixture"]
+                        report["consumed_inputs"][fixture] = {"sha256_before": "a" * 64, "sha256_after": "a" * 64}
+                    elif case == "self-consistent-fixture":
+                        fixture = "/relocated/source/tests/ofx/fixtures/spectral-v1/ordinary-other.json"
+                        report["consumed_inputs"][fixture] = report["consumed_inputs"].pop(prepared["fixture"])
+                        prepared["fixture"] = fixture
+                        prepared["command"][3] = fixture
+                    elif case == "stale-supplement":
+                        prepared["command"].append("/relocated/source/product-updates.json")
+                        report["consumed_inputs"][prepared["command"][-1]] = {
+                            "sha256_before": "b" * 64,
+                            "sha256_after": "b" * 64,
+                        }
+                    elif case == "wrong-preset":
+                        prepared["command"][4] = "windows-clang-release"
+                    else:
+                        logged["command"][4] = "windows-clang-release"
+                    if case != "argv-mismatch":
+                        logged["command"] = prepared["command"]
+                    payloads["production-commands.json"] = json.dumps(commands).encode()
+                    report["commands"]["sha256"] = hashlib.sha256(payloads["production-commands.json"]).hexdigest()
+                    payloads["production-contract.json"] = json.dumps(report).encode()
+                    with self.assertRaisesRegex(ValueError, "spectral v3|production render identity"):
+                        read_native_result(self.bundle, result_bytes=self.write_bundle(result, payloads))
 
     def test_production_v2_rejects_invalid_observations(self):
         cases = (
@@ -882,11 +1022,15 @@ class NativeResultTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing required native run members"):
                 read_native_result(self.bundle, result_bytes=raw)
 
-    def module_producer_fixture(self, preview="OFF", *, explicit_preview=True, testing="ON", raw_preview=None):
+    def module_producer_fixture(
+        self, preview="OFF", *, explicit_preview=True, testing="ON", raw_preview=None, stage_name=None
+    ):
         source = "C:/checkout"
         preset = "windows-clang-release"
         build = f"{source}/out/build/{preset}"
         stage = f"{source}/out/stage/{preset}"
+        if stage_name is not None:
+            stage += f"/{stage_name}"
         cmake = "C:/tools/cmake.exe"
         python = "C:/venv/python.exe"
         targets = ["bundle-archive", "JuicerOfxModuleTests"]
@@ -896,6 +1040,8 @@ class NativeResultTests(unittest.TestCase):
         configure = [cmake, "--preset", preset, f"-DBUILD_TESTING={testing}", f"-DPython3_EXECUTABLE={python}"]
         if explicit_preview:
             configure.append(f"-DJUICER_GRAIN_PREVIEW:BOOL={preview}")
+        if stage_name is not None:
+            configure.append(f"-DCMAKE_INSTALL_PREFIX:PATH={stage}")
         variants = {"production": ["grain-preview"] if preview == "ON" else []}
         if testing == "ON":
             variants["test-support"] = ["test-support"]
@@ -987,6 +1133,24 @@ class NativeResultTests(unittest.TestCase):
             ],
         }
         return result, payloads
+
+    def test_module_producer_binds_named_stage(self):
+        self.subtest_cases = ("ordinary", "preview", "foreign", "different-cached-stage")
+        for case in self.subtest_cases:
+            with self.subTest(case=case):
+                preview = "ON" if case == "preview" else "OFF"
+                stage_name = "outside/bundle" if case == "foreign" else "scanner-candidate"
+                result, payloads = self.module_producer_fixture(preview, stage_name=stage_name)
+                if case == "different-cached-stage":
+                    result["commands"][0]["command"][-1] += "-different"
+                self.write_bundle(result, payloads)
+                if case in {"ordinary", "preview"}:
+                    self.assertEqual(read_native_result(self.bundle)["status"], "passed")
+                else:
+                    with self.assertRaisesRegex(ValueError, "invalid named stage"):
+                        read_native_result(self.bundle)
+
+    test_module_producer_binds_named_stage.required_subtests = True
 
     def test_module_producer_requires_configured_cmake_build(self):
         result, payloads = self.module_producer_fixture()
@@ -1384,6 +1548,16 @@ class NativeResultTests(unittest.TestCase):
         self.write_bundle(result, payloads)
         self.assertEqual(read_native_result(self.bundle)["custom_cases"], 1)
         modules = json.loads(payloads["production-modules.json"])
+        ordinary = modules["ordinary"]["configuration"]
+        del ordinary["JUICER_GRAIN_PREVIEW"]
+        del ordinary["JUICER_GRAIN_PREVIEW_CONFIGURED"]
+        ordinary[qualification.FILM_V1_CONFIGURATION_KEY] = "ON"
+        ordinary[qualification.APERTURE_CONFIGURATION_KEY] = "OFF"
+        self.write_bundle(result, {**payloads, "production-modules.json": json.dumps(modules).encode()})
+        with self.assertRaisesRegex(ValueError, "ordinary producer has different native build settings"):
+            read_native_result(self.bundle)
+
+        modules = json.loads(payloads["production-modules.json"])
         modules["preview"]["configuration"]["JUICER_GRAIN_PREVIEW"] = "OFF"
         payloads["production-modules.json"] = json.dumps(modules).encode()
         self.write_bundle(result, payloads)
@@ -1546,7 +1720,10 @@ for p in (root / 'relocated bundle ü').iterdir():
     assert opens.count(str(p)) == 1, (p, opens.count(str(p)))
 """
         completed = subprocess.run(
-            [sys.executable, "-I", "-S", "-c", code, str(self.root)], capture_output=True, text=True, timeout=20
+            [sys.executable, "-I", "-S", "-X", "utf8", "-c", code, str(self.root)],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=20,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         type(self).read_bytes += json.loads(completed.stdout)["bookkeeping_read_bytes"]
@@ -1759,6 +1936,21 @@ class OpticsSourceTests(unittest.TestCase):
         self.assertNotEqual(before[1], after[1])
         path.write_text("changed support\n")
         self.assertNotEqual(after[1], self.capture()[1])
+
+    def test_consumed_linker_maps_are_captured_and_detect_changed_bytes(self):
+        for name in ("tests/benchmarks/measurement.exports", "tests/benchmarks/measurement.def"):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("export original\n")
+            before, _, _ = self.capture()
+            self.assertIn(name, before["new_files_base64"])
+            self.git("add", name)
+            before, patch, _ = self.capture()
+            path.write_text("export replacement\n")
+            changed, updated, _ = self.capture()
+            self.assertIn(name, before["inputs"])
+            self.assertIn(name, changed["inputs"])
+            self.assertNotEqual(patch, updated)
 
     def test_supported_untracked_headers_are_preserved_and_compared(self):
         import base64
@@ -2064,6 +2256,10 @@ NativeResultTests.test_production_report_rejects_missing_or_failed_command.requi
 NativeResultTests.test_production_v2_rejects_invalid_observations.required_subtests = True
 
 NativeResultTests.test_completed_v2_production_report_is_read_from_bundle_only.required_subtests = True
+NativeResultTests.test_completed_v3_production_report_accepts_relocated_windows_and_linux_sources.required_subtests = (
+    True
+)
+NativeResultTests.test_production_v3_rejects_unreviewed_path_digest_and_argv_variants.required_subtests = True
 
 NativeResultTests.test_production_report_rejects_missing_or_failed_prepared_row.required_subtests = True
 

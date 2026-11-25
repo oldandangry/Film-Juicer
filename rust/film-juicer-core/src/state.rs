@@ -190,9 +190,8 @@ pub struct FrameInput<'a> {
     identity: u64,
 }
 impl FrameInput<'_> {
-    #[cfg(feature = "grain-preview")]
-    pub fn film_grain_selected(&self) -> bool {
-        self.params.film_grain.is_some()
+    pub fn film_grain(&self) -> crate::film::grain::film_v1::Selection {
+        self.params.film_grain
     }
 
     #[cfg(feature = "test-support")]
@@ -244,12 +243,9 @@ impl Published {
     fn matches(
         &self,
         identity: u64,
-        #[cfg(feature = "grain-preview")] film_raster: Option<crate::film::grain::preview::Raster>,
+        film_raster: Option<crate::film::grain::film_v1::Raster>,
     ) -> bool {
-        #[cfg(feature = "grain-preview")]
         let same_geometry = self.state.film_grain().map(|grain| grain.raster()) == film_raster;
-        #[cfg(not(feature = "grain-preview"))]
-        let same_geometry = true;
         self.identity == identity && same_geometry
     }
 
@@ -609,19 +605,13 @@ impl Publication {
         input: FrameInput<'_>,
         prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
     ) -> Result<Arc<RenderState>, Error> {
-        self.admit_frame_with(
-            input,
-            prepare,
-            #[cfg(feature = "grain-preview")]
-            None,
-        )
+        self.admit_frame_with(input, prepare, None)
     }
 
-    #[cfg(feature = "grain-preview")]
-    pub fn admit_preview_frame(
+    pub fn admit_film_grain_frame(
         &self,
         input: FrameInput<'_>,
-        frame: crate::recipe::PreviewFrame,
+        frame: crate::recipe::FilmGrainFrame,
         prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
     ) -> Result<Arc<RenderState>, Error> {
         self.admit_frame_with(input, prepare, Some(frame))
@@ -631,7 +621,7 @@ impl Publication {
         &self,
         input: FrameInput<'_>,
         prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
-        #[cfg(feature = "grain-preview")] frame: Option<crate::recipe::PreviewFrame>,
+        frame: Option<crate::recipe::FilmGrainFrame>,
     ) -> Result<Arc<RenderState>, Error> {
         if !std::ptr::eq(input.publication, self) {
             return Err(Error::InvalidCaptureOperation);
@@ -644,23 +634,18 @@ impl Publication {
                 Error::Preparation(error)
             })
         };
-        #[cfg(feature = "grain-preview")]
-        let film_raster = match frame.filter(|_| input.film_grain_selected()) {
+        let film_raster = match frame.filter(|_| input.film_grain().controls().is_some()) {
             // This render owns the grain-free state. Leave the timeline
             // publication and the geometry it was prepared for in place.
-            Some(crate::recipe::PreviewFrame::Thumbnail) => return prepare(),
-            Some(crate::recipe::PreviewFrame::Raster(raster)) => Some(raster),
+            Some(crate::recipe::FilmGrainFrame::Thumbnail) => return prepare(),
+            Some(crate::recipe::FilmGrainFrame::Raster(raster)) => Some(raster),
             None => None,
         };
         let _rebuild = self.rebuild.lock().map_err(|_| Error::Poisoned)?;
         {
             let state = self.lock()?;
             if let Some(published) = &state.published
-                && published.matches(
-                    input.identity,
-                    #[cfg(feature = "grain-preview")]
-                    film_raster,
-                )
+                && published.matches(input.identity, film_raster)
             {
                 return Ok(Arc::clone(&published.state));
             }
@@ -701,11 +686,7 @@ impl Publication {
                 let state = self.lock()?;
                 let (params, identity) = state.input()?;
                 if let Some(published) = &state.published
-                    && published.matches(
-                        identity,
-                        #[cfg(feature = "grain-preview")]
-                        None,
-                    )
+                    && published.matches(identity, None)
                 {
                     return Ok(published.admission());
                 }
@@ -941,7 +922,6 @@ mod tests {
             state.scanner().gamut().boundary().unwrap().cmax()[100].to_bits(),
         ]
     }
-
     #[test]
     fn uninitialized_does_not_build() {
         let publication = Publication::new();
@@ -951,7 +931,6 @@ mod tests {
         ));
         assert!(publication.state.lock().unwrap().published.is_none());
     }
-
     #[test]
     fn matching_identity_reuses_state() {
         let assets = assets();
@@ -1006,8 +985,6 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(first.hash(), changed.hash());
     }
-
-    #[cfg(feature = "grain-preview")]
     #[test]
     fn film_preview_geometry_retains_matching_tables_and_bounds() {
         let assets = assets();
@@ -1016,29 +993,30 @@ mod tests {
             let film_params = |mm| {
                 let mut captured = params(route, 1);
                 captured.camera_film_format_long_edge_mm = mm;
-                captured.film_grain = Some(film::grain::preview::Controls {
-                    amount_ev: 3.0,
-                    texel_pitch_um: 4.0,
-                    chroma_fraction: 1.0,
-                });
+                captured.film_grain =
+                    film::grain::film_v1::Selection::FilmV1(film::grain::film_v1::Controls {
+                        amount_ev: 3.0,
+                        texel_pitch_um: 4.0,
+                        chroma_fraction: 1.0,
+                    });
                 captured
             };
             publication.stage(valid(1, film_params(36.0))).unwrap();
             let admit = |long_edge_px| {
-                let frame = recipe::PreviewFrame::Raster(crate::film::grain::preview::Raster {
+                let frame = recipe::FilmGrainFrame::Raster(crate::film::grain::film_v1::Raster {
                     long_edge_px,
                     full_grid: None,
                 });
-                publication.admit_preview_frame(
+                publication.admit_film_grain_frame(
                     publication.frame_input().unwrap(),
                     frame,
                     |params| recipe::prepare_for_frame(&assets, params, frame),
                 )
             };
             let landscape = admit(4832).unwrap();
-            let thumbnail = recipe::PreviewFrame::Thumbnail;
+            let thumbnail = recipe::FilmGrainFrame::Thumbnail;
             let clean = publication
-                .admit_preview_frame(publication.frame_input().unwrap(), thumbnail, |params| {
+                .admit_film_grain_frame(publication.frame_input().unwrap(), thumbnail, |params| {
                     recipe::prepare_for_frame(&assets, params, thumbnail)
                 })
                 .unwrap();
@@ -1056,13 +1034,11 @@ mod tests {
                 1.2132651_f32.to_bits()
             );
             assert_ne!(
-                landscape.film_bounds().hash(),
-                portrait.film_bounds().hash()
+                landscape.film_v1_bounds().unwrap().hash(),
+                portrait.film_v1_bounds().unwrap().hash()
             );
-            assert_eq!(
-                landscape.scanner().lut().hash() == portrait.scanner().lut().hash(),
-                route == ScanRoute::NegativePrint,
-            );
+            assert_eq!(landscape.scanner_hash(), portrait.scanner_hash());
+            assert_ne!(landscape.hash(), portrait.hash());
             assert!(matches!(
                 admit(36001),
                 Err(Error::Preparation(PrepareError::FilmGrainFootprint { .. }))
@@ -1074,17 +1050,18 @@ mod tests {
                 current.film_grain().unwrap().table().footprint,
                 (f64::from(11.66_f32) * 1000.0 / 4832.0 / 4.0) as f32
             );
-            assert_ne!(landscape.film_bounds().hash(), current.film_bounds().hash());
+            assert_ne!(
+                landscape.film_v1_bounds().unwrap().hash(),
+                current.film_v1_bounds().unwrap().hash()
+            );
             assert_eq!(landscape_grain.table().footprint, 1.8625828);
             assert_eq!(landscape_grain.raster().long_edge_px, 4832);
         }
     }
-
-    #[cfg(feature = "grain-preview")]
     #[test]
     fn film_thumbnail_validates_authored_selection_without_publishing() {
-        use film::grain::preview::{Controls, Raster};
-        use recipe::{ControlError, PreviewFrame};
+        use film::grain::film_v1::{Controls, Raster, Selection};
+        use recipe::{ControlError, FilmGrainFrame};
 
         let assets = assets();
         let controls = Controls {
@@ -1096,8 +1073,8 @@ mod tests {
             long_edge_px: 4832,
             full_grid: None,
         };
-        let timeline = PreviewFrame::Raster(raster);
-        let thumbnail = PreviewFrame::Thumbnail;
+        let timeline = FilmGrainFrame::Raster(raster);
+        let thumbnail = FilmGrainFrame::Thumbnail;
         for (route, positive_route) in [
             (ScanRoute::NegativeDirect, ScanRoute::PositiveDirect),
             (ScanRoute::NegativePrint, ScanRoute::PositivePrint),
@@ -1106,11 +1083,11 @@ mod tests {
             let authored = || {
                 let mut captured = params(route, 1);
                 captured.grain.active = true;
-                captured.film_grain = Some(controls);
+                captured.film_grain = film::grain::film_v1::Selection::FilmV1(controls);
                 captured
             };
             let admit = |frame| {
-                publication.admit_preview_frame(
+                publication.admit_film_grain_frame(
                     publication.frame_input().unwrap(),
                     frame,
                     |params| recipe::prepare_for_frame(&assets, params, frame),
@@ -1134,8 +1111,8 @@ mod tests {
             let off = recipe::prepare(&assets, &params(route, 1)).unwrap();
             assert_eq!(clean.development().route(), route);
             assert!(clean.film_grain().is_none() && !clean.grain().active());
-            assert_eq!(clean.film_bounds().hash(), off.film_bounds().hash());
-            assert_ne!(clean.film_bounds().hash(), held.film_bounds().hash());
+            assert!(clean.film_v1_bounds().is_none() && off.film_v1_bounds().is_none());
+            assert!(held.film_v1_bounds().is_some());
             assert_timeline_published();
             assert!(Arc::ptr_eq(&held, &admit(timeline).unwrap()));
 
@@ -1150,7 +1127,7 @@ mod tests {
                 (
                     "amount",
                     Params {
-                        film_grain: Some(Controls {
+                        film_grain: Selection::FilmV1(Controls {
                             amount_ev: 4.0,
                             ..controls
                         }),
@@ -1160,7 +1137,7 @@ mod tests {
                 (
                     "pitch",
                     Params {
-                        film_grain: Some(Controls {
+                        film_grain: Selection::FilmV1(Controls {
                             texel_pitch_um: 0.25,
                             ..controls
                         }),
@@ -1170,7 +1147,7 @@ mod tests {
                 (
                     "chroma",
                     Params {
-                        film_grain: Some(Controls {
+                        film_grain: Selection::FilmV1(Controls {
                             chroma_fraction: -0.1,
                             ..controls
                         }),
@@ -1229,29 +1206,28 @@ mod tests {
             }
         }
     }
-
-    #[cfg(feature = "grain-preview")]
     #[test]
     fn film_proxy_publication_uses_full_grid_and_encloses_its_densities() {
-        use crate::film::grain::preview::{ProxyGrid, Raster, Sampling};
+        use crate::film::grain::film_v1::{ProxyGrid, Raster, Sampling};
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let publication = Publication::new();
             let mut captured = params(route, 1);
             captured.camera_film_format_long_edge_mm = 36.0;
-            captured.film_grain = Some(film::grain::preview::Controls {
-                amount_ev: 0.0,
-                texel_pitch_um: 0.5,
-                chroma_fraction: 0.24,
-            });
+            captured.film_grain =
+                film::grain::film_v1::Selection::FilmV1(film::grain::film_v1::Controls {
+                    amount_ev: 0.0,
+                    texel_pitch_um: 0.5,
+                    chroma_fraction: 0.24,
+                });
             publication.stage(valid(1, captured)).unwrap();
             let admit = |long_edge_px, full_grid| {
-                let frame = recipe::PreviewFrame::Raster(Raster {
+                let frame = recipe::FilmGrainFrame::Raster(Raster {
                     long_edge_px,
                     full_grid,
                 });
                 publication
-                    .admit_preview_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap()
@@ -1268,8 +1244,11 @@ mod tests {
                 full.film_grain().unwrap().table(),
                 eighth.film_grain().unwrap().table(),
             ));
-            assert_eq!(full.film_bounds().hash(), eighth.film_bounds().hash());
-            assert_eq!(full.scanner().lut().hash(), eighth.scanner().lut().hash());
+            assert_eq!(
+                full.film_v1_bounds().unwrap().hash(),
+                eighth.film_v1_bounds().unwrap().hash()
+            );
+            assert_eq!(full.scanner_hash(), eighth.scanner_hash());
             assert!(Arc::ptr_eq(&eighth, &admit(604, Some(grid))));
             let other = admit(
                 604,
@@ -1292,11 +1271,13 @@ mod tests {
                     2,
                     Params {
                         camera_film_format_long_edge_mm: 120.0,
-                        film_grain: Some(film::grain::preview::Controls {
-                            amount_ev: 0.0,
-                            texel_pitch_um: 0.5,
-                            chroma_fraction: 0.24,
-                        }),
+                        film_grain: film::grain::film_v1::Selection::FilmV1(
+                            film::grain::film_v1::Controls {
+                                amount_ev: 0.0,
+                                texel_pitch_um: 0.5,
+                                chroma_fraction: 0.24,
+                            },
+                        ),
                         ..params(route, 1)
                     },
                 ))
@@ -1323,11 +1304,13 @@ mod tests {
                 native_grain.table().footprint,
                 proxy_grain.table().footprint * 2.0
             );
-            assert_ne!(native.film_bounds().hash(), same_pitch.film_bounds().hash());
+            assert_ne!(
+                native.film_v1_bounds().unwrap().hash(),
+                same_pitch.film_v1_bounds().unwrap().hash()
+            );
             assert_eq!(admit(4832, None).hash(), native.hash());
         }
     }
-
     #[test]
     fn zero_identity_is_valid() {
         let assets = assets();
@@ -1353,7 +1336,6 @@ mod tests {
             Err(Error::Capturing)
         ));
     }
-
     #[test]
     fn route_changes_publish_complete_states() {
         let assets = assets();
@@ -1377,7 +1359,8 @@ mod tests {
             assert_eq!(state.development().route(), route);
             assert_ne!(state.hash(), 0);
             assert_ne!(state.reference().hash(), 0);
-            assert_ne!(state.scanner().lut().hash(), 0);
+            assert_ne!(state.scanner().hash(), 0);
+            assert_ne!(state.scanner_hash(), 0);
             assert!(!state.development().normalized_curves_cmy().is_empty());
             match (route, state.route()) {
                 (
@@ -1406,7 +1389,6 @@ mod tests {
         }
         cases.finish();
     }
-
     #[test]
     fn invalid_controls_block_admission() {
         let assets = assets();
@@ -1435,7 +1417,6 @@ mod tests {
         assert_eq!(recovered.development().route(), ScanRoute::NegativePrint);
         assert!(!Arc::ptr_eq(&held, &recovered));
     }
-
     #[test]
     fn failed_preparation_blocks_old_state() {
         let assets = assets();
@@ -1471,7 +1452,6 @@ mod tests {
         assert!(!Arc::ptr_eq(&held, &recovered));
         assert_eq!(backing_words(&held), backing_words(&recovered));
     }
-
     #[test]
     fn typed_panics_block_current_and_obsolete_publications() {
         let mut cases = RowCases::new("publication-typed-panic", ["current", "obsolete"]);
@@ -1633,7 +1613,6 @@ mod tests {
             &admitted
         ));
     }
-
     #[test]
     fn obsolete_success_is_not_published() {
         let assets = assets();
@@ -1682,7 +1661,6 @@ mod tests {
                 .unwrap()
         ));
     }
-
     #[test]
     fn obsolete_failure_rechecks_pending() {
         let mut cases = RowCases::new(
@@ -1745,7 +1723,6 @@ mod tests {
         }
         cases.finish();
     }
-
     #[test]
     fn invalidated_build_is_not_published() {
         let assets = assets();
@@ -1771,7 +1748,6 @@ mod tests {
         assert_eq!(saved.identity, 1);
         assert!(Arc::ptr_eq(&saved.state, &held));
     }
-
     #[test]
     fn admitted_holds_survive_replacement_and_cache_release() {
         let assets = assets();
@@ -1810,7 +1786,6 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert!(boundary.upgrade().is_none());
     }
-
     #[test]
     fn concurrent_admission_builds_once() {
         let assets = assets();
@@ -1860,7 +1835,6 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(backing_words(&first), backing_words(&second));
     }
-
     #[test]
     fn poisoned_state_blocks_admission() {
         let mut cases = RowCases::new("publication-poison", ["state", "rebuild"]);
@@ -1928,7 +1902,6 @@ mod tests {
         };
         write
     }
-
     #[test]
     fn frame_input_survives_new_change_without_replacing_current_cache() {
         let assets = assets();
@@ -1974,7 +1947,6 @@ mod tests {
         assert_eq!(state.build, 1);
         assert!(!Arc::ptr_eq(&frame, &newer));
     }
-
     #[test]
     fn frame_input_failure_and_cache_identity_are_explicit() {
         let assets = assets();
@@ -2014,7 +1986,6 @@ mod tests {
         assert_eq!(state.published.as_ref().unwrap().identity, 1);
         assert!(state.current(newer).unwrap());
     }
-
     #[test]
     fn frame_input_rejects_another_publication_before_cache_or_preparation() {
         let first = Publication::new();
@@ -2034,7 +2005,6 @@ mod tests {
         assert!(state.published.is_none());
         assert_eq!(state.build, 0);
     }
-
     #[test]
     fn obsolete_frame_keeps_newer_cache_and_panic_blocks_publication() {
         let assets = assets();
@@ -2084,7 +2054,6 @@ mod tests {
         ));
         assert!(matches!(publication.frame_input(), Err(Error::Poisoned)));
     }
-
     #[test]
     fn frame_install_preserves_checks_and_action_identity() {
         let publication = Arc::new(Publication::new());
@@ -2147,7 +2116,6 @@ mod tests {
             Err(Error::RefreshRequired)
         ));
     }
-
     #[test]
     fn action_failure_survives_render_read_but_not_newer_action_or_failure() {
         let publication = Arc::new(Publication::new());
@@ -2222,7 +2190,6 @@ mod tests {
             _ => panic!("physical failure was replaced"),
         }
     }
-
     #[test]
     fn read_only_failure_keeps_latest_action_ui_and_rejects_frames() {
         for snapshot_failure in [false, true] {
@@ -2291,7 +2258,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn failed_refresh_preserves_latest_action_ui_obligation() {
         let publication = Arc::new(Publication::new());
@@ -2322,7 +2288,6 @@ mod tests {
             Err(Error::CaptureFailed(_))
         ));
     }
-
     #[test]
     fn render_read_supersedes_only_reading_and_preserves_newer_outcomes() {
         let publication = Arc::new(Publication::new());
@@ -2426,7 +2391,6 @@ mod tests {
             23
         );
     }
-
     #[test]
     fn render_read_refuses_writes_failure_revision_mismatch_and_overflow() {
         let publication = Arc::new(Publication::new());
@@ -2478,7 +2442,6 @@ mod tests {
             Err(Error::Poisoned)
         ));
     }
-
     #[test]
     fn render_read_superseded_by_write_preserves_completion_and_failure() {
         for fails in [false, true] {
@@ -2569,7 +2532,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn render_read_supersedes_a_read_on_another_thread() {
         let publication = Arc::new(Publication::new());
@@ -2602,7 +2564,6 @@ mod tests {
             2
         );
     }
-
     #[test]
     fn ordered_capture_completion_and_admission_metadata() {
         let assets = assets();
@@ -2689,7 +2650,6 @@ mod tests {
         assert_eq!(held.input_identity(), 0);
         assert_eq!(held.build(), 1);
     }
-
     #[test]
     fn registered_writes_defer_and_reconcile_actual_completion() {
         let cases = [
@@ -2791,7 +2751,6 @@ mod tests {
         }
         rows.finish();
     }
-
     #[test]
     fn snapshot_phase_rejection_and_failure_precedence() {
         let publication = Arc::new(Publication::new());
@@ -2856,7 +2815,6 @@ mod tests {
         let preview = CaptureFailure::new(CaptureFailureKind::Host, &"é".repeat(2048));
         assert_eq!(preview.diagnostic().len(), 2046);
     }
-
     #[test]
     fn exhausted_ordering_and_blocked_guards_do_not_wrap() {
         let cases = [
@@ -2931,7 +2889,6 @@ mod tests {
         }
         rows.finish();
     }
-
     #[test]
     fn build_counter_exhaustion_keeps_last_committed_publication() {
         let assets = assets();
