@@ -7,8 +7,10 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+import math
 import re
 import stat
+import struct
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
 import tomllib
@@ -2052,6 +2054,138 @@ def require_candidate_source(candidate, payloads, source):
         raise ValueError("retained source differs from candidate: " + source)
 
 
+PORTRA_REQUEST = "portra-certificate-request.json"
+PORTRA_FLAGS = "portra-certificate-input.u32le"
+PORTRA_REPORT = "portra-certificate-report.json"
+PORTRA_MEMBERS = {PORTRA_REQUEST, PORTRA_FLAGS, PORTRA_REPORT}
+PORTRA_FUNCTION = "film::density::portra::tests::calibration_intervals_enclose_executed_words_and_signed_guards"
+
+
+def portra_request(data, flags):
+    request = json.loads(data)
+    mode, parents = request["mode"], request["parents"]
+    if (
+        request["schema"] != "portra-certificate-request-v1"
+        or mode not in {"nonconstant", "interval", "exact"}
+        or not isinstance(parents, list)
+        or not parents
+        or (mode == "exact") != (flags is not None)
+    ):
+        raise ValueError("invalid Portra certificate request")
+    cursor, previous = 0, 0
+    selected = []
+    for parent in parents:
+        first, last = parent["first"], parent["last"]
+        upper = 0x41200000 if mode == "nonconstant" else 0x486A6000
+        if (
+            type(first) is not int
+            or type(last) is not int
+            or not (0x3E7A0000 <= first <= last <= upper and previous < first)
+        ):
+            raise ValueError("invalid or overlapping Portra parent interval")
+        previous = last
+        words = None
+        if mode == "exact":
+            count = parent["words"]
+            if type(count) is not int or not 0 <= count <= last - first + 1:
+                raise ValueError("invalid Portra parent word count")
+            data = flags[cursor : cursor + 4 * count]
+            cursor += 4 * count
+            if len(data) != 4 * count or hashlib.sha256(data).hexdigest() != parent["flags_sha256"]:
+                raise ValueError("Portra parent flag bytes differ from the request")
+            words = sorted(word for (word,) in struct.iter_unpack("<I", data))
+            if len(set(words)) != count or words and not first <= words[0] <= words[-1] <= last:
+                raise ValueError("duplicate or out-of-parent Portra flag")
+        elif parent.keys() != {"first", "last"}:
+            raise ValueError("flag membership in a Portra interval request")
+        selected.append(words)
+    if flags is not None and (not cursor or cursor != len(flags)):
+        raise ValueError("unbound or empty Portra flag payload")
+    return request, selected
+
+
+def validate_portra_report(request, selected, data):
+    report = json.loads(data)
+    mode = request["mode"]
+    if (
+        report["schema"] != "portra-certificate-report-v1"
+        or report["mode"] != mode
+        or report["bank"] != "cab2fed88a398c2e"
+        or report["gain"] != 16
+        or len(report["parents"]) != len(selected)
+    ):
+        raise ValueError("Portra terminal report differs from the request")
+    for parent, words, row in zip(request["parents"], selected, report["parents"], strict=True):
+        first, last = parent["first"], parent["last"]
+        count = len(words) if words is not None else last - first + 1
+        if (row["first"], row["last"], row["count"]) != (first, last, count):
+            raise ValueError("Portra terminal coverage differs from the requested parent")
+
+        def bounds(key):
+            left, right = row[key]
+            if not first <= left <= right <= last or words is not None and (left != right or left not in words):
+                raise ValueError("Portra limiting footprint outside proved inputs")
+
+        intervals = row["intervals"]
+        if type(intervals) is not int or not 0 <= intervals <= count:
+            raise ValueError("invalid Portra interval census")
+        if mode == "nonconstant":
+            gap = row["minimum_light_gap"]
+            if not intervals or not math.isfinite(gap) or gap <= 0:
+                raise ValueError("unproved nonconstant Portra calibration light")
+            bounds("limiting_words")
+            continue
+        exact, singletons = row["exact"], row["singleton_rechecks"]
+        if (
+            type(exact) is not int
+            or not intervals + exact <= count
+            or not 0 <= exact <= count
+            or not intervals
+            and exact != count
+            or row["words"] != words
+            or mode == "exact"
+            and (exact != count or singletons)
+            or singletons != sorted(set(singletons))
+            or len(singletons) > exact
+            or any(not first <= word <= last for word in singletons)
+        ):
+            raise ValueError("invalid Portra exact word coverage")
+        if count:
+            if (
+                not math.isfinite(row["span"])
+                or not 0 <= row["span"] <= 64
+                or not math.isfinite(row["floor"])
+                or row["floor"] < -30
+                or row["wavelength_nm"] not in range(380, 781, 5)
+            ):
+                raise ValueError("invalid Portra safeguard bound")
+            bounds("span_words")
+            bounds("floor_words")
+        elif any(row[key] is not None for key in ("span", "floor", "span_words", "floor_words", "wavelength_nm")):
+            raise ValueError("Portra safeguard bound without selected words")
+
+
+def validate_portra_execution(result, payloads):
+    if result["status"] != "passed":
+        return
+    if "Rust.Core.execution.json" not in payloads:
+        return
+    execution = json.loads(payloads["Rust.Core.execution.json"])
+    if not result.get("portra_certificate"):
+        if "portra_certificate" in execution:
+            raise ValueError("unrequested Portra certificate execution")
+        return
+    hashes = {name: hashlib.sha256(payloads[name]).hexdigest() for name in PORTRA_MEMBERS & payloads.keys()}
+    if execution.get("portra_certificate") != hashes:
+        raise ValueError("Portra certificate members differ from the Rust execution")
+    junit = ET.fromstring(payloads["Rust.Core.xml"])
+    terminals = [case for case in junit.iter("testcase") if case.get("name") == PORTRA_FUNCTION]
+    if len(terminals) != 1 or any(terminals[0].find(tag) is not None for tag in ("failure", "error", "skipped")):
+        raise ValueError("missing successful Portra certificate function")
+    request, selected = portra_request(payloads[PORTRA_REQUEST], payloads.get(PORTRA_FLAGS))
+    validate_portra_report(request, selected, payloads[PORTRA_REPORT])
+
+
 def tests_result_members(result):
     if result.get("scope") not in {"focused", "checkpoint"} or result.get("runtime") not in {"host", "gpu", "all"}:
         raise ValueError("invalid native test scope")
@@ -2061,6 +2195,22 @@ def tests_result_members(result):
     if result.get("rust_artifacts"):
         required.add("rust-artifacts.json")
     selected = result["selection"]
+    if "portra_certificate" in result:
+        if (
+            result["portra_certificate"] is not True
+            or result["schema"] != "native-tests-v6"
+            or result["preset"] != "linux-debug"
+            or result["scope"] != "focused"
+            or result["runtime"] != "host"
+            or result["build_kind"] != "cuda-free"
+            or result["status"] == "passed"
+            and selected != ["Rust.Core"]
+        ):
+            raise ValueError("invalid Portra certificate execution scope")
+        if result["status"] == "passed":
+            required.update({PORTRA_REQUEST, PORTRA_REPORT})
+    elif PORTRA_MEMBERS & result["members"].keys():
+        raise ValueError("unrequested Portra certificate members")
     if result.get("build_kind") == "cuda-free" and result["scope"] != "focused":
         raise ValueError("CUDA-free results must remain focused; they are not product checkpoints")
     if (
@@ -2193,6 +2343,7 @@ def _native_cases(result, payloads, entries, contract, selected, rust_receipts):
 def validate_tests_result(result, payloads):
     tests_result_members(result)
     candidate = _payloads(result, payloads)
+    validate_portra_execution(result, payloads)
     preview_enabled = grain_preview_enabled(candidate.get("configuration", {}).get("JUICER_GRAIN_PREVIEW"))
     current_product = (
         result.get("schema") in {"native-tests-v5", "native-tests-v6"} and result["build_kind"] == "product"

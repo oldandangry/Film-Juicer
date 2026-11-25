@@ -30,6 +30,82 @@ from qualification import (
 )
 
 
+class PortraCertificateTests(unittest.TestCase):
+    def setUp(self):
+        self.word = 0x43C00001
+        self.flags = self.word.to_bytes(4, "little")
+        parent = {
+            "first": self.word - 1,
+            "last": self.word + 1,
+            "words": 1,
+            "flags_sha256": hashlib.sha256(self.flags).hexdigest(),
+        }
+        self.request = {"schema": "portra-certificate-request-v1", "mode": "exact", "parents": [parent]}
+        self.report = {
+            "schema": "portra-certificate-report-v1",
+            "bank": "cab2fed88a398c2e",
+            "gain": 16,
+            "mode": "exact",
+            "parents": [
+                {
+                    "first": parent["first"],
+                    "last": parent["last"],
+                    "count": 1,
+                    "intervals": 0,
+                    "exact": 1,
+                    "span": 5.1,
+                    "floor": -2.2,
+                    "span_words": [self.word, self.word],
+                    "floor_words": [self.word, self.word],
+                    "wavelength_nm": 695,
+                    "words": [self.word],
+                    "singleton_rechecks": [],
+                }
+            ],
+        }
+
+    def payloads(self):
+        payloads = {
+            qualification.PORTRA_REQUEST: json.dumps(self.request).encode(),
+            qualification.PORTRA_FLAGS: self.flags,
+            qualification.PORTRA_REPORT: json.dumps(self.report).encode(),
+        }
+        hashes = {name: hashlib.sha256(data).hexdigest() for name, data in payloads.items()}
+        payloads["Rust.Core.execution.json"] = json.dumps({"portra_certificate": hashes}).encode()
+        payloads["Rust.Core.xml"] = (
+            f'<testsuite><testcase name="{qualification.PORTRA_FUNCTION}"/></testsuite>'.encode()
+        )
+        return payloads
+
+    def test_exact_report_matches_the_requested_parent_and_executed_words(self):
+        result = {"status": "passed", "portra_certificate": True}
+        qualification.validate_portra_execution(result, self.payloads())
+        self.report["parents"][0]["words"] = [self.word + 1]
+        with self.assertRaisesRegex(ValueError, "invalid Portra exact word coverage"):
+            qualification.validate_portra_execution(result, self.payloads())
+
+    def test_parent_interval_and_binary_flags_are_checked_independently(self):
+        data = json.dumps(self.request).encode()
+        with self.assertRaisesRegex(ValueError, "Portra parent flag bytes"):
+            qualification.portra_request(data, (self.word + 1).to_bytes(4, "little"))
+        self.request["parents"][0]["first"] = self.word + 1
+        with self.assertRaisesRegex(ValueError, "out-of-parent Portra flag"):
+            qualification.portra_request(json.dumps(self.request).encode(), self.flags)
+
+    def test_missing_or_modified_terminal_cannot_use_the_ordinary_rust_pass(self):
+        result = {"status": "passed", "portra_certificate": True}
+        payloads = self.payloads()
+        payloads[qualification.PORTRA_REPORT] += b"\n"
+        with self.assertRaisesRegex(ValueError, "differ from the Rust execution"):
+            qualification.validate_portra_execution(result, payloads)
+        del payloads[qualification.PORTRA_REPORT]
+        with self.assertRaisesRegex(ValueError, "differ from the Rust execution"):
+            qualification.validate_portra_execution(result, payloads)
+        payloads["Rust.Core.execution.json"] = b"{}"
+        with self.assertRaisesRegex(ValueError, "differ from the Rust execution"):
+            qualification.validate_portra_execution(result, payloads)
+
+
 class NativeResultTests(unittest.TestCase):
     read_bytes = 0
     written_bytes = 0

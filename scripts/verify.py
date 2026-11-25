@@ -29,6 +29,9 @@ from qualification import (
     MODULE_CONFIGURATION_KEYS,
     OPTIONAL_PRODUCT_REGISTRATIONS,
     FILM_V1_CONFIGURATION_KEY,
+    PORTRA_FLAGS,
+    PORTRA_REPORT,
+    PORTRA_REQUEST,
     PREVIEW_DISCOVERY,
     RECEIPT_ERRORS,
     RUST_TEST_BUILD_TARGET,
@@ -42,6 +45,7 @@ from qualification import (
     read_preview_and_replay_configuration,
     configured_aperture_target,
     product_artifact_consumers,
+    portra_request,
     scanner_replay_linker_control,
     scanner_replay_role,
 )
@@ -168,6 +172,7 @@ def rust_tests(args):
         validate_rust_test_build,
         validate_rust_test_paths,
         validate_rust_test_request,
+        validate_portra_report,
     )
 
     package = args.package
@@ -264,7 +269,17 @@ def rust_tests(args):
     environment.pop("FJ_HOST_BUNDLE", None)
     environment.pop("FJ_OPTICS_CASES", None)
     environment.pop("FJ_RUST_ROWS", None)
+    environment.pop("FJ_PORTRA_CERTIFICATE", None)
     environment["FJ_RUST_ROWS"] = str(bundle / (registration + ".rows.jsonl"))
+    portra_members = {}
+    if (bundle / PORTRA_REQUEST).is_file():
+        if args.preset != "linux-debug" or request.get("build_kind") != "cuda-free" or package != "core":
+            raise ValueError("Portra certificate requires the CUDA-free Linux Debug Rust.Core registration")
+        portra_members[PORTRA_REQUEST] = (bundle / PORTRA_REQUEST).read_bytes()
+        if (bundle / PORTRA_FLAGS).is_file():
+            portra_members[PORTRA_FLAGS] = (bundle / PORTRA_FLAGS).read_bytes()
+        portra, selected_words = portra_request(portra_members[PORTRA_REQUEST], portra_members.get(PORTRA_FLAGS))
+        environment["FJ_PORTRA_CERTIFICATE"] = str(bundle)
     commands = rust_nextest_commands(paths, package, str(config_path))
     records = []
     discovery_bytes = 0
@@ -300,6 +315,11 @@ def rust_tests(args):
             row_bytes = (bundle / (registration + ".rows.jsonl")).read_bytes()
             bookkeeping_reads += len(row_bytes)
             rust_case_events(row_bytes, contract, expected_tests)
+            if portra_members:
+                if any((bundle / name).read_bytes() != data for name, data in portra_members.items()):
+                    raise ValueError("Portra certificate inputs changed during Rust execution")
+                portra_members[PORTRA_REPORT] = (bundle / PORTRA_REPORT).read_bytes()
+                validate_portra_report(portra, selected_words, portra_members[PORTRA_REPORT])
         return completed.returncode
     finally:
         write_json(
@@ -315,6 +335,15 @@ def rust_tests(args):
                 "required_binaries": expected_binaries,
                 "discovered_binaries": discovered_binaries,
                 "junit_sha256": junit_sha256,
+                **(
+                    {
+                        "portra_certificate": {
+                            name: hashlib.sha256(data).hexdigest() for name, data in portra_members.items()
+                        }
+                    }
+                    if portra_members
+                    else {}
+                ),
                 "doctests": {
                     "status": "none",
                     "source_files_scanned": scanned_source_count,
@@ -800,9 +829,9 @@ def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
     payloads = {}
     costs["worker_read_bytes"] = 0
     for path in sorted(run.directory.iterdir()):
-        if path.suffix not in {".json", ".jsonl", ".xml", ".toml", ".patch"} or path.name.endswith(
-            (".process.json", ".gate.json")
-        ):
+        if (
+            path.name != PORTRA_FLAGS and path.suffix not in {".json", ".jsonl", ".xml", ".toml", ".patch"}
+        ) or path.name.endswith((".process.json", ".gate.json")):
             continue
         if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
             raise ValueError("linked native result member")
@@ -1086,6 +1115,16 @@ def native_tests(args):
             if not selected or not selected <= available:
                 raise ValueError("empty or unknown explicit test selection")
             result["selection"] = sorted(selected)
+            if getattr(args, "portra_certificate", None) is not None:
+                if selected != {"Rust.Core"}:
+                    raise ValueError("Portra certificate requires only Rust.Core")
+                result["portra_certificate"] = True
+                request_data = args.portra_certificate.read_bytes()
+                flags = args.portra_flags.read_bytes() if args.portra_flags else None
+                portra_request(request_data, flags)
+                (directory / PORTRA_REQUEST).write_bytes(request_data)
+                if flags is not None:
+                    (directory / PORTRA_FLAGS).write_bytes(flags)
             result["case_files"] = {
                 name: {k: entries[name][k] for k in ("key", "protocol", "rows")} for name in selected if name in entries
             }
@@ -1830,6 +1869,8 @@ def main():
             command.add_argument(
                 "--cuda-free", action="store_true", help="select the shared CUDA-independent test configuration"
             )
+            command.add_argument("--portra-certificate", type=Path, help="Portra footprint proof request JSON")
+            command.add_argument("--portra-flags", type=Path, help="exact Portra flags in little-endian u32 form")
             selection = command.add_mutually_exclusive_group(required=True)
             selection.add_argument("--files", nargs="+")
             selection.add_argument("--tests", nargs="+")
@@ -1900,6 +1941,12 @@ def main():
     probe = modes.add_parser("gpu-lock-probe", help=argparse.SUPPRESS)
     probe.add_argument("--wait-for-owner", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "portra_flags", None) and not args.portra_certificate:
+        parser.error("--portra-flags requires --portra-certificate")
+    if getattr(args, "portra_certificate", None) and (
+        args.preset != "linux-debug" or not args.cuda_free or args.runtime != "host" or args.tests != ["Rust.Core"]
+    ):
+        parser.error("--portra-certificate requires --preset linux-debug --cuda-free --runtime host --tests Rust.Core")
     if args.mode == "closeout" and not args.run_id and (args.accept or args.review or args.hold or args.release_hold):
         parser.error("closeout changes require --run")
     if getattr(args, "cuda_free", False):

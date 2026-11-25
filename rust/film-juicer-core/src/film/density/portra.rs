@@ -297,6 +297,8 @@ mod tests {
     use super::super::Bounds;
     use std::path::Path;
 
+    mod certificate;
+
     const TILE: usize = 256;
     const STRIDE: usize = TILE + 1;
     const PADDED_STRIDE: usize = STRIDE + 40;
@@ -660,6 +662,7 @@ mod tests {
         let bank = assets.portra_grain_bank().unwrap();
         let development = development(&assets);
         let maximum = Bounds::film_v1_clean_maximum(&development);
+        assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
         for (first, steps) in [
             (MIN_PROXY_SAMPLE_FOOTPRINT, 512),
             (f32::from_bits(1.0_f32.to_bits() - 128), 127),
@@ -724,6 +727,7 @@ mod tests {
                 ]
             });
         }
+        certificate::run(&assets, &bank, &development);
     }
 
     #[test]

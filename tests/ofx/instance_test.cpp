@@ -1229,7 +1229,35 @@ namespace {
 
         plugin->setHost(host.binding());
         require(call(plugin, kOfxActionLoad) == kOfxStatOK, "Film v1 load");
+        host.clear_calls();
         require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "Film v1 context");
+        constexpr std::array controls{
+            std::array{0.0, -3.0, 3.0, 0.1},
+            std::array{1.0, 0.5, 4.0, 0.01},
+            std::array{1.0, 0.0, 1.0, 0.01},
+        };
+        for (std::size_t i = 0; i < controls.size(); ++i) {
+            const auto* name = parameters[i + 1].first;
+            const auto [value, min, max, increment] = controls[i];
+            for (const auto& [property, expected_value] : std::array{
+                     std::pair{kOfxParamPropDefault, value},
+                     std::pair{kOfxParamPropMin, min},
+                     std::pair{kOfxParamPropMax, max},
+                     std::pair{kOfxParamPropDisplayMin, min},
+                     std::pair{kOfxParamPropDisplayMax, max},
+                     std::pair{kOfxParamPropIncrement, increment},
+                 }) {
+                const auto setter = [&](const auto& entry) {
+                    return entry.operation == "set_double" && entry.target == name &&
+                           entry.property == property && entry.index == 0;
+                };
+                const auto entry = std::ranges::find_if(host.calls(), setter);
+                require(entry != host.calls().end() && entry->status == kOfxStatOK &&
+                            entry->values == std::vector<ofx_test::InstanceValue>{expected_value} &&
+                            std::ranges::count_if(host.calls(), setter) == 1,
+                        (std::string(name) + " unexpected descriptor property " + property).c_str());
+            }
+        }
         auto* effect = host.create_effect();
         {
             JuicerTests::CaseEvent test(kFilmCaller, "create");

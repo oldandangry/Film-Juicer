@@ -9,7 +9,12 @@ use super::super::{
     density::{self, portra},
 };
 
-pub const DEFAULT_CHROMA: f64 = 1.0;
+pub const AMOUNT_EV_RANGE: std::ops::RangeInclusive<f32> = -3.0..=3.0;
+pub const TEXEL_PITCH_UM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=4.0;
+pub const CHROMA_FRACTION_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+pub const DEFAULT_AMOUNT_EV: f32 = 0.0;
+pub const DEFAULT_TEXEL_PITCH_UM: f32 = 1.0;
+pub const DEFAULT_CHROMA_FRACTION: f32 = 1.0;
 
 #[derive(Clone, Copy)]
 pub struct Controls {
@@ -226,9 +231,9 @@ impl Controls {
         stock == "kodak_portra_400"
             && super::super::input::film_format_mm(f64::from(long_edge_mm)).is_ok()
             && matches!(route, ScanRoute::NegativeDirect | ScanRoute::NegativePrint)
-            && (-3.0..=3.0).contains(&self.amount_ev)
-            && (0.5..=4.0).contains(&self.texel_pitch_um)
-            && (0.0..=1.0).contains(&self.chroma_fraction)
+            && AMOUNT_EV_RANGE.contains(&self.amount_ev)
+            && TEXEL_PITCH_UM_RANGE.contains(&self.texel_pitch_um)
+            && CHROMA_FRACTION_RANGE.contains(&self.chroma_fraction)
     }
 
     pub(crate) fn footprint(self, long_edge_mm: f32, long_edge_px: i32) -> f32 {
@@ -332,7 +337,55 @@ impl Recipe {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, Controls, ProxyGrid, Raster, Sampling, Selection};
+    use super::{
+        Axis, Controls, DEFAULT_AMOUNT_EV, DEFAULT_CHROMA_FRACTION, DEFAULT_TEXEL_PITCH_UM,
+        ProxyGrid, Raster, Sampling, ScanRoute, Selection,
+    };
+
+    #[test]
+    fn authored_controls_admit_only_finite_values_in_the_inclusive_ranges() {
+        let defaults = Controls {
+            amount_ev: DEFAULT_AMOUNT_EV,
+            texel_pitch_um: DEFAULT_TEXEL_PITCH_UM,
+            chroma_fraction: DEFAULT_CHROMA_FRACTION,
+        };
+        let valid = |controls: Controls| {
+            controls.valid("kodak_portra_400", 36.0, ScanRoute::NegativeDirect)
+        };
+        assert!(valid(defaults));
+        type SetControl = fn(Controls, f32) -> Controls;
+        let controls: [(SetControl, f32, f32); 3] = [
+            (|c, amount_ev| Controls { amount_ev, ..c }, -3.0, 3.0),
+            (
+                |c, texel_pitch_um| Controls {
+                    texel_pitch_um,
+                    ..c
+                },
+                0.5,
+                4.0,
+            ),
+            (
+                |c, chroma_fraction| Controls {
+                    chroma_fraction,
+                    ..c
+                },
+                0.0,
+                1.0,
+            ),
+        ];
+        for (with, min, max) in controls {
+            assert!(valid(with(defaults, min)) && valid(with(defaults, max)));
+            for outside in [
+                min.next_down(),
+                max.next_up(),
+                f32::NAN,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+            ] {
+                assert!(!valid(with(defaults, outside)));
+            }
+        }
+    }
 
     fn realized_axis_edges(grid: ProxyGrid, axis: usize) -> Vec<f64> {
         (0..=grid.size[axis])

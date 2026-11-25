@@ -4,6 +4,7 @@
 
 use std::ffi::CStr;
 
+use film_juicer_core::film::grain::film_v1;
 use film_juicer_core::optics::{HALATION_MAX_AUTHORED, HALATION_MAX_BOUNCES, HalationShape};
 use film_juicer_core::optics::highlight_boost;
 
@@ -894,21 +895,34 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
         p.set_string(c"OfxParamPropDefault", 0, c"current")?;
         p.set_string(c"OfxParamPropParent", 0, c"GrainGroup")?;
         p.set_int(c"OfxParamPropEvaluateOnChange", 0, 1)?;
-        for (name, label, default, min, max, increment) in [
-            (c"FilmGrainAmountEv", c"Amount (EV)", 0.0, -3.0, 3.0, 0.1),
-            (c"FilmGrainTexelPitchUm", c"Size (µm)", 1.0, 0.5, 4.0, 0.01),
+        for (name, label, default, range, increment) in [
+            (
+                c"FilmGrainAmountEv",
+                c"Amount (EV)",
+                film_v1::DEFAULT_AMOUNT_EV,
+                film_v1::AMOUNT_EV_RANGE,
+                0.1,
+            ),
+            (
+                c"FilmGrainTexelPitchUm",
+                c"Size (µm)",
+                film_v1::DEFAULT_TEXEL_PITCH_UM,
+                film_v1::TEXEL_PITCH_UM_RANGE,
+                0.01,
+            ),
             (
                 c"FilmGrainChromaFraction",
                 c"Colour",
-                film_juicer_core::film::grain::film_v1::DEFAULT_CHROMA,
-                0.0,
-                1.0,
+                film_v1::DEFAULT_CHROMA_FRACTION,
+                film_v1::CHROMA_FRACTION_RANGE,
                 0.01,
             ),
         ] {
             let p = parameters.define(c"OfxParamTypeDouble", name)?;
             p.set_string(c"OfxPropLabel", 0, label)?;
-            p.set_double(c"OfxParamPropDefault", 0, default)?;
+            let min = f64::from(*range.start());
+            let max = f64::from(*range.end());
+            p.set_double(c"OfxParamPropDefault", 0, f64::from(default))?;
             p.set_double(c"OfxParamPropMin", 0, min)?;
             p.set_double(c"OfxParamPropMax", 0, max)?;
             p.set_double(c"OfxParamPropDisplayMin", 0, min)?;

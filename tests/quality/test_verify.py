@@ -75,6 +75,35 @@ class DevelopmentSelectionTests(unittest.TestCase):
 class PublicCliTests(unittest.TestCase):
     """The CLI delegates to fresh operation owners without reading old receipts."""
 
+    def test_portra_request_requires_the_cuda_free_core_owner(self):
+        command = [
+            "verify.py",
+            "development",
+            "--preset",
+            "linux-debug",
+            "--cuda-free",
+            "--runtime",
+            "host",
+            "--tests",
+            "Rust.Core",
+            "--portra-certificate",
+            "certificate.json",
+            "--portra-flags",
+            "flags.u32le",
+        ]
+        with patch.object(verify, "development", return_value=0) as development:
+            with patch.object(sys, "argv", command):
+                self.assertEqual(verify.main(), 0)
+            args = development.call_args.args[0]
+            self.assertEqual(args.portra_certificate, Path("certificate.json"))
+            self.assertEqual(args.portra_flags, Path("flags.u32le"))
+            command.remove("--cuda-free")
+            development.reset_mock()
+            with patch.object(sys, "argv", command), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    verify.main()
+            development.assert_not_called()
+
     def test_prepare_dispatches_targets_and_explicit_testing_mode(self):
         with (
             patch.object(
