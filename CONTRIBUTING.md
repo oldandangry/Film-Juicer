@@ -140,190 +140,54 @@ consequence. Do not request equivalent renames or unrelated cleanup. Automated
 checks provide mechanical evidence; they do not establish contextual review.
 Within the required response format, briefly state whether contextual review was
 completed for the requested scope and identify any limits, even when no findings
-were found. Do not invent findings to demonstrate coverage. Migration handoffs
-retain this assessment as their G-Names and contextual G-Quality result.
+were found. Do not invent findings to demonstrate coverage.
 
 ## Required checks
 
-The test guide's [validation cadence](tests/README.md#validation-cadence) is the
-common rule for selecting checks during editing, family cutover and broader
-integration/release checkpoints. Documentation-only work needs whitespace,
-link/reference checks and contextual review. A focused handoff does not require
-complete aggregate qualification. The commands below describe available checks;
-they are not a list to run for every change.
+### Cleanup workflow on testing
 
-Supporting-code checks need Python 3.13 and the pinned tools installed explicitly:
+The product baseline for cleanup is `archive/spectral-cutover-2026-11`.
+Each cleanup PR is one commit. Run its checks on that commit and land it on
+`testing` before starting the next PR.
 
-```sh
-python -m pip install -r scripts/quality-requirements.txt
-python -m unittest discover -s tests/quality -p test_tooling_lint.py -v
-python scripts/check-tooling.py
-```
+Use CMake presets for the native build, shipping Rust archive and staged
+bundle. Run native cases with CTest and Rust cases directly with locked
+workspace nextest and Cargo doctests in Debug and Release. Run Rust tests
+serially until their shared resources support parallel runs. The first cleanup
+PR must make its testing-enabled default build produce the registered tests,
+staged modules and resources. It introduces the 300-second per-test CTest limit and
+publishes executable commands in the [build](docs/building.md) and
+[test](tests/README.md) guides in the same change. Until that lands, the
+checkout and hosted jobs still run the tagged product configuration.
+The required CI status names switch once the replacement jobs report on
+that PR, before it merges.
 
-The command checks maintained Python and shell under `scripts/` and `tests/`,
-plus GitHub workflows. It includes eligible untracked files and excludes fixture,
-generated, vendor, private and output trees. Ruff lints with `E4,E7,E9,F` and
-checks formatting with `ruff format --check` (`ruff.toml`: 120 columns, LF);
-ShellCheck resolves sourced scripts; actionlint uses the selected ShellCheck with
-Pyflakes disabled. It neither modifies source nor installs tools, and missing/wrong
-tools, lint or format failures or input changes fail the command. To apply Python
-formatting, run the pinned `ruff format` from the repository root; `ruff.toml`
-limits its discovery to the same maintained scope, so it never rewrites the
-hash-checked Python resources under `Resources/`. The independent Linux lint job
-requires no CUDA setup. Its unit tests also run as `Quality.ToolingLint` in CTest;
-ordinary CTest does not require the lint executables. Private workbench checks
-are separate and are never inputs to public CI. Lints complement contextual review.
+Use standard runner results for cleanup. A failed case or an empty requested
+selection fails its job. Migration qualification groups, command/row receipts,
+offline collection and receipt closeout apply to the tagged baseline. The
+old `verify.py` and `check-quality.py` entry points and ordinary `TIMEOUT 0`
+rule are superseded for cleanup. The tag preserves the [migration commands
+and their original scope](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/CONTRIBUTING.md#required-checks).
 
-Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
-components. Native formatting and tidy use LLVM 22; on Windows the qualified
-tools are under
-`C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
-`scripts/format_touched_files.sh [file ...]` applies that clang-format to changed
-C++/CUDA files from Git Bash or WSL; `--check` verifies without modifying them.
-Preserve `.clang-format`, pinned rustfmt, configured Clippy/tidy and compiler
-warnings-as-errors; do not weaken checks or language standards to land a change.
-Use the shared verifier for native preparation, focused development checks and
-qualification. Keep the existing preset checkout path and cache; configure and
-build through the native owner. A `prepare` command configures and builds only its
-selected target or file closure and does not run tests or create a qualification
-result:
+### Selecting checks
 
-```sh
-python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests --testing ON
-python -B scripts/verify.py prepare --preset linux-release --clean-first \
-  --production-contract --targets juicer JuicerProductionPreparedRenderProbe --testing OFF
-```
-
-`development` selects files, tests or targets for a focused run. It can specify
-`--runtime host`, `gpu` or `all`, and an optional `--run-id`:
-
-```sh
-python -B scripts/verify.py development --preset linux-debug \
-  --files src/ScanRoute.cpp --runtime host --run-id route-change
-```
-
-`qualification` runs named CTest relevance groups on the selected preset. The
-native owner builds the selected closure before tests, compares source inputs at
-entry and exit, supervises the exact test functions/rows/operations, and publishes
-a flat result only after descendant drainage. `--selection` accepts `product`,
-`boundary`, `tooling` and `corpus`; `--runtime` accepts `host`, `gpu` or `all`.
-`--build-dir` selects an already configured standalone tooling tree. `--label`
-accepts a CTest regex and makes the result focused; it cannot establish a complete
-selection.
-
-The owner-authorized Step 6 workflow uses `--clean-first` within the standard
-preset owner for Debug and the Release OFF closure; Release ON reuses the clean
-production objects. Run product/boundary host selections in all four presets, tooling
-once per native Debug OS, and corpus once in Linux Debug. Run both native Release
-OFF production-contract commands before restoring either Release cache to ON.
-The available RTX 4080 is single-GPU only: run the affected GPU registrations as
-explicit focused checks. By owner decision on 5 November 2026,
-`Ffi.Gpu.CudaInspect.MultiDevice` is optional hardware coverage outside the
-single-GPU target's acceptance requirements. Preserve its unexecuted status;
-it is not an acceptance blocker or deferred hardware-acquisition requirement.
-The complete command set, membership and output limits are in
-[the test guide](tests/README.md#owner-authorized-step-6-final-qualification).
-These host and focused GPU results do not claim a full all-runtime checkpoint or
-Resolve acceptance.
-
-```sh
-python -B scripts/verify.py qualification --preset linux-debug \
-  --reason 'Boundary change' --selection boundary --runtime host --run-id boundary-change
-python -B scripts/verify.py qualification --preset linux-debug \
-  --build-dir out/build/tooling-linux --reason 'Tooling checks' \
-  --selection tooling --runtime host --run-id tooling-check
-```
-
-Only actual GPU work holds the shared physical-device lease. Results are written
-to `out/validation/<preset>/results/<run-id>/` and can be inspected offline.
-`collect-qualification --bundles <paths...> --output <path>` accepts optional
-`--selection`, `--runtime` and `--presets`; it validates one complete fresh
-checkpoint per requested preset and does not assemble focused results into a pass.
-
-The supported tooling environment uses Python 3.13, Rust/Cargo 1.98.1,
-rustfmt/Clippy from that toolchain, cargo-nextest 0.9.143, and the native compiler
-and CUDA 13.2 toolchain for the selected platform. CMake/CTest remains the product
-build/test orchestrator. With `BUILD_TESTING=ON`, CMake builds `Rust.Core` and
-`Rust.Bridge` test binaries and nextest metadata through the configured target;
-quality commands do not invoke nested `cargo test` builds. Compiler boundary
-probes run from their existing CTest registrations.
-
-Tests and Rust test metadata are excluded from the default product build;
-the verifier builds their selected dependencies. Use `verify.py development
---preset <preset> --cuda-free --tests ...` for the CUDA-independent Rust,
-tooling and native ABI/owner/value targets listed in tests/README.md. Its small
-CMake configuration shares the preset's Cargo artifacts and build owner, while
-product-linked host tests retain their CUDA compilation requirements. CUDA-free
-results stay focused and cannot supply a full product checkpoint.
-
-The shipping Rust archive always uses production features under the preset's
-`cargo/production`; facade and fault consumers link the separate `cargo/test-support`
-archive. Native objects remain shared. Ordinary test runs do not switch the
-shipping feature set. Inspect both final link assignments and production symbols
-with `Ffi.Host.BuildArtifacts`, and execute the production prepared-render probe
-with its GPU registration. The complete native Release OFF closures and installed
-production checks remain required at their designated qualification checkpoints.
-
-The native quality entry is `scripts/check-quality.py`. For example:
-
-```sh
-python -B scripts/check-quality.py --base <accepted-parent> --preset linux-debug
-python -B scripts/check-quality.py --files Cargo.toml --preset linux-release
-```
-
-Quality commands use the same native process owner and write fresh logs and
-diagnostics below `out/validation/<preset>/results/quality-<id>/`. They run
-formatting, Clippy and configured native/CUDA analysis without installed-tool
-admission or reuse of older results. Preserve the full compiler database and
-configured include variants. CUDA analysis uses Clang's CUDA frontend with CUDA
-13.2, C++20, `sm_75`/`compute_75`, GCC 13 on Linux and the active Visual Studio
-18 environment on Windows. The existing narrow CUDA parser adaptations and
-warnings-as-errors remain enabled.
-
-After review and acceptance, use `scripts/verify.py closeout --preset <preset>
---run <run-id> --accept --review closed` on that native platform. Explicit review,
-failure and reproduction holds serialize with the preset owner. Unheld successful
-optional diagnostics become eligible seven days after closeout; the next native
-invocation or a plain `closeout --preset <preset>` visits at most 32 direct runs.
-Required results, candidate identity and scientific artifacts remain. See
-[result retention](tests/README.md#validation-cadence) for commands and failure policy.
-
-`Quality.RustNaming` checks current crate naming policy using temporary copies of
-the real manifests and reports rejected identifiers by diagnostic code/location.
-`Quality.RustBoundaries` checks workspace dependencies, valid consumer compilation,
-borrow expiry, private profile storage and unsafe-policy boundaries. Positive and
-negative cases remain in their owning tests; do not add product APIs just for a
-compiler fixture. Cargo metadata is read from the command output and source
-workspace.
-
-The shared tooling CMake entry registers 14 Debug tests: the three native result
-groups; Dispatcher, ToolingLint, Execution, BuildEvidence, BuildRegistration,
-Verify and Checkpoint; CTest Report and Repetition; the Rust build contract; and the offline OFX measurement report tests.
-Ordinary host/GPU CTest registrations use explicit `TIMEOUT 0`, and the native
-verifier dispatches CTest with `timeout=None`. Live execution rejects finite,
-missing or malformed ordinary timeouts. Historical result readers still accept
-valid finite positive GPU timeouts as well as zero, with the physical-device lock
-and other evidence checks intact. Explicit bounded child fault controls and hosted
-job limits remain. Windows CI runs core, BuildEvidence and Checkpoint as separate
-label-selected shards. Each shard must succeed; a focused label result does not
-establish full tooling membership.
-
-CI runs cumulative Debug native/CUDA/Rust analysis and matching Release Rust quality
-inside their native product jobs, using their prepared dependencies and compiler
-databases. Product/boundary host selections run in Debug and Release on each OS;
-Linux Debug also runs corpus checks. Tooling and supporting-code lint stay
-independent. Required host statuses demand success from both product/quality jobs
-and tooling; no duplicate analysis preparation job or whole-cache upload is used.
-The shared host result does not establish GPU acceptance, the Release testing-OFF artifact
-contract, shipping-feature isolation, or installed Resolve behavior. No OFF probes
-or full platform matrix are part of this workflow cutover. The contributor guide
-does not change scientific fixtures, numerical expectations, external-reference
-provenance, the Release OFF contract, or frozen R4/I8 meanings.
-
-For each change, record the target, selected groups, expected membership and
-relevant native/CUDA/Rust compilation contexts in the existing handoff. Run the
-smallest owning check while editing, retain actual failures and diagnostics, and
-reserve complete affected-family evidence for its named checkpoint. A focused
-result is not full qualification. Documentation-only work needs whitespace,
-link/reference review and contextual review; it does not require native builds or
-product tests solely because prose changed.
+- While editing, exercise the changed behavior and its nearest consumer. At
+  cutover, run the affected host, Rust and GPU checks on Windows and WSL in
+  the applicable profiles. Run GPU checks on the shared device one OS at a
+  time. `host` needs no GPU at runtime. `gpu` requires one. Multi-device
+  coverage is optional on the single-GPU system.
+- For ABI, ownership or package changes, check both native Release packages
+  with testing off and the applicable testing-on consumers. Compare bindings,
+  linked shipping inputs, exports, resources, lifetimes and typed failures at
+  the boundary that changed. Test features must stay isolated from shipping.
+- Preserve pinned rustfmt, Clippy, clang-format, clang-tidy, Ruff and compiler
+  warnings-as-errors. Analyze native headers through their real translation
+  units and configurations. Review changes to binding inputs against generated
+  output on both platforms. See [binding maintenance](tests/ffi/README.md#binding-maintenance).
+- Keep scientific expectations independent and checked-in fixtures immutable
+  during tests. Report actual selections, outcomes and material limits.
+  Automated results cover their exercised behavior. Resolve installation,
+  visual acceptance and live hardware evidence retain their own scopes.
+- For documentation-only changes, check whitespace, links, referenced
+  commands and meaning in context. Executable changes also need their owning
+  checks.

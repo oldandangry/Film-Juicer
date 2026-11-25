@@ -1,5 +1,10 @@
 # Foreign ABI evidence
 
+The ABI declarations, probes and binding procedure below describe their
+current consumers. For cleanup, the [contributor checks](../../CONTRIBUTING.md#required-checks)
+supersede the migration verifier, receipt and timeout instructions. The
+tagged baseline retains those commands for reproducing its results.
+
 `Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
 C++20 consumers. It compares 615 size, alignment, offset, tag and flag facts,
 including the opaque owner's pointer and the nullable abort callback. Both

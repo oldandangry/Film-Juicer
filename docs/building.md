@@ -1,5 +1,10 @@
 # Building Film-Juicer
 
+The preset and toolchain details below apply to the product build. For cleanup
+on `testing`, the [contributor checks](../CONTRIBUTING.md#required-checks)
+supersede the verifier commands and zero-timeout rules in this guide. The
+first cleanup PR publishes the direct commands with its build-graph changes.
+
 Open this folder directly in Visual Studio 2026 and select a CMake preset.
 The shared build uses Ninja, Rust 1.98.1, C++20 and CUDA C++20 with CUDA
 Toolkit 13.2. CMake invokes Cargo for the two-crate Rust workspace and links the
@@ -164,46 +169,15 @@ saved grain-model value.
 
 ## Public test suite
 
-Public tests are organized by domain under `tests/` and use CTest as the
-scheduler. Test binaries and Rust test metadata are excluded from the default
-product build. Use the maintained verifier to configure `BUILD_TESTING=ON`, build
-the selected dependencies and run a focused check, for example:
+CTest registers native tests by domain. The `host` label needs no GPU at
+runtime, although a product-linked build requires CUDA 13.2. The `gpu` label
+requires a supported driver and device. The `reference` label identifies
+fixture provenance. Python tests use Python 3.13 and `tests/requirements.txt`.
 
-```sh
-python -B scripts/verify.py development --preset linux-release --tests Ofx.Host.Module --runtime host
-```
-
-Replace the preset name for Windows or Debug. Use `qualification` with an explicit
-selection and reason at a named broader checkpoint; see
-[validation cadence](../tests/README.md#validation-cadence) and
-[shared native verification](../tests/README.md#shared-native-verification).
-Direct CTest expects all selected binaries and metadata to be prepared first.
-The `host` label needs no NVIDIA driver/device at runtime, but product-linked
-configuration and compilation still require CUDA 13.2. The `gpu` label requires
-a supported driver/device; `reference` describes fixture authority. Python tests
-require Python 3.13 and `tests/requirements.txt`.
-
-For CUDA-independent Rust model checks, use the maintained `tests/host` entry:
-
-```sh
-python -B scripts/verify.py development --preset linux-debug --cuda-free --tests Rust.Core
-```
-
-This builds/runs the selected core registration without CUDA discovery, sharing
-the preset's Cargo artifacts and native build owner. It is focused test-support
-core evidence, not production-feature, GPU or installed-host qualification. The
-[test guide](../tests/README.md#build-and-run) lists the other supported CUDA-free
-targets and distinguishes product-linked host tests.
-
-Ordinary build, analysis, compiler-probe and CTest execution has no elapsed kill
-deadline (`timeout=None`, ordinary CTest `TIMEOUT 0`). Explicit fault-control
-bounds and hosted job limits remain. Quiet output alone is not a hang; follow
-the native owner's cancellation and descendant-drainage rules.
-
-See [the public test guide](../tests/README.md) for environment setup, domain
-selection, fixture policy, diagnostics, benchmarks, and reference maintenance.
-Fast math is forbidden for correctness tests. Automated results do not replace
-Resolve render and lifecycle acceptance when a change touches that boundary.
+See the [public test guide](../tests/README.md) for fixture policy and
+reference maintenance. The [tagged build guide](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/docs/building.md#public-test-suite)
+retains the original verifier examples. Fast math is forbidden for
+correctness tests. Resolve render and lifecycle acceptance remain separate.
 
 When qualifying a native Linux Resolve environment, run the focused OFX
 host-compatibility probe both normally and with Resolve's `libProResRAW.so`

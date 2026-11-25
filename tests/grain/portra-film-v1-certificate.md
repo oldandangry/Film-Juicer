@@ -77,6 +77,11 @@ fields whose adjacent correlation follows the table's zero-variance branch.
 
 ## Rechecking the domain
 
+The runner and receipt instructions in this section reproduce the tagged
+Task 8 certificate. Cleanup uses the [contributor checks](../../CONTRIBUTING.md#required-checks).
+The mathematical domain, parent ranges, exact inputs and accepted numerical
+bounds continue to define the certificate.
+
 Routine `Rust.Core` runs the placement and periodic bank checks and the focused
 calibration intervals. Supply a maintenance request through the CUDA-free
 Linux Debug host selection.

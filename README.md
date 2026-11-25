@@ -357,10 +357,9 @@ produce the complete bundle and matching compressed package together under
 The maintained public CMake/CTest suite, Python 3.13 setup, host/GPU labels,
 fixture boundaries, and exact test commands are documented in
 [tests/README.md](tests/README.md). Tests are opt-in with
-`-DBUILD_TESTING=ON`; normal plug-in builds keep testing off by default. Test
-targets and Rust test metadata are excluded from the default build; use the
-test guide's selected `verify.py` commands to prepare and run their dependencies.
-CUDA-independent model checks use its `--cuda-free` entry.
+`-DBUILD_TESTING=ON`; normal plug-in builds keep testing off by default. The tagged product build excludes test
+targets and Rust test metadata from the default build. For cleanup on
+`testing`, follow the [contributor checks](CONTRIBUTING.md#required-checks).
 
 ## Project status
 

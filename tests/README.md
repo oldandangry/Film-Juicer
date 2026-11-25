@@ -1,5 +1,10 @@
 # Film-Juicer public tests
 
+For cleanup on `testing`, follow the [contributor checks](../CONTRIBUTING.md#required-checks).
+The shared verifier, qualification groups, receipt collection and zero-timeout
+instructions below describe the tagged product workflow. Cleanup PR 1 will
+publish the direct build and test commands alongside their registrations.
+
 The public suite is organized by product domain and has one normal scheduler:
 CTest. C++ tests use ordinary executables and selective GoogleTest discovery;
 Python tests use `unittest`. Reference generation and benchmarks are explicit
@@ -184,6 +189,9 @@ boundary in six cases. It is a product-linked host registration; see the
 [FFI inventory and maintenance guide](ffi/README.md#ofx-c-abi-evidence).
 
 ## Validation cadence
+
+The following cadence and receipt rules belong to the tagged migration checkpoint.
+For cleanup, use the [contributor checks](../CONTRIBUTING.md#required-checks).
 
 The [OFX fixture guide](ofx/README.md) describes the host and GPU callback
 registrations, their independent C++ consumers and their Rust archive roles.
@@ -461,6 +469,9 @@ cmake --preset linux-debug -DBUILD_TESTING=ON \
 
 ## Build and run
 
+The commands in this section run the baseline configuration.
+For cleanup, use the [contributor checks](../CONTRIBUTING.md#required-checks).
+
 Linux Debug:
 
 ```sh
@@ -691,6 +702,9 @@ not establish hosted delivery; verify the uploaded artifact after download from
 an authorized CI run.
 
 ## Shared native verification
+
+This section documents the tagged verifier and its retained results.
+For cleanup, use the [contributor checks](../CONTRIBUTING.md#required-checks).
 
 Use the shared verifier for build preparation, focused development checks and
 named qualification. Development and qualification create fresh native results

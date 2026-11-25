@@ -1,5 +1,10 @@
 # Benchmarks
 
+The verifier-based preparation and replay commands below describe the tagged
+measurement campaigns. Cleanup uses the [contributor checks](../../CONTRIBUTING.md#required-checks).
+Benchmarks remain explicit measurements with their own inputs and comparison
+criteria.
+
 Benchmarks are explicit measurements, not CTest pass/fail checks. The direct
 scatter/halation command below needs its Release target prepared first;
 `highlight-check` prepares its production check through the shared verifier. Record

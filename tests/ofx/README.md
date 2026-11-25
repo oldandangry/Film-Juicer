@@ -1,5 +1,10 @@
 # OFX host fixtures
 
+For cleanup, use the [contributor checks](../../CONTRIBUTING.md#required-checks).
+Verifier launchers, receipt collection and replay commands below describe
+the tagged OFX evidence. Fixture inputs, callback assertions and host
+lifetime requirements retain their documented scope.
+
 `Ofx.Host.Module` calls the real default-feature Rust descriptor through the
 small native discovery shim in `native/ofx_exports.cpp` and
 `native/juicer_ofx_api.h`. Rust owns OFX callbacks and lifecycle; native CUDA Root
