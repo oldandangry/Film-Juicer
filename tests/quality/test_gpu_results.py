@@ -658,7 +658,7 @@ class GpuResultTests(unittest.TestCase):
             script = r"""
 import collections, json, pathlib, runpy, sys
 root = pathlib.Path(sys.argv[1]).resolve()
-import argparse, datetime, hashlib, stat, time, tomllib, xml.etree.ElementTree, pkgutil, __future__
+import argparse, datetime, hashlib, stat, struct, time, tomllib, xml.etree.ElementTree, pkgutil, __future__
 argparse.ArgumentParser()
 opened = collections.Counter()
 def audit(event, args):
