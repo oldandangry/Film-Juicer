@@ -22,8 +22,8 @@ pub(super) fn film_grain(
     let Some(recipe) = state.film_grain() else {
         return Ok(None);
     };
-    let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
-    if recipe.raster().long_edge_px != full.width.max(full.height) {
+    let rendered_extent = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
+    if recipe.raster().rendered_long_edge_px != rendered_extent.width.max(rendered_extent.height) {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
             "Film v1 frame geometry does not match its prepared density bounds",
@@ -44,7 +44,7 @@ pub(super) fn film_grain(
         }
     });
     let sums = recipe.bank().sums();
-    let (sampling, calibrated_border) = match recipe.sampling() {
+    let (aperture_grid, calibrated_border) = match recipe.sampling() {
         Sampling::Calibrated(border) => (None, border),
         Sampling::Integrated(grid) => (Some(grid), [0; 4]),
     };
@@ -55,19 +55,17 @@ pub(super) fn film_grain(
             count: sums.len(),
         },
         records,
-        origin_x: 0,
-        origin_y: 0,
         seed,
         next_seed,
-        pitch: recipe.footprint(),
+        pitch: recipe.rendered_footprint_texels(),
         temporal_fraction: fraction,
         gain: recipe.gain(),
         chroma_fraction: recipe.chroma_fraction(),
         sample_pitch: table.footprint,
         calibrated_border,
-        sample_extent: sampling.map_or([0.0; 2], |grid| grid.extent),
-        sample_step: sampling.map_or([0.0; 2], |grid| grid.step),
-        sample_origin: sampling.map_or([0.0; 2], |grid| grid.origin),
+        sample_extent: aperture_grid.map_or([0.0; 2], |grid| grid.extent),
+        sample_step: aperture_grid.map_or([0.0; 2], |grid| grid.step),
+        sample_origin: aperture_grid.map_or([0.0; 2], |grid| grid.origin),
     }))
 }
 fn film_seed_pair(time: f64, session: u64, clip: u64) -> Result<(u32, u32, f32), edge::Failure> {

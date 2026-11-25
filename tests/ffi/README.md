@@ -280,6 +280,8 @@ They remain visible in generation logs. The emitted allowlist contains complete
 named C fields and no opaque storage replacement except the intentional
 incomplete `FjCuda` handle. C/C++/Rust field evidence and byte-for-byte native
 regeneration qualify this output; these checks do not prove render lifetime.
+The CUDA inventory contains 624 facts. It pins the 752-byte `FjFilmGrain`
+layout, including the signed double `sample_origin` at byte 736.
 
 For OFX, add `--api ofx` to the same native command. The wrapper includes
 `ofxCore.h`, `ofxProperty.h`, `ofxParam.h`, `ofxImageEffect.h`, `ofxMessage.h`,

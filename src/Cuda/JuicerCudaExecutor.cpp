@@ -12,6 +12,7 @@
 #include <string>
 #include <limits>
 #include <optional>
+#include <type_traits>
 #include <variant>
 
 #include "FilmEffectsFrameDescriptors.h"
@@ -1429,20 +1430,24 @@ namespace {
         if (!grain.filmBank) {
             errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: missing frame bank" : "print Film grain binding failed: missing frame bank"}, cudaErrorInvalidValue);
         }
-        const bool proxy = input.sample_step[0] != 0.0 || input.sample_step[1] != 0.0;
-        grain.filmTables.footprint = proxy ? input.sample_pitch : input.pitch;
-        for (int record = 0; record < 3; ++record) {
+        using namespace JuicerCuda::FilmGrain;
+        static_assert(std::extent_v<decltype(FjFilmGrain::records)> == kRecords);
+        static_assert(std::extent_v<decltype(FjFilmGrainRecord::mean_light)> == kLevels);
+        static_assert(std::extent_v<decltype(FjFilmGrainRecord::mean_density)> == kLevels);
+        static_assert(std::extent_v<decltype(FjFilmGrainRecord::correlation)> == kLevels);
+        grain.filmTables.footprint = input.sample_pitch;
+        for (int record = 0; record < kRecords; ++record) {
             const auto& src = input.records[record];
             auto& dst = grain.filmTables.records[record];
             dst.minimumGross = src.minimum_gross;
             dst.maximumGross = src.maximum_gross;
             dst.offset = src.offset;
-            for (int level = 0; level < 17; ++level)
+            for (int level = 0; level < kLevels; ++level)
                 dst.levels[level] = {src.mean_light[level], src.mean_density[level], src.correlation[level]};
         }
         grain.filmFrame.pitch = input.pitch;
-        grain.filmFrame.originX = input.origin_x;
-        grain.filmFrame.originY = input.origin_y;
+        grain.filmFrame.originX = 0;
+        grain.filmFrame.originY = 0;
         grain.filmFrame.width = window.x2 - window.x1;
         grain.filmFrame.height = window.y2 - window.y1;
         grain.filmFrame.stride = grain.filmFrame.width;
@@ -1451,13 +1456,14 @@ namespace {
         grain.filmFrame.temporalFraction = input.temporal_fraction;
         grain.filmFrame.chromaFraction = input.chroma_fraction;
         std::copy_n(input.calibrated_border, 4, grain.filmFrame.calibratedBorder);
-        if (proxy) {
+        // Raw admission established either two zero steps or two positive steps.
+        if (input.sample_step[0] > 0.0) {
             grain.filmFrame.proxyWorkspace = preparedFrame.film_proxy_workspace();
             std::copy_n(input.sample_extent, 2, grain.filmFrame.proxy.extent);
             std::copy_n(input.sample_step, 2, grain.filmFrame.proxy.step);
             std::copy_n(input.sample_origin, 2, grain.filmFrame.proxy.origin);
         }
-        std::fill_n(grain.filmFrame.amounts, 3, input.gain);
+        std::fill_n(grain.filmFrame.amounts, kRecords, input.gain);
     }
 
     void bind_grain(

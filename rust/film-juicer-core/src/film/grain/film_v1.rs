@@ -47,7 +47,7 @@ pub struct Recipe {
     bank: Arc<PortraGrainBank>,
     table: Arc<PortraGrainTable>,
     raster: Raster,
-    footprint: f32,
+    rendered_footprint_texels: f32,
     sampling: Sampling,
     gain: f32,
     chroma_fraction: f32,
@@ -56,15 +56,20 @@ pub struct Recipe {
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Raster {
-    pub long_edge_px: i32,
-    pub full_grid: Option<ProxyGrid>,
+    /// Complete image long edge at the current render scale.
+    pub rendered_long_edge_px: i32,
+    /// Full grid considered during sampling selection and publication reuse.
+    pub candidate_full_grid: Option<ProxyGrid>,
 }
 
 /// Rendered pixel edges expressed on a sampling lattice anchored to Full.
 #[derive(Clone, Copy, PartialEq)]
 pub struct ProxyGrid {
+    /// Full image extent, in Full cells.
     pub extent: [f64; 2],
+    /// Full cells per rendered pixel.
     pub step: [f64; 2],
+    /// Signed first rendered edge, in Full cells relative to the Full image.
     pub origin: [f64; 2],
     /// Admitted rendered dimensions, including any empty border.
     pub size: [i32; 2],
@@ -180,9 +185,15 @@ impl Axis {
 
 impl Raster {
     pub(crate) fn sampling(self, controls: Controls, long_edge_mm: f32) -> (f32, f32, Sampling) {
-        let Some(grid) = self.full_grid else {
-            let pitch = controls.footprint(long_edge_mm, self.long_edge_px);
-            return (pitch, pitch, Sampling::Calibrated([0; 4]));
+        let Some(grid) = self.candidate_full_grid else {
+            let rendered_texels = controls
+                .footprint_texels(long_edge_mm, f64::from(self.rendered_long_edge_px))
+                as f32;
+            return (
+                rendered_texels,
+                rendered_texels,
+                Sampling::Calibrated([0; 4]),
+            );
         };
         let axes: [Axis; 2] = std::array::from_fn(|i| Axis {
             extent: grid.extent[i],
@@ -196,13 +207,15 @@ impl Raster {
             grid.size[0] - i32::from(right),
             grid.size[1] - i32::from(bottom),
         ];
-        let footprint =
-            controls.footprint(long_edge_mm, (end[0] - first[0]).max(end[1] - first[1]));
-        let full_pitch = f64::from(long_edge_mm) * 1000.0
-            / grid.extent[0].max(grid.extent[1])
-            / f64::from(controls.texel_pitch_um);
+        let supported_long_edge_px = (end[0] - first[0]).max(end[1] - first[1]);
+        let rendered_texels =
+            controls.footprint_texels(long_edge_mm, f64::from(supported_long_edge_px)) as f32;
+        let full_cell_texels =
+            controls.footprint_texels(long_edge_mm, grid.extent[0].max(grid.extent[1]));
         let widest: [f64; 2] = std::array::from_fn(|i| axes[i].widest_interval(first[i], end[i]));
-        if full_pitch * widest[0].max(widest[1]) <= f64::from(portra::CALIBRATED_MAX_FOOTPRINT) {
+        if full_cell_texels * widest[0].max(widest[1])
+            <= f64::from(portra::CALIBRATED_MAX_FOOTPRINT)
+        {
             let [[x_min, x_max], [y_min, y_max]] =
                 std::array::from_fn(|i| axes[i].spacing_range(first[i], end[i], widest[i]));
             let square = x_min.max(y_min) <= x_max.min(y_max) || {
@@ -216,13 +229,17 @@ impl Raster {
             };
             if square {
                 return (
-                    footprint,
-                    footprint,
+                    rendered_texels,
+                    rendered_texels,
                     Sampling::Calibrated([left, top, right, bottom]),
                 );
             }
         }
-        (footprint, full_pitch as f32, Sampling::Integrated(grid))
+        (
+            rendered_texels,
+            full_cell_texels as f32,
+            Sampling::Integrated(grid),
+        )
     }
 }
 
@@ -236,10 +253,8 @@ impl Controls {
             && CHROMA_FRACTION_RANGE.contains(&self.chroma_fraction)
     }
 
-    pub(crate) fn footprint(self, long_edge_mm: f32, long_edge_px: i32) -> f32 {
-        (f64::from(long_edge_mm) * 1000.0
-            / f64::from(long_edge_px)
-            / f64::from(self.texel_pitch_um)) as f32
+    fn footprint_texels(self, long_edge_mm: f32, long_edge_cells: f64) -> f64 {
+        f64::from(long_edge_mm) * 1000.0 / long_edge_cells / f64::from(self.texel_pitch_um)
     }
 }
 
@@ -249,7 +264,7 @@ impl Recipe {
         table: Arc<PortraGrainTable>,
         controls: Controls,
         raster: Raster,
-        footprint: f32,
+        rendered_footprint_texels: f32,
         sampling: Sampling,
     ) -> Self {
         let gain = controls.amount_ev.exp2() / controls.texel_pitch_um;
@@ -267,7 +282,7 @@ impl Recipe {
             }
             Sampling::Integrated(grid) => hash::u64s(&[
                 base_hash,
-                u64::from(footprint.to_bits()),
+                u64::from(rendered_footprint_texels.to_bits()),
                 grid.extent[0].to_bits(),
                 grid.extent[1].to_bits(),
                 grid.step[0].to_bits(),
@@ -280,7 +295,7 @@ impl Recipe {
             bank,
             table,
             raster,
-            footprint,
+            rendered_footprint_texels,
             sampling,
             gain,
             chroma_fraction: controls.chroma_fraction,
@@ -300,8 +315,8 @@ impl Recipe {
         self.raster
     }
 
-    pub fn footprint(&self) -> f32 {
-        self.footprint
+    pub fn rendered_footprint_texels(&self) -> f32 {
+        self.rendered_footprint_texels
     }
 
     pub fn sampling(&self) -> Sampling {
@@ -440,8 +455,8 @@ mod tests {
             assert!(if above { widest > 37.5 } else { widest == 37.5 });
             assert_eq!(widest as f32, 37.5);
             let raster = Raster {
-                long_edge_px: size[0],
-                full_grid: Some(grid),
+                rendered_long_edge_px: size[0],
+                candidate_full_grid: Some(grid),
             };
             let (rendered, pitch, sampling) = raster.sampling(controls, 36.0);
             if above {
@@ -540,8 +555,8 @@ mod tests {
                 assert!(pitch > 37.5);
                 assert_eq!(pitch as f32, 37.5);
                 let raster = Raster {
-                    long_edge_px: 960,
-                    full_grid: Some(grid),
+                    rendered_long_edge_px: 960,
+                    candidate_full_grid: Some(grid),
                 };
                 assert!(
                     raster.sampling(controls, 36.0) == (37.5, 9.375, Sampling::Integrated(grid))
@@ -572,8 +587,8 @@ mod tests {
             assert!(if below { pitch < 37.5 } else { pitch == 37.5 });
             assert_eq!(pitch as f32, 37.5);
             let raster = Raster {
-                long_edge_px: 960,
-                full_grid: Some(grid),
+                rendered_long_edge_px: 960,
+                candidate_full_grid: Some(grid),
             };
             assert!(raster.sampling(controls, 36.0) == (37.5, 37.5, Sampling::Calibrated([0; 4])));
         }
@@ -636,10 +651,10 @@ mod tests {
             publication
                 .install(capture, write_revision, params, 1)
                 .unwrap();
-            let admit = |full_grid| {
+            let admit = |candidate_full_grid| {
                 let frame = FilmGrainFrame::Raster(Raster {
-                    long_edge_px: 1208,
-                    full_grid,
+                    rendered_long_edge_px: 1208,
+                    candidate_full_grid,
                 });
                 publication
                     .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
@@ -657,7 +672,7 @@ mod tests {
             let expected = oracle.film_grain().unwrap();
             for (state, grid) in [(&initial, start), (&returned, start), (&switched, alias)] {
                 let grain = state.film_grain().unwrap();
-                assert!(grain.raster().full_grid == Some(grid));
+                assert!(grain.raster().candidate_full_grid == Some(grid));
                 assert!(
                     grain.sampling() == Sampling::Calibrated([0; 4]),
                     "identical supported words at extent {} switched the calibrated sampler (table pitch {})",
@@ -740,8 +755,8 @@ mod tests {
                         .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
                 );
                 let raster = Raster {
-                    long_edge_px: 1208,
-                    full_grid: Some(grid),
+                    rendered_long_edge_px: 1208,
+                    candidate_full_grid: Some(grid),
                 };
                 assert!(
                     raster.sampling(controls, 36.0) == (pitch, pitch, Sampling::Calibrated([0; 4]))
@@ -770,8 +785,8 @@ mod tests {
         let terminal = 22.0_f64.next_down();
         assert_eq!(rows[9].to_bits(), terminal.to_bits());
         let mut raster = Raster {
-            long_edge_px: 1932,
-            full_grid: Some(grid),
+            rendered_long_edge_px: 1932,
+            candidate_full_grid: Some(grid),
         };
         let (footprint, pitch, sampling) = raster.sampling(controls, 36.0);
         assert_eq!(footprint, pitch);
@@ -781,7 +796,7 @@ mod tests {
         let shortened = realized_axis_edges(grid, 1);
         assert_eq!(&shortened[..9], &rows[..9]);
         assert_eq!(shortened[9], 21.0);
-        raster.full_grid = Some(grid);
+        raster.candidate_full_grid = Some(grid);
         assert!(raster.sampling(controls, 36.0).2 == Sampling::Integrated(grid));
 
         let terminal = 2.0_f64.powi(56);
@@ -841,8 +856,8 @@ mod tests {
             let full_pitch = 36_000.0 / 4832.0;
             assert!(full_pitch * oracle_max_width(grid) < 37.5);
             let raster = Raster {
-                long_edge_px: 1208,
-                full_grid: Some(grid),
+                rendered_long_edge_px: 1208,
+                candidate_full_grid: Some(grid),
             };
             assert!(raster.sampling(controls, 36.0).2 == Sampling::Integrated(grid));
         }
@@ -880,8 +895,8 @@ mod tests {
             assert_eq!(bound, expected_bound);
             assert_eq!(grid.origin, [0.0; 2]);
             let raster = Raster {
-                long_edge_px: 64,
-                full_grid: Some(grid),
+                rendered_long_edge_px: 64,
+                candidate_full_grid: Some(grid),
             };
             assert!(
                 raster.sampling(controls, 36.0)
@@ -926,10 +941,10 @@ mod tests {
             ),
         ] {
             let raster = Raster {
-                long_edge_px: grid.size[0],
-                full_grid: Some(grid),
+                rendered_long_edge_px: grid.size[0],
+                candidate_full_grid: Some(grid),
             };
-            let pitch = controls.footprint(8.0, 60);
+            let pitch = controls.footprint_texels(8.0, f64::from(60)) as f32;
             assert!(raster.sampling(controls, 8.0) == (pitch, pitch, Sampling::Calibrated(border)));
         }
     }
@@ -943,8 +958,8 @@ mod tests {
         };
         for step in [4.0, 4.0_f64.next_up()] {
             let raster = Raster {
-                long_edge_px: 960,
-                full_grid: Some(ProxyGrid {
+                rendered_long_edge_px: 960,
+                candidate_full_grid: Some(ProxyGrid {
                     extent: [3840.0, 11.0],
                     step: [4.0, step],
                     origin: [0.0, 4.0 - step],
@@ -952,7 +967,7 @@ mod tests {
                 }),
             };
             assert_eq!(
-                realized_axis_edges(raster.full_grid.unwrap(), 1),
+                realized_axis_edges(raster.candidate_full_grid.unwrap(), 1),
                 [0.0, 4.0, 8.0, 11.0]
             );
             assert!(raster.sampling(controls, 36.0) == (37.5, 37.5, Sampling::Calibrated([0; 4])));
@@ -973,11 +988,14 @@ mod tests {
             size: [4, 2],
         };
         let raster = Raster {
-            long_edge_px: 4,
-            full_grid: Some(grid),
+            rendered_long_edge_px: 4,
+            candidate_full_grid: Some(grid),
         };
         let (_, sample_pitch, sampling) = raster.sampling(controls, 32.0);
-        assert_eq!(sample_pitch, controls.footprint(32.0, 2000));
+        assert_eq!(
+            sample_pitch,
+            controls.footprint_texels(32.0, f64::from(2000)) as f32
+        );
         assert!(sampling == Sampling::Integrated(grid));
     }
 
@@ -988,8 +1006,8 @@ mod tests {
             texel_pitch_um: 1.0,
             chroma_fraction: 1.0,
         };
-        let full_pitch = controls.footprint(36.0, 4832);
-        let rendered = controls.footprint(36.0, 1208);
+        let full_pitch = controls.footprint_texels(36.0, f64::from(4832)) as f32;
+        let rendered = controls.footprint_texels(36.0, f64::from(1208)) as f32;
         assert!(f64::from(full_pitch) * 4.0 < 37.5);
         assert!(f64::from(full_pitch) * 8.0 > 37.5);
         for (extent, step, size, square_size) in [
@@ -1003,15 +1021,15 @@ mod tests {
                 size,
             };
             let raster = Raster {
-                long_edge_px: 1208,
-                full_grid: Some(grid),
+                rendered_long_edge_px: 1208,
+                candidate_full_grid: Some(grid),
             };
             let (_, sample_pitch, sampling) = raster.sampling(controls, 36.0);
             assert_eq!(sample_pitch, full_pitch);
             assert!(sampling == Sampling::Integrated(grid));
 
             let square = Raster {
-                full_grid: Some(ProxyGrid {
+                candidate_full_grid: Some(ProxyGrid {
                     step: [4.0; 2],
                     size: square_size,
                     ..grid
@@ -1039,15 +1057,16 @@ mod tests {
             size: [1208, 2],
         };
         let raster = Raster {
-            long_edge_px: 1208,
-            full_grid: Some(grid),
+            rendered_long_edge_px: 1208,
+            candidate_full_grid: Some(grid),
         };
-        let rendered = controls.footprint(36.0, raster.long_edge_px);
+        let rendered =
+            controls.footprint_texels(36.0, f64::from(raster.rendered_long_edge_px)) as f32;
         assert!(
             raster.sampling(controls, 36.0) == (rendered, rendered, Sampling::Calibrated([0; 4]))
         );
         let taller = Raster {
-            full_grid: Some(ProxyGrid {
+            candidate_full_grid: Some(ProxyGrid {
                 extent: [4832.0, 10.0],
                 ..grid
             }),
@@ -1073,10 +1092,11 @@ mod tests {
             size: [960, 1],
         };
         let raster = Raster {
-            long_edge_px: 960,
-            full_grid: Some(grid),
+            rendered_long_edge_px: 960,
+            candidate_full_grid: Some(grid),
         };
-        let rendered = controls.footprint(36.0, raster.long_edge_px);
+        let rendered =
+            controls.footprint_texels(36.0, f64::from(raster.rendered_long_edge_px)) as f32;
         assert_eq!(rendered, 37.5);
         for grid in [
             grid,
@@ -1087,11 +1107,14 @@ mod tests {
             },
         ] {
             let raster = Raster {
-                full_grid: Some(grid),
+                candidate_full_grid: Some(grid),
                 ..raster
             };
             let (_, pitch, sampling) = raster.sampling(controls, 36.0);
-            assert_eq!(pitch, controls.footprint(36.0, 3839));
+            assert_eq!(
+                pitch,
+                controls.footprint_texels(36.0, f64::from(3839)) as f32
+            );
             assert!(sampling == Sampling::Integrated(grid));
         }
     }
@@ -1109,8 +1132,8 @@ mod tests {
             (4.0_f64.next_up(), true),
         ] {
             let raster = Raster {
-                long_edge_px: 960,
-                full_grid: Some(ProxyGrid {
+                rendered_long_edge_px: 960,
+                candidate_full_grid: Some(ProxyGrid {
                     extent: [3840.0, 96.0],
                     step: [step; 2],
                     origin: [0.0; 2],

@@ -1618,8 +1618,6 @@ pub struct FjFilmGrain {
     pub bank_hash: u64,
     pub sums: FjFloatSpan,
     pub records: [FjFilmGrainRecord; 3usize],
-    pub origin_x: i32,
-    pub origin_y: i32,
     pub seed: u32,
     pub next_seed: u32,
     pub pitch: f32,
@@ -1634,36 +1632,32 @@ pub struct FjFilmGrain {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjFilmGrain"][::core::mem::size_of::<FjFilmGrain>() - 760usize];
+    ["Size of FjFilmGrain"][::core::mem::size_of::<FjFilmGrain>() - 752usize];
     ["Alignment of FjFilmGrain"][::core::mem::align_of::<FjFilmGrain>() - 8usize];
     ["Offset of field: FjFilmGrain::bank_hash"]
         [::core::mem::offset_of!(FjFilmGrain, bank_hash) - 0usize];
     ["Offset of field: FjFilmGrain::sums"][::core::mem::offset_of!(FjFilmGrain, sums) - 8usize];
     ["Offset of field: FjFilmGrain::records"]
         [::core::mem::offset_of!(FjFilmGrain, records) - 24usize];
-    ["Offset of field: FjFilmGrain::origin_x"]
-        [::core::mem::offset_of!(FjFilmGrain, origin_x) - 672usize];
-    ["Offset of field: FjFilmGrain::origin_y"]
-        [::core::mem::offset_of!(FjFilmGrain, origin_y) - 676usize];
-    ["Offset of field: FjFilmGrain::seed"][::core::mem::offset_of!(FjFilmGrain, seed) - 680usize];
+    ["Offset of field: FjFilmGrain::seed"][::core::mem::offset_of!(FjFilmGrain, seed) - 672usize];
     ["Offset of field: FjFilmGrain::next_seed"]
-        [::core::mem::offset_of!(FjFilmGrain, next_seed) - 684usize];
-    ["Offset of field: FjFilmGrain::pitch"][::core::mem::offset_of!(FjFilmGrain, pitch) - 688usize];
+        [::core::mem::offset_of!(FjFilmGrain, next_seed) - 676usize];
+    ["Offset of field: FjFilmGrain::pitch"][::core::mem::offset_of!(FjFilmGrain, pitch) - 680usize];
     ["Offset of field: FjFilmGrain::temporal_fraction"]
-        [::core::mem::offset_of!(FjFilmGrain, temporal_fraction) - 692usize];
-    ["Offset of field: FjFilmGrain::gain"][::core::mem::offset_of!(FjFilmGrain, gain) - 696usize];
+        [::core::mem::offset_of!(FjFilmGrain, temporal_fraction) - 684usize];
+    ["Offset of field: FjFilmGrain::gain"][::core::mem::offset_of!(FjFilmGrain, gain) - 688usize];
     ["Offset of field: FjFilmGrain::chroma_fraction"]
-        [::core::mem::offset_of!(FjFilmGrain, chroma_fraction) - 700usize];
+        [::core::mem::offset_of!(FjFilmGrain, chroma_fraction) - 692usize];
     ["Offset of field: FjFilmGrain::sample_pitch"]
-        [::core::mem::offset_of!(FjFilmGrain, sample_pitch) - 704usize];
+        [::core::mem::offset_of!(FjFilmGrain, sample_pitch) - 696usize];
     ["Offset of field: FjFilmGrain::calibrated_border"]
-        [::core::mem::offset_of!(FjFilmGrain, calibrated_border) - 708usize];
+        [::core::mem::offset_of!(FjFilmGrain, calibrated_border) - 700usize];
     ["Offset of field: FjFilmGrain::sample_extent"]
-        [::core::mem::offset_of!(FjFilmGrain, sample_extent) - 712usize];
+        [::core::mem::offset_of!(FjFilmGrain, sample_extent) - 704usize];
     ["Offset of field: FjFilmGrain::sample_step"]
-        [::core::mem::offset_of!(FjFilmGrain, sample_step) - 728usize];
+        [::core::mem::offset_of!(FjFilmGrain, sample_step) - 720usize];
     ["Offset of field: FjFilmGrain::sample_origin"]
-        [::core::mem::offset_of!(FjFilmGrain, sample_origin) - 744usize];
+        [::core::mem::offset_of!(FjFilmGrain, sample_origin) - 736usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]

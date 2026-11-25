@@ -742,23 +742,21 @@ typedef struct FjFilmGrain {
     uint64_t bank_hash;
     FjFloatSpan sums;
     FjFilmGrainRecord records[3];
-    int32_t origin_x;
-    int32_t origin_y;
     uint32_t seed;
     uint32_t next_seed;
-    float pitch;
+    float pitch; /* Rendered placement spacing in bank texels. */
     float temporal_fraction;
     float gain;
     float chroma_fraction;
-    /* Full sample lattice for a wide proxy, measured from the Full origin.
-       A zero step on both axes selects the ordinary rendered-pixel sampler. */
-    float sample_pitch;
+    float sample_pitch; /* Resolved table width in bank texels. */
     /* Empty left, top, right, bottom borders of a calibrated render (0 or 1
        per edge). The Full integrator instead derives empty cells from its grid. */
     uint8_t calibrated_border[4];
-    double sample_extent[2];
-    double sample_step[2];
-    double sample_origin[2];
+    /* Two zero steps select rendered sampling and require matching widths.
+       Integrated sampling requires two positive steps. */
+    double sample_extent[2]; /* Full image extent in Full cells. */
+    double sample_step[2];   /* Full cells per rendered pixel. */
+    double sample_origin[2]; /* Signed first rendered edge in Full cells. */
 } FjFilmGrain;
 
 /* Complete invocation-local host input. Fixed records copy resolved coefficients;

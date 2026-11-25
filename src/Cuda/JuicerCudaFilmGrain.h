@@ -1,6 +1,7 @@
 // Copyright 2026 MUAStudio Inc. SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cuda_runtime_api.h>
@@ -15,11 +16,21 @@ namespace JuicerCuda::FilmGrain {
     constexpr int kPlacementMargin = 64;
     constexpr int kSeam = 16;
     constexpr int kLayings = 2;
-    constexpr float kMinFootprint = 0.25F;
+    constexpr float kMinRenderedFootprint = 0.25F;
     constexpr float kMinProxySampleFootprint = 0.244140625F;
     constexpr float kCalibratedMaxFootprint = 37.5F;
     constexpr float kSingleWrapMaxFootprint = static_cast<float>(kTileSide - 1);
     constexpr float kMaxFootprint = 240000.0F; // 120 mm at Size 0.5 µm on one pixel.
+    // Leave one block for the laying shift, seam and calibrated box edges.
+    constexpr double kPlacementCenterLimit = 262144.0 - kPlacementBlock;
+
+    // Exact bank-texel limits shared with the Rust Portra recipe.
+    static_assert(std::bit_cast<std::uint32_t>(kMinRenderedFootprint) == 0x3e800000U);
+    static_assert(std::bit_cast<std::uint32_t>(kMinProxySampleFootprint) == 0x3e7a0000U);
+    static_assert(std::bit_cast<std::uint32_t>(kCalibratedMaxFootprint) == 0x42160000U);
+    static_assert(std::bit_cast<std::uint32_t>(kSingleWrapMaxFootprint) == 0x437f0000U);
+    static_assert(std::bit_cast<std::uint32_t>(kMaxFootprint) == 0x486a6000U);
+    static_assert(kRecords == 3 && kLevels == 17);
     constexpr std::size_t kBankEntries = static_cast<std::size_t>(kRecords) * kLevels * kTileEntries;
 
     struct FilmLevel {

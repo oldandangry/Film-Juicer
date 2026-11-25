@@ -987,6 +987,9 @@ mod tests {
     }
     #[test]
     fn film_preview_geometry_retains_matching_tables_and_bounds() {
+        use film::grain::film_v1::ProxyGrid;
+        use recipe::FilmGrainFootprintKind::{Rendered, Sample};
+
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let publication = Publication::new();
@@ -1002,10 +1005,10 @@ mod tests {
                 captured
             };
             publication.stage(valid(1, film_params(36.0))).unwrap();
-            let admit = |long_edge_px| {
+            let admit_grid = |rendered_long_edge_px, candidate_full_grid| {
                 let frame = recipe::FilmGrainFrame::Raster(crate::film::grain::film_v1::Raster {
-                    long_edge_px,
-                    full_grid: None,
+                    rendered_long_edge_px,
+                    candidate_full_grid,
                 });
                 publication.admit_film_grain_frame(
                     publication.frame_input().unwrap(),
@@ -1013,6 +1016,7 @@ mod tests {
                     |params| recipe::prepare_for_frame(&assets, params, frame),
                 )
             };
+            let admit = |long_edge| admit_grid(long_edge, None);
             let landscape = admit(4832).unwrap();
             let thumbnail = recipe::FilmGrainFrame::Thumbnail;
             let clean = publication
@@ -1055,7 +1059,56 @@ mod tests {
                 current.film_v1_bounds().unwrap().hash()
             );
             assert_eq!(landscape_grain.table().footprint, 1.8625828);
-            assert_eq!(landscape_grain.raster().long_edge_px, 4832);
+            assert_eq!(landscape_grain.raster().rendered_long_edge_px, 4832);
+
+            publication.stage(valid(3, film_params(8.0))).unwrap();
+            let proxy = |scale: f64| {
+                admit_grid(
+                    32,
+                    Some(ProxyGrid {
+                        extent: [32.0 * scale, 16.0 * scale],
+                        step: [scale; 2],
+                        origin: [0.0; 2],
+                        size: [32, 16],
+                    }),
+                )
+            };
+            for (result, expected_kind, expected_width, minimum) in [
+                (admit(8192), Rendered, f32::from_bits(0x3e7a_0000), 0.25),
+                (
+                    proxy(512.0),
+                    Sample,
+                    f32::from_bits(0x3dfa_0000),
+                    f32::from_bits(0x3e7a_0000),
+                ),
+            ] {
+                let Err(Error::Preparation(PrepareError::FilmGrainFootprint {
+                    kind,
+                    long_edge_mm,
+                    texel_pitch_um,
+                    width_texels,
+                    supported_texels,
+                })) = result
+                else {
+                    panic!("expected typed {expected_kind:?} footprint rejection");
+                };
+                assert_eq!(kind, expected_kind);
+                assert_eq!(
+                    (long_edge_mm, texel_pitch_um, width_texels),
+                    (8.0, 4.0, expected_width)
+                );
+                assert_eq!(supported_texels, minimum..=240_000.0);
+            }
+            assert_eq!(
+                proxy(256.0)
+                    .unwrap()
+                    .film_grain()
+                    .unwrap()
+                    .table()
+                    .footprint
+                    .to_bits(),
+                0x3e7a_0000
+            );
         }
     }
     #[test]
@@ -1070,8 +1123,8 @@ mod tests {
             chroma_fraction: 1.0,
         };
         let raster = Raster {
-            long_edge_px: 4832,
-            full_grid: None,
+            rendered_long_edge_px: 4832,
+            candidate_full_grid: None,
         };
         let timeline = FilmGrainFrame::Raster(raster);
         let thumbnail = FilmGrainFrame::Thumbnail;
@@ -1221,10 +1274,10 @@ mod tests {
                     chroma_fraction: 0.24,
                 });
             publication.stage(valid(1, captured)).unwrap();
-            let admit = |long_edge_px, full_grid| {
+            let admit = |rendered_long_edge_px, candidate_full_grid| {
                 let frame = recipe::FilmGrainFrame::Raster(Raster {
-                    long_edge_px,
-                    full_grid,
+                    rendered_long_edge_px,
+                    candidate_full_grid,
                 });
                 publication
                     .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
@@ -1263,7 +1316,10 @@ mod tests {
                 eighth.film_grain().unwrap().table().footprint,
                 other.film_grain().unwrap().table().footprint,
             );
-            assert_eq!(eighth.film_grain().unwrap().footprint(), 72000.0 / 604.0);
+            assert_eq!(
+                eighth.film_grain().unwrap().rendered_footprint_texels(),
+                72000.0 / 604.0
+            );
             assert_eq!(admit(4832, None).hash(), full.hash());
 
             publication
@@ -1294,7 +1350,10 @@ mod tests {
             );
             let native_grain = native.film_grain().unwrap();
             let proxy_grain = same_pitch.film_grain().unwrap();
-            assert_eq!(native_grain.footprint(), proxy_grain.footprint());
+            assert_eq!(
+                native_grain.rendered_footprint_texels(),
+                proxy_grain.rendered_footprint_texels()
+            );
             assert!(matches!(
                 native_grain.sampling(),
                 Sampling::Calibrated([0, 0, 0, 0])

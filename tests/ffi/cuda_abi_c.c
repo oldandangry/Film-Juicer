@@ -16,6 +16,12 @@
 #undef FJ_ABI_FIELD
 #undef FJ_ABI_VALUE
 
+_Static_assert(_Generic(((FjFilmGrain*)0)->records, FjFilmGrainRecord*: 1, default: 0), "Film record type");
+_Static_assert(sizeof(((FjFilmGrain*)0)->records) == 3 * sizeof(FjFilmGrainRecord), "Film records");
+_Static_assert(sizeof(((FjFilmGrainRecord*)0)->mean_light) == 17 * sizeof(float), "Film mean-light levels");
+_Static_assert(sizeof(((FjFilmGrainRecord*)0)->mean_density) == 17 * sizeof(float), "Film mean-density levels");
+_Static_assert(sizeof(((FjFilmGrainRecord*)0)->correlation) == 17 * sizeof(float), "Film correlation levels");
+
 _Static_assert(_Generic((FjAbortQuery)0, uint32_t (*)(void*): 1, default: 0), "abort signature");
 _Static_assert(_Generic(&fj_cuda_create, FjStatus (*)(FjCuda**, FjErrorBuffer*): 1, default: 0), "create signature");
 _Static_assert(_Generic(&fj_cuda_inspect, FjStatus (*)(FjCuda*, const FjFrame*, FjCudaContext*, FjErrorBuffer*): 1, default: 0), "inspect signature");
