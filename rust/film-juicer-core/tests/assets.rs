@@ -13,9 +13,6 @@ use film_juicer_core::assets::{AssetError, Assets, CsvSource};
 use film_juicer_core::data_io::calibration::{ErrorKind as CalibrationErrorKind, Field};
 use film_juicer_core::data_io::noise::ErrorKind as NoiseErrorKind;
 use film_juicer_core::profile::{CatalogError, ProfileCompletionErrorKind, ProfileErrorKind, Role};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -162,12 +159,27 @@ fn source_owners_preserve_independent_bundled_csv_bits() {
         0xc0ea4ea30d5fd861
     );
     assert!(Arc::ptr_eq(&cmf, &assets.cmf().unwrap()));
-    let mut cases = RowCases::new(
-        "bundled-csv-source-owners",
-        CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(CSV_SOURCES.iter().map(|(_, path, _, _)| *path))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-csv-source-owners"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-csv-source-owners"
     );
     for &(source, path, count, hash) in CSV_SOURCES {
-        let row = cases.case(path);
+        let row = AsRef::<str>::as_ref(&(path)).to_owned();
         let rows = assets.csv_source(source).unwrap();
         assert_eq!(rows.rows().len(), count, "{path}");
         assert_eq!(
@@ -178,21 +190,42 @@ fn source_owners_preserve_independent_bundled_csv_bits() {
         let reused = assets.csv_source(source).unwrap();
         assert!(Arc::ptr_eq(&rows, &reused));
         assert_eq!(rows.rows().as_ptr(), reused.rows().as_ptr());
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
 fn closed_csv_sources_retry_failures_and_preserve_raw_rows() {
     let directory = Directory::new();
     let assets = Assets::new(directory.0.clone());
-    let mut cases = RowCases::new(
-        "csv-source-failure-retry",
-        CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(CSV_SOURCES.iter().map(|(_, path, _, _)| *path))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "csv-source-failure-retry"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "csv-source-failure-retry"
     );
     for &(source, path, _, _) in CSV_SOURCES {
-        let row = cases.case(path);
+        let row = AsRef::<str>::as_ref(&(path)).to_owned();
         let error = assets.csv_source(source).unwrap_err();
         let AssetError::CsvSource {
             source: selected,
@@ -226,9 +259,15 @@ fn closed_csv_sources_retry_failures_and_preserve_raw_rows() {
             Err(AssetError::CsvSource { .. })
         ));
         assert_eq!(decoded.rows().len(), 4);
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -311,18 +350,41 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
         .iter()
         .map(|(p, i, f)| format!("{p}/{i}/{f}"))
         .collect();
-    let mut rows = RowCases::new("calibration-absent-selections", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "calibration-absent-selections"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "calibration-absent-selections"
+    );
     for (selection, id) in selections.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             calibration
                 .lookup(selection.0, selection.1, selection.2)
                 .unwrap(),
             None
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     let malformed = [
         (("bad_print", "D65", "film"), Field::PrintProfile),
         (("bad_illuminant", "D65", "film"), Field::PrintIlluminant),
@@ -332,9 +394,26 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
         .iter()
         .map(|((p, i, f), _)| format!("{p}/{i}/{f}"))
         .collect();
-    let mut rows = RowCases::new("calibration-malformed-selections", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "calibration-malformed-selections"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "calibration-malformed-selections"
+    );
     for ((selection, field), id) in malformed.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = calibration
             .lookup(selection.0, selection.1, selection.2)
             .unwrap_err();
@@ -345,9 +424,15 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
         );
         assert_eq!(error.path(), directory.0.join(path));
         assert!(calibration.lookup("paper", "D65", "film").is_ok());
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     fs::remove_file(directory.0.join(path)).unwrap();
     assert!(Arc::ptr_eq(
         &calibration,
@@ -358,9 +443,26 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
 #[test]
 fn calibration_load_errors_remain_snapshots_until_release() {
     let ids = ["missing", "read", "root"];
-    let mut rows = RowCases::new("calibration-load-error-recovery", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "calibration-load-error-recovery"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "calibration-load-error-recovery"
+    );
     for case in ids {
-        let row = rows.case(case);
+        let row = AsRef::<str>::as_ref(&(case)).to_owned();
         let directory = Directory::new();
         let path = directory.0.join("filters/neutral_print_filters.json");
         match case {
@@ -396,9 +498,15 @@ fn calibration_load_errors_remain_snapshots_until_release() {
         drop(assets);
         assert_eq!(loaded.lookup("p", "i", "f").unwrap(), Some([1.0, 2.0, 3.0]));
         assert_eq!(error.path(), path);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -442,9 +550,26 @@ fn ordinary_noise_errors_are_cached_until_release() {
         "malformed_json",
         "malformed_metadata",
     ];
-    let mut rows = RowCases::new("noise-load-error-recovery", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "noise-load-error-recovery"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "noise-load-error-recovery"
+    );
     for case in ids {
-        let row = rows.case(case);
+        let row = AsRef::<str>::as_ref(&(case)).to_owned();
         let directory = Directory::new();
         write_noise(&directory);
         let stbn = directory.0.join("Noise/stbn_scalar_512x512x256_u8.bin");
@@ -499,20 +624,40 @@ fn ordinary_noise_errors_are_cached_until_release() {
         assert_eq!(bundle.stbn().bytes().len(), 67_108_864);
         assert_eq!(bundle.wang().tiles().len(), 1_048_576);
         assert_eq!(error.path(), path);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
 fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
     let catalog_states = [(false, "catalog-valid"), (true, "catalog-failed")];
-    let mut rows = RowCases::new(
-        "cache-release-catalog-states",
-        catalog_states.iter().map(|(_, id)| *id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(catalog_states.iter().map(|(_, id)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "cache-release-catalog-states"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "cache-release-catalog-states"
     );
     for (failed_catalog, id) in catalog_states {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let directory = Directory::new();
         write_noise(&directory);
         write_resource(
@@ -551,18 +696,39 @@ fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
         let new_noise = assets.noise().unwrap();
         assert!(!Arc::ptr_eq(&calibration, &new_calibration));
         assert!(!Arc::ptr_eq(&noise, &new_noise));
-        let mut source_rows = RowCases::new(
-            format!("released-csv-sources/{}/identity-and-reload", id),
-            CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+        let source_rows_ids: Vec<_> =
+            IntoIterator::into_iter(CSV_SOURCES.iter().map(|(_, path, _, _)| *path))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !source_rows_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("released-csv-sources/{}/identity-and-reload", id)
+        );
+        let source_rows_count = source_rows_ids.len();
+        let mut source_rows_remaining = source_rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            source_rows_remaining.len(),
+            source_rows_count,
+            "duplicate case IDs: {}",
+            format_args!("released-csv-sources/{}/identity-and-reload", id)
         );
         for (&(source, path, _, _), old) in CSV_SOURCES.iter().zip(&sources) {
-            let source_row = source_rows.case(path);
+            let source_row = AsRef::<str>::as_ref(&(path)).to_owned();
             let new = assets.csv_source(source).unwrap();
             assert!(!Arc::ptr_eq(old, &new));
             assert_eq!(new.rows(), &[[3.0, 4.0]]);
-            source_row.passed();
+            assert!(
+                source_rows_remaining.remove(&source_row),
+                "unexpected or repeated comparison: {source_row}"
+            );
         }
-        source_rows.finish();
+        assert!(
+            source_rows_remaining.is_empty(),
+            "missing comparisons: {source_rows_remaining:?}"
+        );
         drop(assets);
         assert_eq!(cmf.rows(), &[[1.0, 2.0, 3.0, 4.0]]);
         assert_eq!(
@@ -580,9 +746,15 @@ fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
         }
         drop(sources);
         assert!(reclaimed.upgrade().is_none());
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -649,9 +821,26 @@ fn role_and_authored_key_select_the_resolved_path() {
             )
         })
         .collect();
-    let mut cases = RowCases::new("profile-role-and-authored-key-errors", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "profile-role-and-authored-key-errors"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "profile-role-and-authored-key-errors"
+    );
     for ((role, key), id) in selections.into_iter().zip(&ids) {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = match role {
             Role::Film => assets.film(key).unwrap_err(),
             Role::Print => assets.print(key).unwrap_err(),
@@ -659,9 +848,15 @@ fn role_and_authored_key_select_the_resolved_path() {
         assert!(
             matches!(error, AssetError::MissingProfile { role: actual_role, key: actual_key } if actual_role == role && actual_key == key)
         );
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -765,26 +960,52 @@ fn catalog_error_is_shared_and_survives_repair_and_release() {
     assert!(matches!(first.as_ref(), CatalogError::Directory { .. }));
     directory.defaults();
     assets.release_cached_payloads().unwrap();
-    let mut cases = RowCases::new(
-        "sticky-catalog-error-consumers",
-        ["catalog", "film", "print"],
+    let cases_ids: Vec<_> = IntoIterator::into_iter(["catalog", "film", "print"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "sticky-catalog-error-consumers"
     );
-    let row = cases.case("catalog");
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "sticky-catalog-error-consumers"
+    );
+    let row = AsRef::<str>::as_ref(&("catalog")).to_owned();
     assert!(
         matches!(assets.catalog().unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
     );
-    row.passed();
-    let row = cases.case("film");
+    assert!(
+        cases_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("film")).to_owned();
     assert!(
         matches!(assets.film("kodak_portra_400").unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
     );
-    row.passed();
-    let row = cases.case("print");
+    assert!(
+        cases_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("print")).to_owned();
     assert!(
         matches!(assets.print("kodak_portra_endura").unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
     );
-    row.passed();
-    cases.finish();
+    assert!(
+        cases_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     assert!(Assets::new(directory.0.clone()).catalog().is_ok());
     drop(assets);
     assert!(!first.to_string().is_empty());
@@ -838,12 +1059,27 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
     let assets = Assets::new(repository().join("Resources"));
     let catalog = assets.catalog().unwrap();
     let completed = fixture("completed.json");
-    let mut film_cases = RowCases::new(
-        "bundled-film-handle-identities",
-        catalog.films().iter().map(|entry| entry.key()),
+    let film_cases_ids: Vec<_> =
+        IntoIterator::into_iter(catalog.films().iter().map(|entry| entry.key()))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !film_cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-film-handle-identities"
+    );
+    let film_cases_count = film_cases_ids.len();
+    let mut film_cases_remaining = film_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        film_cases_remaining.len(),
+        film_cases_count,
+        "duplicate case IDs: {}",
+        "bundled-film-handle-identities"
     );
     for entry in catalog.films() {
-        let row = film_cases.case(entry.key());
+        let row = AsRef::<str>::as_ref(&(entry.key())).to_owned();
         let film = assets.film(entry.key()).unwrap();
         let expected = &completed["profiles"][entry.key()];
         assert_eq!(
@@ -852,9 +1088,15 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
             "{}",
             entry.key()
         );
-        row.passed();
+        assert!(
+            film_cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    film_cases.finish();
+    assert!(
+        film_cases_remaining.is_empty(),
+        "missing comparisons: {film_cases_remaining:?}"
+    );
     let prints: Vec<_> = catalog
         .prints()
         .iter()
@@ -877,7 +1119,24 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
             (!case["profile"].as_str()?.is_empty()).then(|| id.to_owned())
         })
         .collect();
-    let mut gamma_cases = RowCases::new("bundled-print-gamma-samples", &ids);
+    let gamma_cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !gamma_cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-print-gamma-samples"
+    );
+    let gamma_cases_count = gamma_cases_ids.len();
+    let mut gamma_cases_remaining = gamma_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        gamma_cases_remaining.len(),
+        gamma_cases_count,
+        "duplicate case IDs: {}",
+        "bundled-print-gamma-samples"
+    );
     for captured in captured_rows {
         let id = captured["id"].as_str().unwrap();
         let case = density_cases.iter().find(|c| c["id"] == id).unwrap();
@@ -885,7 +1144,7 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
         if key.is_empty() {
             continue;
         }
-        let row_case = gamma_cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         let print = prints.iter().find(|p| p.info().stock() == key).unwrap();
         assert_eq!(
             print.asset_token(),
@@ -909,9 +1168,15 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
             assert_eq!(total.map(f32::to_bits), expected, "{id} row {i}");
         }
         cases += 1;
-        row_case.passed();
+        assert!(
+            gamma_cases_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    gamma_cases.finish();
+    assert!(
+        gamma_cases_remaining.is_empty(),
+        "missing comparisons: {gamma_cases_remaining:?}"
+    );
     assert_eq!(cases, 48);
 }
 
@@ -1015,20 +1280,49 @@ fn reconstruction_handles_and_buffers_survive_profile_release_and_owner_drop() {
         )
     );
     drop(assets);
-    let mut rows = RowCases::new("reconstruction-handle-results", [HANATOS, ARCTIC, MALLETT]);
-    let row = rows.case(HANATOS);
+    let rows_ids: Vec<_> = IntoIterator::into_iter([HANATOS, ARCTIC, MALLETT])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "reconstruction-handle-results"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "reconstruction-handle-results"
+    );
+    let row = AsRef::<str>::as_ref(&(HANATOS)).to_owned();
     assert_eq!(hanatos.samples().len(), LUT_COUNT);
     assert_eq!(hanatos.samples()[0].to_bits(), 0x40bb0000);
     assert_eq!(hanatos.asset_hash(), 0x81ebefd4e4cc9926);
-    row.passed();
-    let row = rows.case(ARCTIC);
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&(ARCTIC)).to_owned();
     assert_eq!(arctic.samples().len(), LUT_COUNT);
     assert_eq!(arctic.asset_hash(), 0x9262ffb765e3289e);
-    row.passed();
-    let row = rows.case(MALLETT);
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&(MALLETT)).to_owned();
     assert_eq!(mallett[80][2].to_bits(), 0x3eaa8d89);
-    row.passed();
-    rows.finish();
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -1040,21 +1334,41 @@ fn reconstruction_failures_remain_fixed_across_release_and_file_repair() {
     let arctic = reconstruction_error(assets.arctic().unwrap_err());
     let mallett = reconstruction_error(assets.mallett().unwrap_err());
     let failures = [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)];
-    let mut rows = RowCases::new(
-        "reconstruction-open-failure-snapshots",
-        failures.iter().map(|(name, _)| *name),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(failures.iter().map(|(name, _)| *name))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "reconstruction-open-failure-snapshots"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "reconstruction-open-failure-snapshots"
     );
     for (name, error) in failures {
-        let row = rows.case(name);
+        let row = AsRef::<str>::as_ref(&(name)).to_owned();
         assert_eq!(error.path, lut_path(&directory, name));
         assert_eq!(
             error.kind,
             ReadErrorKind::Open(std::io::ErrorKind::NotFound)
         );
         copy_reconstruction(&directory, name);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assets.release_cached_payloads().unwrap();
     assert!(Arc::ptr_eq(
         &hanatos,
@@ -1100,7 +1414,24 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
             ["compact", "spaced"].map(move |header| format!("width/{width}/{header}"))
         })
         .collect();
-    let mut rows = RowCases::new("npy-supported-width-header-combinations", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "npy-supported-width-header-combinations"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "npy-supported-width-header-combinations"
+    );
     for width in widths {
         let pattern: Vec<u8> = match width {
             2 => halves.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
@@ -1120,14 +1451,17 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
         .into_iter()
         .enumerate()
         {
-            let row = rows.case(format!(
-                "width/{width}/{}",
-                if header_index == 0 {
-                    "compact"
-                } else {
-                    "spaced"
-                }
-            ));
+            let row = AsRef::<str>::as_ref(
+                &(format!(
+                    "width/{width}/{}",
+                    if header_index == 0 {
+                        "compact"
+                    } else {
+                        "spaced"
+                    }
+                )),
+            )
+            .to_owned();
             let directory = Directory::new();
             npy(
                 &directory,
@@ -1151,10 +1485,16 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
                     assert_eq!(sample.to_bits(), bits[i % bits.len()], "sample {i}");
                 }
             }
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -1212,17 +1552,37 @@ fn truncated_reconstruction_outcomes_do_not_publish_partial_assets_or_retry_afte
     let arctic = reconstruction_error(assets.arctic().unwrap_err());
     let mallett = reconstruction_error(assets.mallett().unwrap_err());
     let failures = [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)];
-    let mut rows = RowCases::new(
-        "truncated-reconstruction-error-snapshots",
-        failures.iter().map(|(name, _)| *name),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(failures.iter().map(|(name, _)| *name))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "truncated-reconstruction-error-snapshots"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "truncated-reconstruction-error-snapshots"
     );
     for (name, error) in failures {
-        let row = rows.case(name);
+        let row = AsRef::<str>::as_ref(&(name)).to_owned();
         assert_eq!(error.kind, ReadErrorKind::ShortRead(ReadPart::Header));
         copy_reconstruction(&directory, name);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assets.release_cached_payloads().unwrap();
     assert!(Arc::ptr_eq(
         &hanatos,

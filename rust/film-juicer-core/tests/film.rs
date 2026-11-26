@@ -7,9 +7,6 @@ use std::path::PathBuf;
 use film_juicer_core::assets::Assets;
 use film_juicer_core::film::{Development, Error, Params};
 use film_juicer_core::route::ScanRoute;
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::{Value, json};
 
 fn bits(values: &[f32]) -> Value {
@@ -65,13 +62,27 @@ fn matches_native_captures_and_retains_the_profile() {
     let fixture: Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
     let mut count = 0;
     let cases = fixture["cases"].as_array().unwrap();
-    let mut ledger_cases = RowCases::new(
-        "native-development-cases",
-        cases.iter().map(development_case_id),
+    let ledger_cases_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(development_case_id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !ledger_cases_ids.is_empty(),
+        "empty case set: {}",
+        "native-development-cases"
+    );
+    let ledger_cases_count = ledger_cases_ids.len();
+    let mut ledger_cases_remaining = ledger_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        ledger_cases_remaining.len(),
+        ledger_cases_count,
+        "duplicate case IDs: {}",
+        "native-development-cases"
     );
     for case in cases {
         let key = case["key"].as_str().unwrap();
-        let row = ledger_cases.case(development_case_id(case));
+        let row = AsRef::<str>::as_ref(&(development_case_id(case))).to_owned();
         let profile = assets.film(key).unwrap();
         let expected = &case["development"];
         let table = &fixture["profiles"][key];
@@ -142,9 +153,15 @@ fn matches_native_captures_and_retains_the_profile() {
             assert_eq!(development.layers_hash(), 0);
         }
         count += 1;
-        row.passed();
+        assert!(
+            ledger_cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    ledger_cases.finish();
+    assert!(
+        ledger_cases_remaining.is_empty(),
+        "missing comparisons: {ledger_cases_remaining:?}"
+    );
     assert_eq!(count, 480);
     let profile = assets.film("kodak_portra_400").unwrap();
     let invalid_gammas = [
@@ -163,9 +180,26 @@ fn matches_native_captures_and_retains_the_profile() {
         "below-min",
         "above-max",
     ];
-    let mut invalid_rows = RowCases::new("invalid-gamma-controls", gamma_ids);
+    let invalid_rows_ids: Vec<_> = IntoIterator::into_iter(gamma_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !invalid_rows_ids.is_empty(),
+        "empty case set: {}",
+        "invalid-gamma-controls"
+    );
+    let invalid_rows_count = invalid_rows_ids.len();
+    let mut invalid_rows_remaining = invalid_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        invalid_rows_remaining.len(),
+        invalid_rows_count,
+        "duplicate case IDs: {}",
+        "invalid-gamma-controls"
+    );
     for (gamma, id) in invalid_gammas.into_iter().zip(gamma_ids) {
-        let row = invalid_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert!(matches!(
             Development::new(
                 profile.clone(),
@@ -177,14 +211,34 @@ fn matches_native_captures_and_retains_the_profile() {
             ),
             Err(Error::InvalidGamma)
         ));
-        row.passed();
+        assert!(
+            invalid_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    invalid_rows.finish();
-    let mut route_row = RowCases::new(
-        "route-polarity-mismatch",
-        ["positive-route-on-negative-film"],
+    assert!(
+        invalid_rows_remaining.is_empty(),
+        "missing comparisons: {invalid_rows_remaining:?}"
     );
-    let mismatch = route_row.case("positive-route-on-negative-film");
+    let route_row_ids: Vec<_> = IntoIterator::into_iter(["positive-route-on-negative-film"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !route_row_ids.is_empty(),
+        "empty case set: {}",
+        "route-polarity-mismatch"
+    );
+    let route_row_count = route_row_ids.len();
+    let mut route_row_remaining = route_row_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        route_row_remaining.len(),
+        route_row_count,
+        "duplicate case IDs: {}",
+        "route-polarity-mismatch"
+    );
+    let mismatch = AsRef::<str>::as_ref(&("positive-route-on-negative-film")).to_owned();
     assert!(matches!(
         Development::new(
             profile,
@@ -196,8 +250,14 @@ fn matches_native_captures_and_retains_the_profile() {
         ),
         Err(Error::RouteMismatch)
     ));
-    mismatch.passed();
-    route_row.finish();
+    assert!(
+        route_row_remaining.remove(&mismatch),
+        "unexpected or repeated comparison: {mismatch}"
+    );
+    assert!(
+        route_row_remaining.is_empty(),
+        "missing comparisons: {route_row_remaining:?}"
+    );
     let retained = {
         let temporary = Assets::new(PathBuf::from(&args[1]));
         Development::new(
@@ -238,7 +298,24 @@ fn variable_axes_and_reservation_identity_failures() {
         .iter()
         .map(|case| case["case"].as_str().unwrap().to_owned())
         .collect();
-    let mut ledger_cases = RowCases::new("synthetic-development-cases", &ids);
+    let ledger_cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !ledger_cases_ids.is_empty(),
+        "empty case set: {}",
+        "synthetic-development-cases"
+    );
+    let ledger_cases_count = ledger_cases_ids.len();
+    let mut ledger_cases_remaining = ledger_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        ledger_cases_remaining.len(),
+        ledger_cases_count,
+        "duplicate case IDs: {}",
+        "synthetic-development-cases"
+    );
     #[cfg(feature = "test-support")]
     let mut fault_ids = Vec::new();
     #[cfg(feature = "test-support")]
@@ -248,10 +325,17 @@ fn variable_axes_and_reservation_identity_failures() {
         }
     }
     #[cfg(feature = "test-support")]
-    let mut fault_rows = RowCases::new("synthetic-reservation-faults", &fault_ids);
+    let mut fault_rows_remaining = {
+        let expected = fault_ids.len();
+        let remaining = fault_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(remaining.len(), expected, "duplicate reservation fault IDs");
+        remaining
+    };
     for case in cases {
         let id = case["case"].as_str().unwrap();
-        let row = ledger_cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let assets = Assets::new(
             fixtures
                 .join("synthetic")
@@ -275,7 +359,8 @@ fn variable_axes_and_reservation_identity_failures() {
         assert_eq!(json!(development.normalized_curves_hash()), case["hash"]);
         #[cfg(feature = "test-support")]
         for fault in 1..=3 {
-            let fault_row = fault_rows.case(format!("{id}/reservation-fault/{fault}"));
+            let fault_row =
+                AsRef::<str>::as_ref(&(format!("{id}/reservation-fault/{fault}"))).to_owned();
             film_juicer_core::film::test_support::reject_next(fault);
             let error = Development::new(profile.clone(), params()).err().unwrap();
             assert_eq!(
@@ -286,11 +371,23 @@ fn variable_axes_and_reservation_identity_failures() {
                     Error::ZeroIdentity
                 }
             );
-            fault_row.passed();
+            assert!(
+                fault_rows_remaining.remove(&fault_row),
+                "unexpected or repeated comparison: {fault_row}"
+            );
         }
-        row.passed();
+        assert!(
+            ledger_cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    ledger_cases.finish();
+    assert!(
+        ledger_cases_remaining.is_empty(),
+        "missing comparisons: {ledger_cases_remaining:?}"
+    );
     #[cfg(feature = "test-support")]
-    fault_rows.finish();
+    assert!(
+        fault_rows_remaining.is_empty(),
+        "missing comparisons: {fault_rows_remaining:?}"
+    );
 }

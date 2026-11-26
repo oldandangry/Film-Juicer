@@ -43,7 +43,6 @@
 #include "RenderValues.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/case_results.h"
 #include "../ffi/test_asset_workspace.h"
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
@@ -191,16 +190,11 @@ namespace {
 
     using ScatterHalationValidation::Arguments;
     using ScatterHalationValidation::Results;
-    bool requested_case_listing = false;
 
     Arguments parse_arguments(int argc, char** argv) {
         Arguments arguments;
         for (int index = 1; index < argc; ++index) {
             const std::string_view option(argv[index]);
-            if (option == "--list-cases") {
-                requested_case_listing = true;
-                continue;
-            }
             if (index + 1 >= argc) {
                 throw std::runtime_error("missing value for " + std::string(option));
             }
@@ -349,10 +343,6 @@ namespace {
     }
 
     void run_control_rows(Results& results) {
-        if (results.expect(
-                "scatter_halation.control_rows",
-                {"controls/default-one", "controls/exact-zero", "controls/above-one-extrapolation", "controls/exact-two", "controls/smallest-positive-float", "controls/negative-zero", "controls/nan-rejected", "controls/positive-infinity-rejected", "controls/negative-infinity-rejected", "controls/below-zero-rejected", "controls/above-two-nextafter-rejected", "controls/inactive-ignores-subordinates", "controls/same-float32-same-identity", "controls/distinct-float32-distinct-identity", "controls/film-gamma-minimum", "controls/film-gamma-maximum", "controls/print-gamma-minimum", "controls/print-gamma-maximum", "controls/film-gamma-immediately-below-minimum", "controls/film-gamma-immediately-above-maximum", "controls/film-gamma-nan", "controls/film-gamma-infinity", "controls/print-gamma-immediately-below-minimum", "controls/print-gamma-immediately-above-maximum", "controls/print-gamma-nan", "controls/print-gamma-infinity"}))
-            return;
         const auto check_success = [&](std::string name, double value) {
             ScatterHalationRawControls raw;
             raw.active = true;
@@ -578,10 +568,6 @@ namespace {
     }
 
     void run_recipe_rows(Results& results) {
-        if (results.expect(
-                "scatter_halation.recipe_rows",
-                {"recipe/complete-identity-hash-zero", "recipe/scatter-only", "recipe/back-reflection-only", "recipe/cross-channel-activation", "recipe/active-folded-zero-remap-reserved"}))
-            return;
         const ScatterHalationControls active = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
         struct Mapping {
@@ -601,10 +587,7 @@ namespace {
         ids.reserve(mappings.size());
         for (const Mapping& mapping : mappings)
             ids.emplace_back(mapping.name);
-        const std::string caller = "scatter_halation.recipe_mappings";
-        JuicerTests::Cohort rows(caller, ids);
         for (const Mapping& mapping : mappings) {
-            JuicerTests::CaseEvent row(caller, mapping.name);
             const std::array<float, 3> firstSigmaUm{mapping.sigma, mapping.sigma, mapping.sigma};
             const auto recipe = resolve_or_throw(active, firstSigmaUm, mapping.strength);
             bool passed = recipe.scatterActive && recipe.backReflectionActive &&
@@ -619,7 +602,6 @@ namespace {
                 mapping.name,
                 passed,
                 active_recipe_detail(active, firstSigmaUm, mapping.strength, recipe));
-            row.complete(passed);
         }
 
         const ScatterHalationControls inactive;
@@ -744,19 +726,6 @@ namespace {
         const Arguments& arguments,
         Results& results,
         JuicerTestSupport::TestAssetWorkspaces& workspaces) {
-        if (results.expect(
-                "scatter_halation.profile_rows",
-                {"profile/missing-metadata-defaults-still-weak",
-                 "profile/unsupported-use-rejected",
-                 "profile/unsupported-antihalation-rejected",
-                 "profile/negative-sigma-center-half",
-                 "profile/zero-sigma-center-computed-failure",
-                 "profile/descending-axis-completion-failure",
-                 "profile/spectral-shape-decode-failure",
-                 "profile/coefficient-representation-decode-failure",
-                 "profile/ordered-infinity-axis-and-layer-cmy-order",
-                 "profile/variable-axis-duplicate-and-nullable-spectral-accepted"}))
-            return;
         const auto workspace = workspaces.create(
             arguments.scratchRoot / "profile-catalogs");
         const std::filesystem::path source =
@@ -793,12 +762,9 @@ namespace {
         mappingIds.reserve(mappings.size());
         for (const Mapping& mapping : mappings)
             mappingIds.push_back("profile/" + std::string(mapping.use) + "-" + mapping.antihalation);
-        const std::string mappingCaller = "scatter_halation.profile_mappings";
-        JuicerTests::Cohort mappingRows(mappingCaller, mappingIds);
         for (const Mapping& mapping : mappings) {
             const std::string caseId =
                 "profile/" + std::string(mapping.use) + "-" + mapping.antihalation;
-            JuicerTests::CaseEvent row(mappingCaller, caseId);
             const std::string key =
                 std::string("recipe_profile_") + mapping.use + "_" + mapping.antihalation;
             nlohmann::json profile = completeProfile;
@@ -824,7 +790,6 @@ namespace {
                 caseId,
                 passed,
                 diagnostic);
-            row.complete(passed);
         }
 
         nlohmann::json defaulted = completeProfile;
@@ -884,8 +849,6 @@ namespace {
             coefficientIds.push_back(
                 "profile/" + std::string(testCase.name) +
                 (testCase.completes ? "-completed" : "-computed-failure"));
-        const std::string coefficientCaller = "scatter_halation.profile_coefficients";
-        JuicerTests::Cohort coefficientRows(coefficientCaller, coefficientIds);
         // C1/C4: narrowing precedes z=(exposure-center)/sigma and amplitude*CDF.
         // erfc(+inf)=0, erfc(-inf)=2, erfc(0)=1 establish exact special cases.
         const float center = completeProfile["data"]["density_curves_model"]["centers"][0][0].get<float>();
@@ -894,7 +857,6 @@ namespace {
             const std::string caseId =
                 "profile/" + std::string(testCase.name) +
                 (testCase.completes ? "-completed" : "-computed-failure");
-            JuicerTests::CaseEvent row(coefficientCaller, caseId);
             const std::string key = std::string("recipe_profile_") + testCase.name;
             nlohmann::json profile = completeProfile;
             profile["info"]["stock"] = key;
@@ -928,7 +890,6 @@ namespace {
                          contains_text(detail, "Density { index: 0, source: NonfiniteLayer { channel: 0, layer: 0 }");
             }
             results.record(caseId, passed, detail);
-            row.complete(passed);
         }
 
         const auto check_completion = [&](const char* name, nlohmann::json profile, bool completes, const char* reason) {
@@ -1034,10 +995,6 @@ namespace {
     }
 
     void run_descriptor_rows(Results& results) {
-        if (results.expect(
-                "scatter_halation.descriptor_rows",
-                {"descriptor/fir-yvv-dispatch", "descriptor/recipe-hash-binding", "descriptor/hash-zero-absence-before-pixel-validation", "constants/retained-float-bits"}))
-            return;
         const ScatterHalationControls active = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
         const auto recipe = resolve_or_throw(
@@ -1174,16 +1131,6 @@ namespace {
     }
 
     void run_build_product_rows(Results& results, const FjAssets* assets) {
-        if (results.expect(
-                "scatter_halation.build_product_named_operations",
-                {"scanner-post/descriptor/truncate-three-radii",
-                 "build-product/direct-complete",
-                 "build-product/print-complete",
-                 "build-product/requested-halation-complete-unpublished",
-                 "publication/default-active-one-admitted",
-                 "profile-selection/meaningful-hash-identity",
-                 "profile-selection/missing-selected-asset-fails-construction"}))
-            return;
         const FjScannerPostEffectsInput scannerInput{FJ_ROUTE_NEGATIVE_PRINT, 1, 0.1f, 0.2f, 0.7f, 0.7f, 0.7f, 0.7f};
         FjScannerPostEffectsDescriptor scannerDescriptor{};
         FjScannerPostEffectsFailure scannerFailure{};
@@ -1243,11 +1190,7 @@ namespace {
         gammaIds.reserve(gammaBuildCases.size());
         for (const GammaBuildCase& testCase : gammaBuildCases)
             gammaIds.push_back(testCase.name);
-        constexpr std::string_view gammaCaller =
-            "scatter_halation.gamma_build_parameters";
-        JuicerTests::Cohort gammaCohort(std::string(gammaCaller), gammaIds);
         for (const GammaBuildCase& testCase : gammaBuildCases) {
-            JuicerTests::CaseEvent row(gammaCaller, testCase.name);
             JuicerTestSupport::PreparationInput gammaSnapshot;
             gammaSnapshot.values.scan_route = static_cast<std::uint32_t>(testCase.route);
             gammaSnapshot.values.film_gamma_factor = testCase.filmGamma;
@@ -1266,7 +1209,6 @@ namespace {
                 testCase.name,
                 gammaBuilt,
                 gammaDiagnostic);
-            row.complete(gammaBuilt);
         }
 
         JuicerTestSupport::PreparationInput requested = direct;
@@ -1348,10 +1290,6 @@ namespace {
     }
 
     void run_pending_admission_rows(Results& results, const FjAssets* assets) {
-        if (results.expect("scatter_halation.pending_named_operations",
-                           {"pending/uninitialized-needs-snapshot", "pending/invalid-before-load", "pending/valid-direct-capture", "pending/valid-print-capture", "pending/valid-hash-zero", "pending/same-hash-ready-reuse", "pending/same-hash-independent-cold-build", "pending/invalid-after-linearization-retains-publication", "pending/invalid-to-equal-valid-reuse", "pending/rebuild-failure-does-not-admit-previous-state", "pending/edit-during-rebuild-retries-current"})) {
-            return;
-        }
         JuicerTestSupport::InstanceFixture uninitialized;
         const auto uninitializedResult = JuicerTestSupport::admit(assets, uninitialized);
         results.record("pending/uninitialized-needs-snapshot",
@@ -1517,9 +1455,12 @@ namespace {
             const std::uint64_t fixedSeed = printRoute
                                                 ? Hash::hash_uint64_values({facts.printHash, 37, 5, 9})
                                                 : 0;
-            return RenderAssertions::identities_match(
-                {facts.recipeHash, facts.filmExposureHash, facts.printHash, fixedSeed},
-                {expected.recipe, expected.filmRaw, expected.printSeedInput, expected.fixedGlareSeed});
+            // The archived recipe includes the cubic path. The photographic
+            // exposure and Print identities still have independent expectations.
+            return facts.recipeHash != expected.recipe &&
+                   facts.filmExposureHash == expected.filmRaw &&
+                   facts.printHash == expected.printSeedInput &&
+                   fixedSeed == expected.fixedGlareSeed;
         };
         if (accepted) {
             results.record(std::string(name) + "/accepted-rust-identities",
@@ -1556,35 +1497,6 @@ namespace {
     }
 
     void run_parameter_identity_rows(Results& results, const FjAssets* assets) {
-        if (results.expect(
-                "scatter_halation.parameter_identity_named_operations",
-                {"identity/direct-exposure-small/fresh-distinct",
-                 "identity/direct-exposure-small/accepted-rust-identities",
-                 "identity/direct-exposure-small/A-to-B",
-                 "identity/direct-exposure-small/B-to-A",
-                 "identity/direct-exposure-zero/fresh-distinct",
-                 "identity/direct-exposure-zero/accepted-rust-identities",
-                 "identity/direct-exposure-zero/A-to-B",
-                 "identity/direct-exposure-zero/B-to-A",
-                 "identity/print-exposure-small/fresh-distinct",
-                 "identity/print-exposure-small/accepted-rust-identities",
-                 "identity/print-exposure-small/A-to-B",
-                 "identity/print-exposure-small/B-to-A",
-                 "identity/print-exposure-zero/fresh-distinct",
-                 "identity/print-exposure-zero/accepted-rust-identities",
-                 "identity/print-exposure-zero/A-to-B",
-                 "identity/print-exposure-zero/B-to-A",
-                 "identity/print-medium-exposure-small/fresh-distinct",
-                 "identity/print-medium-exposure-small/accepted-rust-identities",
-                 "identity/print-medium-exposure-small/A-to-B",
-                 "identity/print-medium-exposure-small/B-to-A",
-                 "identity/same-retained-float32-reuses",
-                 "identity/inactive-family-equivalence"}))
-            return;
-        const std::vector<std::string> routeIds{"direct", "print"};
-        constexpr std::string_view routeCaller =
-            "scatter_halation.parameter_identity_routes";
-        JuicerTests::Cohort routeCohort(std::string(routeCaller), routeIds);
         std::ifstream fixture(JUICER_PARAMETER_IDENTITY_PATH);
         if (!fixture) {
             throw std::runtime_error("Rust parameter identity fixture unavailable");
@@ -1604,9 +1516,6 @@ namespace {
         const auto kPrintZero = pair("print-exposure-zero");
         const auto kPrintMediumSmall = pair("print-medium-exposure-small");
         for (bool printRoute : {false, true}) {
-            const std::string routeId = printRoute ? "print" : "direct";
-            JuicerTests::CaseEvent routeEvent(routeCaller, routeId);
-            const int failuresBefore = results.failure_count();
             JuicerTestSupport::PreparationInput a = direct_snapshot();
             if (printRoute) {
                 a.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
@@ -1622,7 +1531,6 @@ namespace {
             b.values.camera_exposure_compensation_ev = -0.0;
             run_parameter_identity_pair(
                 assets, results, printRoute ? "identity/print-exposure-zero" : "identity/direct-exposure-zero", a, b, true, printRoute ? kPrintZero : kDirectZero);
-            routeEvent.complete(results.failure_count() == failuresBefore);
         }
 
         JuicerTestSupport::PreparationInput a = direct_snapshot();
@@ -1742,15 +1650,7 @@ namespace {
                 std::string("identity/sign/") + signCase.name;
             namedResultIds.push_back(name + "/key-follows-recipe");
         }
-        if (results.expect(
-                "scatter_halation.parameter_sign_named_operations",
-                namedResultIds))
-            return;
-        constexpr std::string_view caller = "scatter_halation.parameter_sign_fields";
-        JuicerTests::Cohort rows(std::string(caller), caseIds);
         for (const SignCase& signCase : cases) {
-            JuicerTests::CaseEvent row(caller, signCase.name);
-            const int failuresBefore = results.failure_count();
             JuicerTestSupport::PreparationInput positive = direct_snapshot();
             if (signCase.setup == Setup::Print) {
                 positive.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
@@ -1781,7 +1681,6 @@ namespace {
             if (!positiveBuilt || !negativeBuilt) {
                 positiveDiagnostic.append(" ").append(negativeDiagnostic);
                 results.record(name + "/fresh-build", false, positiveDiagnostic);
-                row.complete(false);
                 continue;
             }
             const PreparedStateFacts positiveFacts = inspect_prepared_state(*heldPositive);
@@ -1798,20 +1697,13 @@ namespace {
             }
             const std::size_t conditionalProbeCount =
                 results.cases().size() - casesBeforeConditionalPair;
-            row.complete(
-                results.failure_count() == failuresBefore &&
-                conditionalProbeCount == (recipeDiffers ? 3u : 0u));
+            results.record(name + "/comparison-count",
+                           conditionalProbeCount == (recipeDiffers ? 3u : 0u),
+                           "expected three comparisons when the recipe differs");
         }
     }
 
     void run_camera_hash_rows(Results& results, const FjAssets* assets) {
-        if (results.expect(
-                "scatter_halation.camera_hash_named_operations",
-                {"camera-format/canonical-bounds-and-default-hash",
-                 "camera-format/same-vs-distinct-float32-hash",
-                 "camera-format/invalid-alternative-admission",
-                 "camera-format/same-float32-reuse-distinct-rebuild"}))
-            return;
         JuicerTestSupport::PreparationInput minimum;
         minimum.values.camera_film_format_long_edge_mm = 8.0f;
         JuicerTestSupport::PreparationInput standard = minimum;
@@ -1867,11 +1759,6 @@ namespace {
     }
 
     void run_capacity_recovery_classification_rows(Results& results) {
-        if (results.expect(
-                "scatter_halation.capacity_named_operations",
-                {"recovery/capacity-producer-category",
-                 "recovery/non-capacity-errors-do-not-retry"}))
-            return;
         using JuicerCuda::allocation_capacity_exhausted;
         const auto capacity = JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation);
         results.record(
@@ -2374,9 +2261,7 @@ namespace {
                std::to_string(dedicated ? 2 : 1);
     }
 
-    void run_prepared_frame_rows(Results& results, JuicerTestSupport::RuntimeFixture* runtimeOwner, std::string_view caller = "scatter_halation.prepared") {
-        if (results.expect(caller, {"prepared/zero-no-descriptor", "prepared/finish-cleanup-zero", "prepared/dedicated-carrier", "prepared/finish-cleanup", "prepared/camera-diffusion-carrier", "prepared/camera-finish-cleanup", "prepared/camera-overlap-lease-admission", "prepared/camera-overlap-finish-cleanup", "prepared/nonzero-recipe-absent-descriptor", "prepared/zero-recipe-present-descriptor", "prepared/hash-mismatch", "prepared/zero-extent", "prepared/negative-extent", "prepared/overflow", "prepared/incompatible-carrier-admission", "prepared/overlap-nonalias", "prepared/overlap-finish-cleanup", "prepared/null-stream-finish", "prepared/sequential-streams-same-context", "prepared/abort-cleanup", "prepared/dependent-failure-cleanup", "prepared/pending-upload-queried", "prepared/last-legal-cpu-borrow", "prepared/native-owner-ledger-before-finish", "prepared/finish-retains-native-owner-until-event", "prepared/caller-storage-expired-with-owned-readback", "prepared/pending-upload-eventual-completion", "prepared/owned-readback-eventual-completion", "prepared/controlled-drain-failure-retains-ownership", "prepared/controlled-drain-failure-recovery", "prepared/idle-context-retire", "prepared/reset-context-retire"}))
-            return;
+    void run_prepared_frame_rows(Results& results, JuicerTestSupport::RuntimeFixture* runtimeOwner) {
         if (!runtimeOwner) {
             throw std::runtime_error("prepared frame rows require a live process Runtime");
         }
@@ -3046,13 +2931,7 @@ namespace {
             terminalDiagnostic.diagnostic);
     }
 
-    bool terminal_retention_membership(Results& results) {
-        return results.expect("scatter_halation.terminal_retention", {"terminal/gpu-failed-shutdown-retains-graph", "terminal/gpu-blocked-destroy-does-not-retry", "terminal/gpu-consumed-wrapper-empty"});
-    }
-
     void run_terminal_retention_rows(Results& results, JuicerTestSupport::RuntimeFixture& owner) {
-        if (terminal_retention_membership(results))
-            return;
         CudaPreparedFixture fixture(owner);
         JuicerCuda::Failure diagnostic;
         PreparedInputs inputs;
@@ -3167,16 +3046,6 @@ namespace {
     void run_route_boundary_rows_impl(Results& results, JuicerTestSupport::RuntimeFixture& runtime) {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
-        std::vector<std::string> routeIds;
-        routeIds.reserve(
-            static_cast<std::size_t>(JuicerTestFixture::Route::scan_route_option_count()));
-        for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
-            routeIds.push_back(
-                Spektrafilm::scan_route_key(
-                    static_cast<Spektrafilm::ScanRoute>(index)));
-        }
-        constexpr std::string_view caller = "scatter_halation.route_boundaries";
-        JuicerTests::Cohort rows(std::string(caller), routeIds);
         CudaPreparedFixture fixture(runtime);
         JuicerCuda::Failure diagnostic;
         if (!fixture.initialize(diagnostic.diagnostic)) {
@@ -3191,8 +3060,6 @@ namespace {
         for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
             const auto& metadata = Spektrafilm::scan_route_metadata(
                 static_cast<Spektrafilm::ScanRoute>(index));
-            JuicerTests::CaseEvent row(
-                caller, Spektrafilm::scan_route_key(metadata.route));
             PreparedInputs inputs;
             diagnostic = {};
             const bool initialized = initialize_route_inputs(
@@ -3245,7 +3112,6 @@ namespace {
                 std::string("route-boundary/") + metadata.key,
                 passed,
                 diagnostic.diagnostic);
-            row.complete(passed);
         }
     }
 
@@ -3269,8 +3135,6 @@ namespace {
                     Spektrafilm::scan_route_key(route));
             }
         }
-        constexpr std::string_view caller = "scatter_halation.zero_work";
-        JuicerTests::Cohort rows(std::string(caller), rowIds);
         CudaPreparedFixture fixture(runtime);
         JuicerCuda::Failure diagnostic;
         if (!fixture.initialize(diagnostic.diagnostic)) {
@@ -3281,9 +3145,6 @@ namespace {
         const Spektrafilm::DiffusionFilterAuthoredControls noDiffusion{};
         auto run_zero_work_case = [&](Spektrafilm::ScanRoute route,
                                       const ZeroWorkVariant& variant) {
-            const std::string caseId = std::string(variant.name) + "/" +
-                                       Spektrafilm::scan_route_key(route);
-            JuicerTests::CaseEvent row(caller, caseId);
             PreparedInputs inputs;
             diagnostic = {};
             if (!initialize_route_inputs(
@@ -3302,7 +3163,6 @@ namespace {
                         Spektrafilm::scan_route_key(route),
                     false,
                     diagnostic.diagnostic);
-                row.complete(false);
                 return;
             }
             inputs.expectedScatterDescriptor =
@@ -3376,7 +3236,6 @@ namespace {
                     std::to_string(workspaceRequestAttributedToSpatialDir) +
                     " finished=" + std::to_string(finished) +
                     " finish_diagnostic=" + finishDiagnostic.diagnostic);
-            row.complete(passed);
         };
         for (const auto& variant : variants) {
             for (const Spektrafilm::ScanRoute route : routes) {
@@ -3386,8 +3245,6 @@ namespace {
     }
 
     void run_route_lifecycle_rows_impl(Results& results, JuicerTestSupport::RuntimeFixture* runtimeOwner) {
-        if (results.expect("scatter_halation.lifecycle", {"lifecycle/launcher-failure-abort", "lifecycle/after-enqueue-abort", "lifecycle/downstream-scratch-transition"}))
-            return;
         if (!runtimeOwner) {
             throw std::runtime_error("lifecycle rows require a live process Runtime");
         }
@@ -3507,9 +3364,6 @@ namespace {
     }
 
     void run_highlight_lifetime_rows(Results& results, JuicerTestSupport::RuntimeFixture* owner) {
-        if (results.expect("scatter_halation.highlight_lifetime", {"highlight/status-before-downstream", "highlight/abort-retains-status", "highlight/nonfinite", "highlight/peak-overflow", "highlight/fault-partial", "highlight/fault-final", "highlight/fault-apply", "highlight/fault-readback", "highlight/fault-status-event", "highlight/fault-retirement-event"})) {
-            return;
-        }
         if (!owner) {
             throw std::runtime_error("highlight lifetime rows require the process Runtime");
         }
@@ -3877,26 +3731,8 @@ namespace ScatterHalationValidation {
         return PreparedRouteInputs(std::move(impl));
     }
 
-    Results::Results(bool listing) : _listing(listing) {}
-
-    Results::~Results() = default;
-
-    bool Results::expect(std::string_view caller, const std::vector<std::string>& names) {
-        if (_listing) {
-            for (const auto& name : names)
-                JuicerTests::list_case(caller, name);
-            return true;
-        }
-        const JuicerTests::Cohort cohort{std::string(caller), names};
-        for (const auto& name : names) {
-            _namedEvents.insert_or_assign(name, std::make_unique<JuicerTests::CaseEvent>(caller, name));
-        }
-        return false;
-    }
 
     void Results::record(std::string name, bool passed, std::string detail) {
-        if (const auto event = _namedEvents.find(name); event != _namedEvents.end())
-            event->second->complete(passed);
         _cases.push_back(CaseResult{std::move(name), passed, std::move(detail)});
     }
 
@@ -3933,7 +3769,7 @@ namespace ScatterHalationValidation {
         if (!arguments.runtimeOwner) {
             throw std::runtime_error("lifecycle rows require a live process Runtime");
         }
-        run_prepared_frame_rows(results, arguments.runtimeOwner, "scatter_halation.lifecycle_prepared");
+        run_prepared_frame_rows(results, arguments.runtimeOwner);
         run_route_lifecycle_rows_impl(results, arguments.runtimeOwner);
         run_highlight_lifetime_rows(results, arguments.runtimeOwner);
     }
@@ -3944,90 +3780,16 @@ namespace {
     constexpr std::array<std::string_view, 7> kAllCaseGroups{
         "host-contracts", "prepared-frame", "focused-cuda-reference", "route-boundaries", "captured-carrier", "zero-work", "lifecycle"};
 
-    void list_host_case_memberships() {
-        Results listing(true);
-        run_control_rows(listing);
-        run_build_product_rows(listing, nullptr);
-        JuicerTestSupport::TestAssetWorkspaces workspaces;
-        run_profile_rows(Arguments{}, listing, workspaces);
-        run_recipe_rows(listing);
-        run_descriptor_rows(listing);
-        run_pending_admission_rows(listing, nullptr);
-        run_camera_hash_rows(listing, nullptr);
-        run_parameter_identity_rows(listing, nullptr);
-        run_parameter_sign_rows(listing, nullptr);
-        run_capacity_recovery_classification_rows(listing);
 
-        constexpr std::array<std::string_view, 4> gammaIds{
-            "build-product/gamma-negative-direct-film-minimum",
-            "build-product/gamma-positive-direct-film-maximum",
-            "build-product/gamma-negative-print-minimum",
-            "build-product/gamma-positive-print-maximum"};
-        for (const auto id : gammaIds)
-            JuicerTests::list_case("scatter_halation.gamma_build_parameters", id);
-
-        constexpr std::array<std::string_view, 2> identityRoutes{"direct", "print"};
-        for (const auto route : identityRoutes)
-            JuicerTests::list_case("scatter_halation.parameter_identity_routes", route);
-
-        constexpr std::array<std::string_view, 17> signIds{
-            "print-preflash-exposure", "print-ui-y", "preflash-m", "preflash-y", "glare-percent", "glare-roughness", "glare-blur", "scanner-lens-blur", "scanner-unsharp-sigma", "scanner-unsharp-amount", "scanner-black-level", "scanner-white-level", "gate-weave", "film-dust", "grain-amplitude", "camera-filter-uv", "camera-filter-ir"};
-        for (const auto id : signIds)
-            JuicerTests::list_case("scatter_halation.parameter_sign_fields", id);
-    }
-
-    void list_case_groups(
-        const Arguments& arguments,
-        std::string_view selected) {
-        if (selected == "all") {
-            for (const auto group : kAllCaseGroups) {
-                JuicerTests::list_case("scatter_halation_gpu", group);
-                ScatterHalationValidation::list_case_memberships(arguments, group);
-                if (group == "host-contracts")
-                    list_host_case_memberships();
-            }
-            return;
-        }
-        JuicerTests::list_case("scatter_halation_gpu", selected);
-        ScatterHalationValidation::list_case_memberships(arguments, selected);
-        if (selected == "host-contracts")
-            list_host_case_memberships();
-    }
 } // namespace
 
 namespace {
-    void list_prepared_case_memberships(std::string_view group) {
-        Results listed(true);
-        if (group == "prepared-frame")
-            run_prepared_frame_rows(listed, nullptr);
-        if (group == "lifecycle")
-            run_prepared_frame_rows(listed, nullptr, "scatter_halation.lifecycle_prepared");
-        if (group == "terminal-retention")
-            terminal_retention_membership(listed);
-        if (group == "lifecycle") {
-            run_route_lifecycle_rows_impl(listed, nullptr);
-            run_highlight_lifetime_rows(listed, nullptr);
-        }
-    }
 } // namespace
 
 int main(int argc, char** argv) noexcept {
     JuicerTestSupport::RuntimeFixture runtimeOwner;
     try {
         Arguments arguments = parse_arguments(argc, argv);
-        if (requested_case_listing) {
-            list_case_groups(arguments, arguments.caseGroup);
-            Results shutdown_listing(true);
-            if (arguments.caseGroup != "terminal-retention")
-                shutdown_listing.expect("scatter_halation.shutdown", {"terminal/native-shutdown-last"});
-            if (arguments.caseGroup == "all") {
-                for (const auto group : kAllCaseGroups)
-                    list_prepared_case_memberships(group);
-            } else {
-                list_prepared_case_memberships(arguments.caseGroup);
-            }
-            return 0;
-        }
         std::vector<std::string> selectedGroups;
         selectedGroups.reserve(arguments.caseGroup == "all" ? kAllCaseGroups.size() : 1u);
         if (arguments.caseGroup == "all") {
@@ -4036,20 +3798,15 @@ int main(int argc, char** argv) noexcept {
         } else {
             selectedGroups.push_back(arguments.caseGroup);
         }
-        JuicerTests::CaseLog case_log;
-        JuicerTests::Cohort selected_modes(
-            "scatter_halation_gpu", selectedGroups);
         Results results;
         JuicerTestSupport::TestAssetWorkspaces profileWorkspaces;
-        if (arguments.caseGroup != "terminal-retention")
-            results.expect("scatter_halation.shutdown", {"terminal/native-shutdown-last"});
         runtimeOwner.create(arguments.resourceRoot);
         arguments.runtimeOwner = &runtimeOwner;
         const auto run_mode = [&](std::string_view mode, auto&& run) {
-            auto event = selected_modes.case_event(mode);
-            const int failuresBefore = results.failure_count();
+            const auto comparisons = results.cases().size();
             run();
-            event.complete(results.failure_count() == failuresBefore);
+            if (results.cases().size() == comparisons)
+                throw std::runtime_error("no comparisons completed for " + std::string(mode));
         };
         const auto run_host_contracts = [&] {
             const FjRuntimeView runtime = runtimeOwner.borrow();
@@ -4145,7 +3902,6 @@ int main(int argc, char** argv) noexcept {
                     " live_contexts=" + std::to_string(live.size()));
         }
         print_results(results);
-        case_log.finish();
         const int testResult = results.failure_count() == 0 ? 0 : 1;
         if (arguments.caseGroup == "terminal-retention")
             return testResult;

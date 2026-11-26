@@ -18,9 +18,6 @@ use film_juicer_core::data_io::{
     ReadError, ReadErrorKind, ReadPart, load_csv_pairs, load_cmf_csv, load_mallett_basis,
     load_spectra_lut,
 };
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -199,12 +196,27 @@ const BUNDLE: &[BundleCase] = &[
 
 #[test]
 fn bundled_csv_bits() {
-    let mut cases = RowCases::new(
-        "bundled-csv-resources",
-        BUNDLE[..8].iter().map(|(resource, _, _, _)| *resource),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(BUNDLE[..8].iter().map(|(resource, _, _, _)| *resource))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-csv-resources"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-csv-resources"
     );
     for &(resource, rows, hash, samples) in &BUNDLE[..8] {
-        let row = cases.case(resource);
+        let row = AsRef::<str>::as_ref(&(resource)).to_owned();
         let path = repository().join("Resources").join(resource);
         let values: Vec<f32> = if resource == "cie1931_2deg.csv" {
             let csv = load_cmf_csv(&path).unwrap();
@@ -219,19 +231,40 @@ fn bundled_csv_bits() {
         for &(index, expected) in samples {
             assert_eq!(values[index].to_bits(), expected, "{resource}[{index}]");
         }
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
 fn bundled_npy_bits() {
-    let mut cases = RowCases::new(
-        "bundled-npy-resources",
-        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-npy-resources"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-npy-resources"
     );
     for &(resource, _, hash, samples) in &BUNDLE[8..] {
-        let row = cases.case(resource);
+        let row = AsRef::<str>::as_ref(&(resource)).to_owned();
         let path = repository().join("Resources").join(resource);
         let basis = resource.ends_with("mallett2019_basis.npy");
         let values = if basis {
@@ -247,9 +280,15 @@ fn bundled_npy_bits() {
         if resource.contains("arctic") {
             assert_eq!(values.iter().copied().fold(0.0_f32, f32::max), 41.0625);
         }
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -317,15 +356,38 @@ fn csv_pair_extraction() {
         .enumerate()
         .map(|(i, _)| format!("csv-line/{i}"))
         .collect();
-    let mut rows = RowCases::new("csv-pair-extraction-lines", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "csv-pair-extraction-lines"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "csv-pair-extraction-lines"
+    );
     for ((line, expected), id) in cases.iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let csv = load_csv_pairs(directory.write(format!("{line}\n"))).unwrap();
         let actual: Vec<u32> = csv.rows().iter().flatten().map(|v| v.to_bits()).collect();
         assert_eq!(actual, *expected, "{line:?}");
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -342,14 +404,37 @@ fn cmf_csv_extraction() {
     let accepted_ids: Vec<String> = (0..accepted.len())
         .map(|i| format!("accepted/{i}"))
         .collect();
-    let mut accepted_rows = RowCases::new("cmf-csv-accepted-forms", &accepted_ids);
+    let accepted_rows_ids: Vec<_> = IntoIterator::into_iter(&accepted_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !accepted_rows_ids.is_empty(),
+        "empty case set: {}",
+        "cmf-csv-accepted-forms"
+    );
+    let accepted_rows_count = accepted_rows_ids.len();
+    let mut accepted_rows_remaining = accepted_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        accepted_rows_remaining.len(),
+        accepted_rows_count,
+        "duplicate case IDs: {}",
+        "cmf-csv-accepted-forms"
+    );
     for (line, id) in accepted.into_iter().zip(&accepted_ids) {
-        let row = accepted_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let csv = load_cmf_csv(directory.write(line)).unwrap();
         assert_eq!(csv.rows(), &[[1.0, 2.0, 3.0, 4.0]], "{line}");
-        row.passed();
+        assert!(
+            accepted_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    accepted_rows.finish();
+    assert!(
+        accepted_rows_remaining.is_empty(),
+        "missing comparisons: {accepted_rows_remaining:?}"
+    );
     let rejected = [
         "1,2,3",
         "1,2,bad,4",
@@ -363,9 +448,26 @@ fn cmf_csv_extraction() {
     let rejected_ids: Vec<String> = (0..rejected.len())
         .map(|i| format!("rejected/{i}"))
         .collect();
-    let mut rejected_rows = RowCases::new("cmf-csv-rejected-forms", &rejected_ids);
+    let rejected_rows_ids: Vec<_> = IntoIterator::into_iter(&rejected_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rejected_rows_ids.is_empty(),
+        "empty case set: {}",
+        "cmf-csv-rejected-forms"
+    );
+    let rejected_rows_count = rejected_rows_ids.len();
+    let mut rejected_rows_remaining = rejected_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rejected_rows_remaining.len(),
+        rejected_rows_count,
+        "duplicate case IDs: {}",
+        "cmf-csv-rejected-forms"
+    );
     for (line, id) in rejected.into_iter().zip(&rejected_ids) {
-        let row = rejected_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert!(
             load_cmf_csv(directory.write(line))
                 .unwrap()
@@ -373,9 +475,15 @@ fn cmf_csv_extraction() {
                 .is_empty(),
             "{line}"
         );
-        row.passed();
+        assert!(
+            rejected_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rejected_rows.finish();
+    assert!(
+        rejected_rows_remaining.is_empty(),
+        "missing comparisons: {rejected_rows_remaining:?}"
+    );
     let csv = load_cmf_csv(directory.write("-0,+0,-0e0,1e-50")).unwrap();
     assert_eq!(
         csv.rows()[0].map(f32::to_bits),
@@ -401,25 +509,49 @@ fn csv_preserves_raw_rows() {
 #[test]
 fn csv_line_limit() {
     let directory = Directory::new();
-    let mut rows = RowCases::new(
-        "csv-line-limit-boundaries",
-        ["over-limit-second-line", "at-limit-valid-row"],
+    let rows_ids: Vec<_> =
+        IntoIterator::into_iter(["over-limit-second-line", "at-limit-valid-row"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "csv-line-limit-boundaries"
     );
-    let too_long = rows.case("over-limit-second-line");
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "csv-line-limit-boundaries"
+    );
+    let too_long = AsRef::<str>::as_ref(&("over-limit-second-line")).to_owned();
     let mut source = b"1,2\n".to_vec();
     source.extend(vec![b'x'; 65_536]);
     let error = load_csv_pairs(directory.write(source)).unwrap_err();
     assert_eq!(error.kind, ReadErrorKind::CsvLineTooLong { line: 2 });
     assert!(error.path.ends_with("input"));
-    too_long.passed();
-    let at_limit = rows.case("at-limit-valid-row");
+    assert!(
+        rows_remaining.remove(&too_long),
+        "unexpected or repeated comparison: {too_long}"
+    );
+    let at_limit = AsRef::<str>::as_ref(&("at-limit-valid-row")).to_owned();
     let source = format!("1,2{}", " ".repeat(65_532));
     assert_eq!(
         load_csv_pairs(directory.write(source)).unwrap().rows(),
         &[[1.0, 2.0]]
     );
-    at_limit.passed();
-    rows.finish();
+    assert!(
+        rows_remaining.remove(&at_limit),
+        "unexpected or repeated comparison: {at_limit}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -427,40 +559,72 @@ fn missing_files() {
     let directory = Directory::new();
     let path = directory.0.join("absent");
     let ids = ["csv-pairs", "cmf-csv", "spectral-lut", "mallett-basis"];
-    let mut rows = RowCases::new("missing-resource-files", ids);
-    let row = rows.case("csv-pairs");
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "missing-resource-files"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "missing-resource-files"
+    );
+    let row = AsRef::<str>::as_ref(&("csv-pairs")).to_owned();
     let error = load_csv_pairs(&path).unwrap_err();
     assert_eq!(error.path, path);
     assert_eq!(
         error.kind,
         ReadErrorKind::Open(std::io::ErrorKind::NotFound)
     );
-    row.passed();
-    let row = rows.case("cmf-csv");
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("cmf-csv")).to_owned();
     let error = load_cmf_csv(&path).unwrap_err();
     assert_eq!(error.path, path);
     assert_eq!(
         error.kind,
         ReadErrorKind::Open(std::io::ErrorKind::NotFound)
     );
-    row.passed();
-    let row = rows.case("spectral-lut");
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("spectral-lut")).to_owned();
     let error = load_spectra_lut(&path).unwrap_err();
     assert_eq!(error.path, path);
     assert_eq!(
         error.kind,
         ReadErrorKind::Open(std::io::ErrorKind::NotFound)
     );
-    row.passed();
-    let row = rows.case("mallett-basis");
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("mallett-basis")).to_owned();
     let error = load_mallett_basis(&path).unwrap_err();
     assert_eq!(error.path, path);
     assert_eq!(
         error.kind,
         ReadErrorKind::Open(std::io::ErrorKind::NotFound)
     );
-    row.passed();
-    rows.finish();
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 fn npy(header: &str, payload: &[u8]) -> Vec<u8> {
@@ -486,7 +650,24 @@ fn equivalent_npy_headers() {
         .iter()
         .flat_map(|(resource, _, _, _)| (0..6).map(move |i| format!("{resource}/header/{i}")))
         .collect();
-    let mut cases = RowCases::new("equivalent-npy-header-forms", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "equivalent-npy-header-forms"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "equivalent-npy-header-forms"
+    );
     for &(resource, _, hash, _) in &BUNDLE[8..] {
         let bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
@@ -506,13 +687,16 @@ fn equivalent_npy_headers() {
             format!("{{'shape':({shape}),'fortran_order':False,'descr':'{dtype}'}}\r\n"),
         ].into_iter().enumerate() {
             let id = format!("{resource}/header/{header_index}");
-            let row = cases.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let values = load_npy(&directory.write(npy(&header, &bytes[128..])), basis).unwrap();
             assert_eq!(fingerprint(values), hash, "{resource}: {header}");
-            row.passed();
+            assert!(cases_remaining.remove(&row), "unexpected or repeated comparison: {row}");
         }
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -605,13 +789,30 @@ fn supported_float_widths_preserve_authored_samples() {
             ["spectra-lut", "mallett-basis"].map(move |asset| format!("{dtype}/{asset}"))
         })
         .collect();
-    let mut cases = RowCases::new("npy-float-width-samples", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-float-width-samples"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "npy-float-width-samples"
+    );
     for (dtype, pattern, expected) in types {
         for (basis, shape, count, asset) in [
             (false, "192,192,81", 2_985_984, "spectra-lut"),
             (true, "81,3", 243, "mallett-basis"),
         ] {
-            let row = cases.case(format!("{dtype}/{asset}"));
+            let row = AsRef::<str>::as_ref(&(format!("{dtype}/{asset}"))).to_owned();
             let width = pattern.len() / expected.len();
             let mut payload = Vec::with_capacity(count * width);
             for index in 0..count {
@@ -629,21 +830,42 @@ fn supported_float_widths_preserve_authored_samples() {
                     "{dtype} basis={basis} [{index}]"
                 );
             }
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
 fn changed_bundled_contents_load() {
     let directory = Directory::new();
-    let mut cases = RowCases::new(
-        "changed-bundled-npy-content",
-        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "changed-bundled-npy-content"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "changed-bundled-npy-content"
     );
     for &(resource, _, hash, _) in &BUNDLE[8..] {
-        let row = cases.case(resource);
+        let row = AsRef::<str>::as_ref(&(resource)).to_owned();
         let mut bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
         // Change a finite sample without changing the representation.
@@ -665,9 +887,15 @@ fn changed_bundled_contents_load() {
             values[0].to_bits(),
             if basis { 0xffc1_2345 } else { 0xffc4_6000 }
         );
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -677,12 +905,26 @@ fn rejects_malformed_or_unsupported_npy_representations() {
         (false, "192,192,81", "spectra-lut"),
         (true, "81,3", "mallett-basis"),
     ];
-    let mut layout_cases = RowCases::new(
-        "npy-malformed-layouts",
-        layouts.iter().map(|(_, _, id)| *id),
+    let layout_cases_ids: Vec<_> = IntoIterator::into_iter(layouts.iter().map(|(_, _, id)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !layout_cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-malformed-layouts"
+    );
+    let layout_cases_count = layout_cases_ids.len();
+    let mut layout_cases_remaining = layout_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        layout_cases_remaining.len(),
+        layout_cases_count,
+        "duplicate case IDs: {}",
+        "npy-malformed-layouts"
     );
     for (basis, shape, layout_id) in layouts {
-        let layout_case = layout_cases.case(layout_id);
+        let layout_case = AsRef::<str>::as_ref(&(layout_id)).to_owned();
         let layout = if basis { "(81, 3)" } else { "(192, 192, 81)" };
         let valid = format!("{{'descr':'<f4','fortran_order':False,'shape':({shape})}}\n");
         let mut headers = vec![
@@ -745,44 +987,116 @@ fn rejects_malformed_or_unsupported_npy_representations() {
             headers.push(valid.replace(&format!("({shape})"), wrong_shape));
         }
         let header_ids: Vec<String> = (0..headers.len()).map(|i| format!("header/{i}")).collect();
-        let mut header_cases =
-            RowCases::new(format!("npy-invalid-header/{layout_id}"), &header_ids);
+        let header_cases_ids: Vec<_> = IntoIterator::into_iter(&header_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !header_cases_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("npy-invalid-header/{layout_id}")
+        );
+        let header_cases_count = header_cases_ids.len();
+        let mut header_cases_remaining = header_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            header_cases_remaining.len(),
+            header_cases_count,
+            "duplicate case IDs: {}",
+            format_args!("npy-invalid-header/{layout_id}")
+        );
         for (header, id) in headers.into_iter().zip(&header_ids) {
-            let row = header_cases.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let path = directory.write(npy(&header, &[]));
             assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
-            row.passed();
+            assert!(
+                header_cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        header_cases.finish();
+        assert!(
+            header_cases_remaining.is_empty(),
+            "missing comparisons: {header_cases_remaining:?}"
+        );
         let versions = [(0, 0), (1, 1), (2, 0), (3, 0), (255, 255)];
         let version_ids: Vec<String> = versions
             .iter()
             .map(|(major, minor)| format!("version/{major}/{minor}"))
             .collect();
-        let mut version_cases =
-            RowCases::new(format!("npy-invalid-versions/{layout_id}"), &version_ids);
+        let version_cases_ids: Vec<_> = IntoIterator::into_iter(&version_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !version_cases_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("npy-invalid-versions/{layout_id}")
+        );
+        let version_cases_count = version_cases_ids.len();
+        let mut version_cases_remaining = version_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            version_cases_remaining.len(),
+            version_cases_count,
+            "duplicate case IDs: {}",
+            format_args!("npy-invalid-versions/{layout_id}")
+        );
         for ((major, minor), id) in versions.into_iter().zip(&version_ids) {
-            let row = version_cases.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let mut bytes = npy(&valid, &[]);
             bytes[6] = major;
             bytes[7] = minor;
             let path = directory.write(bytes);
             assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
-            row.passed();
+            assert!(
+                version_cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        version_cases.finish();
-        let mut magic_cases =
-            RowCases::new(format!("npy-invalid-magic/{layout_id}"), ["bad-magic"]);
-        let magic = magic_cases.case("bad-magic");
+        assert!(
+            version_cases_remaining.is_empty(),
+            "missing comparisons: {version_cases_remaining:?}"
+        );
+        let magic_cases_ids: Vec<_> = IntoIterator::into_iter(["bad-magic"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !magic_cases_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("npy-invalid-magic/{layout_id}")
+        );
+        let magic_cases_count = magic_cases_ids.len();
+        let mut magic_cases_remaining = magic_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            magic_cases_remaining.len(),
+            magic_cases_count,
+            "duplicate case IDs: {}",
+            format_args!("npy-invalid-magic/{layout_id}")
+        );
+        let magic = AsRef::<str>::as_ref(&("bad-magic")).to_owned();
         let mut bytes = npy(&valid, &[]);
         bytes[0] = 0;
         let path = directory.write(bytes);
         assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
-        magic.passed();
-        magic_cases.finish();
-        layout_case.passed();
+        assert!(
+            magic_cases_remaining.remove(&magic),
+            "unexpected or repeated comparison: {magic}"
+        );
+        assert!(
+            magic_cases_remaining.is_empty(),
+            "missing comparisons: {magic_cases_remaining:?}"
+        );
+        assert!(
+            layout_cases_remaining.remove(&layout_case),
+            "unexpected or repeated comparison: {layout_case}"
+        );
     }
-    layout_cases.finish();
+    assert!(
+        layout_cases_remaining.is_empty(),
+        "missing comparisons: {layout_cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -793,9 +1107,26 @@ fn rejects_npy_size_overflow() {
         (true, ",3", "mallett-basis"),
     ];
     let ids = ["spectra-lut", "mallett-basis"];
-    let mut layout_cases = RowCases::new("npy-size-overflow-layouts", ids);
+    let layout_cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !layout_cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-size-overflow-layouts"
+    );
+    let layout_cases_count = layout_cases_ids.len();
+    let mut layout_cases_remaining = layout_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        layout_cases_remaining.len(),
+        layout_cases_count,
+        "duplicate case IDs: {}",
+        "npy-size-overflow-layouts"
+    );
     for (basis, tail, name) in layouts {
-        let layout = layout_cases.case(name);
+        let layout = AsRef::<str>::as_ref(&(name)).to_owned();
         let dimensions = [
             format!("{}0", usize::MAX),
             usize::MAX.to_string(),
@@ -804,21 +1135,50 @@ fn rejects_npy_size_overflow() {
         let ids: Vec<String> = (0..dimensions.len())
             .map(|i| format!("dimension/{i}"))
             .collect();
-        let mut cases = RowCases::new(format!("npy-overflow-dimensions/{name}"), &ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("npy-overflow-dimensions/{name}")
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            format_args!("npy-overflow-dimensions/{name}")
+        );
         for (dimension, id) in dimensions.into_iter().zip(&ids) {
-            let row = cases.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let header =
                 format!("{{'descr':'<f8','fortran_order':False,'shape':({dimension}{tail})}}\n");
             let path = directory.write(npy(&header, &[]));
             let error = load_npy(&path, basis).unwrap_err();
             assert_eq!(error.path, path);
             assert_eq!(error.kind, ReadErrorKind::Size);
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        cases.finish();
-        layout.passed();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
+        assert!(
+            layout_cases_remaining.remove(&layout),
+            "unexpected or repeated comparison: {layout}"
+        );
     }
-    layout_cases.finish();
+    assert!(
+        layout_cases_remaining.is_empty(),
+        "missing comparisons: {layout_cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -828,17 +1188,49 @@ fn rejects_truncated_npy_headers_and_payloads() {
         (false, "192,192,81", 2_985_984, "spectra-lut"),
         (true, "81,3", 243, "mallett-basis"),
     ];
-    let mut layouts_cases = RowCases::new(
-        "npy-truncated-layouts",
-        layouts.iter().map(|(_, _, _, id)| *id),
+    let layouts_cases_ids: Vec<_> =
+        IntoIterator::into_iter(layouts.iter().map(|(_, _, _, id)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !layouts_cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-truncated-layouts"
+    );
+    let layouts_cases_count = layouts_cases_ids.len();
+    let mut layouts_cases_remaining = layouts_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        layouts_cases_remaining.len(),
+        layouts_cases_count,
+        "duplicate case IDs: {}",
+        "npy-truncated-layouts"
     );
     for (basis, shape, count, name) in layouts {
-        let layout_case = layouts_cases.case(name);
+        let layout_case = AsRef::<str>::as_ref(&(name)).to_owned();
         let dtypes = [("<f2", 2), ("<f4", 4), ("<f8", 8)];
         let dtype_ids = ["<f2", "<f4", "<f8"];
-        let mut dtype_cases = RowCases::new(format!("npy-truncated-dtypes/{name}"), dtype_ids);
+        let dtype_cases_ids: Vec<_> = IntoIterator::into_iter(dtype_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !dtype_cases_ids.is_empty(),
+            "empty case set: {}",
+            format_args!("npy-truncated-dtypes/{name}")
+        );
+        let dtype_cases_count = dtype_cases_ids.len();
+        let mut dtype_cases_remaining = dtype_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            dtype_cases_remaining.len(),
+            dtype_cases_count,
+            "duplicate case IDs: {}",
+            format_args!("npy-truncated-dtypes/{name}")
+        );
         for ((dtype, width), dtype_id) in dtypes.into_iter().zip(dtype_ids) {
-            let dtype_case = dtype_cases.case(dtype_id);
+            let dtype_case = AsRef::<str>::as_ref(&(dtype_id)).to_owned();
             let header = format!("{{'descr':'{dtype}','fortran_order':False,'shape':({shape})}}\n");
             let mut bytes = npy(&header, &[]);
             let offset = bytes.len();
@@ -858,9 +1250,26 @@ fn rejects_truncated_npy_headers_and_payloads() {
                 .enumerate()
                 .map(|(i, (length, part))| format!("cut/{i}/{part:?}/{length}"))
                 .collect();
-            let mut cut_cases = RowCases::new(format!("npy-truncated-cuts/{name}/{dtype}"), &ids);
+            let cut_cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+            assert!(
+                !cut_cases_ids.is_empty(),
+                "empty case set: {}",
+                format_args!("npy-truncated-cuts/{name}/{dtype}")
+            );
+            let cut_cases_count = cut_cases_ids.len();
+            let mut cut_cases_remaining = cut_cases_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                cut_cases_remaining.len(),
+                cut_cases_count,
+                "duplicate case IDs: {}",
+                format_args!("npy-truncated-cuts/{name}/{dtype}")
+            );
             for ((length, part), id) in cuts.into_iter().zip(&ids) {
-                let row = cut_cases.case(id);
+                let row = AsRef::<str>::as_ref(&(id)).to_owned();
                 let path = directory.write(&bytes[..length]);
                 let error = load_npy(&path, basis).unwrap_err();
                 assert_eq!(error.path, path);
@@ -869,26 +1278,59 @@ fn rejects_truncated_npy_headers_and_payloads() {
                     ReadErrorKind::ShortRead(part),
                     "{dtype} length={length}"
                 );
-                row.passed();
+                assert!(
+                    cut_cases_remaining.remove(&row),
+                    "unexpected or repeated comparison: {row}"
+                );
             }
-            cut_cases.finish();
-            dtype_case.passed();
+            assert!(
+                cut_cases_remaining.is_empty(),
+                "missing comparisons: {cut_cases_remaining:?}"
+            );
+            assert!(
+                dtype_cases_remaining.remove(&dtype_case),
+                "unexpected or repeated comparison: {dtype_case}"
+            );
         }
-        dtype_cases.finish();
-        layout_case.passed();
+        assert!(
+            dtype_cases_remaining.is_empty(),
+            "missing comparisons: {dtype_cases_remaining:?}"
+        );
+        assert!(
+            layouts_cases_remaining.remove(&layout_case),
+            "unexpected or repeated comparison: {layout_case}"
+        );
     }
-    layouts_cases.finish();
+    assert!(
+        layouts_cases_remaining.is_empty(),
+        "missing comparisons: {layouts_cases_remaining:?}"
+    );
 }
 
 #[test]
 fn rejects_trailing_npy_payload_bytes() {
     let directory = Directory::new();
-    let mut rows = RowCases::new(
-        "npy-trailing-payload-bytes",
-        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    let rows_ids: Vec<_> =
+        IntoIterator::into_iter(BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "npy-trailing-payload-bytes"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "npy-trailing-payload-bytes"
     );
     for &(resource, _, _, _) in &BUNDLE[8..] {
-        let row = rows.case(resource);
+        let row = AsRef::<str>::as_ref(&(resource)).to_owned();
         let mut bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
         bytes.push(0);
@@ -898,7 +1340,13 @@ fn rejects_trailing_npy_payload_bytes() {
             &path,
             if basis { "(81, 3)" } else { "(192, 192, 81)" },
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }

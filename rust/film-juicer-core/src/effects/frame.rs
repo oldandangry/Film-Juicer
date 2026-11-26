@@ -1020,7 +1020,6 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::{Value, json};
     fn scalar(v: &Value) -> f32 {
@@ -1212,7 +1211,24 @@ mod tests {
                     .map(|row| format!("product/{}", row["input"]["id"].as_str().unwrap())),
             )
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("effects-frame-values", expected_ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(expected_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "effects-frame-values"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "effects-frame-values"
+        );
         for (group, row) in rows
             .iter()
             .map(|row| ("case", row))
@@ -1222,7 +1238,8 @@ mod tests {
             if v["missing_recipe"] == true {
                 continue;
             }
-            let case = cases.case(format!("{group}/{}", v["id"].as_str().unwrap()));
+            let case = AsRef::<str>::as_ref(&(format!("{group}/{}", v["id"].as_str().unwrap())))
+                .to_owned();
             let result = Frame::new(input(v));
             assert_eq!(
                 result.is_ok(),
@@ -1263,9 +1280,15 @@ mod tests {
                     );
                 }
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn independently_characterized_primitives() {
@@ -1277,13 +1300,28 @@ mod tests {
             json!(rows.iter().map(|r| &r["input"]["id"]).collect::<Vec<_>>()),
             checked["primitive_ids"]
         );
-        let mut cases = RowCases::new(
-            "effects-frame-primitives",
-            rows.iter().map(|row| row["input"]["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["input"]["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "effects-frame-primitives"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "effects-frame-primitives"
         );
         for row in rows {
             let v = &row["input"];
-            let case = cases.case(v["id"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(v["id"].as_str().unwrap())).to_owned();
             let args = [
                 wide(&v["args"][0]),
                 wide(&v["args"][1]),
@@ -1319,8 +1357,14 @@ mod tests {
             } else {
                 assert_eq!(json!(words), row["words"], "{}", v["id"]);
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

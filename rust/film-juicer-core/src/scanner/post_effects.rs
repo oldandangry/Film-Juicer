@@ -223,7 +223,6 @@ pub fn describe_post_effects(params: PostEffectsParams) -> Result<PostEffects, P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     fn params(route: ScanRoute) -> PostEffectsParams {
@@ -267,16 +266,48 @@ mod tests {
             .iter()
             .filter(|row| row["input"]["route"].as_u64().unwrap() <= 3)
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new(
-            "scanner-post-effects",
-            eligible.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(eligible.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-post-effects"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "scanner-post-effects"
         );
         let successful_ids = eligible
             .iter()
             .filter(|row| row["native"]["success"].as_bool().unwrap())
             .map(|row| row["id"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
-        let mut retained_cases = RowCases::new("scanner-post-effects-retained", successful_ids);
+        let retained_cases_ids: Vec<_> = IntoIterator::into_iter(successful_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !retained_cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-post-effects-retained"
+        );
+        let retained_cases_count = retained_cases_ids.len();
+        let mut retained_cases_remaining = retained_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            retained_cases_remaining.len(),
+            retained_cases_count,
+            "duplicate case IDs: {}",
+            "scanner-post-effects-retained"
+        );
         let mut held = Vec::new();
         for row in rows {
             let input = &row["input"];
@@ -287,7 +318,7 @@ mod tests {
                 3 => ScanRoute::PositivePrint,
                 _ => continue,
             };
-            let case = cases.case(row["id"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["id"].as_str().unwrap())).to_owned();
             let v: [f32; 6] =
                 std::array::from_fn(
                     |i| f32::from_bits(input["values"][i].as_u64().unwrap() as u32),
@@ -334,48 +365,80 @@ mod tests {
                     assert_eq!(error.lane(), first as u32 + 1);
                 }
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         for (id, value, expected) in held {
-            let case = retained_cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(project(value.fields(), value.hash()), expected);
-            case.passed();
+            assert!(
+                retained_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        retained_cases.finish();
+        assert!(
+            retained_cases_remaining.is_empty(),
+            "missing comparisons: {retained_cases_remaining:?}"
+        );
     }
     #[test]
     fn radius_range_order_masking_and_overflow_are_representation_contracts() {
-        let mut cases = RowCases::new(
-            "scanner-post-effect-radius-boundaries",
-            [
-                "below-threshold",
-                "at-threshold",
-                "glare-radius-lane",
-                "lens-radius-lane",
-                "unsharp-radius-lane",
-                "direct-route-mask",
-                "maximum-radius-overflow",
-            ],
+        let cases_ids: Vec<_> = IntoIterator::into_iter([
+            "below-threshold",
+            "at-threshold",
+            "glare-radius-lane",
+            "lens-radius-lane",
+            "unsharp-radius-lane",
+            "direct-route-mask",
+            "maximum-radius-overflow",
+        ])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-post-effect-radius-boundaries"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "scanner-post-effect-radius-boundaries"
         );
         let threshold = 2147483648.0_f32 / 3.0;
         let lower = f32::from_bits(threshold.to_bits() - 1);
-        let case = cases.case("below-threshold");
+        let case = AsRef::<str>::as_ref(&("below-threshold")).to_owned();
         assert_eq!(radius(lower, 1).unwrap(), 75);
-        case.passed();
-        let case = cases.case("at-threshold");
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
+        let case = AsRef::<str>::as_ref(&("at-threshold")).to_owned();
         assert_eq!(
             radius(threshold, 1).unwrap_err().kind(),
             PostEffectsErrorKind::RadiusRange
         );
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
         for lane in 1..=3 {
             let id = match lane {
                 1 => "glare-radius-lane",
                 2 => "lens-radius-lane",
                 _ => "unsharp-radius-lane",
             };
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let mut p = params(ScanRoute::NegativePrint);
             match lane {
                 1 => p.glare_blur_sigma_px = threshold,
@@ -390,14 +453,20 @@ mod tests {
             assert_eq!(error.kind(), PostEffectsErrorKind::RadiusRange);
             assert_eq!(error.lane(), lane);
             assert!(error.rejected_attempt().is_none());
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        let case = cases.case("direct-route-mask");
+        let case = AsRef::<str>::as_ref(&("direct-route-mask")).to_owned();
         let mut p = params(ScanRoute::NegativeDirect);
         p.glare_blur_sigma_px = threshold;
         assert!(describe_post_effects(p).is_ok());
-        case.passed();
-        let case = cases.case("maximum-radius-overflow");
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
+        let case = AsRef::<str>::as_ref(&("maximum-radius-overflow")).to_owned();
         p = params(ScanRoute::NegativePrint);
         p.glare_blur_sigma_px = f32::MAX;
         p.lens_blur_sigma_px = f32::MAX;
@@ -409,7 +478,13 @@ mod tests {
                 .iter()
                 .all(|v| v.to_bits() == 0)
         );
-        case.passed();
-        cases.finish();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

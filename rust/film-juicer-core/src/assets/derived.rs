@@ -737,8 +737,6 @@ impl Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "test-support")]
-    use crate::test_cases::RowCases;
     use crate::color::{self, InputSpace, OutputSpace};
     use std::path::Path;
     use std::sync::Barrier;
@@ -764,9 +762,26 @@ mod tests {
             "inscribed-scale",
             "identity",
         ];
-        let mut cases = RowCases::new("derived-input-hull-faults", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "derived-input-hull-faults"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "derived-input-hull-faults"
+        );
         for (cause, id) in causes.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let owner = assets();
             owner.arm_hull_fault(Some(HullFault::Preparation(cause)));
             let error = owner.input_hull().err().expect("actual cold hull visit");
@@ -784,9 +799,15 @@ mod tests {
             assert!(owner.hull_fault_pending());
             owner.arm_hull_fault(None);
             assert!(!owner.hull_fault_pending());
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[cfg(feature = "test-support")]
@@ -807,10 +828,27 @@ mod tests {
             .iter()
             .flat_map(|operation| faults.map(|(_, fault)| format!("{operation:?}/{fault}")))
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("derived-illuminant-operation-faults", expected_ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(expected_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "derived-illuminant-operation-faults"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "derived-illuminant-operation-faults"
+        );
         for operation in operations {
             for (fault, fault_id) in faults {
-                let case = cases.case(format!("{operation:?}/{fault_id}"));
+                let case = AsRef::<str>::as_ref(&(format!("{operation:?}/{fault_id}"))).to_owned();
                 let owner = assets();
                 let warm = owner.illuminants().unwrap();
                 owner.arm_illuminant_operation(operation, Some(fault));
@@ -839,10 +877,16 @@ mod tests {
                 assert_eq!(metrics.allocations, 3);
                 assert_eq!(metrics.destructions, 3);
                 assert_eq!(metrics.live_bytes, 0);
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[cfg(feature = "test-support")]

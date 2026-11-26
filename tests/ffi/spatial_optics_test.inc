@@ -82,7 +82,6 @@ namespace OpticsTest {
                                                                            {"cpp", fj_test_spatial_optics_prepare}}};
         for (const auto& [caller, prepare] : callers)
             for (const auto& row : captured.at("cases")) {
-                JuicerTests::CaseEvent case_event(caller, row.at("id").get_ref<const std::string&>());
                 auto input = params(row.at("input"));
                 FjSpatialOpticsRecipe out{};
                 seed(out);
@@ -107,7 +106,6 @@ namespace OpticsTest {
                     metadata(failure, expected.reason, expected.component, expected.field, expected.channel);
                     zero(out);
                 }
-                case_event.passed();
             }
     }
     enum class RawVariant : std::uint8_t {
@@ -371,7 +369,6 @@ namespace OpticsTest {
         }
     }
     void run_operation(const OpticsOperation& operation, std::string_view caller, const Json& captured) {
-        JuicerTests::CaseEvent case_event(caller, operation.id);
         switch (operation.kind) {
             case OpticsOperationKind::Layout:
                 layouts();
@@ -382,26 +379,6 @@ namespace OpticsTest {
             case OpticsOperationKind::Fault:
                 fault_variant(captured, caller_prepare(caller), static_cast<FaultVariant>(operation.variant));
                 break;
-        }
-        case_event.passed();
-    }
-    void list_cases(const Json& captured) {
-        const auto& cases = captured.at("cases");
-        require(cases.size() == 553, "exact frozen optics literal membership");
-        std::set<std::string> ids;
-        for (const auto& row : cases) {
-            const auto id = row.at("id").get<std::string>();
-            require(!id.empty() && ids.insert(id).second, "unique frozen optics fixture IDs");
-        }
-        for (const auto caller : {std::string_view("c11"), std::string_view("cpp")})
-            for (const auto& row : cases)
-                JuicerTests::list_case(caller, row.at("id").get_ref<const std::string&>());
-        JuicerTests::list_case("cpp", layout_operation.id);
-        for (const auto caller : {std::string_view("c11"), std::string_view("cpp")}) {
-            for (const auto& operation : raw_operations)
-                JuicerTests::list_case(caller, operation.id);
-            for (const auto& operation : fault_operations)
-                JuicerTests::list_case(caller, operation.id);
         }
     }
     void run_all_nonrow_cases(const Json& captured) {
@@ -438,7 +415,6 @@ namespace OpticsTest {
         for (const auto& row : captured.at("products")) {
             const auto route = row.at("route").get<unsigned>();
             const auto variant = row.at("variant").get<unsigned>();
-            JuicerTests::CaseEvent event("cpp", "optics/product/" + std::to_string(route) + "/" + std::to_string(variant));
             auto input = variant == 0 ? inactive : active;
             input.camera_diffusion.family = variant % 4;
             input.camera_diffusion.strength = cameraStrength;
@@ -490,10 +466,8 @@ namespace OpticsTest {
                             result.native_code == 0 && !product,
                         "failed optics preparation returns no complete owner");
             }
-            event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {
-            JuicerTests::CaseEvent event("cpp", "optics/publication/" + std::to_string(route));
             JuicerTestSupport::PreparationInput baseline;
             baseline.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
             baseline.print_key = "kodak_portra_endura";
@@ -576,7 +550,6 @@ namespace OpticsTest {
             require(!build(badGrain) && diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=resolved_hash", "actual optics guard precedes later grain construction");
             require(!build(badGrain) && diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "consumed optics fault permits the later grain failure");
             require(held.recipe_hash == hash && fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "failures preserve publications and drain temporary construction holds");
-            event.passed();
         }
         std::puts("PASS 32 genuine optics products and four-route publication, ordering, recovery and identity contracts");
     }

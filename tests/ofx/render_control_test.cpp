@@ -11,14 +11,11 @@
 #include "juicer_ofx_api.h"
 #include "../ffi/juicer_test_api.h"
 #include "module_test.h"
-#include "../ffi/case_results.h"
 
 extern "C" FjStatus fj_test_ofx_instance_admit(OfxImageEffectHandle effect, FjPreparedState** out, FjErrorBuffer* error);
 
 namespace {
     using ofx_test::InstanceHost;
-    constexpr std::string_view kCaller = "ofx.render_controls";
-    constexpr std::array kCases{"non_cuda", "faults", "admission"};
     struct Fixture {
         InstanceHost host;
         OfxPlugin* plugin = nullptr;
@@ -84,7 +81,6 @@ namespace {
         return std::bit_cast<double>(bits);
     }
     void non_cuda(OfxPlugin* plugin) {
-        const JuicerTests::Cohort rows("ofx.render_controls.non_cuda", {"film_copy_allocation", "print_copy_allocation", "diagnostic_allocation"});
         const struct Case {
             const char* id;
             std::uint32_t control;
@@ -94,7 +90,6 @@ namespace {
             {"print_copy_allocation", 2, "kodak_portra_400"},
             {"diagnostic_allocation", 3, "kodak_portra_400"}};
         for (const auto& test : cases) {
-            auto row = rows.case_event(test.id);
             Fixture fixture;
             start(fixture, plugin, 2.0, false, true, test.failing_profile);
             fj_test_ofx_render_control(test.control);
@@ -107,14 +102,11 @@ namespace {
                         return call.operation == "clip_get_image";
                     }),
                     std::string(test.id) + ": non-CUDA allocation reached images");
-            row.passed();
             finish(fixture);
         }
     }
     void faults(OfxPlugin* plugin) {
-        const JuicerTests::Cohort rows("ofx.render_controls.faults", {"action_panic", "release_panic"});
         {
-            auto row = rows.case_event("action_panic");
             Fixture fixture;
             start(fixture, plugin, 1.0, true);
             fj_test_ofx_render_control(4);
@@ -125,11 +117,9 @@ namespace {
             require(fixture.host.image_release_count(fixture.effect, "Source") == 0 &&
                         fixture.host.image_release_count(fixture.effect, "Output") == 0,
                     "action panic preceded image acquisition");
-            row.passed();
             finish(fixture);
         }
         {
-            auto row = rows.case_event("release_panic");
             Fixture fixture;
             start(fixture, plugin, 1.0, true, false);
             fj_test_ofx_render_control(6);
@@ -142,14 +132,11 @@ namespace {
             require(observation.native_entry_count == 0, "missing image stopped before native entry");
             require(action(plugin, kOfxActionBeginInstanceEdit, fixture.effect) == kOfxStatFailed,
                     "cleanup panic invalidated future ordinary admission");
-            row.passed();
             finish(fixture);
         }
     }
     void admission(OfxPlugin* plugin) {
-        const JuicerTests::Cohort rows("ofx.render_controls.admission", {"invalid_current", "first_capture_reentry", "render_read_reentry", "render_read_change_reentry", "release_once", "no_native_entry", "no_submission_mutation"});
         {
-            auto row = rows.case_event("invalid_current");
             Fixture fixture;
             start(fixture, plugin, time_from_bits(UINT64_C(0x43e0000000000000)), true);
             require(action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args()) == kOfxStatErrFatal,
@@ -173,11 +160,9 @@ namespace {
                     "failed current admission releases both images");
             const auto observation = observe(fixture);
             require(observation.native_entry_count == 0, "failed current admission preceded native entry");
-            row.passed();
             finish(fixture);
         }
         {
-            auto row = rows.case_event("first_capture_reentry");
             Fixture fixture;
             start(fixture, plugin, time_from_bits(UINT64_C(0x43e0000000000000)), true);
             OfxStatus nested = kOfxStatOK;
@@ -192,11 +177,9 @@ namespace {
                     "outer and reentrant renders release their images once");
             const auto observation = observe(fixture);
             require(observation.native_entry_count == 0, "time rejection left native entry count unchanged");
-            row.passed();
             finish(fixture);
         }
         for (const bool interveningChange : {false, true}) {
-            auto row = rows.case_event(interveningChange ? "render_read_change_reentry" : "render_read_reentry");
             Fixture fixture;
             start(fixture, plugin, time_from_bits(UINT64_C(0x43e0000000000000)), true);
             OfxStatus nested = kOfxStatOK;
@@ -223,14 +206,12 @@ namespace {
                         fixture.host.image_release_count(fixture.effect, "Output") == 3,
                     "all three nested render callbacks release both images once");
             require(observe(fixture).native_entry_count == 0, "bounded reentry and invalid frame never enter CUDA");
-            row.passed();
             finish(fixture);
         }
         const struct Case {
             const char* id;
         } cases[]{{"release_once"}, {"no_native_entry"}, {"no_submission_mutation"}};
         for (const auto& test : cases) {
-            auto row = rows.case_event(test.id);
             Fixture fixture;
             start(fixture, plugin, time_from_bits(UINT64_C(0x43e0000000000000)), true);
             const auto status = action(plugin, kOfxImageEffectActionRender, fixture.effect, fixture.host.action_args());
@@ -249,38 +230,24 @@ namespace {
             if (std::string_view(test.id) == "no_submission_mutation")
                 require(observation.submission_id == 0 && observation.frame_token == 0,
                         "time rejection does not select or publish a submission token");
-            row.passed();
             finish(fixture);
         }
     }
 } // namespace
 
-int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
-        return 0;
-    }
+int main(int argc, char**) try {
     require(argc == 1, "render control fixture takes no arguments");
-    JuicerTests::CaseLog log;
     auto* plugin = OfxGetPlugin(0);
     require(plugin != nullptr, "Rust OFX callback available");
     {
-        JuicerTests::CaseEvent event(kCaller, "non_cuda");
         non_cuda(plugin);
-        event.passed();
     }
     {
-        JuicerTests::CaseEvent event(kCaller, "faults");
         faults(plugin);
-        event.passed();
     }
     {
-        JuicerTests::CaseEvent event(kCaller, "admission");
         admission(plugin);
-        event.passed();
     }
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "render control fixture: %s\n", error.what());

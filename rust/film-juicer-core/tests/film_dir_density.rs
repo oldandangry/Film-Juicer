@@ -7,9 +7,6 @@ use film_juicer_core::assets::Assets;
 use film_juicer_core::film::{self, density, dir};
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::{Value, json};
 
 fn root() -> PathBuf {
@@ -100,9 +97,26 @@ fn exact_native_dir_and_bounds() {
                 .unwrap_or_else(|| format!("case/{i}"))
         })
         .collect();
-    let mut rows = RowCases::new("native-dir-density-cases", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "native-dir-density-cases"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "native-dir-density-cases"
+    );
     for (case, id) in cases.iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let development = film::Development::new(
             assets.film(case["key"].as_str().unwrap()).unwrap(),
             film::Params {
@@ -123,9 +137,15 @@ fn exact_native_dir_and_bounds() {
             "authored_minimum":bits(bounds.authored_minimum_cmy()),"authored_maximum":bits(bounds.authored_maximum_cmy()),"hash":bounds.hash()});
         assert_eq!(v, case["bounds"]);
         assert_eq!(bounds.route(), development.route());
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -134,9 +154,26 @@ fn original_exposure_spans_and_bypasses() {
     let captured = fixture("-f1");
     let cases = captured.as_array().unwrap();
     let ids: Vec<String> = cases.iter().map(original_exposure_case_id).collect();
-    let mut rows = RowCases::new("original-exposure-span-bypasses", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "original-exposure-span-bypasses"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "original-exposure-span-bypasses"
+    );
     for (case, id) in cases.iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let name = case["case"].as_str().unwrap();
         let resources = if matches!(name, "duplicates" | "singleton") {
             root().join("tests/film/fixtures/synthetic").join(name)
@@ -188,9 +225,15 @@ fn original_exposure_spans_and_bypasses() {
                 _ => assert!(matches!(error, dir::Error::LogExposure { sample: 1 })),
             }
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -205,19 +248,39 @@ fn minimum_keeps_zero_sign_and_rejects_before_clamp() {
         ("positive-infinity", f32::INFINITY),
         ("negative-infinity", f32::NEG_INFINITY),
     ];
-    let mut rows = RowCases::new(
-        "invalid-density-minimum-values",
-        values.iter().map(|(id, _)| *id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(values.iter().map(|(id, _)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "invalid-density-minimum-values"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "invalid-density-minimum-values"
     );
     for (id, value) in values {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert!(matches!(
             density::Minimum::new([value, 0.0, 0.0]),
             Err(density::Error::Minimum)
         ));
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -243,9 +306,26 @@ fn focused_native_conditionals_and_minima() {
                 .unwrap_or_else(|| format!("minimum/{i}"))
         })
         .collect();
-    let mut rows = RowCases::new("focused-dir-conditionals-and-minima", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "focused-dir-conditionals-and-minima"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "focused-dir-conditionals-and-minima"
+    );
     for (case, id) in cases.iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let key = case["key"].as_str().unwrap();
         let selected = if key == "kodak_portra_400" {
             ScanRoute::NegativeDirect
@@ -326,9 +406,15 @@ fn focused_native_conditionals_and_minima() {
                 assert_eq!(json!(bounds.hash()), case["hash"]);
             }
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -375,12 +461,26 @@ fn spans_precede_knees_and_axis_reservation() {
         Err(dir::Error::Allocation)
     ));
     let faults = [(1, "size"), (2, "allocation"), (3, "zero-identity")];
-    let mut rows = RowCases::new(
-        "spatial-dir-axis-reservation-faults",
-        faults.iter().map(|(_, id)| *id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(faults.iter().map(|(_, id)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "spatial-dir-axis-reservation-faults"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "spatial-dir-axis-reservation-faults"
     );
     for (fault, id) in faults {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         dir::test_support::reject_next(fault);
         let result = dir::Recipe::new(&ordinary, params(&controls));
         assert!(matches!(
@@ -389,7 +489,13 @@ fn spans_precede_knees_and_axis_reservation() {
                 | (2, Err(dir::Error::Allocation))
                 | (3, Err(dir::Error::ZeroIdentity))
         ));
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }

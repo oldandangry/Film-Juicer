@@ -481,7 +481,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
 #[cfg(test)]
 mod tests {
     use super::frame_position;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn frame_positions() {
@@ -521,9 +520,17 @@ mod tests {
             ("positive_infinity", 0x7ff0_0000_0000_0000, Some(0)),
             ("negative_infinity", 0xfff0_0000_0000_0000, Some(0)),
         ];
-        let mut rows = RowCases::new("ofx-frame-positions", cases.map(|(id, _, _)| id));
+        let rows_ids: Vec<_> = IntoIterator::into_iter(cases.map(|(id, _, _)| id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "ofx-frame-positions");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows_remaining.len(), rows_count, "ofx-frame-positions");
         for (id, bits, expected) in cases {
-            let row = rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             {
                 let input = f64::from_bits(bits);
                 let actual = frame_position(input);
@@ -539,8 +546,14 @@ mod tests {
                     }
                 }
             }
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 }

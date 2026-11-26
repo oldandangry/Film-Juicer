@@ -25,7 +25,8 @@ foreach(resource IN LISTS JUICER_RUNTIME_RESOURCES)
         DESTINATION "${resource_destination}")
 endforeach()
 
-install(FILES Resources/grain/portra-400/NOTICE.md tests/grain/LICENSE.Fotufilm
+install(FILES Resources/grain/portra-400/NOTICE.md third_party/fotufilm/LICENSE.Fotufilm
+    third_party/fotufilm/ENGINE-NOTICE.md
     DESTINATION "${JUICER_CONTENTS}/Legal/fotufilm")
 
 install(FILES LICENSE DESTINATION "${JUICER_CONTENTS}/Legal")
@@ -33,8 +34,7 @@ install(FILES third_party/spektrafilm/SPEKTRAFILM_LICENSE.txt third_party/spektr
     DESTINATION "${JUICER_CONTENTS}/Legal/spektrafilm")
 install(DIRECTORY third_party/ofxs/Legal/ DESTINATION "${JUICER_CONTENTS}/Legal/ofxs")
 install(FILES third_party/ofxs/PROVENANCE.json DESTINATION "${JUICER_CONTENTS}/Legal/ofxs")
-install(FILES third_party/nlohmann/LICENSE.MIT third_party/nlohmann/PROVENANCE.md
-    DESTINATION "${JUICER_CONTENTS}/Legal/nlohmann")
+install(FILES third_party/openrand/LICENSE.MIT DESTINATION "${JUICER_CONTENTS}/Legal/openrand")
 install(FILES third_party/rust/PROVENANCE.md DESTINATION "${JUICER_CONTENTS}/Legal/rust")
 install(FILES third_party/rust/itoa-1.0.18/LICENSE-MIT third_party/rust/itoa-1.0.18/LICENSE-APACHE
     DESTINATION "${JUICER_CONTENTS}/Legal/rust/itoa-1.0.18")
@@ -84,6 +84,8 @@ if(WIN32)
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${JUICER_CONTENTS}/${JUICER_ARCH_DIR}")
     set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
     include(InstallRequiredSystemLibraries)
+    install(FILES third_party/msvc-runtime/PROVENANCE.md
+        DESTINATION "${JUICER_CONTENTS}/Legal/msvc-runtime")
 else()
     install(FILES
         third_party/gcc-runtime/GPL-3.0-only.txt

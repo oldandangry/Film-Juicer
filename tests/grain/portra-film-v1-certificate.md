@@ -82,14 +82,14 @@ Task 8 certificate. Cleanup uses the [contributor checks](../../CONTRIBUTING.md#
 The mathematical domain, parent ranges, exact inputs and accepted numerical
 bounds continue to define the certificate.
 
-Routine `Rust.Core` runs the placement and periodic bank checks and the focused
-calibration intervals. Supply a maintenance request through the CUDA-free
-Linux Debug host selection.
+Workspace nextest runs the placement, periodic bank and calibration checks.
+For a maintenance run, put `portra-certificate-request.json` in its output
+directory and point `FJ_PORTRA_CERTIFICATE` at that directory.
 
 ```sh
-python -B scripts/verify.py development --preset linux-debug --cuda-free \
-  --runtime host --tests Rust.Core --run-id portra-check \
-  --portra-certificate /path/to/request.json
+FJ_PORTRA_CERTIFICATE=/absolute/path/to/validation-directory \
+  cargo nextest run --locked -p film-juicer-core --features test-support \
+  --test-threads 1 -E 'test(calibration_intervals_enclose_executed_words_and_signed_guards)'
 ```
 
 The request has schema `portra-certificate-request-v1`, a `mode`, and ordered,
@@ -118,13 +118,13 @@ bit patterns as JSON integers. The modes have these obligations.
   parent. Duplicate or out-of-parent words, extra bytes and wrong digests
   fail the request. Keep the corresponding parent proof with the receipt.
 
-The verifier copies the request and exact flag bytes into its run bundle before
-execution. The Rust execution record identifies those files and its terminal
-report. The offline reader checks the member digests, the successful certificate
-function, exact input membership and the reported coverage and bounds. Read
-the completed result with `scripts/qualification.py --bundle <directory>`.
+The original verifier copied the request and exact flag bytes into its run
+bundle before execution. Its Rust record identifies those files and the terminal
+report. Use the tagged guide to inspect retained migration evidence and verify
+its digests, input membership, coverage and bounds.
+[Tagged certificate guide](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/grain/portra-film-v1-certificate.md)
 
-The signed density and enlarger witnesses in `Rust.Core`, the held high-gain
+The signed density and enlarger witnesses in the core workspace tests, the held high-gain
 GPU scanner XYZ reference, and the staged and linked CUDA cohorts exercise the
 result. The all-word argument supplies the calibration and interval coverage
 between those checks. Delivered RGB and historical cubic comparisons retain the

@@ -16,9 +16,6 @@ use film_juicer_core::profile::{
     ProfileCompletionError, ProfileCompletionErrorKind, ProfileInfo, ProfileSource, ProfileTables,
     Role, load_catalog, load_film_source, load_print_source,
 };
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -183,9 +180,26 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
         .iter()
         .map(|(role, entry)| format!("{role}/{}", entry.key()))
         .collect();
-    let mut cases = RowCases::new("bundled-completed-profiles", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-completed-profiles"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-completed-profiles"
+    );
     for ((role_name, entry), id) in entries.iter().zip(&ids) {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let role = if *role_name == "film" {
             Role::Film
         } else {
@@ -331,9 +345,15 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
             );
         }
         count += 1;
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     assert_eq!(count, 28);
 }
 
@@ -356,14 +376,30 @@ fn synthetic_completions_match_frozen_identity_composition_and_digests() {
     let expected = fixture("completed.json");
     let directory = Directory::new();
     let fixture_cases = expected["cases"].as_array().unwrap();
-    let mut cases = RowCases::new(
-        "synthetic-completed-profile-cases",
+    let cases_ids: Vec<_> = IntoIterator::into_iter(
         fixture_cases
             .iter()
             .map(|case| case["id"].as_str().unwrap()),
+    )
+    .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+    .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "synthetic-completed-profile-cases"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "synthetic-completed-profile-cases"
     );
     for case in fixture_cases {
-        let row = cases.case(case["id"].as_str().unwrap());
+        let row = AsRef::<str>::as_ref(&(case["id"].as_str().unwrap())).to_owned();
         let document = case_document(&expected, case);
         let role = if document["info"]["stage"] == "printing" {
             Role::Print
@@ -393,9 +429,15 @@ fn synthetic_completions_match_frozen_identity_composition_and_digests() {
         if let Completed::Film(film) = &completed {
             assert_processing_defaults(film.processing_defaults(), &case["digest"]);
         }
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -417,7 +459,24 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
                 .map(str::to_owned),
         )
         .collect();
-    let mut cases = RowCases::new("interpolation-axis-structure", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "interpolation-axis-structure"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "interpolation-axis-structure"
+    );
     for role_name in ["film", "print"] {
         let role = if role_name == "film" {
             Role::Film
@@ -425,7 +484,7 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
             Role::Print
         };
         for (axis_index, axis) in axes.iter().cloned().enumerate() {
-            let row = cases.case(format!("{role_name}/axis/{axis_index}"));
+            let row = AsRef::<str>::as_ref(&(format!("{role_name}/axis/{axis_index}"))).to_owned();
             let mut document = base.clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -457,9 +516,12 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
                 assert_eq!(tables.density_curves()[0], [0.0; 3]);
                 assert_eq!(tables.density_curves()[axis.len() - 1], [6.0; 3]);
             }
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        let row = cases.case(format!("{role_name}/descending-axis"));
+        let row = AsRef::<str>::as_ref(&(format!("{role_name}/descending-axis"))).to_owned();
         let mut document = base.clone();
         if role == Role::Print {
             document["info"]["stage"] = json!("printing");
@@ -474,9 +536,15 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
         );
         assert_eq!(error.stock, "authored");
         assert_eq!(error.role, role);
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -499,7 +567,24 @@ fn unusual_models_reach_complete_film_and_print_sampling() {
                 .map(move |(i, _)| format!("{role}/model/{i}"))
         })
         .collect();
-    let mut cases = RowCases::new("unusual-profile-model-sampling", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "unusual-profile-model-sampling"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "unusual-profile-model-sampling"
+    );
     for role_name in ["film", "print"] {
         let role = if role_name == "film" {
             Role::Film
@@ -507,7 +592,7 @@ fn unusual_models_reach_complete_film_and_print_sampling() {
             Role::Print
         };
         for (i, (field, value, exposure, total)) in parameters.iter().enumerate() {
-            let row = cases.case(format!("{role_name}/model/{i}"));
+            let row = AsRef::<str>::as_ref(&(format!("{role_name}/model/{i}"))).to_owned();
             let mut document = base.clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -527,10 +612,16 @@ fn unusual_models_reach_complete_film_and_print_sampling() {
                     .flatten()
                     .all(|v| v.to_bits() == value.to_bits())
             );
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -580,7 +671,24 @@ fn completion_reports_computed_failure_after_prior_successful_samples() {
                 .map(move |(i, _)| format!("{role}/failure/{i}"))
         })
         .collect();
-    let mut cases = RowCases::new("computed-profile-completion-failures", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "computed-profile-completion-failures"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "computed-profile-completion-failures"
+    );
     for role_name in ["film", "print"] {
         let role = if role_name == "film" {
             Role::Film
@@ -588,7 +696,7 @@ fn completion_reports_computed_failure_after_prior_successful_samples() {
             Role::Print
         };
         for (i, (field, value, axis, expected)) in parameters.iter().enumerate() {
-            let row = cases.case(format!("{role_name}/failure/{i}"));
+            let row = AsRef::<str>::as_ref(&(format!("{role_name}/failure/{i}"))).to_owned();
             let mut document = fixture("completed.json")["base"].clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -599,24 +707,44 @@ fn completion_reports_computed_failure_after_prior_successful_samples() {
                 .err()
                 .unwrap();
             assert_eq!(error.kind, *expected);
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
 fn optional_adaptation_and_null_samples_survive_completion() {
     let directory = Directory::new();
-    let mut cases = RowCases::new(
-        "optional-adaptation-profile-variants",
-        [
-            "film/empty",
-            "print/empty",
-            "print/null",
-            "film/authored",
-            "print/authored",
-        ],
+    let cases_ids: Vec<_> = IntoIterator::into_iter([
+        "film/empty",
+        "print/empty",
+        "print/null",
+        "film/authored",
+        "print/authored",
+    ])
+    .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+    .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "optional-adaptation-profile-variants"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "optional-adaptation-profile-variants"
     );
     for role in [Role::Film, Role::Print] {
         let role_id = if role == Role::Film { "film" } else { "print" };
@@ -632,7 +760,7 @@ fn optional_adaptation_and_null_samples_survive_completion() {
             if role == Role::Film && variant == "null" {
                 continue;
             }
-            let row = cases.case(format!("{role_id}/{variant}"));
+            let row = AsRef::<str>::as_ref(&(format!("{role_id}/{variant}"))).to_owned();
             for key in [
                 "hanatos2025_adaptation_window_params",
                 "hanatos2025_adaptation_surface_params",
@@ -656,9 +784,12 @@ fn optional_adaptation_and_null_samples_survive_completion() {
             assert!(completed.tables().log_sensitivity()[0][0].is_nan());
             assert!(completed.tables().base_density().iter().all(|v| v.is_nan()));
             assert_eq!(completed.tables().linear_sensitivity()[0], [0.0, 1.0, 10.0]);
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        let row = cases.case(format!("{role_id}/authored"));
+        let row = AsRef::<str>::as_ref(&(format!("{role_id}/authored"))).to_owned();
         document["data"]["hanatos2025_adaptation_window_params"] =
             json!([380.0, -100.0, 780.0, 1e40]);
         document["data"]["hanatos2025_adaptation_surface_params"] = json!(([[1e40; 15]; 3]));
@@ -688,9 +819,15 @@ fn optional_adaptation_and_null_samples_survive_completion() {
                 .all(|v| v.is_infinite())
         );
         assert_eq!(completed.tables().linear_sensitivity()[0], [0.0; 3]);
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -748,9 +885,26 @@ fn identity_retains_f64_distinctions_and_canonicalizes_only_f32_zero_signs() {
         "amplitude-f64",
         "sigma-f64",
     ];
-    let mut cases = RowCases::new("authored-profile-identity-changes", ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "authored-profile-identity-changes"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "authored-profile-identity-changes"
+    );
     for id in ids {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let case = expected["cases"]
             .as_array()
             .unwrap()
@@ -799,9 +953,15 @@ fn identity_retains_f64_distinctions_and_canonicalizes_only_f32_zero_signs() {
                 .sigmas()
                 .map(|r| r.map(|v| v as f32))
         );
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     let mut changed = expected["base"].clone();
     changed["data"]["log_sensitivity"][0][1] = json!(0.0);
     changed["data"]["channel_density"][0][0] = json!(-0.0);

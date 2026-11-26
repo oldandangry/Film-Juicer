@@ -31,7 +31,6 @@
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "juicer_cuda_owner.h"
@@ -106,15 +105,12 @@ namespace {
         write(color / "manifest.json", {{"payloads", {{"linux-debug.json", "shared.json"}, {"linux-release.json", "shared.json"}}}});
         write(color / "shared.json", {{"expected_blocks", "blocks.json"}, {"recipes", {{{"expected", {{"sensitivity_record", 0}}}}, {{"expected", {{"sensitivity_record", 0}}}}}}});
         write(color / "blocks.json", {{"schema_version", 1}, {"sensitivity", {{0, 0x80000000u, 0x7fc00123u}}}});
-        JuicerTests::Cohort logical_rows("color.shared_fixture.logical", {"linux-debug.json", "linux-release.json"});
         for (const auto* logical : {"linux-debug.json", "linux-release.json"}) {
-            auto logical_event = logical_rows.case_event(logical);
             const auto word = std::string(logical) == "linux-debug.json" ? 11 : 17;
             write(updates / logical, {{"original_fixture", logical}, {"patch", {{{"op", "test"}, {"path", "/recipes/0/expected/sensitivity/0"}, {"value", 0}}, {{"op", "replace"}, {"path", "/recipes/0/expected/sensitivity/0"}, {"value", word}}, {{"op", "test"}, {"path", "/recipes/1/expected/sensitivity/0"}, {"value", 0}}}}});
             const auto fixture = load_exposure_qualified_fixture(color / logical);
             require(fixture.at("recipes").at(0).at("expected").at("sensitivity").at(0) == word, "logical alias selects its own ordered supplement");
             require(fixture.at("recipes").at(1).at("expected").at("sensitivity") == Json::array({0, 0x80000000u, 0x7fc00123u}), "expanded expected cases retain independent bits and patch state");
-            logical_event.passed();
         }
         bool unknownRejected = false;
         try {
@@ -123,10 +119,7 @@ namespace {
             unknownRejected = true;
         }
         require(unknownRejected, "unregistered logical preset is rejected");
-        JuicerTests::Cohort index_rows("color.shared_fixture.invalid_index", 3u);
-        std::size_t index_ordinal = 0;
         for (const auto& index : Json::array({-1, 0.5, std::numeric_limits<std::uint64_t>::max()})) {
-            auto index_event = index_rows.case_event(std::to_string(index_ordinal++));
             write(color / "shared.json", {{"expected_blocks", "blocks.json"}, {"recipes", {{{"expected", {{"sensitivity_record", index}}}}}}});
             bool referenceRejected = false;
             try {
@@ -135,7 +128,6 @@ namespace {
                 referenceRejected = std::string(error.what()) == "invalid expected block reference";
             }
             require(referenceRejected, "expected block references require a bounded nonnegative integer");
-            index_event.passed();
         }
         write(color / "shared.json", {{"recipes", Json::array()}});
         const auto contextManifest = Json{{"payloads", {{"linux-debug.json", "shared.json"}, {"linux-release.json", "shared.json"}}}, {"contexts", {{"linux-debug.json", "context.json"}}}};
@@ -380,10 +372,7 @@ namespace {
             }
         };
         const Json expected = invoke();
-        JuicerTests::Cohort native_color_faults_rows("color.native_fault/operation-" + std::to_string(operation), 2u);
-        std::size_t native_color_faults_index = 0;
         for (const auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-            auto native_color_faults_event = native_color_faults_rows.case_event(std::to_string(native_color_faults_index++));
             FaultScope cleanup;
             expect_status(arm_color_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
             require(invoke() == expected, "native bridge consumes exactly one successful call before scheduled fault");
@@ -398,14 +387,11 @@ namespace {
             require(thrown, "native color bridge must propagate the scheduled typed failure");
             require(invoke() == expected, "native color bridge recovers on the next same-thread call with exact bits");
             require(invoke() == expected, "native color bridge fault is consumed once");
-
-            native_color_faults_event.passed();
         }
     }
     void leaf_tests(const Json& fixture) {
         bool scalarDistinct = false;
         for (const auto& row : fixture.at("leaf")) {
-            JuicerTests::CaseEvent event("color.leaf", row.at("id").get<std::string>());
             const auto& expected = row.at("expected");
             const auto actual = leaf_result(row);
             const std::string id = row.at("id").get<std::string>();
@@ -422,9 +408,7 @@ namespace {
             std::array<float, 3> multiplied{};
             multiplied = multiply_matrix(matrix.data(), xyz);
             scalarDistinct = scalarDistinct || !same_values(bits(multiplied), expected.at("adapted"));
-            event.passed();
         }
-        JuicerTests::CaseEvent controls_event("color.leaf", "abi_fault_and_comparator_controls");
         require(scalarDistinct, "captures distinguish scalar from matrix product shortcut");
         auto altered = fixture.at("leaf").at(7).at("expected").at("matrix");
         const auto expected = altered;
@@ -435,24 +419,16 @@ namespace {
         require(!same_values(altered, expected), "one-bit negative control");
         require(fj_test_color_abi_c() == 0, "real C transport/null/panic/canaries");
         FaultScope cleanup;
-        JuicerTests::Cohort cat16_invalid_hooks_rows("color.cat16-invalid-hooks", 6u);
-        std::size_t cat16_invalid_hooks_index = 0;
-        JuicerTests::Cohort cat16_hook_operations_rows("color.cat16-hook-operations", 2u);
-        std::size_t cat16_hook_operations_index = 0;
         for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT}) {
-            auto cat16_hook_operations_event = cat16_hook_operations_rows.case_event(std::to_string(cat16_hook_operations_index++));
             expect_status(arm_color_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation == 1 ? 2 : 1), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 3>{{{0, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
-                auto cat16_invalid_hooks_event = cat16_invalid_hooks_rows.case_event(std::to_string(cat16_invalid_hooks_index++));
                 expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                 expect_status(arm_color_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
-
-                cat16_invalid_hooks_event.passed();
             }
             expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
             expect_status(arm_color_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
@@ -460,8 +436,6 @@ namespace {
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
-
-            cat16_hook_operations_event.passed();
         }
         expect_status(arm_color_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
         FjStatus otherThread{};
@@ -473,7 +447,6 @@ namespace {
         expect_status(raw_call(FJ_TEST_CAT16_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
         native_color_fault_tests(FJ_TEST_CAT16_MATRIX, "CAT16 matrix preparation failed");
         native_color_fault_tests(FJ_TEST_CAT16_ADAPT, "CAT16 scalar adaptation failed");
-        controls_event.passed();
         std::puts("CAT16: 933 independent scalar/matrix cases, C ABI, fault and comparator controls passed");
     }
     bool admitted(const JuicerTestSupport::PublicationAdmission& result) {
@@ -529,16 +502,6 @@ namespace {
     void admission_tests(const FjAssets* assets) {
         std::size_t failures = 0;
         std::size_t supersessions = 0;
-        std::vector<std::string> admission_ids;
-        for (int route : {0, 1})
-            for (int method : {0, 2})
-                for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT})
-                    for (std::uint32_t index = 1; index <= (operation == FJ_TEST_CAT16_MATRIX ? 1u : 2u); ++index)
-                        for (const auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC})
-                            admission_ids.emplace_back("route-" + std::to_string(route) + "/method-" + std::to_string(method) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault));
-        JuicerTests::Cohort admission_rows("color.admission.fault_tuple", admission_ids);
-        JuicerTests::Cohort cat16_supersession_rows("color.cat16-supersession", 72u);
-        std::size_t supersession_index = 0;
         for (int route : {0, 1}) {
             for (int method : {0, 2}) {
                 const auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
@@ -548,8 +511,6 @@ namespace {
                     const std::uint32_t calls = operation == FJ_TEST_CAT16_MATRIX ? 1u : 2u;
                     for (std::uint32_t index = 1; index <= calls; ++index) {
                         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                            const auto id = "route-" + std::to_string(route) + "/method-" + std::to_string(method) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault);
-                            auto row_event = admission_rows.case_event(id);
                             FaultScope cleanup;
                             JuicerTestSupport::InstanceFixture state;
                             JuicerTestSupport::capture(state, controls);
@@ -580,7 +541,6 @@ namespace {
                                         "independent recovery instance prepares B");
 
                                 for (int mode = 0; mode < 3; ++mode) {
-                                    auto event = cat16_supersession_rows.case_event(std::to_string(supersession_index++));
                                     JuicerTestSupport::InstanceFixture superseded;
                                     JuicerTestSupport::capture(superseded, changed);
                                     const auto held_b = JuicerTestSupport::admit(assets, superseded);
@@ -603,9 +563,7 @@ namespace {
                                     fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                                     expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                     ++supersessions;
-                                    event.passed();
                                 }
-                                row_event.passed();
                                 continue;
                             }
                             require_preparation_failure(failed, fault);
@@ -626,7 +584,6 @@ namespace {
                             require(JuicerTestSupport::published_view(old).recipe_hash == old_recipe, "held A remains readable after B recovery");
 
                             for (int mode = 0; mode < 3; ++mode) {
-                                auto event = cat16_supersession_rows.case_event(std::to_string(supersession_index++));
                                 Supersession selection{&state, changed, mode};
                                 JuicerTestSupport::capture(state, controls);
                                 fj_test_instance_prepare_hooks(nullptr, supersede_capture, &selection);
@@ -645,9 +602,7 @@ namespace {
                                 fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                                 expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                 ++supersessions;
-                                event.passed();
                             }
-                            row_event.passed();
                         }
                     }
                 }
@@ -657,10 +612,7 @@ namespace {
         std::printf("CAT16 admission: %zu failures/recoveries and %zu real-owner supersession witnesses passed\n", failures, supersessions);
     }
     void construction_controls(const FjAssets* assets) {
-        JuicerTests::Cohort cat16_construction_routes_rows("color.cat16-construction-routes", 2u);
-        std::size_t cat16_construction_routes_index = 0;
         for (int route = 0; route < 2; ++route) {
-            auto cat16_construction_routes_event = cat16_construction_routes_rows.case_event(std::to_string(cat16_construction_routes_index++));
             JuicerTestSupport::InstanceFixture state;
             const auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Hanatos2025);
             JuicerTestSupport::capture(state, controls);
@@ -677,8 +629,6 @@ namespace {
             JuicerTestSupport::capture(state, controls);
             const auto reused = JuicerTestSupport::admit(assets, state);
             require(admitted(reused) && reused.state->build() == build, "complete A capture reuses retained publication");
-
-            cat16_construction_routes_event.passed();
         }
         std::puts("Construction: actual missing-profile failure retains the private publication and recovers by recapturing A");
     }
@@ -687,29 +637,22 @@ namespace {
         identity["hash"] = identity["hash"].get<std::uint64_t>() ^ 1;
         require(identity != fixture.at("transforms").at(0), "identity negative control");
         for (int space = 0; space < 9; ++space) {
-            JuicerTests::CaseEvent event("color.preparation.transform", std::to_string(space));
             require(transform_result(space) == fixture.at("transforms").at(space), "native-parent output transform/identity space=" + std::to_string(space));
-            event.passed();
         }
         for (const auto& row : fixture.at("tables")) {
-            JuicerTests::CaseEvent event("color.preparation.table", std::to_string(row.at("space").get<int>()));
             require(table_result(row.at("space").get<int>()) == row.at("expected"), "complete Cmax/table/hash");
-            event.passed();
         }
         const auto cases = scenarios();
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& [id, controls] = cases[i];
-            JuicerTests::CaseEvent event("color.preparation.recipe", id);
             auto product = JuicerTestSupport::prepare_product(assets, controls);
             require(id == fixture.at("recipes").at(i).at("id").get<std::string>(), "fixed recipe case membership");
             const auto actual = complete_result(product);
             require_live_identity_record(actual, ArchivedColorRecipe{fixture.at("recipes").at(i).at("expected")}, id + " independent complete arrays/identities", i == 0);
             auto repeated = JuicerTestSupport::prepare_product(assets, controls);
             require(complete_result(repeated) == actual, id + " repeat complete construction");
-            event.passed();
         }
         for (int route = 0; route < 2; ++route) {
-            JuicerTests::CaseEvent event("color.preparation.encoding_reuse", std::to_string(route));
             const auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Hanatos2025);
             auto product = JuicerTestSupport::prepare_product(assets, controls);
             std::array<char, 2048> diagnostic{};
@@ -742,12 +685,9 @@ namespace {
             const auto repeated = JuicerTestSupport::admit(assets, state);
             require(admitted(repeated) && repeated.state->input_identity() == old.state->input_identity() && repeated.state->build() == counter, "unchanged admission reuses actual state");
             expect_status(raw_call(FJ_TEST_CAT16_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
-            event.passed();
         }
-        JuicerTests::CaseEvent controls_event("color.preparation", "admission_and_construction_controls");
         admission_tests(assets);
         construction_controls(assets);
-        controls_event.passed();
         std::puts("Preparation: native-parent complete identities, tables, contributing controls and retained-owner reuse passed");
     }
 
@@ -1026,7 +966,6 @@ namespace {
         for (const auto operation : operations)
             for (const auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC})
                 fault_ids.emplace_back("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
-        JuicerTests::Cohort operation_faults("color.fault.operation_fault", fault_ids);
         std::vector<std::string> unrelated_ids, null_ids, invalid_ids, replacement_ids;
         for (const auto operation : operations) {
             for (const auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
@@ -1042,19 +981,12 @@ namespace {
             for (const auto replacement : operations)
                 replacement_ids.push_back(std::to_string(operation) + "/" + std::to_string(replacement));
         }
-        JuicerTests::Cohort unrelated_rows("color.fault.unrelated", unrelated_ids);
-        JuicerTests::Cohort null_rows("color.fault.null", null_ids);
-        JuicerTests::Cohort invalid_rows("color.fault.invalid", invalid_ids);
-        JuicerTests::Cohort replacement_rows("color.fault.replacement", replacement_ids);
         for (const auto operation : operations) {
             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                auto row_event = operation_faults.case_event("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
                 expect_status(arm_color_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
                 for (const auto unrelated : operations) {
                     if (unrelated != operation) {
-                        auto unrelated_event = unrelated_rows.case_event(std::to_string(operation) + "/" + std::to_string(fault) + "/" + std::to_string(unrelated));
                         expect_status(raw_call(unrelated), FJ_STATUS_SUCCESS);
-                        unrelated_event.passed();
                     }
                 }
                 if (!color_facade_operation(operation)) {
@@ -1062,9 +994,7 @@ namespace {
                 }
                 const int pointers = color_pointer_count(operation);
                 for (int slot = 0; slot < pointers; ++slot) {
-                    auto null_event = null_rows.case_event(std::to_string(operation) + "/" + std::to_string(fault) + "/" + std::to_string(slot));
                     expect_status(null_color_call({.operation = operation, .slot = slot}), FJ_STATUS_UNSUPPORTED_INPUT);
-                    null_event.passed();
                 }
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
@@ -1078,18 +1008,13 @@ namespace {
                 expect_status(otherThread, FJ_STATUS_SUCCESS);
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
-                row_event.passed();
             }
-            std::size_t invalid_index = 0;
             for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 5>{{{0, 1, 1}, {FJ_TEST_OUTPUT_COLOR_FACADE + 1U, 1, 1}, {99, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
-                auto invalid_event = invalid_rows.case_event(std::to_string(operation) + "/" + std::to_string(invalid_index++));
                 expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                 expect_status(arm_color_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
-                invalid_event.passed();
             }
             for (const auto replacement : operations) {
-                auto replacement_event = replacement_rows.case_event(std::to_string(operation) + "/" + std::to_string(replacement));
                 expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                 expect_status(arm_color_fault(replacement, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
                 if (replacement != operation) {
@@ -1098,7 +1023,6 @@ namespace {
                 expect_status(raw_call(replacement), FJ_STATUS_SUCCESS);
                 expect_status(raw_call(replacement), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(replacement), FJ_STATUS_SUCCESS);
-                replacement_event.passed();
             }
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
@@ -1109,7 +1033,6 @@ namespace {
         bool scalarDistinct = false;
         for (const auto* group : {"leaf", "threshold"}) {
             for (const auto& row : fixture.at(group)) {
-                JuicerTests::CaseEvent event("color.cat02_leaf", row.at("id").get<std::string>());
                 const auto source = triplet(row.at("source"));
                 const auto destination = triplet(row.at("destination"));
                 const auto xyz = triplet(row.at("xyz"));
@@ -1130,11 +1053,9 @@ namespace {
                 std::array<float, 3> multiplied{};
                 multiplied = multiply_matrix(matrix.data(), xyz);
                 scalarDistinct = scalarDistinct || !same_values(bits(multiplied), expected.at("adapted"));
-                event.passed();
             }
         }
         require(scalarDistinct, "independent CAT02 captures distinguish scalar from matrix shortcut");
-        JuicerTests::CaseEvent controls_event("color.cat02_leaf", "direction_abi_and_fault_controls");
         const auto selected = std::find_if(fixture.at("leaf").begin(), fixture.at("leaf").end(), [](const auto& row) {
             return row.at("id") == "d65-to-output-d50-xyz-0";
         });
@@ -1152,7 +1073,6 @@ namespace {
         require(fj_test_cat02_abi_c() == 0, "real C11 CAT02 layout/status/null/clear/canary/alias/nonfinite/panic transport");
         color_fault_tests();
         native_color_fault_tests(FJ_TEST_CAT02_MATRIX, "CAT02 matrix preparation failed");
-        controls_event.passed();
         std::printf("CAT02: %zu leaf and %zu strict-threshold cases passed independently through production and facade\n", fixture.at("leaf").size(), fixture.at("threshold").size());
     }
     template <typename Range>
@@ -1245,10 +1165,6 @@ namespace {
     void cat02_admission_tests(const FjAssets* assets) {
         std::size_t failures = 0;
         std::size_t supersessions = 0;
-        JuicerTests::Cohort supersession_rows("color.cat02-supersession", 96u);
-        JuicerTests::Cohort fault_rows("color.cat02-admission-faults", 32u);
-        std::size_t supersession_index = 0;
-        std::size_t fault_index = 0;
         for (int route = 0; route < 4; ++route) {
             for (int method = 0; method < 3; ++method) {
                 const auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
@@ -1257,7 +1173,6 @@ namespace {
                 const std::uint32_t calls = method == 1 ? 2u : 1u;
                 for (std::uint32_t index = 1; index <= calls; ++index) {
                     for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                        auto event = fault_rows.case_event(std::to_string(fault_index++));
                         FaultScope cleanup;
                         JuicerTestSupport::InstanceFixture state;
                         JuicerTestSupport::capture(state, controls);
@@ -1287,7 +1202,6 @@ namespace {
                                     "independent CAT02 recovery instance prepares B");
 
                             for (int mode = 0; mode < 3; ++mode) {
-                                auto supersession_event = supersession_rows.case_event(std::to_string(supersession_index++));
                                 JuicerTestSupport::InstanceFixture superseded;
                                 JuicerTestSupport::capture(superseded, changed);
                                 const auto held_b = JuicerTestSupport::admit(assets, superseded);
@@ -1307,9 +1221,7 @@ namespace {
                                 fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                                 expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                 ++supersessions;
-                                supersession_event.passed();
                             }
-                            event.passed();
                             continue;
                         }
                         require_preparation_failure(failed, fault);
@@ -1331,7 +1243,6 @@ namespace {
                         const auto recovered_values = retain_values(*recovered.state);
 
                         for (int mode = 0; mode < 3; ++mode) {
-                            auto supersession_event = supersession_rows.case_event(std::to_string(supersession_index++));
                             Supersession selection{&state, changed, mode};
                             JuicerTestSupport::capture(state, controls);
                             fj_test_instance_prepare_hooks(nullptr, supersede_capture, &selection);
@@ -1351,9 +1262,7 @@ namespace {
                             fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                             ++supersessions;
-                            supersession_event.passed();
                         }
-                        event.passed();
                     }
                 }
             }
@@ -1400,16 +1309,13 @@ namespace {
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& input = cases[i];
             const auto& row = fixture.at("helpers").at(i);
-            JuicerTests::CaseEvent event("color.cat02_helper", row.at("id").get<std::string>());
             require(input.at("id") == row.at("id") && input.at("rgb") == row.at("rgb") && input.at("reference_white") == row.at("reference_white"), "frozen retained helper inputs");
             require(Cat02Fixtures::helper_result(input, tables, sInv, true, hanatosSamples) == row.at("hanatos_expected"), input.at("id").get<std::string>() + " signed Hanatos sanitation/spectrum");
             require(Cat02Fixtures::helper_result(input, tables, sInv, false, hanatosSamples) == row.at("tables_expected"), input.at("id").get<std::string>() + " tables sanitation/spectrum");
-            event.passed();
         }
         const std::array<float, 3> rgb{2.0f, -0.25f, 0.5f};
         const auto held = retain_values(product);
         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-            JuicerTests::CaseEvent event("color.cat02_helper_fault", std::to_string(fault));
             std::array<float, 3> adapted{};
             require_color_facade_failure(FJ_TEST_CAT02_ADAPT, fault, [&] {
                 return fj_test_adapt_cat02(rgb.data(), Spectral::gDWG_WhitePoint_XYZ, tables.white_xyz, adapted.data());
@@ -1417,16 +1323,12 @@ namespace {
             require_spectrum_fixture_failure(tables, sInv, 1, fault, hanatosSamples);
             require_spectrum_fixture_failure(tables, sInv, 2, fault, hanatosSamples);
             require_retained_values(product, held);
-            event.passed();
         }
         std::printf("CAT02 retained helpers: %zu independent pre/post sanitation/spectrum cases per helper and both typed failure categories passed\n", cases.size());
     }
     void cat02_control_tests(const FjAssets* assets) {
-        JuicerTests::Cohort cat02_control_routes_rows("color.cat02-control-routes", 12u);
-        std::size_t cat02_control_routes_index = 0;
         for (int route = 0; route < 4; ++route) {
             for (int method = 0; method < 3; ++method) {
-                auto cat02_control_routes_event = cat02_control_routes_rows.case_event(std::to_string(cat02_control_routes_index++));
                 const auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
                 auto product = Cat02Fixtures::prepare(assets, controls);
                 std::array<char, 2048> diagnostic{};
@@ -1487,16 +1389,11 @@ namespace {
                 const auto replacement = JuicerTestSupport::admit(assets, state);
                 require(admitted(replacement) && replacement.state->input_identity() == JuicerTestSupport::hash_input_identity(output) && replacement.state->build() == counter + 1, "output-space state replacement publishes complete owner/hash/counter");
                 require_retained_values(old, held);
-
-                cat02_control_routes_event.passed();
             }
         }
     }
     void output_color_admission_tests(const FjAssets* assets) {
-        JuicerTests::Cohort output_admission_routes_rows("color.output-admission-routes", 4u);
-        std::size_t output_admission_routes_index = 0;
         for (int route = 0; route < 4; ++route) {
-            auto output_admission_routes_event = output_admission_routes_rows.case_event(std::to_string(output_admission_routes_index++));
             const auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Mallett2019);
             auto changed = controls;
             changed.values.output_cctf_encoding = 0;
@@ -1541,8 +1438,6 @@ namespace {
             require(admitted(repeated) && repeated.state->input_identity() == completed.state->input_identity() && repeated.state->build() == completed.state->build(), "warm output publication reuses owner without preparation");
             FjOutputColorPreparation raw{};
             expect_status(fj_test_boundary_output_color(0, &raw), FJ_STATUS_INTERNAL_FAILURE);
-
-            output_admission_routes_event.passed();
         }
     }
 
@@ -1570,7 +1465,6 @@ namespace {
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& [id, controls] = cases[i];
             const auto& row = fixture.at("recipes").at(i);
-            JuicerTests::CaseEvent event("color.cat02_recipe", row.at("id").get<std::string>());
             require(id == row.at("id").get<std::string>(), "frozen CAT02 recipe ordered case identity");
             const auto& settings = row.at("controls");
             require(settings.at("filmProfileKey") == controls.film_key && settings.at("printProfileKey") == controls.print_key && settings.at("scanRoute") == static_cast<int>(controls.values.scan_route) && settings.at("spectralUpsamplingMode") == controls.values.spectral_upsampling_mode && settings.at("inputColorSpace") == controls.values.input_color_space && settings.at("inputCctfDecoding") == controls.values.input_cctf_decoding && settings.at("outputColorSpace") == controls.values.output_color_space && settings.at("outputCctfEncoding") == controls.values.output_cctf_encoding && settings.at("cameraAutoExposureEnabled") == controls.values.camera_auto_exposure_enabled && settings.at("inputCompressionEnabled") == controls.values.input_compression_enabled && settings.at("cameraExposureCompensationEv").at("f64_bits") == std::bit_cast<std::uint64_t>(controls.values.camera_exposure_compensation_ev), "frozen CAT02 selected controls");
@@ -1586,12 +1480,10 @@ namespace {
                 check_preset_witness(actual, row.at("expected"), witness);
                 wrongPresetRejected = true;
             }
-            event.passed();
         }
         require(wrongPresetRejected, "different native-preset value/identity baselines reject incorrect expectation");
         std::array<Scanner::ScannerIlluminant, 4> illuminants;
         for (int route = 0; route < 4; ++route) {
-            JuicerTests::CaseEvent event("color.cat02_scanner_illuminant", std::to_string(route));
             auto product = Cat02Fixtures::prepare(assets, Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Mallett2019));
             illuminants[route] = Cat02Fixtures::scanner_illuminant(product);
             const auto& row = fixture.at("scanner_illuminants").at(route);
@@ -1601,18 +1493,14 @@ namespace {
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             require(product.view(view, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
             require(row.at("route") == route && row.at("viewing_illuminant") == Cat02Fixtures::viewing_illuminant(assets, view) && row.at("white_xyz") == bits(illuminant.whiteXYZ) && row.at("white_xy") == bits(illuminant.whiteXY) && row.at("normalization") == bits(std::array{illuminant.normalization}) && row.at("hash") == illuminant.hash && row.at("samples") == bits(illuminant.curve.linear), "actual selected-route scanner illuminant exact fields/identity");
-            event.passed();
         }
         for (const auto& row : fixture.at("scanner_cases")) {
-            JuicerTests::CaseEvent event("color.cat02_scanner", row.at("id").get<std::string>());
             const OutputEncoding::Params encoding{static_cast<OutputEncoding::ColorSpace>(row.at("space").get<int>()), row.at("encoding").get<int>() != 0, true};
             const auto color = JuicerTestFixture::Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), illuminants[row.at("route").get<int>()], encoding, row.at("gamut_recipe_hash").get<std::uint64_t>());
             require(Cat02Fixtures::color_result(color) == row.at("expected"), row.at("id").get<std::string>() + " real scanner color exact arrays/encoding/hash");
             require_scanner_encoding(color, catalogue);
-            event.passed();
         }
         for (const auto& row : fixture.at("scanner_invalid_cases")) {
-            JuicerTests::CaseEvent event("color.cat02_scanner_invalid", std::to_string(row.at("medium").get<int>()));
             auto invalid = illuminants[0];
             invalid.hash = 0;
             FaultScope cleanup;
@@ -1620,13 +1508,10 @@ namespace {
             const auto color = JuicerTestFixture::Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), invalid, {}, 0);
             require(Cat02Fixtures::color_result(color) == row.at("expected"), "invalid scanner illuminant keeps early zero-hash color result");
             expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_INTERNAL_FAILURE);
-            event.passed();
         }
-        JuicerTests::CaseEvent controls_event("color.cat02_preparation", "admission_helpers_controls");
         output_color_admission_tests(assets);
         cat02_helper_tests(assets, fixture);
         cat02_control_tests(assets);
-        controls_event.passed();
         std::printf("CAT02 preparation: %zu independent recipes, %zu scanner cases, distinct controls and full retained arrays passed\n", cases.size(), fixture.at("scanner_cases").size());
     }
 
@@ -1888,65 +1773,51 @@ namespace {
         for (const auto& row : fixture.at("conversion"))
             for (bool clamp : {false, true})
                 conversion_ids.push_back(row.at("id").get<std::string>() + "/clamp-" + std::to_string(clamp));
-        JuicerTests::Cohort conversion_rows("color.input_conversion.clamp", conversion_ids);
 
         const auto& inverse = fixture.at("recipes").at(0).at("expected").at("xyz_to_linear_srgb");
         for (const auto& row : fixture.at("recipes")) {
-            JuicerTests::CaseEvent event("color.input_leaf.recipe", row.at("id").get<std::string>());
             require(row.at("expected").at("xyz_to_linear_srgb") == inverse && row.at("expected").at("config_xyz_to_linear_srgb") == inverse, "amended producer reference uses agreeing completed native A");
-            event.passed();
         }
         // The standalone inverse and unready default remain native characterization.
         // Explicit conversion operands, including B, are consumed exactly as frozen.
         for (const auto& row : fixture.at("matrices")) {
-            JuicerTests::CaseEvent event("color.input_leaf.matrix", std::to_string(row.at("space").get<int>()));
             const auto space = row.at("space").get<int>();
             const auto actual = JuicerTestFixture::Color::input_matrices(static_cast<Spectral::InputColorSpace>(space));
             FjInputColorMatrices facade{};
             expect_status(fj_test_input_matrices(static_cast<std::uint32_t>(space), &facade), FJ_STATUS_SUCCESS);
             require(bits(actual.rgbToXyz) == row.at("rgb_to_xyz") && bits(actual.nominalWhiteXYZ) == row.at("nominal_white") && bits(actual.d65WhiteXYZ) == row.at("d65_white") && bits(actual.xyzToLinearSrgb) == inverse, "production input matrices/nominal whites/inverse A exact");
             require(bits(facade.rgb_to_xyz) == row.at("rgb_to_xyz") && bits(facade.nominal_white_xyz) == row.at("nominal_white") && bits(facade.d65_white_xyz) == row.at("d65_white") && bits(facade.xyz_to_linear_srgb) == inverse, "direct-core input matrices exact");
-            event.passed();
         }
         for (const auto& row : fixture.at("decode")) {
-            JuicerTests::CaseEvent event("color.input_leaf.decode", row.at("id").get<std::string>());
             const auto rgb = triplet(row.at("rgb"));
             std::array<float, 3> actual{};
             expect_status(fj_test_decode_input(row.at("space").get<std::uint32_t>(), row.at("decode").get<std::uint32_t>(), rgb.data(), actual.data()), FJ_STATUS_SUCCESS);
             require(same_values(bits(actual), row.at("expected").at("linear")), row.at("id").get<std::string>() + " decoder branch/zero/nonfinite/overflow");
-            event.passed();
         }
         for (const auto& row : fixture.at("conversion")) {
-            JuicerTests::CaseEvent event("color.input_leaf.conversion", row.at("id").get<std::string>());
             const auto config = InputFixtures::config(row);
             const auto input = InputFixtures::foreign(config);
             const auto rgb = triplet(row.at("rgb"));
             const auto& expected = row.at("expected");
             for (bool clamp : {false, true}) {
-                auto conversion_event = conversion_rows.case_event(row.at("id").get<std::string>() + "/clamp-" + std::to_string(clamp));
                 std::array<float, 3> facadeRgb{}, facadeXyz{};
                 expect_status(fj_test_input_to_dwg(&input, rgb.data(), clamp ? 1u : 0u, facadeRgb.data(), facadeXyz.data()), FJ_STATUS_SUCCESS);
                 const std::string prefix = clamp ? "dwg_clamped" : "dwg_signed";
                 require(same_values(bits(facadeRgb), expected.at(prefix + "_rgb")) && same_values(bits(facadeXyz), expected.at(prefix + "_xyz")), row.at("id").get<std::string>() + " facade DWG conversion/XYZ observation");
-                conversion_event.passed();
             }
             std::array<float, 3> facadeRgb{}, facadeXyz{};
             expect_status(fj_test_input_to_linear_srgb(&input, rgb.data(), config.xyz_to_linear_srgb, facadeRgb.data(), facadeXyz.data()), FJ_STATUS_SUCCESS);
             require(same_values(bits(facadeRgb), expected.at("srgb_rgb")) && same_values(bits(facadeXyz), expected.at("srgb_xyz")), row.at("id").get<std::string>() + " facade explicit inverse linear sRGB/XYZ");
-            event.passed();
         }
         for (const auto& row : fixture.at("linear")) {
-            JuicerTests::CaseEvent event("color.input_leaf.linear", row.at("id").get<std::string>());
             const auto rgb = triplet(row.at("rgb"));
             std::array<float, 3> srgb{}, dwg{};
             expect_status(fj_test_linear_srgb_to_xyz(rgb.data(), srgb.data()), FJ_STATUS_SUCCESS);
             expect_status(fj_test_dwg_to_xyz(rgb.data(), dwg.data()), FJ_STATUS_SUCCESS);
             require(same_values(bits(srgb), row.at("expected").at("srgb_xyz")) && same_values(bits(JuicerTestFixture::Color::linear_srgb_to_xyz(rgb)), row.at("expected").at("srgb_xyz")), row.at("id").get<std::string>() + " unsanitized linear sRGB leaf");
             require(same_values(bits(dwg), row.at("expected").at("dwg_xyz")), row.at("id").get<std::string>() + " unsanitized DWG leaf");
-            event.passed();
         }
         for (const auto& row : fixture.at("projection")) {
-            JuicerTests::CaseEvent event("color.input_leaf.projection", row.at("id").get<std::string>());
             const auto rgb = triplet(row.at("rgb"));
             const auto matrix = InputFixtures::matrix(row.at("rgb_to_xyz"));
             const auto adaptation = InputFixtures::matrix(row.at("xyz_adapt"));
@@ -1954,9 +1825,7 @@ namespace {
             std::array<float, 3> facade{};
             expect_status(fj_test_project_linear_rgb_to_xyz(rgb.data(), matrix.m, adaptation.m, facade.data()), FJ_STATUS_SUCCESS);
             require(same_values(bits(actual), row.at("expected").at("projected_xyz")) && same_values(bits(facade), row.at("expected").at("projected_xyz")), row.at("id").get<std::string>() + " ordered already-linear projection");
-            event.passed();
         }
-        JuicerTests::CaseEvent comparator_event("color.input_leaf", "projection_order_comparator");
         const auto projectionCase = std::find_if(fixture.at("projection").begin(), fixture.at("projection").end(), [](const auto& row) {
             return row.at("id") == "projection-3-rgb-5";
         });
@@ -1991,30 +1860,18 @@ namespace {
             }
         }
         require(signedOutput, "signed linear sRGB clamping rejected");
-        comparator_event.passed();
-        JuicerTests::CaseEvent controls_event("color.input_leaf", "abi_fault_and_default_controls");
         require(fj_test_input_color_abi_c() == 0, "input-color C11 layouts/signatures/nulls/flags/partial clearing/panic/canaries/readonly aliases");
         color_fault_tests();
-        JuicerTests::Cohort input_countdown_operations_rows("color.input-countdown-operations", 6u);
-        std::size_t input_countdown_operations_index = 0;
         for (std::uint32_t operation = 5; operation <= 10; ++operation) {
-            auto input_countdown_operations_event = input_countdown_operations_rows.case_event(std::to_string(input_countdown_operations_index++));
             FaultScope cleanup;
             expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
             std::array<float, 3> decoded{};
             const std::array<float, 3> rgb{.184f, -0.0f, -1.0f};
             expect_status(fj_test_decode_input(3, 1, rgb.data(), decoded.data()), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
-
-            input_countdown_operations_event.passed();
         }
-        JuicerTests::Cohort input_invalid_conversion_rows("color.input-invalid-conversion", 12u);
-        std::size_t input_invalid_conversion_index = 0;
-        JuicerTests::Cohort input_malformed_faults_rows("color.input-malformed-faults", 6u);
-        std::size_t input_malformed_faults_index = 0;
         for (std::uint32_t operation : {FJ_TEST_INPUT_MATRICES, FJ_TEST_INPUT_TO_DWG, FJ_TEST_INPUT_TO_LINEAR_SRGB}) {
             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                auto input_malformed_faults_event = input_malformed_faults_rows.case_event(std::to_string(input_malformed_faults_index++));
                 FaultScope cleanup;
                 expect_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 FjInputColorMatrices matrices{};
@@ -2026,7 +1883,6 @@ namespace {
                     expect_status(fj_test_boundary_input_matrices(4, &matrices), FJ_STATUS_UNSUPPORTED_INPUT);
                 } else {
                     for (int invalid = 0; invalid < 3; ++invalid) {
-                        auto input_invalid_conversion_event = input_invalid_conversion_rows.case_event(std::to_string(input_invalid_conversion_index++));
                         input.input_space = invalid == 0 ? 4u : 0u;
                         input.decode_cctf = invalid == 1 ? 2u : 0u;
                         input.adapt_xyz = invalid == 2 ? 2u : 0u;
@@ -2034,8 +1890,6 @@ namespace {
                                                 ? fj_test_input_to_dwg(&input, rgb.data(), 0, outRgb.data(), outXyz.data())
                                                 : fj_test_input_to_linear_srgb(&input, rgb.data(), identity.data(), outRgb.data(), outXyz.data());
                         expect_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
-
-                        input_invalid_conversion_event.passed();
                     }
                     if (operation == FJ_TEST_INPUT_TO_DWG) {
                         input.input_space = 0;
@@ -2045,13 +1899,10 @@ namespace {
                     }
                 }
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-
-                input_malformed_faults_event.passed();
             }
         }
         require(fixture.at("input_d65") != fixture.at("process_dwg_white"), "input D65 and process DWG white remain distinct");
         require(Spectral::input_color_space_from_index(-1) == Spectral::InputColorSpace::DaVinciWideGamut && Spectral::input_color_space_from_index(4) == Spectral::InputColorSpace::DaVinciWideGamut, "native integer transport fallback retained");
-        controls_event.passed();
         std::puts("Input color: exact matrices/A, decode, explicit A/B conversions, linear leaves/projection and C11/ten-operation fault/default/facade controls passed");
     }
 
@@ -2108,24 +1959,6 @@ namespace {
         std::size_t heldSupersessions = 0;
         std::size_t counts = 0;
         std::size_t skippedOperation10Supersessions = 0;
-        std::vector<std::string> fault_ids;
-        for (int route = 0; route < 4; ++route)
-            for (int method = 0; method < 3; ++method)
-                for (int space : {1, 3}) {
-                    const std::array<std::uint32_t, 6> calls{method == 1 ? 1u : 3u, 0u, 0u, method == 1 ? 0u : 2u, 0u, method == 1 ? 0u : 1u};
-                    for (std::uint32_t operation = 5; operation <= 10; ++operation)
-                        for (std::uint32_t index = 1; index <= calls[operation - 5]; ++index)
-                            for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC})
-                                fault_ids.emplace_back("route-" + std::to_string(route) + "/method-" + std::to_string(method) + "/space-" + std::to_string(space) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault));
-                }
-        JuicerTests::Cohort fault_rows("color.input_admission.fault_tuple", fault_ids);
-        std::vector<std::string> supersession_ids;
-        for (const auto& id : fault_ids)
-            for (int mode = 0; mode < 3; ++mode)
-                supersession_ids.push_back(id + "/mode-" + std::to_string(mode));
-        JuicerTests::Cohort supersession_rows("color.input_admission.supersession", supersession_ids);
-        JuicerTests::Cohort call_count_rows("color.input_admission.call_counts", 144u);
-        std::size_t call_count_index = 0;
         for (int route = 0; route < 4; ++route) {
             for (int method = 0; method < 3; ++method) {
                 for (int space : {1, 3}) {
@@ -2139,7 +1972,6 @@ namespace {
                     const std::array<std::uint32_t, 6> callCounts{method == 1 ? 1u : 3u, 0u, 0u, method == 1 ? 0u : 2u, 0u, method == 1 ? 0u : 1u};
                     for (std::uint32_t operation = 5; operation <= 10; ++operation) {
                         const auto calls = callCounts[operation - 5];
-                        auto call_count_event = call_count_rows.case_event(std::to_string(call_count_index++));
                         {
                             FaultScope cleanup;
                             const auto heldCalls = operation == FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ ? 0u : calls;
@@ -2148,14 +1980,10 @@ namespace {
                             expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
                             ++counts;
                         }
-                        call_count_event.passed();
 
                         if (operation == FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ && calls == 1) {
                             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                                const auto id = "route-" + std::to_string(route) + "/method-" + std::to_string(method) + "/space-" + std::to_string(space) + "/operation-" + std::to_string(operation) + "/index-1/fault-" + std::to_string(fault);
-                                auto fault_event = fault_rows.case_event(id);
                                 for (int mode = 0; mode < 3; ++mode) {
-                                    auto event = supersession_rows.case_event(id + "/mode-" + std::to_string(mode));
                                     FaultScope cleanup;
                                     JuicerTestSupport::InstanceFixture state;
                                     JuicerTestSupport::capture(state, controls);
@@ -2181,9 +2009,7 @@ namespace {
                                     expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
                                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                                     ++skippedOperation10Supersessions;
-                                    event.passed();
                                 }
-                                fault_event.passed();
                             }
                             continue;
                         }
@@ -2191,8 +2017,6 @@ namespace {
                             continue;
                         for (std::uint32_t index = 1; index <= calls; ++index) {
                             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                                const auto id = "route-" + std::to_string(route) + "/method-" + std::to_string(method) + "/space-" + std::to_string(space) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault);
-                                auto row_event = fault_rows.case_event(id);
                                 FaultScope cleanup;
                                 JuicerTestSupport::InstanceFixture state;
                                 JuicerTestSupport::capture(state, controls);
@@ -2222,7 +2046,6 @@ namespace {
                                             "independent input recovery instance prepares B");
 
                                     for (int mode = 0; mode < 3; ++mode) {
-                                        auto event = supersession_rows.case_event(id + "/mode-" + std::to_string(mode));
                                         JuicerTestSupport::InstanceFixture superseded;
                                         JuicerTestSupport::capture(superseded, changed);
                                         const auto held_b = JuicerTestSupport::admit(assets, superseded);
@@ -2245,9 +2068,7 @@ namespace {
                                         fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                                         expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                         ++heldSupersessions;
-                                        event.passed();
                                     }
-                                    row_event.passed();
                                     continue;
                                 }
                                 require_preparation_failure(result, fault);
@@ -2269,7 +2090,6 @@ namespace {
                                 require(input_values(old) == oldValues, "input-color recovery leaves A hold exact");
 
                                 for (int mode = 0; mode < 3; ++mode) {
-                                    auto event = supersession_rows.case_event(id + "/mode-" + std::to_string(mode));
                                     Supersession selection{&state, changed, mode};
                                     JuicerTestSupport::capture(state, controls);
                                     fj_test_instance_prepare_hooks(nullptr, supersede_capture, &selection);
@@ -2288,9 +2108,7 @@ namespace {
                                     fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                                     expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                     ++heldSupersessions;
-                                    event.passed();
                                 }
-                                row_event.passed();
                             }
                         }
                     }
@@ -2329,14 +2147,11 @@ namespace {
         const std::array<float, 9> inverse{view.s_inverse[0], view.s_inverse[1], view.s_inverse[2], view.s_inverse[3], view.s_inverse[4], view.s_inverse[5], view.s_inverse[6], view.s_inverse[7], view.s_inverse[8]};
         require(Cat02Fixtures::tables_result(tables) == fixture.at("helper_tables") && bits(inverse) == fixture.at("helper_s_inv"), "native-parent helper preparation exact");
         for (const auto& row : fixture.at("helpers")) {
-            JuicerTests::CaseEvent event("color.input_helper", row.at("id").get<std::string>());
             require(Cat02Fixtures::helper_result(row, tables, inverse, true, hanatosSamples) == row.at("hanatos_expected"), row.at("id").get<std::string>() + " retained Hanatos helper exact");
             require(Cat02Fixtures::helper_result(row, tables, inverse, false, hanatosSamples) == row.at("tables_expected"), row.at("id").get<std::string>() + " retained table helper exact");
-            event.passed();
         }
         const std::array<float, 3> rgb{2.0f, -.25f, .5f};
         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-            JuicerTests::CaseEvent event("color.input_helper_fault", std::to_string(fault));
             require_spectrum_fixture_failure(tables, inverse, 1, fault, hanatosSamples);
             require_spectrum_fixture_failure(tables, inverse, 2, fault, hanatosSamples);
             std::array<float, 3> output{}, xyz{};
@@ -2362,24 +2177,20 @@ namespace {
             require_input_failure(FJ_TEST_INPUT_MATRICES, fault, [&] {
                 (void)JuicerTestFixture::Color::input_matrices(Spectral::InputColorSpace::ITU_R_BT2020);
             });
-            event.passed();
         }
         std::puts("Input-color helpers: independent spectra and both-category direct primitive/DWG helper failures passed");
     }
 
     void input_preparation_tests(const FjAssets* assets, const Json& fixture, const std::filesystem::path& fixturePath) {
-        JuicerTests::CaseEvent retained_event("color.input_preparation", "retained_comparison_and_defaults");
         retained_comparison_tests();
         const auto cases = InputFixtures::scenarios();
         require(cases.size() == 140 && cases.size() == fixture.at("recipes").size(), "96 base plus 44 bounded input-color products");
         require(InputFixtures::controls_json(JuicerTestSupport::PreparationInput{}) == spectral_controls_from_archive(fixture.at("defaults")), "all frozen parent defaults exact");
-        retained_event.passed();
         const auto witness = load_preset_witness(fixturePath, "input-color-manifest.json");
         bool wrongPreset = false;
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& [id, controls] = cases[i];
             const auto& row = fixture.at("recipes").at(i);
-            JuicerTests::CaseEvent event("color.input_recipe", row.at("id").get<std::string>());
             require(id == row.at("id").get<std::string>() && InputFixtures::controls_json(controls) == spectral_controls_from_archive(row.at("controls")), "ordered frozen product inputs/settings exact");
             auto product = Cat02Fixtures::prepare(assets, controls);
             const auto actual = InputFixtures::complete_result(product);
@@ -2388,12 +2199,10 @@ namespace {
                 check_preset_witness(actual, row.at("expected"), witness);
                 wrongPreset = true;
             }
-            event.passed();
         }
         require(wrongPreset, "native preset differences are observable and reject wrong references");
         for (int route = 0; route < 4; ++route) {
             for (int method = 0; method < 3; ++method) {
-                JuicerTests::CaseEvent event("color.input_admission", std::to_string(route) + "/" + std::to_string(method));
                 auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
                 controls.values.input_color_space = 1;
                 controls.values.input_cctf_decoding = 1;
@@ -2437,13 +2246,10 @@ namespace {
                 require(bits(liveView.scanner_color.cat02, 9) == bits(encodedOffView.scanner_color.cat02, 9) && liveView.output_boundary.entry_identity == encodedOffView.output_boundary.entry_identity && liveView.output_boundary.cmax.data == encodedOffView.output_boundary.cmax.data, "output encoding retains CAT02 and the output boundary owner");
                 require(liveView.scanner_hash != encodedOffView.scanner_hash && liveView.recipe_hash != encodedOffView.recipe_hash,
                         "output encoding changes the scanner binding and full recipe");
-                event.passed();
             }
         }
         input_helper_tests(assets, fixture);
-        JuicerTests::CaseEvent admission_event("color.input_preparation", "input_admission_failure_contract");
         input_admission_tests(assets);
-        admission_event.passed();
         std::puts("Input-color preparation: 140 exact products/identities, controls, retained owners/cache replacement and terminal admission gates passed");
     }
 
@@ -2562,8 +2368,6 @@ namespace {
                 for (unsigned binding = 0; binding < 3; ++binding)
                     binding_ids.push_back(id + "/" + std::to_string(binding));
             }
-        const JuicerTests::Cohort bindings("color.gpu_reuse.binding", binding_ids);
-        const JuicerTests::Cohort contexts("color.gpu_reuse.context_retire", context_ids);
         require(cudaSetDevice(0) == cudaSuccess && cudaFree(nullptr) == cudaSuccess, "GPU initialization");
         void* context = nullptr;
         std::string contextError;
@@ -2600,14 +2404,11 @@ namespace {
                 facts.frameRate = 24.0;
                 facts.sessionSeed = 0x243f6a8885a308d3ull;
                 facts.clipToken = 0x13198a2e03707344ull;
-                unsigned binding = 0;
                 for (const JuicerTestSupport::PreparedStateHold* prepared : {&product, &encodedOff, &product}) {
-                    auto binding_event = bindings.case_event(std::to_string(scenario) + "/" + std::to_string(route) + "/" + std::to_string(binding++));
                     std::string diagnostic;
                     require(FrameFixture::with_prepared_frame_inputs(
                                 assets, *prepared, facts, &call, &prepare_and_check_gpu_reuse, diagnostic),
                             diagnostic);
-                    binding_event.passed();
                 }
                 sequence = call.sequence;
                 std::printf("GPU scanner route=%d method=%d input=%d decode=%d preparation_us cold=%lld cctf=%lld warm=%lld binding=%llu exact_spectral_words=%zu\n",
@@ -2622,9 +2423,7 @@ namespace {
                             call.previousContent.size());
                 std::printf("GPU TC route=%d method=%d identity=%llu exact_values=%zu allocation=%p\n", selectedRoute, method, static_cast<unsigned long long>(call.tcLutHash), call.previousTcContent.size(), static_cast<const void*>(call.previousTc));
                 std::string diagnostic;
-                auto context_event = contexts.case_event(std::to_string(scenario) + "/" + std::to_string(route));
                 require(JuicerCuda::borrow_root(runtimeView.cuda).retire_idle_context(0, context, diagnostic), diagnostic);
-                context_event.passed();
             }
         }
         std::puts("GPU reuse: Hanatos/Arctic both polarities and retained Mallett input-color cases; direct/print spectral packet preservation, scanner identity restoration and TC device reuse; prepared binding leaves math faults unconsumed");
@@ -2633,90 +2432,12 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
-    JuicerTests::CaseLog case_log;
-    if (argc == 5 && std::string_view(argv[argc - 1]) == "--list-cases") {
-        const std::string group = argv[3];
-        if (group == "fixture-format") {
-            JuicerTests::list_case("color_preparation", group);
-            return 0;
-        }
-        if (group == "reuse-gpu") {
-            JuicerTests::list_case("color_preparation", "owner_close");
-            // Inner tuple membership is independently declared before execution.
-            for (int scenario = 0; scenario < 7; ++scenario)
-                for (int route = 0; route < 2; ++route) {
-                    const auto id = std::to_string(scenario) + "/" + std::to_string(route);
-                    JuicerTests::list_case("color.gpu_reuse.context_retire", id);
-                    for (unsigned binding = 0; binding < 3; ++binding)
-                        JuicerTests::list_case("color.gpu_reuse.binding", id + "/" + std::to_string(binding));
-                }
-            return 0;
-        }
-        const Json listed = PrintIlluminantFixtures::apply(argv[2], load_exposure_qualified_fixture(argv[2]));
-        const auto list_rows = [&](std::string_view caller, const Json& rows) {
-            for (const auto& row : rows)
-                JuicerTests::list_case(caller, row.at("id").get<std::string>());
-        };
-        if (group == "leaf") {
-            list_rows("color.leaf", listed.at("leaf"));
-            JuicerTests::list_case("color.leaf", "abi_fault_and_comparator_controls");
-        } else if (group == "preparation") {
-            for (int space = 0; space < 9; ++space)
-                JuicerTests::list_case("color.preparation.transform", std::to_string(space));
-            for (const auto& row : listed.at("tables"))
-                JuicerTests::list_case("color.preparation.table", std::to_string(row.at("space").get<int>()));
-            list_rows("color.preparation.recipe", listed.at("recipes"));
-            for (int route = 0; route < 2; ++route)
-                JuicerTests::list_case("color.preparation.encoding_reuse", std::to_string(route));
-            JuicerTests::list_case("color.preparation", "admission_and_construction_controls");
-        } else if (group == "cat02-leaf") {
-            list_rows("color.cat02_leaf", listed.at("leaf"));
-            list_rows("color.cat02_leaf", listed.at("threshold"));
-            JuicerTests::list_case("color.cat02_leaf", "direction_abi_and_fault_controls");
-        } else if (group == "cat02-preparation") {
-            list_rows("color.cat02_recipe", listed.at("recipes"));
-            for (int route = 0; route < 4; ++route)
-                JuicerTests::list_case("color.cat02_scanner_illuminant", std::to_string(route));
-            list_rows("color.cat02_scanner", listed.at("scanner_cases"));
-            for (const auto& row : listed.at("scanner_invalid_cases"))
-                JuicerTests::list_case("color.cat02_scanner_invalid", std::to_string(row.at("medium").get<int>()));
-            list_rows("color.cat02_helper", listed.at("helpers"));
-            for (auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC})
-                JuicerTests::list_case("color.cat02_helper_fault", std::to_string(fault));
-            JuicerTests::list_case("color.cat02_preparation", "admission_helpers_controls");
-        } else if (group == "input-leaf") {
-            list_rows("color.input_leaf.recipe", listed.at("recipes"));
-            list_rows("color.input_leaf.decode", listed.at("decode"));
-            list_rows("color.input_leaf.conversion", listed.at("conversion"));
-            list_rows("color.input_leaf.linear", listed.at("linear"));
-            list_rows("color.input_leaf.projection", listed.at("projection"));
-            for (const auto& row : listed.at("matrices"))
-                JuicerTests::list_case("color.input_leaf.matrix", std::to_string(row.at("space").get<int>()));
-            JuicerTests::list_case("color.input_leaf", "projection_order_comparator");
-            JuicerTests::list_case("color.input_leaf", "abi_fault_and_default_controls");
-        } else if (group == "input-preparation") {
-            list_rows("color.input_recipe", listed.at("recipes"));
-            JuicerTests::list_case("color.input_preparation", "retained_comparison_and_defaults");
-            for (int route = 0; route < 4; ++route)
-                for (int method = 0; method < 3; ++method)
-                    JuicerTests::list_case("color.input_admission", std::to_string(route) + "/" + std::to_string(method));
-            list_rows("color.input_helper", listed.at("helpers"));
-            for (auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC})
-                JuicerTests::list_case("color.input_helper_fault", std::to_string(fault));
-            JuicerTests::list_case("color.input_preparation", "input_admission_failure_contract");
-        }
-        JuicerTests::list_case("color_preparation", "owner_close");
-        return 0;
-    }
     JuicerTestSupport::RuntimeFixture owner;
     try {
         require(argc == 4, "resources, immutable fixture and group required");
         const std::string group = argv[3];
         if (group == "fixture-format") {
-            JuicerTests::CaseEvent event("color_preparation", group);
             shared_fixture_loading_tests(argv[1]);
-            event.passed();
-            case_log.finish();
             return 0;
         }
         owner.create(argv[1]);
@@ -2741,11 +2462,8 @@ int main(int argc, char** argv) try {
             throw std::runtime_error("unknown color test group");
         }
         {
-            JuicerTests::CaseEvent close_event("color_preparation", "owner_close");
             expect_status(owner.close(), FJ_STATUS_SUCCESS);
-            close_event.passed();
         }
-        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Color tests: %s\n", error.what());

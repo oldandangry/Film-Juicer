@@ -14,7 +14,6 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
-#include "gtest_cases.h"
 #include "ProcessRoot.h"
 #include "test_asset_workspace.h"
 #include "test_asset_bridge.h"
@@ -295,26 +294,20 @@ namespace IlluminantConstruction {
         std::vector<std::string> blackbody_ids;
         for (const auto& expected : f["leaf"]["blackbody"])
             blackbody_ids.push_back(std::to_string(expected.at("temperature").get<std::uint32_t>()));
-        JuicerTests::GtestCohort blackbody_cases("leaves-blackbody", blackbody_ids);
         for (const auto& row : f["leaf"]["blackbody"]) {
-            auto blackbody_case = blackbody_cases.case_event(std::to_string(row.at("temperature").get<std::uint32_t>()));
             SCOPED_TRACE(row["temperature"].dump());
             const auto temperature = std::bit_cast<float>(row["temperature"].get<std::uint32_t>());
             status(fj_test_illuminant_blackbody(temperature, &curve, &d.error), FJ_STATUS_SUCCESS);
             samples(curve, row["normalized"]);
             status(fj_test_illuminant_curve(2, {}, {}, temperature, &core, &c, &d.error), FJ_STATUS_SUCCESS);
             samples(core, row["normalized"]);
-
-            blackbody_case.passed();
         }
         status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         samples(curve, f["leaf"]["equal"]["samples"]);
         std::vector<std::string> direct_ids;
         for (const auto& expected : f["leaf"]["direct"])
             direct_ids.push_back(expected.at("id").get<std::string>());
-        JuicerTests::GtestCohort direct_curve_cases("leaves-direct", direct_ids);
         for (const auto& row : f["leaf"]["direct"]) {
-            auto direct_curve_case = direct_curve_cases.case_event(row.at("id").get<std::string>());
             SCOPED_TRACE(row["id"].dump());
             const auto input = scalars(row["rows"]);
             const auto expected = row["curve"]["samples"].empty() ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_SUCCESS;
@@ -327,15 +320,11 @@ namespace IlluminantConstruction {
                 EXPECT_TRUE(cleared(curve));
                 EXPECT_TRUE(cleared(core));
             }
-
-            direct_curve_case.passed();
         }
         std::vector<std::string> resample_ids;
         for (const auto& expected : f["leaf"]["resample"])
             resample_ids.push_back(expected.at("id").get<std::string>());
-        JuicerTests::GtestCohort resample_curve_cases("leaves-resample", resample_ids);
         for (const auto& row : f["leaf"]["resample"]) {
-            auto resample_curve_case = resample_curve_cases.case_event(row.at("id").get<std::string>());
             SCOPED_TRACE(row["id"].dump());
             const auto input = scalars(row["rows"]);
             const auto expected = row["kg3"]["samples"].empty() ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_SUCCESS;
@@ -354,8 +343,6 @@ namespace IlluminantConstruction {
                 samples(core, row["lens"]["samples"]);
             }
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
-
-            resample_curve_case.passed();
         }
     }
     TEST(IlluminantConstruction, BorrowedRowsAndMeasuredScratchHaveScopedLifetimes) {
@@ -384,9 +371,7 @@ namespace IlluminantConstruction {
         std::vector<std::string> borrowed_resample_ids;
         for (const auto& row : f["leaf"]["resample"])
             borrowed_resample_ids.push_back(row.at("id").get<std::string>());
-        JuicerTests::GtestCohort borrowed_resample_cases("borrowed-resample", borrowed_resample_ids);
         for (const auto& row : f["leaf"]["resample"]) {
-            auto borrowed_resample_case = borrowed_resample_cases.case_event(row.at("id").get<std::string>());
             const auto input = scalars(row["rows"]);
             (void)fj_test_illuminant_curve(8, span(input), {}, 0, &curve, &c, &d.error);
             std::array<std::size_t, 10> bytes{};
@@ -396,8 +381,6 @@ namespace IlluminantConstruction {
             for (std::size_t index = 0; index < count; ++index)
                 total += bytes[index];
             std::printf("Rust Akima %s: actual Vec capacities=%zu buffers/%zu cumulative bytes; no retained scratch, excludes metadata/RSS\n", row["id"].get<std::string>().c_str(), count, total);
-
-            borrowed_resample_case.passed();
         }
     }
 
@@ -407,10 +390,7 @@ namespace IlluminantConstruction {
         FjIlluminantCoverage c{};
         const std::vector<float> input{370, 1, 790, 1};
         const std::array<FjFloatSpan, 5> invalid{{{nullptr, 2}, {input.data(), 1}, {input.data(), std::numeric_limits<std::size_t>::max() - 1}, {reinterpret_cast<const float*>(reinterpret_cast<const char*>(input.data()) + 1), 2}, {reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3), 2}}};
-        JuicerTests::GtestCohort malformed_span_cases("malformed-spans", std::size(invalid));
-        std::size_t malformed_span_index = 0;
         for (const auto& view : invalid) {
-            auto malformed_span_case = malformed_span_cases.case_event(std::to_string(malformed_span_index++));
             std::fill(std::begin(curve.samples), std::end(curve.samples), 9);
             status(fj_test_illuminant_from_samples(view, &curve, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_TRUE(cleared(curve));
@@ -419,13 +399,8 @@ namespace IlluminantConstruction {
             status(fj_test_illuminant_lens_finish(&owner, view, &curve, &c, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
-
-            malformed_span_case.passed();
         }
-        JuicerTests::GtestCohort construction_fault_cases("construction-faults", 4u);
-        std::size_t construction_fault_index = 0;
         for (unsigned fault = 0; fault < 4; ++fault) {
-            auto construction_fault_case = construction_fault_cases.case_event(std::to_string(construction_fault_index++));
             auto* owner = lens(input);
             FjErrorBuffer bad{nullptr, 1, 99};
             FjErrorBuffer* error = fault == 0 ? nullptr : fault == 1 ? &bad
@@ -435,8 +410,6 @@ namespace IlluminantConstruction {
             status(fj_test_illuminant_lens_finish(&owner, span(input), out, coverage, error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
-
-            construction_fault_case.passed();
         }
         auto* owner = lens(input);
         status(fj_test_illuminant_lens_release(&owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -460,11 +433,8 @@ namespace IlluminantConstruction {
         EXPECT_EQ(c.warnings, 3u);
         status(fj_test_illuminant_lens_finish(&owner, span(narrow), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(c.warnings, 3u);
-        JuicerTests::GtestCohort operation_fault_cases("operation-faults", 28u);
-        std::size_t operation_fault_index = 0;
         for (std::uint32_t operation = 1; operation <= 7; ++operation)
             for (std::uint32_t fault = 1; fault <= 4; ++fault) {
-                auto operation_fault_case = operation_fault_cases.case_event(std::to_string(operation_fault_index++));
                 SCOPED_TRACE(std::to_string(operation) + "/" + std::to_string(fault));
                 owner = operation >= 6 ? lens(input) : nullptr;
                 status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
@@ -530,8 +500,6 @@ namespace IlluminantConstruction {
                         FAIL();
                 }
                 EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
-
-                operation_fault_case.passed();
             }
         status(fj_test_illuminant_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
         status(fj_test_illuminant_curve(3, {}, {}, 0, &curve, &c, &d.error), FJ_STATUS_SUCCESS);
@@ -572,10 +540,7 @@ namespace IlluminantConstruction {
         product_ids.reserve(f["products"].size());
         for (std::size_t i = 0; i < f["products"].size(); ++i)
             product_ids.push_back(std::to_string(i) + "/" + f["products"][i].at("label").get<std::string>());
-        JuicerTests::GtestCohort product_cases("products", product_ids);
-        std::size_t product_index = 0;
         for (const auto& row : f["products"]) {
-            auto product_case = product_cases.case_event(product_ids[product_index++]);
             SCOPED_TRACE(row["label"].dump() + "/" + row["controls"]["enlIll"].dump());
             const int polarity = row["polarity"], route = row["route"];
             auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route));
@@ -611,7 +576,6 @@ namespace IlluminantConstruction {
                 EXPECT_FALSE(std::string(productText.data(), productError.length).empty());
                 EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
                 EXPECT_FALSE(preparedDiagnostic.empty());
-                product_case.passed();
                 continue;
             }
             status(preparedStatus, FJ_STATUS_SUCCESS);
@@ -654,8 +618,6 @@ namespace IlluminantConstruction {
             PrintIlluminantFixtures::select_frozen_light_hashes(expected, "print_descriptors");
             const bool matches = result == expected;
             EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(expected, result).front().dump());
-
-            product_case.passed();
         }
     }
 
@@ -673,11 +635,8 @@ namespace IlluminantConstruction {
             std::ofstream changed(path);
             changed << film;
         }
-        JuicerTests::GtestCohort admission_fault_cases("construction-operation-faults", 18u);
-        std::size_t admission_fault_index = 0;
         for (std::uint32_t operation : {1u, 2u, 3u, 4u, 5u, 6u})
             for (std::uint32_t fault : {1u, 2u, 3u}) {
-                auto admission_fault_case = admission_fault_cases.case_event(std::to_string(admission_fault_index++));
                 auto controls = snapshot(operation == 3 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan);
                 controls.values.enl_ill = 7;
                 JuicerTestSupport::InstanceFixture cold;
@@ -785,8 +744,6 @@ namespace IlluminantConstruction {
                     ASSERT_EQ(recovered.kind, FJ_ADMISSION_READY);
                     EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build + 1);
                 }
-
-                admission_fault_case.passed();
             }
         auto controls = snapshot(Spektrafilm::ScanRoute::NegativePrintScan);
         controls.values.enl_ill = 7;
@@ -809,10 +766,7 @@ namespace IlluminantConstruction {
             "asset boundary panic",
             "illuminant scratch capacity",
             "illuminant CSV axis mismatch"};
-        JuicerTests::GtestCohort publication_fault_cases("publication-faults", 4u);
-        std::size_t publication_fault_index = 0;
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
-            auto publication_fault_case = publication_fault_cases.case_event(std::to_string(publication_fault_index++));
             status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
             std::optional<JuicerTestSupport::PreparedStateHold> failed;
             std::array<char, 2048> failureText{};
@@ -838,8 +792,6 @@ namespace IlluminantConstruction {
             FjPreparedStateView retriedView{};
             status(retried->view(retriedView, retryError), FJ_STATUS_SUCCESS);
             EXPECT_EQ(retriedView.recipe_hash, heldRustHash);
-
-            publication_fault_case.passed();
         }
 
         // Actual complete-state publication for EQUAL faults is independent
@@ -851,10 +803,7 @@ namespace IlluminantConstruction {
         ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(retainedPublication.state);
         const auto retainedCounterStart = JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build;
-        JuicerTests::GtestCohort preflash_fault_cases("preflash-faults", 4u);
-        std::size_t preflash_fault_index = 0;
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
-            auto preflash_fault_case = preflash_fault_cases.case_event(std::to_string(preflash_fault_index++));
             auto changed = retainedControls;
             changed.values.camera_exposure_compensation_ev += static_cast<double>(fault) * 0.01;
             JuicerTestSupport::capture(*equalPublisher, changed);
@@ -922,8 +871,6 @@ namespace IlluminantConstruction {
             EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*warm.state), JuicerTestSupport::PublicationObserver::backing(*retainedPublication.state));
             EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, recoveredBuild);
             retainedControls = changed;
-
-            preflash_fault_case.passed();
         }
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, retainedCounterStart + 3);
     }

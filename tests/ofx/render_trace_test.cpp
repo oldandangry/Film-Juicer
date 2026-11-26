@@ -5,7 +5,6 @@
 #include "Hash.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "processor_test_hooks.h"
-#include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/preparation_fixture.h"
 #include "../ffi/owner_fixture.h"
@@ -32,7 +31,6 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
     const JuicerCuda::DirectPipelineRunParams*, const JuicerCuda::ScannerSpectra&, const float*, const float*, const float*, float*, float*, float*, const float*, void*);
 
 namespace {
-    constexpr std::string_view kCaller = "ofx.gpu.render_trace";
     constexpr std::array kRows{"temporal/initial", "temporal/time_a", "temporal/time_b", "temporal/backward", "temporal/repeat", "temporal/preset", "temporal/reset", "temporal/undo", "temporal/redo", "temporal/invalid", "temporal/recovery", "geometry/changed_size", "geometry/half_scale", "geometry/origin", "effects/full_frame", "identity/fixed", "failure/message_order", "failure/recovery", "failure/holds", "time/valid_after_rejection"};
     constexpr std::array kSupplemental{"fixed/negative-print", "fixed/positive-direct", "fixed/positive-print", "fixed/combined-print", "fixed/glare-plus-zero", "fixed/glare-minus-zero", "time/positive_zero", "time/negative_zero", "time/negative_half", "time/below_negative_one", "time/below_positive_one", "time/nan", "time/positive_infinity", "time/negative_infinity", "abort/terminal_recovery"};
     constexpr std::array kIdentityPairs{"direct-exposure-small", "direct-exposure-zero", "print-exposure-small", "print-exposure-zero", "print-medium-exposure-small"};
@@ -306,40 +304,29 @@ namespace {
         return cold;
     }
 
-    int report_reference_inputs(std::string_view caller, std::span<const ScannerReferenceCase> cases, bool listing) {
-        if (listing) {
-            for (const auto& test : cases)
-                JuicerTests::list_case(caller, test.image.id);
-            return 0;
-        }
-        JuicerTests::CaseLog log;
+    int report_reference_inputs(std::span<const ScannerReferenceCase> cases) {
         std::vector<std::string> ids;
         ids.reserve(cases.size());
         for (const auto& test : cases)
             ids.emplace_back(test.image.id);
-        JuicerTests::Cohort cohort(std::string(caller), ids);
         std::puts("CTEST_FULL_OUTPUT");
         for (const auto& test : cases) {
-            auto row = cohort.case_event(test.image.id);
             const auto input = capture_reference_inputs(test);
             std::puts(input.dump().c_str());
-            row.passed();
         }
-        log.finish();
         return 0;
     }
 
-    int run_render_gpu_reference_inputs(bool listing) {
+    int run_render_gpu_reference_inputs() {
         std::array<ScannerReferenceCase, ofx_test::kRenderReferenceCases.size()> cases{};
         for (std::size_t index = 0; index < cases.size(); ++index) {
             const auto& route = ofx_test::kRenderReferenceCases[index];
             cases[index] = {{route.id, route.id, route.route, route.reconstruction, route.components}, route.film, route.resolvedRoute, nullptr, &route};
         }
-        return report_reference_inputs("ofx.gpu.render_reference_inputs", cases, listing);
+        return report_reference_inputs(cases);
     }
 
-    int run_reference_inputs(bool listing) {
-        constexpr std::string_view caller = "ofx.gpu.scanner_reference_inputs";
+    int run_reference_inputs() {
         constexpr std::array cases{
             ScannerReferenceCase{{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 3}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_DIRECT},
             ScannerReferenceCase{{"negative-print", "negative-print", "NegativePrintScan", 1, 4}, "kodak_portra_400", FJ_ROUTE_NEGATIVE_PRINT},
@@ -369,11 +356,10 @@ namespace {
                                  kFixedGlareMinusZero.profile,
                                  FJ_ROUTE_NEGATIVE_PRINT,
                                  &kFixedGlareMinusZero}};
-        return report_reference_inputs(caller, cases, listing);
+        return report_reference_inputs(cases);
     }
 
-    int run_retained_high_gain_reference(bool listing) {
-        constexpr std::string_view caller = "ofx.gpu.retained_high_gain_reference";
+    int run_retained_high_gain_reference() {
         const auto path = std::filesystem::path(JUICER_SPECTRAL_TRACE_PATH).parent_path() / "retained-high-gain-inputs.json";
         std::ifstream file(path);
         ofx_test::require_render(static_cast<bool>(file), "open retained high-gain scanner fixture");
@@ -386,11 +372,7 @@ namespace {
         std::vector<std::string> ids;
         for (const auto& record : records) {
             ids.push_back(record.at("id").get<std::string>());
-            if (listing)
-                JuicerTests::list_case(caller, ids.back());
         }
-        if (listing)
-            return 0;
 
         const auto word = [](const nlohmann::json& value) {
             ofx_test::require_render(value.is_number_unsigned() && value.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max(),
@@ -435,11 +417,8 @@ namespace {
                                "launch scanner on retained high-gain C/M/Y");
         const auto observed = capture.read();
         const auto arithmetic = ofx_test::scan_reference_arithmetic(observed);
-        JuicerTests::CaseLog log;
-        JuicerTests::Cohort rows(std::string(caller), ids);
         std::puts("CTEST_FULL_OUTPUT");
         for (std::size_t index = 0; index < records.size(); ++index) {
-            auto row = rows.case_event(ids[index]);
             const auto& expected = records.at(index);
             const auto& actual = observed[index];
             ofx_test::require_render(ofx_test::scan_float_words(actual.density) == expected.at("film_cmy"), "plane scanner consumed different C/M/Y words");
@@ -452,36 +431,25 @@ namespace {
             }
             const nlohmann::json report{{"id", ids[index]}, {"xyz", actual.xyz}, {"adapted_xyz", actual.adaptedXYZ}, {"signed_rgb", actual.signedRGB}, {"wavelength_arithmetic", arithmetic.at(index)}};
             std::puts(report.dump().c_str());
-            row.passed();
         }
-        log.finish();
         return 0;
     }
 
-    int run_print_glare_launches(bool listing) {
+    int run_print_glare_launches() {
         using Handoff = JuicerCuda::ExecutorTest::WorkspaceHandoff;
         constexpr std::array phases{"fused", "materialized", "warm", "frame-edit", "origin-edit", "glare-off"};
         constexpr std::array cases{kFixedNegativePrint, kFixedPositivePrint};
         constexpr std::array<std::uint64_t, 2> identities{0xf618c9a27080fb03ULL, 0xecf77afbfba9bf31ULL};
         constexpr std::array<std::uint64_t, 2> seeds{0x368f350b0108787aULL, 0x8aaee75c5d1781d1ULL};
-        const std::string caller = "ofx.gpu.print_glare_launches";
         std::vector<std::string> ids;
         ids.reserve(cases.size() * phases.size());
         for (const auto& test : cases)
             for (const auto* phase : phases)
                 ids.emplace_back(std::string(test.name) + "/" + phase);
-        if (listing) {
-            for (const auto& id : ids)
-                JuicerTests::list_case(caller, id);
-            return 0;
-        }
 
-        JuicerTests::CaseLog log;
-        JuicerTests::Cohort rows(caller, ids);
         for (std::size_t index = 0; index < cases.size(); ++index) {
             auto test = cases[index];
             test.origin = {-13, 7};
-            const std::string prefix = std::string(test.name) + "/";
             ofx_test::DeviceImages images({7, 5, test.components});
             fj_test_ofx_render_tokens(kSession, test.instance, kClip);
             ofx_test::RenderHost fixture;
@@ -522,33 +490,20 @@ namespace {
                 return ofx_test::scan_float_words(field);
             };
 
-            auto fused = rows.case_event(prefix + "fused");
             const auto original = observe(37.0, Handoff::FusedDirScanner);
-            fused.passed();
             fixture.host().set_value(fixture.effect(), "CouplersActive", {0});
             change(fixture, "CouplersActive", kOfxChangeUserEdited, 37.0);
-            auto plane = rows.case_event(prefix + "materialized");
             ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) == original, "fused and plane glare fields differ");
-            plane.passed();
-            auto warm = rows.case_event(prefix + "warm");
             ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) == original, "warm Print glare field changed");
-            warm.passed();
-            auto frame = rows.case_event(prefix + "frame-edit");
             ofx_test::require_render(observe(38.0, Handoff::MaterializedDensity) != original, "frame token did not change Print glare");
-            frame.passed();
-            auto origin = rows.case_event(prefix + "origin-edit");
             ++test.origin.x;
             configure_fixed_scan(fixture, images, test);
             ofx_test::require_render(observe(37.0, Handoff::MaterializedDensity) != original, "origin edit did not change Print glare");
-            origin.passed();
-            auto off = rows.case_event(prefix + "glare-off");
             fixture.host().set_value(fixture.effect(), "GlareActive", {0});
             change(fixture, "GlareActive", kOfxChangeUserEdited, 37.0);
             (void)observe(37.0, Handoff::Monolithic, false);
-            off.passed();
             fixture.close();
         }
-        log.finish();
         return 0;
     }
 
@@ -719,7 +674,7 @@ namespace {
         field("camera_diffusion_family", actual.camera_diffusion.family, expected.camera_diffusion.family);
         field("halation_active", actual.scatter_halation.active, expected.scatter_halation.active);
     }
-    void frozen_scenarios(const JuicerTests::Cohort& rows) {
+    void frozen_scenarios() {
         constexpr std::array scenarios{
             kFixedNegativePrint,
             kFixedPositiveDirect,
@@ -729,7 +684,6 @@ namespace {
             kFixedGlareMinusZero};
         for (const auto& scenario : scenarios) {
             const bool negativePrint = std::string_view(scenario.name) == kFixedNegativePrint.name;
-            auto event = rows.case_event(std::string("fixed/") + scenario.name);
             ofx_test::DeviceImages images({7, 5, scenario.components});
             fj_test_ofx_render_tokens(kSession, scenario.instance, kClip);
             ofx_test::RenderHost fixture(OfxGetPlugin(0));
@@ -803,14 +757,7 @@ namespace {
                                          fixture.host().image_release_count(fixture.effect(), "Output") == 1,
                                      "frozen scenario image releases");
             fixture.close();
-            event.passed();
         }
-    }
-    template <class F>
-    void row(const JuicerTests::Cohort& rows, const char* id, F&& body) {
-        auto event = rows.case_event(id);
-        body();
-        event.passed();
     }
     void snapshot_defaults(ofx_test::RenderHost& fixture) {
         auto& host = fixture.host();
@@ -870,7 +817,7 @@ namespace {
         return {std::move(pixels), {state.recipe_hash, state.scanner_hash, state.print.glare_hash, frame.input_identity}, state.film_exposure.hash, state.print_recipe_hash, actual.view.build, actual.view.backing_identity};
     }
 
-    void accepted_identities(const JuicerTests::Cohort& rows) {
+    void accepted_identities() {
         std::ifstream stream(JUICER_PARAMETER_IDENTITIES_PATH);
         ofx_test::require_render(static_cast<bool>(stream), "identity fixture unavailable");
         const auto expected = PrintIlluminantFixtures::apply(JUICER_PARAMETER_IDENTITIES_PATH, nlohmann::json::parse(stream));
@@ -890,7 +837,6 @@ namespace {
             std::optional<IdentityRender> first;
             for (const char* suffix : {"A", "B"}) {
                 const std::string fixture_key = std::string(name) + "/" + suffix;
-                auto event = rows.case_event(std::string("identity/") + fixture_key);
                 const bool second = std::string_view(suffix) == "B";
                 const double value = second ? (signed_zero ? -0.0 : 1.00001) : original;
                 fixture.host().set_value(fixture.effect(), control, {value});
@@ -922,16 +868,15 @@ namespace {
                     RenderAssertions::compare_bits("restored exposure pixels", restored.pixels, first->pixels);
                     RenderAssertions::compare_bits("warm restored exposure pixels", warm.pixels, restored.pixels);
                 }
-                event.passed();
             }
             fixture.close();
         }
     }
-    void run(const JuicerTests::Cohort& rows) {
-        row(rows, "identity/fixed", [&] {
-            frozen_scenarios(rows);
-        });
-        accepted_identities(rows);
+    void run() {
+        ([&] {
+            frozen_scenarios();
+        })();
+        accepted_identities();
         ofx_test::DeviceImages images({7, 5, 3});
         tokens();
         ofx_test::RenderHost fixture(OfxGetPlugin(0));
@@ -940,15 +885,15 @@ namespace {
         std::vector<float> time_a_pixels;
         std::vector<float> time_b_pixels;
         std::uint64_t initial_build = 0;
-        row(rows, "temporal/initial", [&] {
+        ([&] {
             original = render(fixture, images, 37.0);
             const auto expected = ofx_test::read_render_reference(JUICER_PROCESSOR_RUST_PATH, JUICER_SPECTRAL_TRACE_PRESET, false);
             RenderAssertions::compare_pixels("initial spectral pixels", original, expected.at("route/negative-direct"));
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.pending_kind == 4 && state.view.build > 0 && state.view.backing_identity != 0, "initial publication");
             initial_build = state.view.build;
-        });
-        row(rows, "temporal/time_a", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "Exposure", {0.5});
             fixture.host().clear_calls();
             change(fixture, "Exposure", kOfxChangeTime, 41.0);
@@ -964,31 +909,31 @@ namespace {
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.captured.camera_exposure_compensation_ev == 0.5 && state.view.build > initial_build,
                                      "time A captured publication");
-        });
-        row(rows, "temporal/time_b", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "Exposure", {1.0});
             change(fixture, "Exposure", kOfxChangeTime, 49.0);
             time_b_pixels = render(fixture, images, 49.0);
             ofx_test::require_render(time_a_pixels != time_b_pixels, "different exposures rendered identical pixels");
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.captured.camera_exposure_compensation_ev == 1.0, "time B capture");
-        });
-        row(rows, "temporal/backward", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "Exposure", {0.5});
             change(fixture, "Exposure", kOfxChangeTime, 41.0);
             RenderAssertions::compare_bits("backward fixed token pixels", render(fixture, images, 41.0), time_a_pixels);
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.captured.camera_exposure_compensation_ev == 0.5, "backward capture");
-        });
-        row(rows, "temporal/repeat", [&] {
+        })();
+        ([&] {
             Observation before(fixture.effect());
             const auto pixels = render(fixture, images, 41.0);
             Observation after(fixture.effect());
             ofx_test::require_render(before.view.build == after.view.build && before.view.backing_identity == after.view.backing_identity,
                                      "repeat must reuse immutable publication");
             RenderAssertions::compare_bits("repeat pixels", pixels, render(fixture, images, 41.0));
-        });
-        row(rows, "temporal/preset", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "GrainPreset", {1});
             change(fixture, "GrainPreset", kOfxChangeUserEdited, 41.0);
             const auto pixels = render(fixture, images, 41.0);
@@ -999,8 +944,8 @@ namespace {
                                          state.view.captured.grain.chroma_mix == 0.3f &&
                                          state.view.captured.grain.particle_area_um2 == 0.25f,
                                      "preset captured grain values");
-        });
-        row(rows, "temporal/reset", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "GrainBlurDyeCloudsUm", {9.0});
             fixture.host().set_value(fixture.effect(), "GrainSizeMixWeight", {0.0});
             fixture.host().set_value(fixture.effect(), "GrainMicroStructure", {1.0, 2.0});
@@ -1017,35 +962,35 @@ namespace {
                                          state.view.captured.grain.dye_cloud_blur_um == 1.0f &&
                                          state.view.captured.grain.coarse_weight == static_cast<float>(expected_weight),
                                      "reset advanced values and capture");
-        });
-        row(rows, "temporal/undo", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "Exposure", {0.0});
             change(fixture, "Exposure", kOfxChangeUserEdited, 41.0);
             (void)render(fixture, images, 41.0);
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.captured.camera_exposure_compensation_ev == 0.0, "undo capture");
-        });
-        row(rows, "temporal/redo", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "Exposure", {0.5});
             change(fixture, "Exposure", kOfxChangeUserEdited, 41.0);
             (void)render(fixture, images, 41.0);
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.captured.camera_exposure_compensation_ev == 0.5, "redo capture");
-        });
-        row(rows, "temporal/invalid", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "CameraFilmFormatMm", {121.0});
             change(fixture, "CameraFilmFormatMm", kOfxChangeUserEdited, 41.0);
             tokens();
             ofx_test::require_render(fixture.render() == kOfxStatErrFatal, "invalid controls admitted render");
-        });
-        row(rows, "temporal/recovery", [&] {
+        })();
+        ([&] {
             fixture.host().set_value(fixture.effect(), "CameraFilmFormatMm", {35.0});
             change(fixture, "CameraFilmFormatMm", kOfxChangeUserEdited, 41.0);
             (void)render(fixture, images, 41.0);
             Observation state(fixture.effect());
             ofx_test::require_render(state.view.pending_kind == 4, "recovery publication");
-        });
-        row(rows, "geometry/changed_size", [&] {
+        })();
+        ([&] {
             ofx_test::DeviceImages changed({9, 6, 3});
             fixture.configure(changed);
             (void)render(fixture, changed, 41.0);
@@ -1053,8 +998,8 @@ namespace {
             ofx_test::require_render(seen.full_bounds[2] == 9 && seen.full_bounds[3] == 6 &&
                                          std::abs(seen.pixel_size_um - 35000.0f / 9.0f) < 0.01f,
                                      "changed size frame facts");
-        });
-        row(rows, "geometry/half_scale", [&] {
+        })();
+        ([&] {
             fixture.configure(images);
             const auto full_scale = render(fixture, images, 41.0);
             fixture.host().set_property(fixture.host().action_args(), kOfxImageEffectPropRenderScale, {0.5, 0.5});
@@ -1065,8 +1010,8 @@ namespace {
             const auto seen = render_observation(fixture.effect());
             ofx_test::require_render(seen.full_bounds[2] == 7 && seen.full_bounds[3] == 5 && seen.pixel_size_um == 5000.0f,
                                      "half-scale frame facts");
-        });
-        row(rows, "geometry/origin", [&] {
+        })();
+        ([&] {
             fixture.configure(images, {11, -3});
             (void)render(fixture, images, 41.0);
             const auto seen = render_observation(fixture.effect());
@@ -1074,8 +1019,8 @@ namespace {
                                          seen.full_bounds[2] == 18 && seen.full_bounds[3] == 2 &&
                                          std::equal(std::begin(seen.full_bounds), std::end(seen.full_bounds), std::begin(seen.render_bounds)),
                                      "origin frame facts");
-        });
-        row(rows, "effects/full_frame", [&] {
+        })();
+        ([&] {
             fixture.configure(images);
             fixture.host().set_value(fixture.effect(), "FilmDustAmount", {0.5});
             change(fixture, "FilmDustAmount", kOfxChangeUserEdited, 41.0);
@@ -1123,8 +1068,8 @@ namespace {
             change(fixture, "FilmDustAmount", kOfxChangeUserEdited, 41.0);
             fixture.host().set_value(fixture.effect(), "GateWeaveAmount", {0.0});
             change(fixture, "GateWeaveAmount", kOfxChangeUserEdited, 41.0);
-        });
-        row(rows, "failure/message_order", [&] {
+        })();
+        ([&] {
             using namespace JuicerCuda::ExecutorTest;
             Observation held(fixture.effect());
             const auto held_backing = held.view.backing_identity;
@@ -1166,8 +1111,8 @@ namespace {
             ofx_test::require_render(held.view.backing_identity == held_backing && held.view.published.recipe_hash == held_recipe,
                                      "held publication survives native failure");
             (void)render(fixture, images, 41.0);
-        });
-        row(rows, "failure/holds", [&] {
+        })();
+        ([&] {
             Observation held(fixture.effect());
             const auto previous = held.view.captured.camera_exposure_compensation_ev;
             const auto backing = held.view.backing_identity;
@@ -1178,7 +1123,7 @@ namespace {
             ofx_test::require_render(held.view.captured.camera_exposure_compensation_ev == previous && held.view.backing_identity == backing &&
                                          updated.view.captured.camera_exposure_compensation_ev == 0.25 && updated.view.backing_identity != backing,
                                      "admitted backing remains held through subsequent publication");
-        });
+        })();
         struct TimeCase {
             const char* id;
             std::uint64_t input, normalized, token;
@@ -1193,7 +1138,7 @@ namespace {
             TimeCase{"time/positive_infinity", 0x7ff0000000000000, 0, 0},
             TimeCase{"time/negative_infinity", 0xfff0000000000000, 0, 0}};
         for (const auto& time : time_cases) {
-            row(rows, time.id, [&] {
+            ([&] {
                 const auto source_releases = fixture.host().image_release_count(fixture.effect(), "Source");
                 const auto output_releases = fixture.host().image_release_count(fixture.effect(), "Output");
                 fixture.host().set_property(fixture.host().action_args(), kOfxPropTime, {std::bit_cast<double>(time.input)});
@@ -1207,9 +1152,9 @@ namespace {
                                              fixture.host().image_release_count(fixture.effect(), "Output") == output_releases + 1,
                                          "literal time facts and image releases");
                 (void)images.pixels(images.read());
-            });
+            })();
         }
-        row(rows, "time/valid_after_rejection", [&] {
+        ([&] {
             (void)render(fixture, images, 41.0);
             const auto before = render_observation(fixture.effect());
             const auto source_releases = fixture.host().image_release_count(fixture.effect(), "Source");
@@ -1238,12 +1183,11 @@ namespace {
             (void)render(fixture, images, 42.0);
             const auto next = render_observation(fixture.effect());
             ofx_test::require_render(next.submission_id == before.submission_id + 1, "time rejection consumed submission counter");
-        });
-        row(rows, "failure/recovery", [&] {
+        })();
+        ([&] {
             (void)render(fixture, images, 41.0);
             ofx_test::require_render(render_observation(fixture.effect()).submission_id != 0, "submission after context recovery");
             fixture.close();
-            auto abort_case = rows.case_event("abort/terminal_recovery");
             {
                 tokens();
                 ofx_test::RenderHost terminal(OfxGetPlugin(0));
@@ -1271,37 +1215,23 @@ namespace {
                 RenderAssertions::compare_pixels("new module after abort panic", render(recovered, images, 37.0), original);
                 recovered.close();
             }
-            abort_case.passed();
-        });
+        })();
     }
 } // namespace
 
 int main(int argc, char** argv) try {
     if (argc >= 2 && std::string_view(argv[1]) == "--retained-high-gain-reference") {
-        return run_retained_high_gain_reference(JuicerTests::list_requested(argc, argv));
+        return run_retained_high_gain_reference();
     }
     if (argc >= 2 && std::string_view(argv[1]) == "--scanner-reference-inputs") {
-        return run_reference_inputs(JuicerTests::list_requested(argc, argv));
+        return run_reference_inputs();
     }
     if (argc >= 2 && std::string_view(argv[1]) == "--render-gpu-reference-inputs") {
-        return run_render_gpu_reference_inputs(JuicerTests::list_requested(argc, argv));
+        return run_render_gpu_reference_inputs();
     }
     if (argc >= 2 && std::string_view(argv[1]) == "--print-glare-launches") {
-        return run_print_glare_launches(JuicerTests::list_requested(argc, argv));
+        return run_print_glare_launches();
     }
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kRows)
-            JuicerTests::list_case(kCaller, id);
-        for (const auto* id : kSupplemental)
-            JuicerTests::list_case(kCaller, id);
-        for (const auto* id : kCarrierRows)
-            JuicerTests::list_case(kCaller, id);
-        for (const auto* pair : kIdentityPairs)
-            for (const char* suffix : {"A", "B"})
-                JuicerTests::list_case(kCaller, std::string("identity/") + pair + "/" + suffix);
-        return 0;
-    }
-    JuicerTests::CaseLog log;
     std::vector<std::string> ids(kRows.begin(), kRows.end());
     ids.insert(ids.end(), kSupplemental.begin(), kSupplemental.end());
     ids.insert(ids.end(), kCarrierRows.begin(), kCarrierRows.end());
@@ -1309,14 +1239,10 @@ int main(int argc, char** argv) try {
     for (const auto* pair : kIdentityPairs)
         for (const char* suffix : {"A", "B"})
             ids.emplace_back(std::string("identity/") + pair + "/" + suffix);
-    JuicerTests::Cohort rows(std::string(kCaller), ids);
-    run(rows);
+    run();
     for (std::size_t index = 0; index < kCarrierRows.size(); ++index) {
-        auto row = rows.case_event(kCarrierRows[index]);
         check_highlight_carrier(index);
-        row.passed();
     }
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "GPU render trace fixture: %s\n", error.what());

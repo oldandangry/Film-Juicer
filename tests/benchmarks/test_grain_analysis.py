@@ -1,17 +1,16 @@
 """Independent known cases for the G2 offline grain measurements."""
 
 import math
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-
-import numpy as np
-from scipy.integrate import quad
 
 import grain_analysis as analysis
 import grain_campaign as campaign
+import numpy as np
 from grain_chroma import coupled_strength, mix_density
+from scipy.integrate import quad
 
 
 class GrainAnalysisTests(unittest.TestCase):
@@ -46,7 +45,7 @@ class GrainAnalysisTests(unittest.TestCase):
         for iy, ix in [(0, 1), (1, 1), (2, 2), (2, 4)]:
             y, x = iy - 2, ix - 2
 
-            def height(t):
+            def height(t, *, y=y):
                 half = math.sqrt(max(0.0, radius**2 - t**2))
                 return max(0.0, min(y + 0.5, half) - max(y - 0.5, -half))
 

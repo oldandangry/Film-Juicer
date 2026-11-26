@@ -7,7 +7,6 @@
 #include <type_traits>
 
 #include "ofx_abi_test.h"
-#include "case_results.h"
 
 #define FJ_OFX_TYPE(type, size, alignment) \
     static_assert(sizeof(type) == size);   \
@@ -138,27 +137,18 @@ namespace {
                fj_test_ofx_call_rust(&host, &plugin) == 0;
     }
 } // namespace
-int main(int argc, char** argv) try {
+int main() try {
     constexpr const char* cases[] = {"layout", "constants", "signatures", "callbacks", "parameters", "messages"};
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const char* name : cases)
-            JuicerTests::list_case("ofx_abi", name);
-        return 0;
-    }
-    JuicerTests::CaseLog log;
     bool ok = true;
     for (const char* name : cases) {
-        JuicerTests::CaseEvent event("ofx_abi", name);
         const std::string_view current(name);
         const bool passed = current == "layout" ? layout() : current == "constants" ? constants()
                                                          : current == "signatures"  ? signatures()
                                                          : current == "callbacks"   ? callbacks()
                                                          : current == "parameters"  ? fj_test_ofx_abi_parameters(fj_test_ofx_parameter_suite()) == 0
                                                                                     : fj_test_ofx_abi_messages(fj_test_ofx_message_suite()) == 0;
-        event.complete(passed);
         ok = ok && passed;
     }
-    log.finish();
     return ok ? 0 : 1;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "OFX ABI fixture: %s\n", error.what());

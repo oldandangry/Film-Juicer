@@ -6,7 +6,6 @@ import math
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[4]
 TOOL = ROOT / "tests/diffusion/reference"
 BUNDLE = ROOT / ".tmp/diffusion/cuda-convolution-fixtures"

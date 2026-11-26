@@ -27,8 +27,6 @@
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
-#include "../ffi/case_results.h"
-#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -94,13 +92,6 @@ namespace {
         return route_case_key(route) + "/layers-" + (layers ? "on" : "off");
     }
 
-    std::vector<std::string> curve_storage_case_ids() {
-        std::vector<std::string> ids;
-        for (const auto route : kCurveStorageRoutes)
-            for (bool layers : kCurveStorageLayerModes)
-                ids.push_back(curve_storage_case_key(route, layers));
-        return ids;
-    }
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -491,13 +482,11 @@ namespace {
     };
 
     TEST_F(GrainScratch, PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes) {
-        JuicerTests::GtestCohort cases("noise-release-operation", {"consumer-exception-preserved", "release-failure-preserved", "retry-after-release-failure"});
         Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         const std::size_t baseline = fj_test_live_noise_owners();
         NoiseFaultReset resetFault;
         FrameFixture::FrameFacts facts = inputs.facts;
 
-        auto consumerException = cases.case_event("consumer-exception-preserved");
         bool sentinelRethrown = false;
         std::string diagnostic;
         try {
@@ -510,9 +499,7 @@ namespace {
         }
         EXPECT_TRUE(sentinelRethrown);
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
-        consumerException.passed();
 
-        auto releaseFailure = cases.case_event("release-failure-preserved");
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken.value = 0x475241494eull;
         snapshot.frameToken.value = nextIdentity;
@@ -530,9 +517,7 @@ namespace {
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
         if (call.frame.active())
             finish(call.frame);
-        releaseFailure.passed();
 
-        auto retry_event = cases.case_event("retry-after-release-failure");
         fj_test_noise_fault(0);
         FrameCall retry{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
         diagnostic.clear();
@@ -543,7 +528,6 @@ namespace {
         if (retry.frame.active())
             finish(retry.frame);
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
-        retry_event.passed();
     }
 
     TEST(GrainUpload, RetainsCapacityFailureAfterRelock) {
@@ -572,8 +556,6 @@ namespace {
     }
 
     TEST(GrainUpload, FilmBankReuseAndContextRetirement) {
-        JuicerTests::GtestCohort cases("film-bank-lifetime", {"reuse-and-retire", "fresh-epoch"});
-        auto reuse = cases.case_event("reuse-and-retire");
         require_cuda(cudaSetDevice(0));
         require_cuda(cudaFree(nullptr));
         CUcontext context = nullptr;
@@ -603,9 +585,7 @@ namespace {
         ASSERT_TRUE(JuicerCuda::drain_for_context_retire(resources, failure)) << failure.diagnostic;
         EXPECT_TRUE(resources.filmGrainBanks.empty());
         EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
-        reuse.passed();
 
-        auto epoch = cases.case_event("fresh-epoch");
         JuicerCuda::Resources replacement(key, 2, ledger);
         const JuicerCuda::FilmGrain::FilmQuad* newEpoch = nullptr;
         ASSERT_TRUE(JuicerCuda::ensure_film_grain_uploaded(replacement, input, newEpoch, failure)) << failure.diagnostic;
@@ -614,12 +594,9 @@ namespace {
         EXPECT_EQ(ledger->record_count_for_context(key, 2), 1);
         ASSERT_TRUE(JuicerCuda::drain_for_context_retire(replacement, failure)) << failure.diagnostic;
         EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
-        epoch.passed();
     }
 
     TEST(GrainUpload, FilmBankFailureDoesNotPublish) {
-        JuicerTests::GtestCohort cases("film-bank-admission", {"capacity-refusal-and-retry", "malformed-bank"});
-        auto capacity = cases.case_event("capacity-refusal-and-retry");
         require_cuda(cudaSetDevice(0));
         require_cuda(cudaFree(nullptr));
         CUcontext context = nullptr;
@@ -644,14 +621,11 @@ namespace {
             EXPECT_TRUE(resources.filmGrainBanks.empty());
             EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
         }
-        capacity.passed();
 
-        auto malformed = cases.case_event("malformed-bank");
         input.sums.count--;
         EXPECT_FALSE(JuicerCuda::ensure_film_grain_uploaded(resources, input, bank, failure));
         EXPECT_EQ(failure.status.category, FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_TRUE(resources.filmGrainBanks.empty());
-        malformed.passed();
     }
 
     TEST_F(GrainScratch, GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
@@ -666,12 +640,8 @@ namespace {
             for (const auto pixelSize : pixelSizes)
                 ids.push_back(route_case_key(route) + "/pixel-" +
                               std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
-        JuicerTests::GtestCohort cases("route-pixel-size", ids);
         for (auto route : routes)
             for (float pixelSize : pixelSizes) {
-                auto row = cases.case_event(
-                    route_case_key(route) + "/pixel-" +
-                    std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
                 Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 const auto kernels = frame.visual_grain_resources();
@@ -701,7 +671,6 @@ namespace {
                         EXPECT_EQ(reused.dyeCloud[layer][c].weights, kernels.dyeCloud[layer][c].weights);
                 }
                 finish(warm);
-                row.passed();
             }
     }
 
@@ -712,9 +681,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(runtime, 128, 96, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
@@ -734,15 +701,12 @@ namespace {
             EXPECT_NE(grain.layerWork, optics.rgbG);
             EXPECT_NE(grain.sharedDelta, optics.rgbB);
             finish(frame);
-            row.passed();
         }
     }
 
     TEST_F(GrainScratch, FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage) {
-        JuicerTests::GtestCohort cases("route-layer-mode", curve_storage_case_ids());
         for (const auto route : kCurveStorageRoutes) {
             for (bool layers : kCurveStorageLayerModes) {
-                auto row = cases.case_event(curve_storage_case_key(route, layers));
                 GrainVariant variant;
                 variant.layers = layers;
                 Inputs before(runtime, 64, 48, route, variant);
@@ -764,18 +728,15 @@ namespace {
                 EXPECT_EQ(firstCurves.normalizedHash, changedCurves.normalizedHash);
                 EXPECT_EQ(firstCurves.layersHash, changedCurves.layersHash);
                 finish(second);
-                row.passed();
             }
         }
     }
 
     TEST_F(GrainScratch, DirAmountChangeOverwritesCurvesInPlace) {
-        JuicerTests::GtestCohort cases("route-layer-mode", curve_storage_case_ids());
         for (const auto route : kCurveStorageRoutes) {
             for (bool layers : kCurveStorageLayerModes) {
                 const auto caseKey = curve_storage_case_key(route, layers);
                 SCOPED_TRACE(caseKey);
-                auto row = cases.case_event(caseKey);
                 GrainVariant variant;
                 variant.layers = layers;
                 const Inputs before(runtime, 64, 48, route, variant);
@@ -828,7 +789,6 @@ namespace {
                 // identity checked by the focused resource warm predicate.
                 auto second = prepare(changed, false, 0x475241494eull, nullptr, &firstCurves);
                 finish(second);
-                row.passed();
             }
         }
     }
@@ -863,7 +823,6 @@ namespace {
                                           "/shared-" + (shared ? "on" : "off") + "/time-" +
                                           std::to_string(std::bit_cast<std::uint64_t>(time)) +
                                           "/debug-" + std::to_string(debug));
-        JuicerTests::GtestCohort cases("route-layer-shared-time-debug", ids);
         for (auto route : routes) {
             for (bool layers : layerModes) {
                 for (bool shared : sharedModes) {
@@ -872,10 +831,6 @@ namespace {
                     std::array<std::optional<Inputs>, 7> inputsByDebug;
                     for (double time : times) {
                         for (int debug = 0; debug <= 6; ++debug) {
-                            auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off") +
-                                                        "/shared-" + (shared ? "on" : "off") + "/time-" +
-                                                        std::to_string(std::bit_cast<std::uint64_t>(time)) +
-                                                        "/debug-" + std::to_string(debug));
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route)
                                                             << " layers=" << layers << " shared=" << shared << " time=" << time << " debug=" << debug);
                             auto& retained = inputsByDebug[debug];
@@ -896,7 +851,6 @@ namespace {
                             EXPECT_EQ(work.sharedDelta != nullptr, shared && debug <= 1);
                             compare_grain(inputs, frame);
                             finish(frame);
-                            row.passed();
                         }
                     }
                 }
@@ -916,11 +870,8 @@ namespace {
             for (const auto pixelSize : pixelSizes)
                 ids.push_back(route_case_key(route) + "/pixel-" +
                               std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
-        JuicerTests::GtestCohort cases("route-pixel-size", ids);
         for (auto route : routes) {
             for (float pixelSize : pixelSizes) {
-                auto row = cases.case_event(route_case_key(route) + "/pixel-" +
-                                            std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
                 Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 auto lease = frame.workspace_lease();
@@ -938,7 +889,6 @@ namespace {
                 EXPECT_EQ(after.deltaAccum, before.deltaAccum);
                 compare_grain(inputs, frame);
                 finish(frame);
-                row.passed();
             }
         }
     }
@@ -950,9 +900,7 @@ namespace {
         for (const int width : widths)
             ids.push_back("width-" + std::to_string(width));
         ids.push_back("context-retirement-recreation");
-        JuicerTests::GtestCohort cases("width-context-transition", ids);
         for (int width : widths) {
-            auto row = cases.case_event("width-" + std::to_string(width));
             Inputs inputs(runtime, width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
             auto frame = prepare(inputs);
             const auto marker = frame.workspace_lease();
@@ -964,9 +912,7 @@ namespace {
             auto next = prepare(inputs);
             compare_grain(inputs, next);
             finish(next);
-            row.passed();
         }
-        auto retirement = cases.case_event("context-retirement-recreation");
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
         require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
@@ -974,7 +920,6 @@ namespace {
         auto recreated = prepare(inputs);
         compare_grain(inputs, recreated);
         finish(recreated);
-        retirement.passed();
     }
 
     TEST_F(GrainScratch, RejectsConcurrentRetainedLeasesAndOrdersLaterStreamReuse) {
@@ -1035,9 +980,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(runtime, 96, 64, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
@@ -1060,7 +1003,6 @@ namespace {
             std::cout << "ADMITTED_DIR_PLANES=" << dir.planeRoles.total_float_planes() << '\n';
             compare_grain(inputs, frame);
             finish(frame);
-            row.passed();
         }
     }
 
@@ -1288,9 +1230,7 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
-    case_log.finish();
     return result;
 } catch (...) {
     return 1;

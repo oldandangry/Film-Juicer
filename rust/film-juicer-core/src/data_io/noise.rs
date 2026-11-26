@@ -412,7 +412,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use std::io::Cursor;
 
     fn reservation_failure(bytes: &mut Vec<u8>, _: usize) -> Result<(), TryReserveError> {
@@ -426,16 +425,39 @@ mod tests {
             (vec![isize::MAX as usize + 1], ErrorKind::Capacity),
         ];
         let ids = ["size-overflow", "capacity-overflow"];
-        let mut cases = RowCases::new("noise-size-overflow", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-size-overflow"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-size-overflow"
+        );
         for ((dimensions, expected), id) in inputs.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let result = read_bytes(&mut io::empty(), 0, &dimensions, |_, _| {
                 panic!("invalid products must not reach reservation")
             });
             assert_eq!(result.unwrap_err(), expected);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -447,7 +469,24 @@ mod tests {
                 ["empty", "short", "long"].map(move |length| format!("{name}/{length}"))
             })
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("noise-wrong-lengths", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-wrong-lengths"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-wrong-lengths"
+        );
         for (name, dimensions) in dimensions {
             let count = byte_count(&dimensions).unwrap();
             for (length, actual) in [
@@ -455,7 +494,7 @@ mod tests {
                 ("short", count as u64 - 1),
                 ("long", count as u64 + 1),
             ] {
-                let case = cases.case(format!("{name}/{length}"));
+                let case = AsRef::<str>::as_ref(&(format!("{name}/{length}"))).to_owned();
                 let result = read_bytes(&mut io::empty(), actual, &dimensions, |_, _| {
                     panic!("wrong length must not reserve")
                 });
@@ -466,31 +505,63 @@ mod tests {
                         actual
                     }
                 );
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
     fn reservation_failure_publishes_no_noise() {
-        let mut cases = RowCases::new("noise-reservation-failures", ["stbn", "wang"]);
-        let stbn_case = cases.case("stbn");
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["stbn", "wang"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-reservation-failures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-reservation-failures"
+        );
+        let stbn_case = AsRef::<str>::as_ref(&("stbn")).to_owned();
         let mut reader = Cursor::new([9u8; 1]);
         assert_eq!(
             read_stbn(&mut reader, 67_108_864, reservation_failure).unwrap_err(),
             ErrorKind::Capacity
         );
         assert_eq!(reader.position(), 0);
-        stbn_case.passed();
-        let wang_case = cases.case("wang");
+        assert!(
+            cases_remaining.remove(&stbn_case),
+            "unexpected or repeated comparison: {stbn_case}"
+        );
+        let wang_case = AsRef::<str>::as_ref(&("wang")).to_owned();
         assert_eq!(
             read_wang(&mut reader, 1_048_576, [0; 16], reservation_failure).unwrap_err(),
             ErrorKind::Capacity
         );
         assert_eq!(reader.position(), 0);
-        wang_case.passed();
-        cases.finish();
+        assert!(
+            cases_remaining.remove(&wang_case),
+            "unexpected or repeated comparison: {wang_case}"
+        );
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     struct ChunkReader {
@@ -539,9 +610,26 @@ mod tests {
             (None, ErrorKind::ShortRead),
         ];
         let ids = ["permission-error", "short-read"];
-        let mut cases = RowCases::new("noise-read-failures", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-read-failures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-read-failures"
+        );
         for ((fail_after, expected), id) in inputs.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let reader = || ChunkReader {
                 input: Cursor::new(vec![7; 9000]),
                 chunk_size: 3,
@@ -555,9 +643,15 @@ mod tests {
                 read_wang(&mut reader(), 1_048_576, [0; 16], Vec::try_reserve_exact).unwrap_err(),
                 expected
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -577,21 +671,41 @@ mod tests {
             build_lut(read_metadata(reader()).unwrap()).unwrap(),
             [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
         );
-        let mut cases = RowCases::new(
-            "noise-metadata-short-reads",
-            ["offset-0", "offset-2", "offset-10"],
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["offset-0", "offset-2", "offset-10"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-metadata-short-reads"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-metadata-short-reads"
         );
         for position in [0, 2, 10] {
-            let case = cases.case(format!("offset-{position}"));
+            let case = AsRef::<str>::as_ref(&(format!("offset-{position}"))).to_owned();
             let mut reader = reader();
             reader.fail_after = Some(position);
             assert_eq!(
                 read_metadata(reader).unwrap_err(),
                 ErrorKind::Read(io::ErrorKind::PermissionDenied)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn metadata_reader_preserves_reported_oom_before_and_after_prefix() {
@@ -609,19 +723,40 @@ mod tests {
                 Ok(count)
             }
         }
-        let mut cases = RowCases::new(
-            "noise-metadata-oom",
-            ["remaining-0", "remaining-1", "remaining-3", "remaining-64"],
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(["remaining-0", "remaining-1", "remaining-3", "remaining-64"])
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "noise-metadata-oom"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "noise-metadata-oom"
         );
         for remaining in [0, 1, 3, 64] {
-            let case = cases.case(format!("remaining-{remaining}"));
+            let case = AsRef::<str>::as_ref(&(format!("remaining-{remaining}"))).to_owned();
             assert_eq!(
                 read_metadata(OomReader { remaining }).unwrap_err(),
                 ErrorKind::Read(io::ErrorKind::OutOfMemory)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]

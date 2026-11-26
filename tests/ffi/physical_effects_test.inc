@@ -260,22 +260,19 @@ namespace {
     }
     void effects_values(const Json& captured) {
         require(captured.at("cases").size() == 220, "exact effects literal membership");
-        for (bool facade : {false, true}) {
+        for (unsigned pass = 0; pass < 2; ++pass) {
             const auto call = fj_test_physical_effects_prepare;
             for (const auto& row : captured.at("cases")) {
-                JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "effects/" + row.at("id").get<std::string>());
                 const auto params = effects_params(row.at("controls"));
                 auto out = effects_sentinel();
                 FjFilmRecipeFailure failure{99, 99, 99};
                 status(call(&params, &out, &failure, nullptr));
                 metadata(failure);
                 require(effects_projection(out) == row.at("recipe"), "220 exact native effects recipes through each checked entry");
-                event.passed();
             }
         }
     }
     void effects_failures(const Json& zero) {
-        JuicerTests::CaseEvent event("cpp", "effects/failures");
         const FjPhysicalEffectsParams base{1, 2, 3, 4, 0.1, 0, 0};
         const FjStatus unsupported{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
         const FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
@@ -287,8 +284,6 @@ namespace {
             for (unsigned fault = 1; fault <= 4; ++fault)
                 fault_ids.emplace_back("caller-" + std::to_string(facade) + "/fault-" + std::to_string(fault));
         }
-        JuicerTests::Cohort diagnostic_capacities("physical_effects.diagnostic_capacity", capacity_ids);
-        JuicerTests::Cohort recipe_faults("physical_effects.fault_tuple", fault_ids);
         for (unsigned caller_index = 0; caller_index < 2; ++caller_index) {
             const auto call = fj_test_physical_effects_prepare;
             auto out = effects_sentinel();
@@ -325,7 +320,6 @@ namespace {
             metadata(failure, FJ_FILM_RECIPE_RAW);
             const std::string message = "film recipe reason=1 channel=3 sample=18446744073709551615";
             for (std::size_t capacity : {0u, 1u, 12u, 128u}) {
-                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 132> text{};
                 text.fill('!');
                 FjErrorBuffer error{capacity ? text.data() : nullptr, capacity, 999};
@@ -333,7 +327,6 @@ namespace {
                 const auto length = capacity ? std::min(capacity - 1, message.size()) : 0;
                 require(error.length == length && (!capacity || (std::string_view(text.data(), length) == std::string_view(message).substr(0, length) && text[length] == '\0')), "effects diagnostic exact length/truncation/NUL");
                 require(text[capacity] == '!', "diagnostic leaves bytes outside admitted capacity untouched");
-                row_event.passed();
             }
             FjErrorBuffer invalid{nullptr, 4, 99};
             rejected(&base, unsupported, FJ_FILM_RECIPE_RAW, &invalid);
@@ -343,7 +336,6 @@ namespace {
             alignas(FjErrorBuffer) std::array<std::byte, sizeof(FjErrorBuffer) + 8> diagnosticStorage{};
             rejected(&base, unsupported, FJ_FILM_RECIPE_RAW, reinterpret_cast<FjErrorBuffer*>(diagnosticStorage.data() + 1));
             for (unsigned fault : {1u, 2u, 3u, 4u}) {
-                auto row_event = recipe_faults.case_event("caller-" + std::to_string(caller_index) + "/fault-" + std::to_string(fault));
                 status(fj_test_film_recipe_fault(8, fault));
                 rejected(&base, fault == 1 ? internalFailure : preparationFailure, fault == 1 ? FJ_FILM_RECIPE_PANIC : FJ_FILM_RECIPE_EFFECTS_PROBABILITY);
                 status(call(&base, &out, &failure, nullptr));
@@ -354,7 +346,6 @@ namespace {
                 metadata(failure, FJ_FILM_RECIPE_RAW);
                 status(call(&base, &out, &failure, nullptr));
                 metadata(failure);
-                row_event.passed();
             }
             auto suppressed = base;
             suppressed.grain_active = 1;
@@ -387,14 +378,12 @@ namespace {
         for (auto& thread : threads)
             thread.join();
         require(complete, "effects fault containment and recovery are thread local");
-        event.passed();
     }
     void effects_products(const std::filesystem::path& resources, const Json& captured) {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 92, "exact physical effects product membership");
         for (const auto& row : captured.at("products")) {
-            JuicerTests::CaseEvent event("cpp", "effects/product/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()) + "/" + row.at("id").get<std::string>());
             const auto controls = effects_params(row.at("controls"));
             JuicerTestSupport::PreparationInput params;
             params.film_key = row.at("key");
@@ -422,10 +411,8 @@ namespace {
             require(row.at("snapshot_hash").is_number_unsigned() && row.at("final_hash").is_number_unsigned() &&
                         view.route == row.at("route") && view.recipe_hash != 0 && view.recipe_hash == view.upload_core_hash,
                     "prepared effects retain the current route and aggregate");
-            event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {
-            JuicerTests::CaseEvent event("cpp", "effects/publication/" + std::to_string(route));
             JuicerTestSupport::PreparationInput params;
             params.values.scan_route = static_cast<std::uint32_t>(route);
             params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -492,7 +479,6 @@ namespace {
                         finalMetrics.backingIdentity == baselineMetrics.backingIdentity,
                     "unconsumed effects guard precedes competing DIR failure");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "effects failures drain temporary development/DIR holds");
-            event.passed();
         }
         std::puts("PASS 92 genuine physical effects products across four routes");
     }

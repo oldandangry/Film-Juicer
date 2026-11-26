@@ -21,7 +21,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "test_asset_workspace.h"
 #include "ProcessRoot.h"
@@ -223,8 +222,6 @@ namespace {
             if (completed.at("profiles").contains(id.substr(0, id.find("/gamma-"))))
                 gamma_ids.push_back(id);
         }
-        JuicerTests::GtestCohort profile_rows("frozen-profiles", profile_ids);
-        JuicerTests::GtestCohort gamma_rows("frozen-gammas", gamma_ids);
         Assets assets(resources);
         FjCatalog* catalog = nullptr;
         FjCatalogCounts counts{};
@@ -236,7 +233,6 @@ namespace {
                 FjCatalogEntryView entry{};
                 expect_status(fj_test_catalog_entry(catalog, role, i, &entry, nullptr), FJ_STATUS_SUCCESS);
                 const std::string key(entry.key.data, entry.key.count);
-                auto profile_row = profile_rows.case_event(key);
                 SCOPED_TRACE(key);
                 const auto& expected = completed["profiles"][key];
                 const std::string baselineId = key + "/gamma-1.0";
@@ -284,17 +280,14 @@ namespace {
                         if (!id.starts_with(key + "/gamma-")) {
                             continue;
                         }
-                        auto gamma_row = gamma_rows.case_event(id);
                         const auto& row = capture(density, id);
                         Density curves(print, std::bit_cast<double>(row["gamma_bits"].get<std::uint64_t>()));
                         const auto sampled = curves.view();
                         EXPECT_EQ(sampled.hash, row["identities"]["print_hash"].get<std::uint64_t>());
                         ASSERT_EQ(sampled.totals_cmy.count, view.tables.log_exposure.count * 3);
                         density_bits(sampled.totals_cmy, row, payload);
-                        gamma_row.passed();
                     }
                 }
-                profile_row.passed();
             }
         }
         expect_status(fj_test_catalog_release(catalog, nullptr), FJ_STATUS_SUCCESS);
@@ -341,28 +334,18 @@ namespace {
 
     TEST(ProductionProfileOwner, ForeignFailuresClearOutputsAndConsumeMalformedReleases) {
         Assets assets(resources);
-        JuicerTests::GtestCohort malformed_keys_cases("malformed-keys", 3u);
-        std::size_t malformed_keys_index = 0;
         for (auto key : {FjStringView{nullptr, 1}, FjStringView{"x", std::numeric_limits<std::size_t>::max()}, FjStringView{"\xff", 1}}) {
-            auto malformed_keys_case = malformed_keys_cases.case_event(std::to_string(malformed_keys_index++));
             FjFilmProfile* film = nullptr;
             FjPrintProfile* print = nullptr;
             expect_status(fj_test_assets_film_acquire(assets.owner, key, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(fj_test_print_profile_acquire(assets.owner, key, &print, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(film, nullptr);
             EXPECT_EQ(print, nullptr);
-
-            malformed_keys_case.passed();
         }
-        JuicerTests::GtestCohort missing_keys_cases("missing-keys", 4u);
-        std::size_t missing_keys_index = 0;
         for (const std::string& key : {std::string(), std::string("missing"), std::string("kodak_portra_400\0", 17), std::string("kodak_portra_endura")}) {
-            auto missing_keys_case = missing_keys_cases.case_event(std::to_string(missing_keys_index++));
             FjFilmProfile* film = nullptr;
             expect_status(fj_test_assets_film_acquire(assets.owner, text(key), &film, nullptr), FJ_STATUS_PREPARATION_FAILURE);
             EXPECT_EQ(film, nullptr);
-
-            missing_keys_case.passed();
         }
         FjFilmProfileView fv{};
         fv.asset_token = 42;
@@ -370,20 +353,12 @@ namespace {
         EXPECT_EQ(fv.asset_token, 0u);
         EXPECT_EQ(fv.tables.log_exposure.data, nullptr);
         Print print(assets, "kodak_portra_endura");
-        JuicerTests::GtestCohort invalid_gamma_cases("invalid-gamma", 4u);
-        std::size_t invalid_gamma_index = 0;
         for (double gamma : {0.0, -1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
-            auto invalid_gamma_case = invalid_gamma_cases.case_event(std::to_string(invalid_gamma_index++));
             FjPrintDensityCurves* curves = nullptr;
             expect_status(fj_test_print_profile_sample_density(print.owner, gamma, &curves, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(curves, nullptr);
-
-            invalid_gamma_case.passed();
         }
-        JuicerTests::GtestCohort faults_cases("faults", 2u);
-        std::size_t faults_index = 0;
         for (unsigned fault : {1u, 2u}) {
-            auto faults_case = faults_cases.case_event(std::to_string(faults_index++));
             fj_test_profile_fault(fault);
             FjFilmProfile* out = nullptr;
             expect_status(fj_test_assets_film_acquire(assets.owner, text("kodak_portra_400"), &out, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
@@ -392,17 +367,12 @@ namespace {
             FjPrintDensityCurves* curves = nullptr;
             expect_status(fj_test_print_profile_sample_density(print.owner, 1.1, &curves, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
             EXPECT_EQ(curves, nullptr);
-
-            faults_case.passed();
         }
         Film film(assets, "kodak_portra_400");
         FjErrorBuffer malformedFilm{nullptr, 1, 99};
         expect_status(fj_test_assets_film_release(std::exchange(film.owner, nullptr), &malformedFilm), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_profile_live_owners(), 1u);
-        JuicerTests::GtestCohort malformed_releases_cases("malformed-releases", 2u);
-        std::size_t malformed_releases_index = 0;
         for (bool gammaResult : {false, true}) {
-            auto malformed_releases_case = malformed_releases_cases.case_event(std::to_string(malformed_releases_index++));
             if (gammaResult) {
                 Density released(print, 1.1);
                 fj_test_profile_fault(3);
@@ -414,8 +384,6 @@ namespace {
                 expect_status(fj_test_assets_film_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
                 EXPECT_EQ(fj_test_profile_live_owners(), 1u);
             }
-
-            malformed_releases_case.passed();
         }
         FjErrorBuffer malformed{nullptr, 1, 99};
         Density density(print, 1.1);
@@ -471,10 +439,7 @@ namespace {
     }
 
     TEST(ProductionProfileOwner, CacheReleaseOverlapsFirstCatalogPublication) {
-        JuicerTests::GtestCohort publication_overlap_cases("publication-overlap", 8u);
-        std::size_t publication_overlap_index = 0;
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
-            auto publication_overlap_case = publication_overlap_cases.case_event(std::to_string(publication_overlap_index++));
             Assets assets(resources);
             expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
@@ -536,8 +501,6 @@ namespace {
             EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
             expect_status(fj_test_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_assets_live_owners(), 0u);
-
-            publication_overlap_case.passed();
         }
     }
 
@@ -647,10 +610,7 @@ namespace {
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
-        JuicerTests::GtestCohort typed_blackbody_cases("typed-blackbody", 3u);
-        std::size_t typed_blackbody_index = 0;
         for (const auto& item : std::array<std::pair<const char*, double>, 3>{{{" BB+3200.5 ", 3200.5}, {"bb3.2005e3", 3200.5}, {"BB6500.25", 6500.25}}}) {
-            auto typed_blackbody_case = typed_blackbody_cases.case_event(std::to_string(typed_blackbody_index++));
             SCOPED_TRACE(item.first);
             auto changed = original;
             changed["info"]["reference_illuminant"] = item.first;
@@ -724,13 +684,8 @@ namespace {
                 std::bit_cast<std::uint64_t>(printView.viewing_illuminant.temperature_kelvin),
                 std::bit_cast<std::uint64_t>(item.second));
             EXPECT_EQ(preparedState.print_profile_asset_version, printView.asset_token);
-
-            typed_blackbody_case.passed();
         }
-        JuicerTests::GtestCohort invalid_blackbody_cases("invalid-blackbody", 4u);
-        std::size_t invalid_blackbody_index = 0;
         for (const auto* label : {"BB0", "BB-0.0", "BB-3200", "BB1e-400"}) {
-            auto invalid_blackbody_case = invalid_blackbody_cases.case_event(std::to_string(invalid_blackbody_index++));
             auto changed = original;
             changed["info"]["reference_illuminant"] = label;
             save_film(owner.borrow().assets, root, changed);
@@ -743,8 +698,6 @@ namespace {
             EXPECT_FALSE(prepared_view(owner.borrow().assets, direct_controls(), rejected, rejectedView, diagnostic));
             EXPECT_FALSE(rejected.has_value());
             EXPECT_FALSE(diagnostic.empty());
-
-            invalid_blackbody_case.passed();
         }
     }
 
@@ -926,10 +879,7 @@ namespace {
         controls.values.spectral_upsampling_mode = 0;
         controls.values.hanatos2025_adaptation_window = 1;
         controls.values.hanatos2025_adaptation_surface = 0;
-        JuicerTests::GtestCohort hanatos_widths_cases("hanatos-widths", 3u);
-        std::size_t hanatos_widths_index = 0;
         for (double width : {-100.0, 1e40, 0.0}) {
-            auto hanatos_widths_case = hanatos_widths_cases.case_event(std::to_string(hanatos_widths_index++));
             SCOPED_TRACE(width);
             auto changed = original;
             changed["data"]["hanatos2025_adaptation_window_params"] = {380.0, width, 780.0, 100.0};
@@ -953,8 +903,6 @@ namespace {
                 EXPECT_EQ(preparedState.input_policy.apply_hanatos_window, 1u);
                 EXPECT_NE(preparedState.film_exposure.sensitivity_hash, 0u);
             }
-
-            hanatos_widths_case.passed();
         }
     }
 
@@ -964,10 +912,7 @@ namespace {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const std::array<Json, 4> axes{Json::array({0.0}), Json::array({-1.0, 0.0, 0.0, 1.0}), Json::array({1.00000004, 1.00000003}), Json::array({-1e40, 0.0, 1e40})};
-        JuicerTests::GtestCohort broader_axes_cases("broader-axes", axes.size());
-        std::size_t broader_axes_index = 0;
         for (const auto& axis : axes) {
-            auto broader_axes_case = broader_axes_cases.case_event(std::to_string(broader_axes_index++));
             SCOPED_TRACE(axis.dump());
             auto changed = original;
             changed["data"]["log_exposure"] = axis;
@@ -1003,8 +948,6 @@ namespace {
                 EXPECT_FALSE(activePrepared.has_value());
                 EXPECT_FALSE(preparedDiagnostic.empty());
             }
-
-            broader_axes_case.passed();
         }
     }
 
@@ -1016,7 +959,6 @@ int main(int argc, char** argv) {
         ::testing::InitGoogleTest(&argc, argv);
         if (::testing::GTEST_FLAG(list_tests))
             return RUN_ALL_TESTS();
-        JuicerTests::CaseLog case_log;
         if (argc != 4) {
             std::fprintf(stderr, "resources, fixtures and scratch paths required\n");
             return 2;
@@ -1026,7 +968,6 @@ int main(int argc, char** argv) {
         scratch = argv[3];
         fs::create_directories(scratch);
         const int result = RUN_ALL_TESTS();
-        case_log.finish();
         const bool ownersDrained = fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_assets_live_owners() == 0;
         return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
     } catch (const std::exception& error) {

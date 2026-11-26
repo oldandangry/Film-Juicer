@@ -1,18 +1,12 @@
 # Building Film-Juicer
 
-The preset and toolchain details below apply to the product build. For cleanup
-on `testing`, the [contributor checks](../CONTRIBUTING.md#required-checks)
-supersede the verifier commands and zero-timeout rules in this guide. The
-first cleanup PR publishes the direct commands with its build-graph changes.
-
 Open this folder directly in Visual Studio 2026 and select a CMake preset.
 The shared build uses Ninja, Rust 1.98.1, C++20 and CUDA C++20 with CUDA
 Toolkit 13.2. CMake invokes Cargo for the two-crate Rust workspace and links the
 resulting `film-juicer-plugin` static library into the OFX module.
 See the [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map)
 for model, host, ABI and native execution entry points.
-The consumed OpenFX 1.4/Resolve OFXS variant and nlohmann JSON 3.12.0 are vendored;
-no sibling SDK checkout, Eigen, or package manager is required.
+The OpenFX 1.4 headers and the native tests’ nlohmann JSON headers are vendored.
 
 Use CMake 4.3 or newer and Ninja. Install the Visual Studio C++/CMake and Clang
 tools, MSVC v145, the Windows SDK, and CUDA 13.2. Set `CUDA_PATH_V13_2` to that toolkit.
@@ -101,37 +95,21 @@ checkout; existing CMake/Cargo caches contain absolute paths and cannot be moved
 while retaining their preparation evidence.
 
 Ninja uses separate pools of at most eight compile jobs and two link jobs.
-The verification runner defaults to at most eight available CPU workers and
-honours a positive `CMAKE_BUILD_PARALLEL_LEVEL`; ordinary CMake builds also accept
-`--parallel <count>`. Changing this scheduling limit preserves compiled artifacts.
-The desktop `CODEX_TOOL_CALL_ID` is removed from compiler/test subprocess environments and
-freshness identities. Preparation consumes `CMAKE_BUILD_PARALLEL_LEVEL` before
-removing it from configure/compiler subprocess environments, so it cannot become
-an untracked compiler input. Other environment inputs remain tracked.
-CMake creates the required `CACHEDIR.TAG` in its dedicated Cargo directory so
-the pinned Cargo can perform package-scoped cleanup safely when preparation
-requires it. CUDA library discovery uses the toolkit already selected by NVCC
-and system library locations, avoiding unrelated environment `PATH` scans.
+Limit total concurrency with `cmake --build --parallel <count>` or
+`CMAKE_BUILD_PARALLEL_LEVEL`. Use a fresh `-B` directory and separate
+`CMAKE_INSTALL_PREFIX` to check an independent closure beside an existing stage.
 
-For local compiler analysis, prepare `juicer_analysis_inputs` through the native
-owner instead of the complete product/test build:
+For analysis, configure the native preset and build `juicer_analysis_inputs`
+to generate headers. Run clang-tidy against its compile database.
 
 ```sh
-python -B scripts/verify.py prepare --preset linux-debug --testing ON --targets juicer_analysis_inputs
-python -B scripts/check-quality.py --base <accepted-base> --preset linux-debug
+cmake --preset linux-debug -DBUILD_TESTING=ON
+cmake --build --preset linux-debug --target juicer_analysis_inputs
+python3.13 scripts/check.py tidy --build-dir out/build/linux-debug --clang-tidy clang-tidy-22
 ```
 
-The same target works with the Windows preset. It builds the ordinary native
-and retained host objects required by isolation checks, the production Rust
-archive and generated diffusion reference header consumed by compiler analysis.
-The compilation database still contains every configured test-hook variant.
-Quality analysis defaults to at most four CPUs available to the process;
-`--jobs <count>` provides an explicit limit, including `--jobs 1` for serial
-diagnosis. Compiler commands, checks and before/after content verification are
-unchanged by the worker count.
-Preparation configures and builds the selected closure; it does not run tests or
-create a qualification result. Select checks using the
-[validation cadence](../tests/README.md#validation-cadence).
+Use `scripts/format_touched_files.sh` for native formatting. See
+[native ABI and binding maintenance](ffi.md) for pinned bindgen commands.
 
 The build preserves explicit SM 7.5 machine code plus compute_75 PTX. It does
 not select the build machine's CPU/GPU architecture. Windows uses the CUDA
@@ -146,17 +124,8 @@ host libraries cannot interpose an incompatible libstdc++ implementation. See
 The standard Film-Juicer bundle includes the spectral scanner, the Portra 400
 Film v1 grain model, and the grain bank and notices. It uses the established
 OFX identifier, `com.juicer.Juicer`. The grain model defaults to **Current**.
-Use the normal Release preset and archive target. This example stages Windows
-Release to a named directory so an existing staged bundle stays available.
-
-```sh
-python -B scripts/verify.py prepare --preset windows-clang-release \
-  --testing OFF --targets bundle-archive --stage-subdirectory film-v1
-```
-
-The named stage contains `juicer.ofx.bundle` and `juicer-Win64.tar.gz`
-under `out/stage/windows-clang-release/film-v1/`. Use `linux-release` for the
-Linux bundle. See the [Film v1 settings and limits](../README.md#portra-400-film-v1).
+Use the Release preset and `bundle-archive`. See the
+[Film v1 settings and limits](../README.md#portra-400-film-v1).
 
 Archived Grain Preview projects use `com.juicer.Juicer.GrainPreview`. On a
 project copy, open the project with its archived plug-in available and record
@@ -169,15 +138,52 @@ saved grain-model value.
 
 ## Public test suite
 
-CTest registers native tests by domain. The `host` label needs no GPU at
-runtime, although a product-linked build requires CUDA 13.2. The `gpu` label
-requires a supported driver and device. The `reference` label identifies
-fixture provenance. Python tests use Python 3.13 and `tests/requirements.txt`.
+The default testing-enabled build supplies CTest's executables, modules and
+resources. Use the matching native preset. Run Windows and WSL GPU checks
+one OS at a time. CTest uses a 300-second per-test timeout.
 
-See the [public test guide](../tests/README.md) for fixture policy and
-reference maintenance. The [tagged build guide](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/docs/building.md#public-test-suite)
-retains the original verifier examples. Fast math is forbidden for
-correctness tests. Resolve render and lifecycle acceptance remain separate.
+The following example uses WSL Debug. The default build includes the
+registered binaries, generated headers, runtime resources and the staged
+module used by the production render probe.
+
+```sh
+python3.13 -m pip install -r tests/requirements.txt
+cmake --preset linux-debug -DBUILD_TESTING=ON
+cmake --build --preset linux-debug
+ctest --preset linux-debug -L '^host$' --no-tests=error --output-on-failure
+cargo nextest run --workspace --locked --features film-juicer-plugin/test-support --test-threads 1
+cargo test --workspace --doc --locked
+ctest --preset linux-debug -L '^gpu$' -LE '^multi-gpu$' --no-tests=error --output-on-failure
+```
+
+Repeat the CMake and CTest steps with the Release preset. Run these Cargo
+commands for Release.
+
+```sh
+cargo nextest run --workspace --locked --release --features film-juicer-plugin/test-support --test-threads 1
+cargo test --workspace --doc --locked --release
+```
+
+## Testing-OFF production package
+
+Configure the production closure separately, with testing and benchmarks off.
+Run the package build in a toolchain environment without Python. Run both
+strict C11 probes with CUDA hidden. Use Python 3.13 afterwards to inspect
+the archive, dependencies, exports, resources and notices.
+
+```sh
+cmake --preset linux-release -DBUILD_TESTING=OFF -DJUICER_BUILD_BENCHMARKS=OFF
+cmake --build --preset linux-release --target bundle-archive JuicerProductionOfxProbe JuicerProductionCudaAbiProbe
+CUDA_VISIBLE_DEVICES=-1 out/build/linux-release/tests/bin/JuicerProductionOfxProbe out/stage/linux-release/juicer.ofx.bundle/Contents/Linux-x86-64/juicer.ofx
+CUDA_VISIBLE_DEVICES=-1 out/build/linux-release/tests/bin/JuicerProductionCudaAbiProbe
+python3.13 scripts/check.py bundle --stage out/stage/linux-release
+```
+
+On Windows use `windows-clang-release`, both `.exe` probes and the staged
+`Contents/Win64/juicer.ofx`. Set `$env:CUDA_VISIBLE_DEVICES = '-1'` for the
+probe processes. Keep the CUDA toolkit's `bin/x64` and `bin` directories on
+PATH for linked executables. Run the bundle check from the VS x64 developer
+shell with `dumpbin` available.
 
 When qualifying a native Linux Resolve environment, run the focused OFX
 host-compatibility probe both normally and with Resolve's `libProResRAW.so`

@@ -5,9 +5,9 @@ The oracle evaluates the analytic curve on exact FP32 samples and exact resolved
 FP64 descriptor words, independently of the CUDA implementation.
 """
 
-from decimal import Decimal, localcontext
 import math
 import struct
+from decimal import Decimal, localcontext
 
 
 def float_bits(value):

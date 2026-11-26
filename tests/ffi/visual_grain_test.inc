@@ -171,11 +171,9 @@ namespace {
     void grain_values(const std::filesystem::path& resources, const Json& captured, const Json& synthetic, const std::filesystem::path& fixtureDirectory) {
         require(captured.at("products").size() == 36 && captured.at("controls").size() == 758 && synthetic.at("products").size() == 28, "exact independent grain cohort membership");
         Assets assets(resources);
-        for (bool facade : {false, true}) {
+        for (unsigned pass = 0; pass < 2; ++pass) {
             const auto call = fj_test_visual_grain_prepare;
-            std::size_t product_index = 0;
             for (const auto& row : captured.at("products")) {
-                JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/product-input/" + std::to_string(product_index++) + "/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()));
                 auto params = grain_params(row.at("controls"));
                 FjVisualGrainRecipe out{};
                 {
@@ -188,13 +186,10 @@ namespace {
                     require(fj_test_film_development_live_owners() == holds, "grain does not retain/release development");
                 }
                 require(project(out) == row.at("grain"), "all fixed grain fields survive source/cache/development release");
-                event.passed();
             }
             GrainDevelopment withLayers(assets, captured.at("products")[2], true);
             GrainDevelopment withoutLayers(assets, captured.at("products")[2], false);
-            std::size_t control_index = 0;
             for (const auto& row : captured.at("controls")) {
-                JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/control/" + std::to_string(control_index++) + "/" + row.at("id").get<std::string>());
                 const auto params = grain_params(row.at("controls"));
                 auto* development = row.at("source_layers_hash").get<std::uint64_t>() == 0 ? withoutLayers.owner : withLayers.owner;
                 FjVisualGrainRecipe out{};
@@ -210,11 +205,8 @@ namespace {
                     metadata(failure, row.at("id") == "missing-layers" ? FJ_FILM_RECIPE_GRAIN_LAYERS : FJ_FILM_RECIPE_GRAIN_CONTROLS);
                     require(cleared_grain(out), "every declared field cleared after control/layer failure");
                 }
-                event.passed();
             }
-            std::size_t synthetic_index = 0;
             for (const auto& row : synthetic.at("products")) {
-                JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/synthetic/" + std::to_string(synthetic_index++) + "/" + row.at("source").get<std::string>());
                 Assets source(fixtureDirectory / "synthetic" / row.at("source").get<std::string>());
                 GrainDevelopment development(source, row, true);
                 FjFilmDevelopmentView view{};
@@ -233,12 +225,9 @@ namespace {
                 status(call(development.owner, &params, &out, &failure, nullptr));
                 metadata(failure);
                 require(project(out) == row.at("grain"), "28 genuine variable-row/polarity/overflow projections");
-                event.passed();
             }
         }
-        JuicerTests::CaseEvent drain_event("cpp", "grain/owner-drain");
         require(fj_test_film_development_live_owners() == 0, "all grain fixture holds drain");
-        drain_event.passed();
     }
     void grain_failures(const std::filesystem::path& resources, const Json& captured) {
         Assets assets(resources);
@@ -249,11 +238,7 @@ namespace {
             for (unsigned fault : {1u, 2u})
                 fault_ids.emplace_back("caller-" + std::to_string(caller) + "/fault-" + std::to_string(fault));
         }
-        JuicerTests::Cohort diagnostic_capacities("visual_grain.diagnostic_capacity", capacity_ids);
-        JuicerTests::Cohort recipe_faults("visual_grain.fault_tuple", fault_ids);
-        unsigned caller_index = 0;
-        for (bool facade : {false, true}) {
-            JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/failures");
+        for (unsigned pass = 0; pass < 2; ++pass) {
             GrainDevelopment development(assets, captured.at("products")[2], true);
             GrainDevelopment noLayers(assets, captured.at("products")[2], false);
             const auto base = grain_params(captured.at("products")[2].at("controls"));
@@ -288,7 +273,6 @@ namespace {
             rejected(noLayers.owner, &params, preparationFailure, FJ_FILM_RECIPE_GRAIN_CONTROLS);
             rejected(noLayers.owner, &base, preparationFailure, FJ_FILM_RECIPE_GRAIN_LAYERS);
             for (std::size_t capacity : {0u, 1u, 5u, 256u}) {
-                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 256> text{};
                 text.fill('Z');
                 FjErrorBuffer error{capacity ? text.data() : nullptr, capacity, 99};
@@ -299,7 +283,6 @@ namespace {
                             return c == 'Z';
                         }),
                         "diagnostic stays in its admitted backing extent");
-                row_event.passed();
             }
             FjErrorBuffer malformed{nullptr, 1, 99};
             rejected(development.owner, &params, unsupported, FJ_FILM_RECIPE_RAW, &malformed);
@@ -324,10 +307,8 @@ namespace {
             status(call(development.owner, &base, &out, reinterpret_cast<FjFilmRecipeFailure*>(failureStorage.data() + 1), nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared_grain(out), "misaligned failure slot does not prevent independent output clearing");
             for (unsigned fault : {1u, 2u}) {
-                auto row_event = recipe_faults.case_event("caller-" + std::to_string(caller_index) + "/fault-" + std::to_string(fault));
                 status(fj_test_film_recipe_fault(7, fault));
                 rejected(development.owner, &base, fault == 1 ? internalFailure : preparationFailure, fault == 1 ? FJ_FILM_RECIPE_PANIC : FJ_FILM_RECIPE_IDENTITY);
-                row_event.passed();
             }
             status(fj_test_film_recipe_fault(7, 1));
             status(call(development.owner, &base, nullptr, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -360,17 +341,13 @@ namespace {
             for (auto& thread : callers)
                 thread.join();
             require(concurrentOk.load() && fj_test_film_development_live_owners() == holds, "concurrent fixed results borrow one shared immutable live development");
-            event.passed();
-            ++caller_index;
         }
         require(fj_test_film_development_live_owners() == 0, "grain failure/concurrency holds drain");
     }
     void grain_products(const std::filesystem::path& resources, const Json& captured) {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
-        std::size_t product_index = 0;
         for (const auto& row : captured.at("products")) {
-            JuicerTests::CaseEvent event("cpp", "grain/product/" + std::to_string(product_index++) + "/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()));
             JuicerTestSupport::PreparationInput params;
             params.film_key = row.at("key").get<std::string>();
             params.print_key = "kodak_portra_endura";
@@ -391,7 +368,6 @@ namespace {
                         view.film_development.hash == row.at("development_hash"),
                     "visual grain retains the exact film development and current route");
             if (row.at("route") != 0 || row.at("gamma")[0] != 1065353216u || !params.values.grain.active || !params.values.grain.sublayers_active) {
-                event.passed();
                 continue;
             }
             const auto originalGrainHash = view.grain.hash;
@@ -412,10 +388,8 @@ namespace {
             FjPreparedStateView chromaView{};
             status(chromaProduct.view(chromaView, error));
             require(chromaView.grain.hash != originalGrainHash, "resolved recipe independently includes chroma mix");
-            event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {
-            JuicerTests::CaseEvent event("cpp", "grain/publication/" + std::to_string(route));
             JuicerTestSupport::PreparationInput params;
             params.values.scan_route = static_cast<std::uint32_t>(route);
             params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -454,11 +428,8 @@ namespace {
                         JuicerTestSupport::PublicationObserver::backing(*repeat.state) == baselineMetrics.backingIdentity &&
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
                     "unchanged grain publication reuses state");
-            event.passed();
         }
-        JuicerTests::CaseEvent drain_event("cpp", "grain/product-owner-drain");
         require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "all whole-state temporary owners drain");
-        drain_event.passed();
         std::puts("PASS 36 independent grain products, four-route publication/recovery, minimum separation and stage order");
     }
 } // namespace

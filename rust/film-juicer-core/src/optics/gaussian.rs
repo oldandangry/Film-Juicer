@@ -74,24 +74,43 @@ impl GaussianKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn active_domain_and_order() {
         let radius_cases = [("zero", 0), ("above-limit", 2049), ("max", u32::MAX)];
-        let mut cases = RowCases::new(
-            "gaussian-invalid-radius",
-            radius_cases.iter().map(|(id, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(radius_cases.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "gaussian-invalid-radius"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "gaussian-invalid-radius"
         );
         for (id, radius) in radius_cases {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 GaussianKernel::new(radius, f32::NAN).unwrap_err(),
                 GaussianKernelError::Radius
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let sigma_cases = [
             ("positive-zero", 0.0),
             ("negative-zero", -0.0),
@@ -100,19 +119,39 @@ mod tests {
             ("positive-infinity", f32::INFINITY),
             ("negative-infinity", f32::NEG_INFINITY),
         ];
-        let mut cases = RowCases::new(
-            "gaussian-invalid-sigma",
-            sigma_cases.iter().map(|(id, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(sigma_cases.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "gaussian-invalid-sigma"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "gaussian-invalid-sigma"
         );
         for (id, sigma) in sigma_cases {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 GaussianKernel::new(1, sigma).unwrap_err(),
                 GaussianKernelError::Sigma
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let kernel = GaussianKernel::new(2048, f32::from_bits(1)).unwrap();
         assert_eq!(kernel.weights().len(), 4097);
         assert_eq!(kernel.weights()[2048], 1.0);
@@ -168,17 +207,37 @@ mod tests {
                     )
                 })
         }));
-        let mut cases = RowCases::new("gaussian-native-cases-and-primitives", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "gaussian-native-cases-and-primitives"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "gaussian-native-cases-and-primitives"
+        );
         for case in rows {
             let name = case["name"].as_str().unwrap();
-            let row_case = cases.case(name);
+            let row_case = AsRef::<str>::as_ref(&(name)).to_owned();
             let radius = case["radius"].as_i64().unwrap();
             let sigma_bits = case["sigma_bits"].as_u64().unwrap() as u32;
             let sigma = f32::from_bits(sigma_bits);
             if radius <= 0 || !sigma.is_finite() || sigma <= 0.0 {
                 assert_eq!(case["count"], 0);
                 assert!(case["weights"].as_array().unwrap().is_empty());
-                row_case.passed();
+                assert!(
+                    cases_remaining.remove(&row_case),
+                    "unexpected or repeated comparison: {row_case}"
+                );
                 continue;
             }
             let kernel = GaussianKernel::new(radius as u32, sigma).unwrap();
@@ -196,15 +255,21 @@ mod tests {
                 }
             }
             if mismatches.len() == mismatch_count {
-                row_case.passed();
+                assert!(
+                    cases_remaining.remove(&row_case),
+                    "unexpected or repeated comparison: {row_case}"
+                );
             } else {
                 drop(row_case);
             }
             for (index, primitive) in case["primitives"].as_array().unwrap().iter().enumerate() {
-                let primitive_case = cases.case(format!(
-                    "primitive/{name}/query/{index}/i/{}",
-                    primitive["i"].as_i64().unwrap()
-                ));
+                let primitive_case = AsRef::<str>::as_ref(
+                    &(format!(
+                        "primitive/{name}/query/{index}/i/{}",
+                        primitive["i"].as_i64().unwrap()
+                    )),
+                )
+                .to_owned();
                 let x = f64::from(primitive["i"].as_i64().unwrap() as i32);
                 let s = f64::from(sigma);
                 let argument = -(x * x) / (s * s * 2.0);
@@ -212,7 +277,10 @@ mod tests {
                 if argument.exp().to_bits() != primitive["exp"].as_u64().unwrap() {
                     primitive_differences += 1;
                 }
-                primitive_case.passed();
+                assert!(
+                    cases_remaining.remove(&primitive_case),
+                    "unexpected or repeated comparison: {primitive_case}"
+                );
             }
         }
         println!(
@@ -226,6 +294,9 @@ mod tests {
             mismatches.is_empty(),
             "exact Gaussian coefficient gate failed"
         );
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

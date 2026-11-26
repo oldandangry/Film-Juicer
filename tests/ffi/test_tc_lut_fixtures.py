@@ -1,8 +1,7 @@
 import hashlib
 import json
-from pathlib import Path
 import unittest
-
+from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures/tc_lut"
 
@@ -15,21 +14,6 @@ class TcLutFixtures(unittest.TestCase):
             membership["records"]: json.loads(payloads[membership["records"]])
             for membership in manifest["preset_membership"].values()
         }
-        self.subtest_cases = tuple(
-            [f"preset/{preset}" for preset in manifest["preset_membership"]]
-            + [f"sha256/{name}" for name in manifest["sha256"]]
-            + [f"table/{name}" for name in {m["tables"] for m in manifest["preset_membership"].values()}]
-            + [
-                f"leaf/{name}/{index}"
-                for name, records in records_by_name.items()
-                for index, _ in enumerate(records["leaves"]["cases"])
-            ]
-            + [
-                f"product/{name}/{row['polarity']}-{row['route']}-{row['method']}-{row['variant']}"
-                for name, records in records_by_name.items()
-                for row in records["products"]
-            ]
-        )
         self.assertEqual(manifest["parent"], "5b134fb1cb731e16db85159e37c70eda38122874")
         presets = {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}
         self.assertEqual(set(manifest["preset_membership"]), presets)
@@ -69,8 +53,6 @@ class TcLutFixtures(unittest.TestCase):
                 case = f"product/{name}/{row['polarity']}-{row['route']}-{row['method']}-{row['variant']}"
                 with self.subTest(case=case):
                     self.assertEqual((row["expected"]["tc_table"] is None), row["method"] == 1)
-
-    test_native_provenance_complete_membership_and_frozen_bytes.required_subtests = True
 
 
 if __name__ == "__main__":

@@ -826,7 +826,6 @@ mod tests {
     use crate::recipe::{self, PreparedRoute};
     use crate::recipe::test_support::{assets, output_boundary_weak, params};
     use crate::route::ScanRoute;
-    use crate::test_cases::RowCases;
 
     enum TestInput {
         Valid { params: Arc<Params>, identity: u64 },
@@ -1405,10 +1404,18 @@ mod tests {
             ("positive-direct", ScanRoute::PositiveDirect),
             ("positive-print", ScanRoute::PositivePrint),
         ];
-        let mut cases = RowCases::new("publication-routes", routes.map(|(id, _)| id));
+        let cases_ids: Vec<_> = IntoIterator::into_iter(routes.map(|(id, _)| id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "publication-routes");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "publication-routes");
         let mut holds = Vec::new();
         for (index, (id, route)) in routes.into_iter().enumerate() {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             publication
                 .stage(valid(index as u64, params(route, 1)))
                 .unwrap();
@@ -1444,9 +1451,15 @@ mod tests {
                 assert_eq!(held.development().route(), *route);
                 assert_eq!(backing_words(held), *words);
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn invalid_controls_block_admission() {
@@ -1513,9 +1526,21 @@ mod tests {
     }
     #[test]
     fn typed_panics_block_current_and_obsolete_publications() {
-        let mut cases = RowCases::new("publication-typed-panic", ["current", "obsolete"]);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["current", "obsolete"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "publication-typed-panic");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "publication-typed-panic"
+        );
         for scenario in ["current", "obsolete"] {
-            let case = cases.case(scenario);
+            let case = AsRef::<str>::as_ref(&(scenario)).to_owned();
             let assets = assets();
             let publication = Publication::new();
             publication.stage(valid(1, direct())).unwrap();
@@ -1557,9 +1582,15 @@ mod tests {
                 publication.begin_capture(CaptureMode::Change),
                 Err(Error::Poisoned)
             ));
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[cfg(feature = "test-support")]
@@ -1722,12 +1753,21 @@ mod tests {
     }
     #[test]
     fn obsolete_failure_rechecks_pending() {
-        let mut cases = RowCases::new(
-            "publication-obsolete-failure",
-            ["valid", "invalid", "capturing"],
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["valid", "invalid", "capturing"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "publication-obsolete-failure");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "publication-obsolete-failure"
         );
         for next in ["valid", "invalid", "capturing"] {
-            let case = cases.case(next);
+            let case = AsRef::<str>::as_ref(&(next)).to_owned();
             let assets = assets();
             let publication = Publication::new();
             publication.stage(valid(1, direct())).unwrap();
@@ -1778,9 +1818,15 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn invalidated_build_is_not_published() {
@@ -1896,9 +1942,17 @@ mod tests {
     }
     #[test]
     fn poisoned_state_blocks_admission() {
-        let mut cases = RowCases::new("publication-poison", ["state", "rebuild"]);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["state", "rebuild"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "publication-poison");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "publication-poison");
         for target in ["state", "rebuild"] {
-            let case = cases.case(target);
+            let case = AsRef::<str>::as_ref(&(target)).to_owned();
             let assets = assets();
             let publication = Publication::new();
             publication.stage(valid(1, direct())).unwrap();
@@ -1938,9 +1992,15 @@ mod tests {
                 assert!(Arc::ptr_eq(&saved.state, &held));
             }
             assert_eq!(backing_words(&held), words);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     fn begin(publication: &Publication, mode: CaptureMode) -> u64 {
         let CaptureStart::Started { capture } = publication.begin_capture(mode).unwrap() else {
@@ -2718,9 +2778,17 @@ mod tests {
             "first-finishes-first",
             "last-finishes-first",
         ];
-        let mut rows = RowCases::new("publication-host-writes", cases);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(cases)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "publication-host-writes");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows_remaining.len(), rows_count, "publication-host-writes");
         for id in cases {
-            let row = rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let publication = Arc::new(Publication::new());
             let old = begin(&publication, CaptureMode::Initial);
             let first = write(&publication, old);
@@ -2806,9 +2874,15 @@ mod tests {
                 let revision = reading(&publication, capture);
                 publication.install(capture, revision, direct(), 5).unwrap();
             }
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
     #[test]
     fn snapshot_phase_rejection_and_failure_precedence() {
@@ -2884,9 +2958,17 @@ mod tests {
             "blocked-drop",
             "poisoned-write-drop",
         ];
-        let mut rows = RowCases::new("publication-exhaustion", cases);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(cases)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "publication-exhaustion");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows_remaining.len(), rows_count, "publication-exhaustion");
         for id in cases {
-            let row = rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             let publication = Arc::new(Publication::new());
             let capture = begin(&publication, CaptureMode::Change);
             match id {
@@ -2944,9 +3026,15 @@ mod tests {
                 publication.begin_capture(CaptureMode::Change),
                 Err(Error::Poisoned)
             ));
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
     #[test]
     fn build_counter_exhaustion_keeps_last_committed_publication() {

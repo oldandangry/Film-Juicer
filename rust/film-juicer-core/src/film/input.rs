@@ -542,7 +542,6 @@ pub fn film_format_preset(index: i32) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use std::path::Path;
 
     fn profile() -> profile::FilmProfile {
@@ -703,12 +702,26 @@ mod tests {
                 exposure::ErrorKind::BandPassResponse,
             ),
         ];
-        let mut cases = RowCases::new(
-            "film-input-reference-failures",
-            rows.iter().map(|(id, _, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(rows.iter().map(|(id, _, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "film-input-reference-failures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "film-input-reference-failures"
         );
         for (id, reference, kind) in rows {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let mut borrowed = resources(&reference);
             borrowed.reference_white_xyz = Some(&white);
             borrowed.tc_source_hash = 1;
@@ -718,9 +731,15 @@ mod tests {
                 panic!("reference computation must precede missing reconstruction");
             };
             assert_eq!(error.kind(), kind);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn identity_matrices_are_completed_values() {

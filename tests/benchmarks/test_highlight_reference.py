@@ -1,8 +1,8 @@
 """Independent endpoint and boundary controls for the experiment oracle."""
 
-from decimal import Decimal, localcontext
 import math
 import unittest
+from decimal import Decimal, localcontext
 
 import highlight_reference as reference
 

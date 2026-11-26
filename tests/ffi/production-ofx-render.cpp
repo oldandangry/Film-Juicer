@@ -37,7 +37,6 @@
 #include "ofxParamExt.h"
 #include "instance_host.h"
 #include "production_images.h"
-#include "case_results.h"
 
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
 #include <optional>
@@ -437,13 +436,16 @@ namespace {
         return result;
     }
 
-    bool compare_fixture(const std::vector<float>& actual, const std::vector<float>& expected) {
+    bool compare_fixture(const std::vector<float>& actual, const std::vector<float>& expected, int components) {
         if (actual.size() != expected.size()) {
             return false;
         }
         for (std::size_t i = 0; i < actual.size(); ++i) {
-            const float tolerance = 2.0e-4f + 3.0e-4f * std::abs(expected[i]);
-            if (!std::isfinite(actual[i]) || !std::isfinite(expected[i]) || std::abs(actual[i] - expected[i]) > tolerance) {
+            const double tolerance = 2.0e-4 + 3.0e-4 * std::abs(static_cast<double>(expected[i]));
+            if (!std::isfinite(actual[i]) || !std::isfinite(expected[i]) ||
+                std::abs(static_cast<double>(actual[i]) - expected[i]) > tolerance ||
+                (components == 4 && i % 4 == 3 &&
+                 std::bit_cast<std::uint32_t>(actual[i]) != std::bit_cast<std::uint32_t>(expected[i]))) {
                 return false;
             }
         }
@@ -501,7 +503,7 @@ namespace {
             return std::isfinite(value);
         });
         require(finite, "rendered pixels are nonfinite");
-        const Json fixtureMatch = expected ? Json(compare_fixture(activeOutput, *expected)) : Json(nullptr);
+        const Json fixtureMatch = expected ? Json(compare_fixture(activeOutput, *expected, test.components)) : Json(nullptr);
         require(!expected || fixtureMatch == true, "rendered pixels differ from accepted fixture");
         std::vector<std::uint32_t> outputWords;
         outputWords.reserve(activeOutput.size());
@@ -826,12 +828,7 @@ namespace {
 
     int grain_preview_discovery(const std::filesystem::path& previewPath, const std::filesystem::path& ordinaryPath) {
         const bool paired = !ordinaryPath.empty();
-        const char* caller = paired ? "grain-preview-paired-discovery" : "grain-preview-discovery";
-        const char* id = paired ? "ordinary-and-preview" : "preview-module";
-        JuicerTests::CaseLog cases;
-        cases.membership(caller, {id});
         {
-            JuicerTests::CaseEvent event(caller, id);
             require(previewPath.is_absolute() && previewPath.filename() == "juicer-grain-preview.ofx", "preview discovery module path");
             Module preview(previewPath);
             if (paired) {
@@ -844,19 +841,11 @@ namespace {
                 check_discovery(preview, previewPath, "com.juicer.Juicer.GrainPreview");
             }
             preview.close();
-            event.passed();
         }
-        cases.finish();
         return 0;
     }
 
     int film_v1_witness(const std::filesystem::path& path) {
-        JuicerTests::CaseLog cases;
-        std::vector<std::string> ids;
-        ids.reserve(kFilmV1Cases.size());
-        for (const auto& test : kFilmV1Cases)
-            ids.emplace_back(test.id);
-        cases.membership("film-v1-render", ids);
         require(path.filename() == "juicer.ofx", "expected standard module");
         const auto resources = path.parent_path().parent_path() / "Resources";
         require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
@@ -885,7 +874,6 @@ namespace {
         Json routes = Json::array();
         bool allPassed = true;
         for (const auto& test : kFilmV1Cases) {
-            JuicerTests::CaseEvent event("film-v1-render", test.id);
             auto* effect = host.create_effect();
             const auto amountDefault = host.value(effect, "FilmGrainAmountEv");
             const auto sizeDefault = host.value(effect, "FilmGrainTexelPitchUm");
@@ -1035,7 +1023,6 @@ namespace {
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"paused_36mm_returned", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
-                event.complete(passed);
                 continue;
             }
             if (timeEndpoint) {
@@ -1096,7 +1083,6 @@ namespace {
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"equal_endpoint_words_at", {29, 38, 0}}, {"film_changes_output", true}, {"distinct_seeds_change_output", true}, {"paused_repeat", true}, {"accepted_time_limits", {-1'000'000, 1'000'000}}, {"time_and_geometry_recovered", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
-                event.passed();
                 continue;
             }
             if (eightMmProxy || clippedQuarter) {
@@ -1160,7 +1146,6 @@ namespace {
                 routes.push_back(std::move(row));
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
-                event.passed();
                 continue;
             }
             if (proxy || smallerFormats || largerFormats || thumbnails) {
@@ -1379,7 +1364,6 @@ namespace {
                     routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"flag_raster", {92, 46}}, {"flag_checks", std::move(flags)}, {"property_faults_recovered", true}, {"film_controls_rejected", {{"thumbnail", kOfxStatErrFatal}, {"timeline", kOfxStatErrFatal}, {"diagnostic", "FilmJuicerRenderAdmission"}, {"recovered", true}}}, {"film_amount_edit_changed_words_and_returned", true}, {"one_pixel_mismatches", std::move(mismatches)}, {"current_image_scale_preserved", true}, {"images_released_once", true}});
                     require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                     device.release_images();
-                    event.passed();
                     continue;
                 }
                 if (smallerFormats || largerFormats) {
@@ -1448,7 +1432,6 @@ namespace {
                         routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"thumbnail_recovered", true}});
                         require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                         device.release_images();
-                        event.passed();
                         continue;
                     }
                     select_format(2, 36.0);
@@ -1484,7 +1467,6 @@ namespace {
                     routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"paused_36mm_returned", true}, {"current_and_off_at_8mm", true}, {"footprint_recovered", true}});
                     require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                     device.release_images();
-                    event.passed();
                     continue;
                 }
                 for (int divisor : {1, 2, 4, 8}) {
@@ -1521,7 +1503,6 @@ namespace {
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"proxy_scales", {1.0, 0.5, 0.25, 0.125}}, {"sizes_um", {0.5, 1.0, 4.0}}, {"wide_proxy_advanced_and_returned", true}, {"full_returned", true}, {"geometry_recovered", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
-                event.passed();
                 continue;
             }
             const auto off = render(37.0);
@@ -1536,7 +1517,6 @@ namespace {
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"max_size_changes_output", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
-                event.passed();
                 continue;
             }
             const auto current = render(37.0);
@@ -1589,14 +1569,15 @@ namespace {
             routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
             require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
             device.release_images();
-            event.passed();
         }
         device.close();
         require(lifecycle.unload() == kOfxStatOK && !host.callback_error(), "preview unload");
         module.close();
         restore.restore();
-        cases.finish();
-        // Keep the verified subcases of both routes in the staged CTest receipt.
+        std::set<std::string> compared;
+        for (const auto& row : routes)
+            require(compared.insert(row.at("case_id").get<std::string>()).second, "duplicate Film v1 witness case");
+        require(compared.size() == 23, "expected 23 completed Film v1 witness cases");
         std::cout << "CTEST_FULL_OUTPUT\n";
         std::cout << Json{{"schema", "film-v1-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
         return allPassed && std::cout ? 0 : 1;
@@ -2090,11 +2071,6 @@ int main(int argc, char** argv) {
         }
 #if defined(JUICER_GRAIN_MOTION_REPLAY)
         if (argc >= 2 && std::string_view(argv[1]) == "--film-v1-apertures") {
-            if (JuicerTests::list_requested(argc, argv)) {
-                for (const auto& witness : kOfxApertures)
-                    JuicerTests::list_case(kApertureCaller, witness.id);
-                return std::fflush(stdout) == 0 ? 0 : 1;
-            }
             require(argc == 2, "aperture witness arguments");
             return film_v1_apertures();
         }
@@ -2107,22 +2083,12 @@ int main(int argc, char** argv) {
         require(false, "expected --film-v1-apertures");
 #endif
         if (argc >= 3 && std::string_view(argv[1]) == "--film-v1-witness") {
-            if (JuicerTests::list_requested(argc, argv)) {
-                for (const auto& test : kFilmV1Cases)
-                    JuicerTests::list_case("film-v1-render", test.id);
-                return std::fflush(stdout) == 0 ? 0 : 1;
-            }
             require(argc == 3, "preview witness arguments");
             return film_v1_witness(argv[2]);
         }
         if (argc >= 2 && (std::string_view(argv[1]) == "--grain-preview-discovery" ||
                           std::string_view(argv[1]) == "--grain-preview-paired-discovery")) {
             const bool paired = std::string_view(argv[1]) == "--grain-preview-paired-discovery";
-            if (JuicerTests::list_requested(argc, argv)) {
-                JuicerTests::list_case(paired ? "grain-preview-paired-discovery" : "grain-preview-discovery",
-                                       paired ? "ordinary-and-preview" : "preview-module");
-                return std::fflush(stdout) == 0 ? 0 : 1;
-            }
             require(argc == 4, "preview discovery arguments");
             return grain_preview_discovery(argv[2], paired ? std::filesystem::path(argv[3]) : std::filesystem::path{});
         }
@@ -2133,23 +2099,11 @@ int main(int argc, char** argv) {
         if (argc == 5 && std::string_view(argv[1]) == "--native-scanner-frame") {
             return frame_replay({.module = argv[2], .capture = argv[3], .output = argv[4], .parameters = {}, .nativeScannerFrame = true});
         }
-        if (JuicerTests::list_requested(argc, argv)) {
-            for (const auto id : kCaseIds)
-                JuicerTests::list_case("production-prepared-render", id);
-            return std::fflush(stdout) == 0 ? 0 : 1;
-        }
         const bool capture = argc == 4 && std::string_view(argv[1]) == "--halation-capture";
         const bool summary = capture || (argc == 6 && std::string_view(argv[5]) == "--summary");
         require(argc == 5 || summary, "usage: JuicerProductionPreparedRenderProbe module Resources ordinary-${preset}.json preset [--summary]; or --halation-capture module output-directory");
         const auto selected = capture ? std::span<const Case>(kHalationCases)
                                       : std::span<const Case>(kOrdinaryCases).first(2);
-        const std::string caller = capture ? "production-halation-capture" : "production-prepared-render";
-        JuicerTests::CaseLog cases;
-        std::vector<std::string> intended;
-        for (const auto& test : selected)
-            for (const auto* pass : {"cold", "warm"})
-                intended.emplace_back(std::string(test.id) + "/" + pass);
-        cases.membership(caller, intended);
         const std::filesystem::path modulePath(argv[capture ? 2 : 1]);
         const std::filesystem::path captureDirectory = capture ? std::filesystem::path(argv[3]) : std::filesystem::path{};
         if (capture)
@@ -2247,8 +2201,6 @@ int main(int argc, char** argv) {
             configure(host, effect, test, device);
             std::vector<std::uint32_t> coldWords;
             for (const auto* pass : {"cold", "warm"}) {
-                const std::string id = std::string(test.id) + "/" + pass;
-                cases.event(caller, id, "start");
                 rows.push_back(run_pass(driver, lifecycle, host, effect, test, pass, {.source = source, .expected = capture ? nullptr : &expected[index], .capture = captureDirectory}, device, coldWords, summary));
             }
             if (capture)
@@ -2264,6 +2216,12 @@ int main(int argc, char** argv) {
         require(unload == kOfxStatOK && !host.callback_error(), "production module unload action failed");
         module.close();
         restore.restore();
+        require(restore.restored && effectsCreated == effectsDestroyed, "production render lifecycle did not complete");
+        if (!capture) {
+            require(rows.size() == kCaseIds.size(), "incomplete production prepared-render comparisons");
+            for (std::size_t index = 0; index < kCaseIds.size(); ++index)
+                require(rows.at(index).at("case_id").get_ref<const std::string&>() == kCaseIds[index], "unexpected production prepared-render case");
+        }
         for (auto& row : rows)
             row["context_restored"] = restore.restored;
         Json report{{"rows", std::move(rows)}, {"lifecycle", {{"module_load_status", load}, {"effects_created", effectsCreated}, {"effects_destroyed", effectsDestroyed}, {"destroy_statuses", std::move(destroyStatuses)}, {"module_unload_status", unload}, {"context_restored", restore.restored}}}};
@@ -2281,9 +2239,6 @@ int main(int argc, char** argv) {
         const auto output = report.dump();
         if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fputc('\n', stdout) == EOF || std::fflush(stdout) != 0)
             return 1;
-        for (const auto& row : report.at("rows"))
-            cases.event(caller, row.at("case_id").get<std::string>(), "terminal", "passed");
-        cases.finish();
         return 0;
     } catch (const std::exception& error) {
         (void)std::fputs(error.what(), stderr);

@@ -7,7 +7,6 @@
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/capture_identity.h"
 #include "../ffi/prepared_frame_fixture.h"
-#include "../ffi/case_results.h"
 #include "../ffi/test_asset_workspace.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_cuda_api.h"
@@ -1053,12 +1052,9 @@ namespace {
             intended.push_back(std::string(test.name) + "/" + id);
         for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U})
             intended.push_back(std::string(test.name) + "/cancel/" + std::to_string(checkpoint));
-        JuicerTests::Cohort rows(std::string("cutover_callback/") + test.name, intended);
         JuicerTestSupport::InstanceFixture state;
         MembershipRetirement stateRetirement{runtime, state};
-        auto disjoint_row = rows.case_event(std::string(test.name) + "/disjoint-rows");
         compare_pixels("same allocation disjoint rows", render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::DisjointRows), expected);
-        disjoint_row.passed();
         const auto sameSubmission = [](const JuicerTestSupport::SubmissionObservation& left, const JuicerTestSupport::SubmissionObservation& right) {
             const auto& a = left.submission;
             const auto& b = right.submission;
@@ -1067,7 +1063,6 @@ namespace {
                    a.upload_core_hash == b.upload_core_hash && a.dir_hash == b.dir_hash &&
                    a.scanner_hash == b.scanner_hash && a.auto_exposure_hash == b.auto_exposure_hash;
         };
-        auto preflight_row = rows.case_event(std::string(test.name) + "/preflight-keeps-submission");
         const auto beforePreflight = runtime.submission(state);
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         fj_test_prepared_noise_observation_reset();
@@ -1085,8 +1080,6 @@ namespace {
         if (fj_test_prepared_noise_observation(&preflightObservation).category != FJ_STATUS_SUCCESS || preflightObservation.native_render_calls != 0)
             throw std::runtime_error("preflight failure reached native rendering");
 #endif
-        preflight_row.passed();
-        auto dir_row = rows.case_event(std::string(test.name) + "/dir-disabled-submission");
         auto dirDisabled = parameters_for(test);
         dirDisabled.values.dir_couplers.active = false;
         DirSubmissionWitness firstDir{};
@@ -1114,12 +1107,10 @@ namespace {
         };
         if (!validDir(firstDir) || !validDir(repeatDir) || firstDir.selected.submission_id != repeatDir.selected.submission_id)
             throw std::runtime_error("DIR-disabled completed, selected, or native submission identity changed");
-        dir_row.passed();
         Case uniform = test;
         uniform.uniform = true;
         auto uniformParameters = parameters_for(uniform);
         uniformParameters.values.glare_active = false;
-        auto initial_row = rows.case_event(std::string(test.name) + "/initial-uniform");
         const auto initialUniform = render_case(runtime, uniform, uniformParameters, state);
         // This is a constant-input invariance test, complementary to the
         // independent accepted pixel fixtures above. Glare would add noise.
@@ -1136,7 +1127,6 @@ namespace {
             return pixels;
         };
         compare_pixels("initial uniform callback", initialUniform, uniform_expected(uniform));
-        initial_row.passed();
         const auto firstId = runtime.submission(state).submission.submission_id;
         uniform.width += 2;
         uniform.height -= 2;
@@ -1146,26 +1136,21 @@ namespace {
         uniform.scaleX = 0.5;
         uniform.scaleY = 1.5;
         const auto changedExpected = uniform_expected(uniform);
-        auto changed_row = rows.case_event(std::string(test.name) + "/changed-geometry-time-scale");
         compare_pixels("changed geometry time and scale", render_case(runtime, uniform, uniformParameters, state), changedExpected);
         const auto changedId = runtime.submission(state).submission.submission_id;
         if (changedId == firstId || runtime.submission(state).submission.frame_token != static_cast<std::uint64_t>(std::int64_t{-18})) {
             throw std::runtime_error("changed callback facts reused the previous latch");
         }
-        changed_row.passed();
         // Each render_case allocates a new supplied stream; the same facts reuse the latch.
-        auto supplied_stream_row = rows.case_event(std::string(test.name) + "/sequential-supplied-stream");
         compare_pixels("sequential supplied stream", render_case(runtime, uniform, uniformParameters, state), changedExpected);
         if (runtime.submission(state).submission.submission_id != changedId) {
             throw std::runtime_error("unchanged callback facts failed to reuse the latch");
         }
-        supplied_stream_row.passed();
         CUcontext current = nullptr;
         if (cuCtxGetCurrent(&current) != CUDA_SUCCESS) {
             throw std::runtime_error("get callback context");
         }
         std::exception_ptr workerFailure;
-        auto worker_row = rows.case_event(std::string(test.name) + "/worker-thread");
         std::thread worker([&] {
             try {
                 if (cuCtxSetCurrent(current) != CUDA_SUCCESS) {
@@ -1181,12 +1166,10 @@ namespace {
         if (workerFailure) {
             std::rethrow_exception(workerFailure);
         }
-        worker_row.passed();
         CUcontext other = nullptr;
         if (cuCtxCreate(&other, nullptr, 0, 0) != CUDA_SUCCESS) {
             throw std::runtime_error("create fixture context");
         }
-        auto context_row = rows.case_event(std::string(test.name) + "/second-context");
         try {
             compare_pixels("second context on same device", render_case(runtime, uniform, uniformParameters, state), changedExpected);
             if (reinterpret_cast<void*>(runtime.submission(state).context.context) != other) {
@@ -1205,11 +1188,9 @@ namespace {
         if (cuCtxDestroy(other) != CUDA_SUCCESS || cuCtxSetCurrent(current) != CUDA_SUCCESS) {
             throw std::runtime_error("release fixture context");
         }
-        context_row.passed();
         JuicerTestSupport::SubmissionObservation selectedOnCancel{};
         for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U}) {
             const auto beforeCancel = runtime.submission(state);
-            auto cancel_row = rows.case_event(std::string(test.name) + "/cancel/" + std::to_string(checkpoint));
             AbortObservation observation;
             observation.cancelAt = checkpoint;
             s_abortObservation = &observation;
@@ -1230,9 +1211,7 @@ namespace {
                 selectedOnCancel = afterCancel;
             if (checkpoint >= 3 && (!afterCancel.valid || (checkpoint > 3 && !sameSubmission(selectedOnCancel, afterCancel))))
                 throw std::runtime_error("post-selection cancellation failed to commit or reuse the submission");
-            cancel_row.passed();
         }
-        auto throwing_row = rows.case_event(std::string(test.name) + "/throwing-cancellation");
         AbortObservation throwing;
         throwing.throwAt = 4;
         s_abortObservation = &throwing;
@@ -1250,8 +1229,6 @@ namespace {
             !sameSubmission(selectedOnCancel, runtime.submission(state))) {
             throw std::runtime_error("abort suite exception escaped or became successful cancellation");
         }
-        throwing_row.passed();
-        auto recovery_row = rows.case_event(std::string(test.name) + "/render-after-cancellation");
         compare_pixels("render after cancellation", render_case(runtime, test, parameters_for(test), state), expected);
         if (!sameSubmission(selectedOnCancel, runtime.submission(state)))
             throw std::runtime_error("render after cancellation did not reuse the committed submission");
@@ -1260,7 +1237,6 @@ namespace {
         if (!stateRetirement.close()) {
             throw std::runtime_error("retire cutover fixture instance");
         }
-        recovery_row.passed();
         std::cout << test.name << ": production geometry/time/scale, streams, threads, contexts, disjoint alias and abort contracts passed\n";
     }
 } // namespace
@@ -1295,9 +1271,7 @@ namespace {
         intended.reserve(5);
         for (const char* family : familyNames)
             intended.push_back(std::string(test.name) + "/" + family);
-        JuicerTests::Cohort rows(std::string("physical_effect_pixels/") + test.name, intended);
         for (unsigned family = 0; family < 5; ++family) {
-            auto case_event = rows.case_event(std::string(test.name) + "/" + familyNames[family]);
             auto enabled = off;
             if (family == 0)
                 enabled.values.film_dust_amount = 10;
@@ -1315,7 +1289,6 @@ namespace {
             enabled.values.grain.debug_view = 3;
             if (!same_bits(render_case(runtime, test, enabled, state), pixels))
                 throw std::runtime_error("inactive grain debug incorrectly suppresses physical effects");
-            case_event.passed();
         }
         auto debug = off;
         debug.values.grain.active = true;
@@ -1932,34 +1905,6 @@ namespace {
         return true;
     }
 
-    std::vector<std::string> workspace_candidate_ids() {
-        std::vector<std::string> ids;
-        ids.reserve(50);
-        constexpr std::array<const char*, 4> routes{"negative-direct", "negative-print", "positive-direct", "positive-print"};
-        for (unsigned route = 0; route < routes.size(); ++route) {
-            const std::string prefix = std::string(routes[route]) + "/";
-            ids.push_back(prefix + "actual-schedule");
-            ids.push_back(prefix + "no-work");
-            ids.push_back(prefix + "dir-unsharp");
-            if (route < 2) {
-                for (unsigned reject = 0; reject <= 6; ++reject)
-                    ids.push_back(prefix + "strict-yvv/capacity/" + std::to_string(reject));
-                ids.push_back(prefix + "strict-yvv/invalid-value");
-                ids.push_back(prefix + "strict-yvv/context-loss");
-                for (unsigned shape = 0; shape < 4; ++shape)
-                    ids.push_back(prefix + "strict-yvv/shape/" + std::to_string(shape));
-                ids.push_back(prefix + "strict-yvv/debug-view");
-                ids.push_back(prefix + "strict-yvv/camera-diffusion");
-            } else {
-                ids.push_back(prefix + "strict-yvv/positive-storage");
-            }
-            ids.push_back(prefix + "physical-effects");
-        }
-        ids.push_back("halation-carrier/dedicated");
-        ids.push_back("halation-carrier/camera-diffusion");
-        return ids;
-    }
-
     void run_workspace_transitions(CallbackSession& runtime, bool referenceInputs) {
         using Frame = JuicerProcess::Root::PreparedCudaFrame;
         using namespace JuicerCuda::ResourceManager;
@@ -1976,20 +1921,7 @@ namespace {
         DeviceFrame device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "workspace stream");
         std::uint64_t next = 1;
-        std::vector<std::string> intended;
-        intended.reserve(10);
-        for (const char* route : {"negative-direct", "negative-print"}) {
-            for (const char* mode : {"competing", "malformed"})
-                intended.push_back(std::string(route) + "/" + mode);
-            for (const char* carrier : {"disabled", "dedicated", "camera-diffusion"})
-                intended.push_back(std::string(route) + "/" + carrier);
-        }
-        JuicerTests::Cohort transition_rows("workspace_transition", intended);
-        const auto candidate_ids = workspace_candidate_ids();
-        JuicerTests::Cohort candidate_rows("workspace_candidate", candidate_ids);
-        unsigned routeIndex = 0;
         for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan}) {
-            const std::string routeName(routeIndex++ == 0 ? "negative-direct" : "negative-print");
             const bool print = Spektrafilm::scan_route_is_print(route);
             JuicerTestSupport::PreparationInput params;
             params.values.scan_route = static_cast<std::uint32_t>(route);
@@ -2010,7 +1942,6 @@ namespace {
             facts.sessionSeed = 17;
             facts.clipToken = 23;
             for (bool competing : {true, false}) {
-                auto row = transition_rows.case_event(routeName + "/" + (competing ? "competing" : "malformed"));
                 SubmissionSnapshot snapshot;
                 snapshot.instanceToken.value = 0x53344438;
                 snapshot.frameToken.value = next;
@@ -2052,11 +1983,8 @@ namespace {
                 require(error.diagnostic == primary.diagnostic && error.status.category == primary.status.category, "abort lost primary failure");
                 std::cout << "replacement R2 route=" << routeKey << " competing=" << competing << " status={3,0,0} diagnostic=" << error.diagnostic
                           << " stage=derive_cuda_frame_workspace_request prefix=CUDA frame workspace derivation failed" << '\n';
-                row.passed();
             }
-            const std::array<const char*, 3> carrier_names{"disabled", "dedicated", "camera-diffusion"};
             for (unsigned carrier : {0u, 1u, 2u}) {
-                auto row = transition_rows.case_event(routeName + "/" + carrier_names[carrier]);
                 params.values.grain.active = false;
                 params.values.dir_couplers.active = false;
                 params.values.gate_dust_amount = 1.0;
@@ -2129,7 +2057,6 @@ namespace {
                         "abort lost attachment checkpoint failure");
                 require(!frame.scatter_halation_resources().descriptor && !frame.diffusion_resources().active, "aborted attachment failure exposed prepared optics");
                 std::cout << "preserved attachment checkpoint route=" << Spektrafilm::scan_route_key(route) << " carrier=" << carrier << " status={3,0,0} diagnostic=" << gateFailure.diagnostic << '\n';
-                row.passed();
             }
         }
         const auto cases = std::span(kProcessorCases).first<4>();
@@ -2139,7 +2066,6 @@ namespace {
             std::puts("CTEST_FULL_OUTPUT");
         for (std::size_t index = 0; index < cases.size(); ++index) {
             const auto& test = cases[index];
-            auto case_event = candidate_rows.case_event(std::string(test.name) + "/actual-schedule");
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
             JuicerCuda::ExecutorTest::reset_workspace_transitions();
@@ -2159,7 +2085,6 @@ namespace {
             ++pixels;
             std::cout << "workspace actual schedule route=" << Spektrafilm::scan_route_key(test.route)
                       << " handoff=" << static_cast<unsigned>(*JuicerCuda::ExecutorTest::workspaceHandoff) << '\n';
-            case_event.passed();
         }
         unsigned injectedFailures = 0;
         std::vector<float> latestPixels;
@@ -2241,19 +2166,15 @@ namespace {
             params.values.dir_couplers.active = false;
             params.values.glare_active = false;
             params.values.scanner_unsharp_mask[0] = params.values.scanner_unsharp_mask[1] = 0.0;
-            auto no_work_row = candidate_rows.case_event(routeName + "/no-work");
             const auto noWork = run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
             require(!noWork.requested && !noWork.admitted && noWork.candidateCount == 0, "no-family schedule requested scratch");
             require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic,
                     routeName + ": grain-off route must complete through the monolithic scanner");
-            no_work_row.passed();
             params.values.dir_couplers.active = true;
             params.values.scanner_unsharp_mask[0] = params.values.scanner_unsharp_mask[1] = 0.5;
-            auto dir_unsharp_row = candidate_rows.case_event(routeName + "/dir-unsharp");
             run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
             require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner,
                     routeName + ": DIR with unsharp must complete through the fused scanner");
-            dir_unsharp_row.passed();
             params.values.grain.active = true;
             params.values.grain.sublayers_active = true;
             params.values.grain.chroma_shared_weight = 1.0f;
@@ -2264,7 +2185,6 @@ namespace {
             if (route < 2) {
                 std::vector<float> baseline;
                 for (unsigned reject = 0; reject <= 6; ++reject) {
-                    auto reject_row = candidate_rows.case_event(routeName + "/strict-yvv/capacity/" + std::to_string(reject));
                     const auto observed = run(strict, params, reject, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, reject == 6);
                     const std::array raw{3, 3, 3, 3, 3, 1};
                     const std::array temp{3, 3, 3, 2, 1, 1};
@@ -2294,39 +2214,26 @@ namespace {
                                                                                                 : 0u),
                                 "admitted source-cache count changed");
                     }
-                    reject_row.passed();
                 }
-                auto invalid_value_row = candidate_rows.case_event(routeName + "/strict-yvv/invalid-value");
                 run(strict, params, 1, JuicerCuda::ExecutorTest::WorkspaceRejection::InvalidValue, true);
-                invalid_value_row.passed();
-                auto context_loss_row = candidate_rows.case_event(routeName + "/strict-yvv/context-loss");
                 run(strict, params, 1, JuicerCuda::ExecutorTest::WorkspaceRejection::ContextLoss, true);
-                context_loss_row.passed();
                 for (unsigned shape = 0; shape < 4; ++shape) {
-                    auto shape_row = candidate_rows.case_event(routeName + "/strict-yvv/shape/" + std::to_string(shape));
                     params.values.grain.sublayers_active = shape >= 2;
                     params.values.grain.chroma_shared_weight = shape % 2 ? 1.0f : 0.0f;
                     params.values.grain.chroma_independent_weight = shape % 2 ? 0.0f : 1.0f;
                     run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
-                    shape_row.passed();
                 }
                 params.values.grain.debug_view = 1;
-                auto debug_row = candidate_rows.case_event(routeName + "/strict-yvv/debug-view");
                 run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
-                debug_row.passed();
                 params.values.grain.debug_view = 0;
                 params.values.camera_diffusion.active = true;
-                auto diffusion_row = candidate_rows.case_event(routeName + "/strict-yvv/camera-diffusion");
                 const auto diffusion = run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
                 require(diffusion.admitted->grain_storage() == GrainStorage::Dedicated, "diffusion used DIR raw grain");
-                diffusion_row.passed();
             } else {
-                auto positive_row = candidate_rows.case_event(routeName + "/strict-yvv/positive-storage");
                 const auto positive = run(strict, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
                 require(positive.admitted->scanner_storage() == ScannerStorage::Dedicated && positive.admitted->grain_storage() == GrainStorage::Dedicated,
                         "positive route aliased corrections");
                 require(positive.sourceCacheChannels == 0 && positive.finalCacheChannels == 3 && positive.finalDevelopment.has_value(), "later cache staging missing");
-                positive_row.passed();
             }
             params.values.grain.active = false;
             params.values.camera_diffusion.active = false;
@@ -2335,22 +2242,24 @@ namespace {
             params.values.gate_dust_amount = 1.0;
             params.values.gate_scratch_amount = 1.0;
             params.values.gate_weave_amount = 1.0;
-            auto physical_row = candidate_rows.case_event(routeName + "/physical-effects");
             run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
             require(JuicerCuda::ExecutorTest::workspaceHandoff == JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity,
                     routeName + ": physical effects must complete through the materialized scanner");
-            physical_row.passed();
         }
+        // The carrier cases are independent of the injected context-loss rows.
+        // Drain their idle CUDA owner before using the pinned upload pool again.
+        std::string retirementDiagnostic;
+        const bool retired = JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(deviceId, context, retirementDiagnostic);
+        require(retired, "workspace owner retirement before halation-carrier: " + retirementDiagnostic);
         for (bool camera : {false, true}) {
-            auto carrier_row = candidate_rows.case_event(std::string("halation-carrier/") + (camera ? "camera-diffusion" : "dedicated"));
             Case test{"halation-carrier", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0, true};
             auto params = parameters_for(test);
             params.values.camera_diffusion.active = camera;
             params.values.enlarger_diffusion.active = true;
             run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
-            carrier_row.passed();
         }
         JuicerCuda::ExecutorTest::reset_workspace_transitions();
+        require(pixels == 44 && injectedFailures == 6, "complete workspace pixel and injected-failure comparisons");
         std::cout << "WorkspaceTransitions replacement: genuine_pixels=" << pixels << " construction_failures=4 checkpoint_failures=6 injected_failures=" << injectedFailures << '\n';
     }
 
@@ -2380,7 +2289,6 @@ namespace {
                     intended.push_back("route-" + std::to_string(route) + "/case/" + name);
             }
         }
-        JuicerTests::Cohort rows("effects_frame", intended);
         const auto scalar = [](const Json& v) {
             return std::bit_cast<float>(v.get<std::uint32_t>());
         };
@@ -2707,7 +2615,6 @@ namespace {
             for (const auto& row : captured.at("products")) {
                 if (row.at("route") != route)
                     continue;
-                auto case_event = rows.case_event("route-" + std::to_string(route) + "/product/" + row.at("spec").at("id").get<std::string>());
                 const auto& spec = row.at("spec");
                 const bool pixel = spec.at("pixels");
                 const bool witness = spec.at("id") == "off";
@@ -2726,14 +2633,11 @@ namespace {
                     run(row, EffectsCallerPath::BeforeBuilder);
                     run(row, EffectsCallerPath::StopBeforePreparation, true);
                 }
-                case_event.passed();
             }
             for (const auto& row : captured.at("cases")) {
                 const auto name = row.at("input").at("id").get<std::string>();
                 if (std::find(caseNames.begin(), caseNames.end(), name) != caseNames.end()) {
-                    auto case_event = rows.case_event("route-" + std::to_string(route) + "/case/" + name);
                     run(row, EffectsCallerPath::StopBeforePreparation);
-                    case_event.passed();
                 }
             }
             if (fj_cuda_retire_instance(runtime.borrow().cuda, 0x645700 + route, nullptr).category != 0)
@@ -2784,7 +2688,6 @@ namespace {
                     intended.push_back("route-" + std::to_string(route) + "/case/" + name);
             }
         }
-        JuicerTests::Cohort rows("grain_frame", intended);
         const auto scalar = [](const Json& v) {
             return std::bit_cast<float>(v.get<std::uint32_t>());
         };
@@ -3056,7 +2959,6 @@ namespace {
             for (const auto& row : captured.at("products")) {
                 if (row.at("route") != route)
                     continue;
-                auto case_event = rows.case_event("route-" + std::to_string(route) + "/" + grain_frame_product_id(row.at("spec")));
                 const auto& spec = row.at("spec");
                 const bool pixel = !spec.at("active").get<bool>() || (spec.at("debug") == 0 && !spec.contains("amplitude"));
                 if (!spec.at("active").get<bool>() && fj_test_grain_frame_fault(1).category != 0)
@@ -3074,16 +2976,13 @@ namespace {
                     run(row, GrainCallerPath::BeforeBuilder);
                     run(row, GrainCallerPath::StopBeforePreparation, true);
                 }
-                case_event.passed();
             }
             for (const auto& row : captured.at("cases")) {
                 const auto& v = row.at("input");
                 const auto name = v.at("name").get<std::string>();
                 const auto logical = name.starts_with("positive/") ? name.substr(9) : name;
                 if (v.at("capture_polarity") == route / 2 && v.at("film_polarity") == route / 2 && std::find(caseNames.begin(), caseNames.end(), logical) != caseNames.end()) {
-                    auto case_event = rows.case_event("route-" + std::to_string(route) + "/case/" + name);
                     run(row, GrainCallerPath::StopBeforePreparation);
-                    case_event.passed();
                 }
             }
             if (fj_cuda_retire_instance(runtime.borrow().cuda, 0x645600 + route, nullptr).category != 0)
@@ -3113,7 +3012,6 @@ namespace {
             for (const char* name : caseNames)
                 intended.push_back("route-" + std::to_string(route) + "/case/" + name);
         }
-        JuicerTests::Cohort rows("dir_frame", intended);
         const auto extent = [](const Json& value) -> Spektrafilm::DirFrameExtent {
             return {value.at(0), value.at(1), value.at(2), value.at(3)};
         };
@@ -3365,18 +3263,15 @@ namespace {
             };
             for (const auto& row : captured.at("products")) {
                 if (row.at("route") == route) {
-                    auto case_event = rows.case_event("route-" + std::to_string(route) + "/product/" + row.at("input").at("name").get<std::string>());
                     const bool executePixels = row.at("input").at("name") == std::to_string(route) + "/pixel-8";
                     run(row, true, false, executePixels, false);
                     if (executePixels) {
                         run(row, true, true, false, false);
                         run(row, true, false, false, true);
                     }
-                    case_event.passed();
                 }
             }
             for (const char* name : caseNames) {
-                auto case_event = rows.case_event("route-" + std::to_string(route) + "/case/" + name);
                 const auto found = std::find_if(captured.at("cases").begin(), captured.at("cases").end(), [&](const auto& row) {
                     return row.at("input").at("name") == name;
                 });
@@ -3384,7 +3279,6 @@ namespace {
                     throw std::runtime_error("DIR caller literal missing");
                 }
                 run(*found, false, false, false, false);
-                case_event.passed();
             }
         }
         if (runs != 100) {
@@ -3702,21 +3596,14 @@ namespace {
             for (const char* terminal : {"context-loss", "mismatching-context", "gate-reentry", "active-submission", "non-dir-failure", "long-diagnostic"})
                 intended.push_back(std::string(test.name) + "/terminal/" + terminal);
         }
-        JuicerTests::Cohort rows("failure_order", intended);
         {
-            auto row = rows.case_event(kDiffusionComponentsPanicCase);
             check_diffusion_components_panic(runtime, cases.front());
-            row.passed();
         }
         for (const Case& test : cases) {
-            unsigned deliveryIndex = 0;
             for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
                                         JuicerCuda::ExecutorTest::Delivery::Failure,
                                         JuicerCuda::ExecutorTest::Delivery::Throw}) {
-                const auto* const deliveryName = std::array{"success", "failure", "throw"}[deliveryIndex++];
-                auto row = rows.case_event(std::string(test.name) + "/delivery/" + deliveryName);
                 check_failure_order(runtime, test, delivery, true, JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), "renamed receiver arithmetic failure 100%");
-                row.passed();
             }
             const std::array statuses{JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED),
                                       JuicerCuda::runtime_failure_status(cudaErrorDeviceUninitialized),
@@ -3725,36 +3612,24 @@ namespace {
             const std::array<const char*, 3> wordings{"test component=dir 100% device lost out of memory", "renamed arithmetic failure 100%", ""};
             for (std::size_t statusIndex = 0; statusIndex < statuses.size(); ++statusIndex) {
                 for (std::size_t wordingIndex = 0; wordingIndex < wordings.size(); ++wordingIndex) {
-                    auto row = rows.case_event(std::string(test.name) + "/status/" + std::to_string(statusIndex) + "/wording/" + std::to_string(wordingIndex));
                     check_failure_order(runtime, test, JuicerCuda::ExecutorTest::Delivery::Success, true, statuses[statusIndex], wordings[wordingIndex]);
-                    row.passed();
                 }
             }
             for (const bool holdGate : {true, false}) {
-                auto row = rows.case_event(std::string(test.name) + "/terminal/" + (holdGate ? "gate-reentry" : "active-submission"));
                 check_recovery_interference(runtime, test, holdGate);
-                row.passed();
             }
             {
-                auto row = rows.case_event(std::string(test.name) + "/terminal/mismatching-context");
                 check_mismatching_recovery(runtime, test);
-                row.passed();
             }
             {
-                auto row = rows.case_event(std::string(test.name) + "/terminal/context-loss");
                 check_failure_order(runtime, test, JuicerCuda::ExecutorTest::Delivery::Success, false, JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), "test component=scanner 100% renamed diagnostic");
-                row.passed();
             }
             {
-                auto row = rows.case_event(std::string(test.name) + "/terminal/non-dir-failure");
                 check_failure_order(runtime, test, JuicerCuda::ExecutorTest::Delivery::Success, false, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "non-DIR failure mentioning component=dir 100%");
-                row.passed();
             }
             {
-                auto row = rows.case_event(std::string(test.name) + "/terminal/long-diagnostic");
                 const std::string longDiagnostic = std::string(8192, 'x') + " 100% complete diagnostic";
                 check_failure_order(runtime, test, JuicerCuda::ExecutorTest::Delivery::Success, true, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, longDiagnostic.c_str());
-                row.passed();
             }
         }
     }
@@ -3826,7 +3701,6 @@ namespace {
     void run_output_gamut_failure_cases(CallbackSession& runtime) {
         const std::array cases{Case{"gamut-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"gamut-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
-        JuicerTests::Cohort rows("output_gamut_cmax", {"gamut-direct/allocation-failure", "gamut-direct/retry", "gamut-direct/warm-no-repeat", "gamut-print/allocation-failure", "gamut-print/retry", "gamut-print/warm-no-repeat"});
         for (const auto& test : cases) {
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
@@ -3847,7 +3721,6 @@ namespace {
                 }
             };
 
-            auto failureRow = rows.case_event(std::string(test.name) + "/allocation-failure");
             JuicerCuda::ExecutorTest::ResourceFailures failures;
             failures.cmax = allocation;
             auto classified = allocation;
@@ -3856,23 +3729,18 @@ namespace {
             check_resource_failure(runtime, test, parameters, state, failures, classified, "prepare_focused_route_resources", true);
             if (failures.focusedPreparationAttempts != 1 || failures.cmax || failures.cmaxAttempts != 1 || failures.injections != 1)
                 throw std::runtime_error("output gamut Cmax fault did not reach the live owner exactly once");
-            failureRow.passed();
 
-            auto retryRow = rows.case_event(std::string(test.name) + "/retry");
             JuicerCuda::ExecutorTest::ResourceFailures retry;
             const auto restored = capture_allocations(retry);
             if (retry.focusedPreparationAttempts != 1 || retry.cmaxAttempts != 1 || retry.injections != 0)
                 throw std::runtime_error("output gamut Cmax retry did not perform one allocation");
-            retryRow.passed();
 
-            auto warmRow = rows.case_event(std::string(test.name) + "/warm-no-repeat");
             JuicerCuda::ExecutorTest::ResourceFailures warm;
             warm.cmax = allocation;
             const auto repeated = capture_allocations(warm);
             if (warm.focusedPreparationAttempts != 1 || !warm.cmax || warm.cmaxAttempts != 0 || warm.injections != 0)
                 throw std::runtime_error("warm output gamut repeated the Cmax allocation");
             RenderAssertions::compare_bits(std::string(test.name) + " warmed output gamut", restored, repeated);
-            warmRow.passed();
         }
     }
 
@@ -3885,14 +3753,12 @@ namespace {
             for (const char* timing : {"event-create", "event-record"})
                 for (unsigned code = 0; code < 3; ++code)
                     intended.push_back(std::string(test.name) + "/" + timing + "/" + std::to_string(code));
-        JuicerTests::Cohort rows("defect_fence", intended);
         for (const Case& test : cases) {
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
             for (const bool failCreate : {true, false}) {
                 const std::array codes{cudaErrorContextIsDestroyed, cudaErrorInvalidResourceHandle, cudaErrorMemoryAllocation};
                 for (std::size_t codeIndex = 0; codeIndex < codes.size(); ++codeIndex) {
-                    auto row = rows.case_event(std::string(test.name) + "/" + (failCreate ? "event-create" : "event-record") + "/" + std::to_string(codeIndex));
                     const auto code = codes[codeIndex];
                     auto parameters = parameters_for(test);
                     parameters.values.film_dust_amount = 1.0f;
@@ -3905,7 +3771,6 @@ namespace {
                     if (failures.injections != 1) {
                         throw std::runtime_error("defect fence failure did not reach the resource owner");
                     }
-                    row.passed();
                 }
             }
         }
@@ -4022,16 +3887,13 @@ namespace {
         const std::array cases{Case{"noise-published-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"noise-published-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
         const std::array<std::string, 4> intended{{"direct/cold", "direct/warm", "print/cold", "print/warm"}};
-        JuicerTests::Cohort rows("noise_published_call", std::vector<std::string>(intended.begin(), intended.end()));
         const FjAssets* rootAssets = runtime.borrow().assets;
         for (const Case& test : cases) {
-            const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
             auto active = parameters_for(test);
             active.values.grain.active = true;
             for (bool cold : {true, false}) {
-                auto case_event = rows.case_event(route + (cold ? "/cold" : "/warm"));
                 if (cold) {
                     fj_test_assets_release_cached_payloads(rootAssets, nullptr);
                 }
@@ -4045,7 +3907,6 @@ namespace {
                     !noise_ordered_through_completion(observation)) {
                     throw std::runtime_error("published direct/print Rust noise source was not held through completion");
                 }
-                case_event.passed();
             }
         }
         std::puts("PASS published direct/print state borrows: actual Rust noise acquisition, completion hold, post-completion drop and native render");
@@ -4060,19 +3921,13 @@ namespace {
             for (const char* availability : {"missing-state", "missing-instance", "uninitialized-instance", "missing-state-uninitialized"})
                 for (const char* cancellation : {"cancel", "no-cancel"})
                     intended.push_back(std::string(route) + "/" + availability + "/" + cancellation);
-        JuicerTests::Cohort rows("noise_unavailable_request", intended);
         for (const Case& test : cases) {
-            const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
             auto active = parameters_for(test);
             active.values.grain.active = true;
             const auto run = [&](PublishedRequestAvailability availability, unsigned cancelAt, bool expectFatal) {
                 JuicerTestSupport::InstanceFixture state;
                 MembershipRetirement stateRetirement{runtime, state};
                 const bool latchValidBefore = runtime.submission(state).valid;
-                const char* const availability_name = availability == PublishedRequestAvailability::MissingState ? "missing-state" : availability == PublishedRequestAvailability::MissingInstance     ? "missing-instance"
-                                                                                                                                 : availability == PublishedRequestAvailability::UninitializedIdentity ? "uninitialized-instance"
-                                                                                                                                                                                                       : "missing-state-uninitialized";
-                auto case_event = rows.case_event(route + "/" + availability_name + "/" + (cancelAt ? "cancel" : "no-cancel"));
                 fj_test_prepared_noise_observation_reset();
                 AbortObservation abort{};
                 abort.cancelAt = cancelAt;
@@ -4108,7 +3963,6 @@ namespace {
                            !noise_ordered_through_completion(observation)) {
                     throw std::runtime_error(std::string(test.name) + ": missing-instance processor request did not hold active noise through completion");
                 }
-                case_event.passed();
             };
 
             run(PublishedRequestAvailability::MissingState, 1, false);
@@ -4127,9 +3981,7 @@ namespace {
         const std::array cases{Case{"noise-held-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"noise-held-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
         const std::array<std::string, 6> intended{{"direct", "print", "direct/retire-cancel", "direct/retire-abort-failure", "print/retire-cancel", "print/retire-abort-failure"}};
-        JuicerTests::Cohort rows("noise_scratch_failure", std::vector<std::string>(intended.begin(), intended.end()));
         for (const Case& test : cases) {
-            auto case_event = rows.case_event(Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct");
             ScratchNoiseResources scratch;
             ScratchRustAssets assets(scratch.root);
             auto parameters = parameters_for(test);
@@ -4451,9 +4303,7 @@ namespace {
                 malformedObservation.drops_after_complete != 1 || !noise_ordered_through_completion(malformedObservation)) {
                 throw std::runtime_error(std::string(test.name) + ": malformed borrowed noise view did not reach and fail the raw callback while held");
             }
-            const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
             for (const bool invalidAbort : {false, true}) {
-                auto retirementCase = rows.case_event(route + (invalidAbort ? "/retire-abort-failure" : "/retire-cancel"));
                 struct AbortAtSelection {
                     unsigned calls = 0;
                     bool invalid = false;
@@ -4491,10 +4341,8 @@ namespace {
                 const auto recovered = render_held_prepared_state(runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, recoveredDiagnostic, freshAssets.get(), &recoveredCompletion);
                 if (recovered.outcome.status.category != FJ_STATUS_SUCCESS || recovered.fatal != 0 || recoveredCompletion.calls != 1 || recoveredCompletion.retirementFailed)
                     throw std::runtime_error("render did not recover after retirement failure");
-                retirementCase.passed();
             }
             scratch.mark_verified();
-            case_event.passed();
         }
         std::puts("PASS complete Rust held state with typed missing/capacity/internal source failures, malformed borrowed view, recovery, and post-completion owner drops");
     }
@@ -4508,7 +4356,6 @@ namespace {
             for (unsigned wording = 0; wording < 2; ++wording)
                 for (unsigned upload = 0; upload < 8; ++upload)
                     intended.push_back(std::string(test.name) + "/wording/" + std::to_string(wording) + "/upload/" + std::to_string(upload));
-        JuicerTests::Cohort rows("grain_upload", intended);
         for (const Case& test : cases) {
             const std::array<const char*, 2> wordings{"renamed upload component=dir diagnostic", "device lost out of memory 100%"};
             for (std::size_t wordingIndex = 0; wordingIndex < wordings.size(); ++wordingIndex) {
@@ -4531,7 +4378,6 @@ namespace {
                                                          {ordinary, capacity, ordinary.status},
                                                          {contextLoss, driverLoss, contextLoss.status}}};
                 for (std::size_t uploadIndex = 0; uploadIndex < uploads.size(); ++uploadIndex) {
-                    auto row = rows.case_event(std::string(test.name) + "/wording/" + std::to_string(wordingIndex) + "/upload/" + std::to_string(uploadIndex));
                     const auto& upload = uploads[uploadIndex];
                     JuicerTestSupport::InstanceFixture state;
                     MembershipRetirement stateRetirement{runtime, state};
@@ -4558,7 +4404,6 @@ namespace {
                         failures.injections != static_cast<int>(upload.stbn.has_value()) + static_cast<int>(upload.wang.has_value())) {
                         throw std::runtime_error("grain upload attempts or failure order changed");
                     }
-                    row.passed();
                 }
             }
         }
@@ -4653,13 +4498,11 @@ namespace {
         const auto captures = read_accepted_capture(referenceInputs);
         const auto input = decode_accepted_pixels(captures.at("input_bits"));
         const std::vector<std::string> intended(kAcceptedCaseNames.begin(), kAcceptedCaseNames.end());
-        JuicerTests::Cohort rows(referenceInputs ? "accepted_capture_reference" : "accepted_capture", intended);
         if (referenceInputs)
             std::puts("CTEST_FULL_OUTPUT");
         for (const auto& capture : captures.at("cases")) {
             const auto& settings = capture.at("settings");
             const std::string name = capture.at("name").get<std::string>();
-            auto row = rows.case_event(name);
             Case test{};
             test.name = name.c_str();
             test.route = static_cast<Spektrafilm::ScanRoute>(settings.at("route").get<unsigned>());
@@ -4701,7 +4544,6 @@ namespace {
                 const auto pixels = render_case(runtime, test, parameters, state);
                 compare_pixels(name, pixels, decode_accepted_pixels(capture.at("output_bits")));
             }
-            row.passed();
         }
     }
 
@@ -4710,10 +4552,8 @@ namespace {
         names.reserve(kProcessorCases.size());
         for (const auto& test : kProcessorCases)
             names.emplace_back(test.name);
-        JuicerTests::Cohort rows("processor_reference_inputs", names);
         std::puts("CTEST_FULL_OUTPUT");
         for (const auto& test : kProcessorCases) {
-            auto row = rows.case_event(test.name);
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement{runtime, state};
             ofx_test::ScanReferenceCapture::Samples observed{};
@@ -4737,7 +4577,6 @@ namespace {
             auto report = processor_scan_report(test, rendered, observed, processor_scanner_inputs(view.published), ReferenceSchedule::Processor);
             report["wavelength_arithmetic"] = ofx_test::scan_reference_arithmetic(observed);
             std::puts(report.dump().c_str());
-            row.passed();
         }
     }
 
@@ -4762,11 +4601,9 @@ namespace {
         names.reserve(kExtendedProcessorCases.size());
         for (const auto& test : kExtendedProcessorCases)
             names.emplace_back(test.name);
-        JuicerTests::Cohort rows("processor_scanner_reference_inputs", names);
         std::puts("CTEST_FULL_OUTPUT");
         for (std::size_t index = 0; index < kExtendedProcessorCases.size(); ++index) {
             const auto& test = kExtendedProcessorCases[index];
-            auto row = rows.case_event(test.name);
             JuicerTestSupport::InstanceFixture state;
             MembershipRetirement stateRetirement(runtime, state);
             ofx_test::ScanReferenceCapture::Samples observed{};
@@ -4804,7 +4641,6 @@ namespace {
                 }
             }
             std::puts(report.dump().c_str());
-            row.passed();
         }
     }
 } // namespace
@@ -4812,7 +4648,6 @@ namespace {
 
 
 int main(int argc, char** argv) try {
-    const bool listing = JuicerTests::list_requested(argc, argv);
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
     constexpr char packetOverlapCase[] = "negative-print/spectral-packet-overlap";
     constexpr std::array<std::pair<const char*, JuicerCudaTest::StateLifetimeCase>, 12> lifetime_cases{{{"supplied-stream", JuicerCudaTest::StateLifetimeCase::SuppliedStream},
@@ -4828,222 +4663,6 @@ int main(int argc, char** argv) try {
                                                                                                         {"idle-retirement", JuicerCudaTest::StateLifetimeCase::IdleRetirement},
                                                                                                         {"deferred-destruction", JuicerCudaTest::StateLifetimeCase::DeferredDestruction}}};
 #endif
-    if (listing) {
-#if defined(JUICER_PREPARED_BOUNDARY_TEST)
-        if (argc == 4 && std::string_view(argv[1]) == "--prepared-case") {
-            JuicerTests::list_case("processor_operation", std::string("prepared_boundary/") + argv[2]);
-            JuicerTests::list_case("prepared_boundary", argv[2]);
-            for (const char* path : {"boundary-cold", "boundary-warm", "direct-executor", "processor-render"})
-                JuicerTests::list_case("processor_render_path", std::string(argv[2]) + "/" + path);
-            return 0;
-        }
-        if (argc == 4 && std::string_view(argv[1]) == "--state-contract") {
-            JuicerTests::list_case("processor_operation", std::string("state_contract/") + argv[2]);
-            JuicerTests::list_case("state_contract", argv[2]);
-            for (const char* path : {"boundary-cold", "boundary-warm", "direct-executor", "processor-render", "grain-boundary"})
-                JuicerTests::list_case("processor_render_path", std::string(argv[2]) + "/" + path);
-            for (const auto id : JuicerCudaTest::kGrainDispatchCases)
-                JuicerTests::list_case(JuicerCudaTest::kGrainDispatchCaller, id);
-            for (const auto id : JuicerCudaTest::kScanReadbackCases)
-                JuicerTests::list_case(JuicerCudaTest::kScanReadbackCaller, id);
-            const auto* alternate = std::string_view(argv[2]).starts_with("negative-") ? JuicerCudaTest::kPlaneScanReadbackCaller : JuicerCudaTest::kDirScanReadbackCaller;
-            for (const auto id : JuicerCudaTest::kScanReadbackCases) {
-                JuicerTests::list_case(alternate, id);
-                JuicerTests::list_case(JuicerCudaTest::kScratchScanReadbackCaller, id);
-            }
-            return 0;
-        }
-        if (argc == 4 && std::string_view(argv[1]) == "--state-lifetime") {
-            JuicerTests::list_case("processor_operation", "state_lifetime");
-            for (const char* route : {"negative-direct", "negative-print"})
-                JuicerTests::list_case("state_lifetime_route", route);
-            for (const char* route : {"negative-direct", "negative-print"})
-                for (const auto& [name, lifetime_case] : lifetime_cases) {
-                    (void)lifetime_case;
-                    JuicerTests::list_case("state_lifetime", std::string(route) + "/" + name);
-                }
-            JuicerTests::list_case("state_lifetime", packetOverlapCase);
-            for (const char* route : {"negative-direct", "negative-print"})
-                for (const char* pass : {"cold", "warm"})
-                    JuicerTests::list_case("production-state-contract", std::string(route) + "/" + pass);
-            return 0;
-        }
-#else
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (argc == 3 && (std::string_view(argv[1]) == "--workspace-transitions" || std::string_view(argv[1]) == "--workspace-reference-inputs")) {
-            JuicerTests::list_case("processor_operation", std::string_view(argv[1]) == "--workspace-transitions" ? "workspace_transitions" : "workspace_reference_inputs");
-            for (const char* route : {"negative-direct", "negative-print"}) {
-                for (const char* mode : {"competing", "malformed"})
-                    JuicerTests::list_case("workspace_transition", std::string(route) + "/" + mode);
-                for (const char* carrier : {"disabled", "dedicated", "camera-diffusion"})
-                    JuicerTests::list_case("workspace_transition", std::string(route) + "/" + carrier);
-            }
-            for (const auto& id : workspace_candidate_ids())
-                JuicerTests::list_case("workspace_candidate", id);
-            return 0;
-        }
-        if (argc == 3 && std::string_view(argv[1]) == "--noise-lifetime") {
-            JuicerTests::list_case("processor_operation", "noise_lifetime");
-            for (const char* id : {"published_noise_call", "unavailable_request", "scratch_failure_recovery"})
-                JuicerTests::list_case("noise_lifetime", id);
-            for (const char* route : {"direct", "print"})
-                for (const char* cache : {"cold", "warm"})
-                    JuicerTests::list_case("noise_published_call", std::string(route) + "/" + cache);
-            for (const char* route : {"direct", "print"})
-                for (const char* availability : {"missing-state", "missing-instance", "uninitialized-instance", "missing-state-uninitialized"})
-                    for (const char* cancellation : {"cancel", "no-cancel"})
-                        JuicerTests::list_case("noise_unavailable_request", std::string(route) + "/" + availability + "/" + cancellation);
-            for (const char* route : {"direct", "print"}) {
-                JuicerTests::list_case("noise_scratch_failure", route);
-                for (const char* failure : {"retire-cancel", "retire-abort-failure"})
-                    JuicerTests::list_case("noise_scratch_failure", std::string(route) + "/" + failure);
-            }
-            return 0;
-        }
-        if (argc == 3 && std::string_view(argv[1]) == "--failure-order") {
-            JuicerTests::list_case("processor_operation", "failure_order");
-            JuicerTests::list_case("failure_order", kDiffusionComponentsPanicCase);
-            for (const char* route : {"failure-direct", "failure-print"}) {
-                for (const char* delivery : {"success", "failure", "throw"})
-                    JuicerTests::list_case("failure_order", std::string(route) + "/delivery/" + delivery);
-                for (unsigned status = 0; status < 4; ++status)
-                    for (unsigned wording = 0; wording < 3; ++wording)
-                        JuicerTests::list_case("failure_order", std::string(route) + "/status/" + std::to_string(status) + "/wording/" + std::to_string(wording));
-                for (const char* terminal : {"context-loss", "mismatching-context", "gate-reentry", "active-submission", "non-dir-failure", "long-diagnostic"})
-                    JuicerTests::list_case("failure_order", std::string(route) + "/terminal/" + terminal);
-            }
-            return 0;
-        }
-        if (argc == 4 && std::string_view(argv[1]) == "--resource-failure") {
-            JuicerTests::list_case("processor_operation", std::string("resource_failure/") + argv[2]);
-            JuicerTests::list_case("resource_failure", argv[2]);
-            if (std::string_view(argv[2]) == "OutputGamut") {
-                for (const char* route : {"gamut-direct", "gamut-print"})
-                    for (const char* phase : {"allocation-failure", "retry", "warm-no-repeat"})
-                        JuicerTests::list_case("output_gamut_cmax", std::string(route) + "/" + phase);
-            } else if (std::string_view(argv[2]) == "DefectFence") {
-                for (const char* route : {"defect-direct", "defect-print"})
-                    for (const char* timing : {"event-create", "event-record"})
-                        for (unsigned code = 0; code < 3; ++code)
-                            JuicerTests::list_case("defect_fence", std::string(route) + "/" + timing + "/" + std::to_string(code));
-            } else if (std::string_view(argv[2]) == "GrainUpload") {
-                for (const char* route : {"grain-direct", "grain-print"})
-                    for (unsigned wording = 0; wording < 2; ++wording)
-                        for (unsigned upload = 0; upload < 8; ++upload)
-                            JuicerTests::list_case("grain_upload", std::string(route) + "/wording/" + std::to_string(wording) + "/upload/" + std::to_string(upload));
-            }
-            return 0;
-        }
-        if (argc == 5 && (std::string_view(argv[1]) == "--effects-frame" || std::string_view(argv[1]) == "--grain-frame" || std::string_view(argv[1]) == "--dir-frame")) {
-            using Json = nlohmann::json;
-            const std::filesystem::path fixturePath(argv[2]);
-            const Json manifest = Json::parse(std::ifstream(fixturePath));
-            const std::string_view mode(argv[1]);
-            const auto logicalCapture = fixturePath.parent_path() / manifest.at("presets").at(argv[3]).at("native").get<std::string>();
-            const Json captured = mode == "--grain-frame"
-                                      ? Json::parse(std::ifstream(logicalCapture))
-                                      : load_shared_fixture(logicalCapture, "manifest.json");
-            const std::string prefix = mode == "--effects-frame" ? "effects_frame" : mode == "--grain-frame" ? "grain_frame"
-                                                                                                             : "dir_frame";
-            JuicerTests::list_case("processor_operation", prefix);
-            if (mode == "--effects-frame") {
-                const std::array caseNames{"mixed", "active-zero-work", "active-zero-work-recipe-zero", "inactive", "inactive-bad-identity", "film_dust", "film_scratch", "gate_dust", "gate_scratch", "weave-1", "weave-nan", "geometry-roi", "geometry-negative", "weave-roi", "film-time--1.75", "film_dust-ignored-frame_rate", "gate_dust-ignored-frame_time", "gate_dust-ignored-frame_rate", "gate_dust-ignored-pixel_size_um", "weave-frame_rate-0", "film_format_long_edge_mm-zero"};
-                for (unsigned route = 0; route < 4; ++route) {
-                    for (const auto& row : captured.at("products"))
-                        if (row.at("route") == route)
-                            JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/product/" + row.at("spec").at("id").get<std::string>());
-                    for (const auto& row : captured.at("cases")) {
-                        const auto name = row.at("input").at("id").get<std::string>();
-                        if (std::find(caseNames.begin(), caseNames.end(), name) != caseNames.end())
-                            JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/case/" + name);
-                    }
-                }
-            } else if (mode == "--grain-frame") {
-                const std::array caseNames{"time--1.75", "time-1.5", "fps-23.976", "fps-0.2", "negative-origin", "partial-unblurred", "sigma-0.4", "sigma-0.4000001", "new-session", "new-clip", "mix", "S4D6-R1", "pixel-half", "pixel-eight", "geometry-96x71", "geometry-offset-96x71", "layers-film_layers_hash", "model-0", "frame-frame_time"};
-                for (unsigned route = 0; route < 4; ++route) {
-                    for (const auto& row : captured.at("products"))
-                        if (row.at("route") == route)
-                            JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/" + grain_frame_product_id(row.at("spec")));
-                    for (const auto& row : captured.at("cases")) {
-                        const auto& input = row.at("input");
-                        const auto name = input.at("name").get<std::string>();
-                        const auto logical = name.starts_with("positive/") ? name.substr(9) : name;
-                        if (input.at("capture_polarity") == route / 2 && input.at("film_polarity") == route / 2 &&
-                            std::find(caseNames.begin(), caseNames.end(), logical) != caseNames.end())
-                            JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/case/" + name);
-                    }
-                }
-            } else {
-                const std::array caseNames{"inactive", "size-zero", "size-nan", "core-word-1", "core-word-1042983595", "fir", "core-word-1077936128", "tail-mixed", "tail-weight-one", "tail-zero", "pixel-change", "negative-origin", "pixel-zero", "offset", "tail-radius", "core-inf", "active-hash-zero"};
-                for (unsigned route = 0; route < 4; ++route) {
-                    for (const auto& row : captured.at("products"))
-                        if (row.at("route") == route)
-                            JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/product/" + row.at("input").at("name").get<std::string>());
-                    for (const char* name : caseNames)
-                        JuicerTests::list_case(prefix, "route-" + std::to_string(route) + "/case/" + name);
-                }
-            }
-            return 0;
-        }
-#endif
-        if (argc == 3 && std::string_view(argv[1]) == "--sequential-owners") {
-            JuicerTests::list_case("processor_operation", "sequential_owners");
-            for (const char* name : {"negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print", "glare-plus-zero", "glare-minus-zero"})
-                JuicerTests::list_case("processor_reference", name);
-            return 0;
-        }
-        if (argc == 3 && std::string_view(argv[1]) == "--cutover-contract") {
-            JuicerTests::list_case("processor_operation", "cutover_contract");
-            for (const char* name : {"negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print", "glare-plus-zero", "glare-minus-zero"})
-                JuicerTests::list_case("processor_reference", name);
-            for (const char* name : {"negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print"})
-                for (const char* family : {"film-dust", "film-scratch", "gate-dust", "gate-scratch", "gate-weave"})
-                    JuicerTests::list_case(std::string("physical_effect_pixels/") + name, std::string(name) + "/" + family);
-            for (const char* name : {"negative-direct", "negative-print"}) {
-                for (const char* id : {"disjoint-rows", "preflight-keeps-submission", "dir-disabled-submission", "initial-uniform", "changed-geometry-time-scale", "sequential-supplied-stream", "worker-thread", "second-context", "throwing-cancellation", "render-after-cancellation"})
-                    JuicerTests::list_case(std::string("cutover_callback/") + name, std::string(name) + "/" + id);
-                for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U})
-                    JuicerTests::list_case(std::string("cutover_callback/") + name, std::string(name) + "/cancel/" + std::to_string(checkpoint));
-            }
-            return 0;
-        }
-#if defined(JUICER_ACCEPTED_CAPTURE_PATH)
-        if (argc == 3 && std::string_view(argv[1]) == "--processor-reference-inputs") {
-            JuicerTests::list_case("processor_operation", "processor_reference_inputs");
-            for (const auto& test : kProcessorCases)
-                JuicerTests::list_case("processor_reference_inputs", test.name);
-            return 0;
-        }
-        if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--processor-scanner-reference-inputs") {
-            JuicerTests::list_case("processor_operation", "processor_scanner_reference_inputs");
-            for (const auto& test : kExtendedProcessorCases)
-                JuicerTests::list_case("processor_scanner_reference_inputs", test.name);
-            return 0;
-        }
-#if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
-        if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-reference-inputs") {
-            JuicerTests::list_case("processor_operation", "accepted_clean_reference_inputs");
-            for (const char* name : kAcceptedCaseNames)
-                JuicerTests::list_case("accepted_capture_reference", name);
-            return 0;
-        }
-#endif
-        if (argc == 3 && std::string_view(argv[1]) == "--accepted-clean-captures") {
-            const auto manifest = read_accepted_capture(false);
-            JuicerTests::list_case("processor_operation", "accepted_clean_captures");
-            for (const auto& row : manifest.at("cases"))
-                JuicerTests::list_case("accepted_capture", row.at("name").get_ref<const std::string&>());
-            return 0;
-        }
-#endif
-        JuicerTests::list_case("processor_operation", "processor_reference");
-        for (const char* name : {"negative-direct", "negative-print", "positive-direct", "positive-print", "combined-print", "glare-plus-zero", "glare-minus-zero"})
-            JuicerTests::list_case("processor_reference", name);
-        return 0;
-#endif
-        return 2;
-    }
-    JuicerTests::CaseLog case_log;
     std::string operation_id = "processor_reference";
     if (argc > 1) {
         const std::string_view mode(argv[1]);
@@ -5082,7 +4701,6 @@ int main(int argc, char** argv) try {
         else if (mode == "--dir-frame")
             operation_id = "dir_frame";
     }
-    JuicerTests::CaseEvent operation_event("processor_operation", operation_id);
     CallbackSession runtime;
     try {
         runtime.create({});
@@ -5093,16 +4711,12 @@ int main(int argc, char** argv) try {
             run_processor_reference_inputs(runtime);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("processor reference capture owner cleanup failed");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--processor-scanner-reference-inputs") {
             run_processor_scanner_reference_inputs(runtime, argc == 3 ? argv[2] : nullptr);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("extended processor scanner capture owner cleanup failed");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
 #if defined(JUICER_SCAN_DENSITY_CAPTURE_TEST) && defined(JUICER_ARCHIVED_ACCEPTED_CAPTURE_PATH)
@@ -5110,8 +4724,6 @@ int main(int argc, char** argv) try {
             run_accepted_clean_captures(runtime, true);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("accepted reference capture owner cleanup failed");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
 #endif
@@ -5120,8 +4732,6 @@ int main(int argc, char** argv) try {
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("accepted capture owner cleanup failed");
             }
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
 #endif
@@ -5131,24 +4741,18 @@ int main(int argc, char** argv) try {
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("workspace transitions owner cleanup failed");
             }
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 4 && std::string(argv[1]) == "--effects-frame") {
             run_effects_frame_cases(runtime, argv[2], argv[3]);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("effects caller owner cleanup failed");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 4 && std::string(argv[1]) == "--grain-frame") {
             run_grain_frame_cases(runtime, argv[2], argv[3]);
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("grain caller owner cleanup failed");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 4 && std::string(argv[1]) == "--dir-frame") {
@@ -5156,38 +4760,26 @@ int main(int argc, char** argv) try {
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("DIR caller owner cleanup failed");
             }
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--noise-lifetime") {
             const std::vector<std::string> ids{"published_noise_call", "unavailable_request", "scratch_failure_recovery"};
-            JuicerTests::Cohort rows("noise_lifetime", ids);
             {
-                auto row = rows.case_event("published_noise_call");
                 run_published_noise_call_cases(runtime);
-                row.passed();
             }
             {
-                auto row = rows.case_event("unavailable_request");
                 run_processor_unavailable_request_cases(runtime);
-                row.passed();
             }
             {
-                auto row = rows.case_event("scratch_failure_recovery");
                 run_scratch_noise_failure_recovery_cases(runtime);
-                row.passed();
             }
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("noise lifetime owner cleanup failed");
             }
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 3 && std::string(argv[1]) == "--resource-failure") {
             const std::string resourceFailure = argv[2];
-            JuicerTests::CaseEvent resource_event("resource_failure", resourceFailure);
             if (resourceFailure == "DefectFence") {
                 run_defect_fence_failure_cases(runtime);
             } else if (resourceFailure == "OutputGamut") {
@@ -5204,9 +4796,6 @@ int main(int argc, char** argv) try {
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("resource failure owner cleanup failed");
             }
-            resource_event.passed();
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--failure-order") {
@@ -5218,8 +4807,6 @@ int main(int argc, char** argv) try {
             if (runtime.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("failure order owner cleanup failed");
             }
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
 #endif
@@ -5250,7 +4837,6 @@ int main(int argc, char** argv) try {
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
         if (stateLifetime) {
             const std::array<std::string, 2> route_ids{{"negative-direct", "negative-print"}};
-            JuicerTests::Cohort route_rows("state_lifetime_route", std::vector<std::string>(route_ids.begin(), route_ids.end()));
             std::vector<std::string> intended;
             intended.reserve(2 * lifetime_cases.size() + 1);
             for (const char* route : {"negative-direct", "negative-print"})
@@ -5259,22 +4845,16 @@ int main(int argc, char** argv) try {
                     intended.push_back(std::string(route) + "/" + name);
                 }
             intended.emplace_back(packetOverlapCase);
-            JuicerTests::Cohort lifetime_rows("state_lifetime", intended);
             for (std::size_t index = 0; index < 2; ++index) {
-                auto route_row = route_rows.case_event(cases[index].name);
                 JuicerTestSupport::InstanceFixture unused;
                 MembershipRetirement unusedRetirement{runtime, unused};
                 for (const auto& [name, lifetimeCase] : lifetime_cases) {
-                    auto row = lifetime_rows.case_event(std::string(cases[index].name) + "/" + name);
                     (void)render_case(runtime, cases[index], parameters_for(cases[index]), unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, lifetimeCase);
-                    row.passed();
                 }
                 if (cases[index].route == Spektrafilm::ScanRoute::NegativePrintScan) {
-                    auto row = lifetime_rows.case_event(packetOverlapCase);
                     auto parameters = parameters_for(cases[index]);
                     parameters.values.glare_active = false;
                     (void)render_case(runtime, cases[index], parameters, unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SpectralPacketOverlap);
-                    row.passed();
                 }
                 if (!unusedRetirement.close())
                     throw std::runtime_error("held-state lifetime instance retirement failed");
@@ -5283,20 +4863,16 @@ int main(int argc, char** argv) try {
                 if (index == 0) {
                     runtime.create({});
                 }
-                route_row.passed();
             }
             runtime.create({});
-            const JuicerTests::Cohort production_rows("production-state-contract", {"negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"});
             const auto expected = production_pixels();
             for (std::size_t index = 0; index < expected.size(); ++index) {
                 const auto parameters = parameters_for(cases[index]);
                 const auto input = parameters.record();
-                JuicerCudaTest::check_production_state_contract(runtime.borrow(), input, JuicerTestSupport::hash_input_identity(parameters), static_cast<std::uint32_t>(cases[index].route), expected[index], production_rows);
+                JuicerCudaTest::check_production_state_contract(runtime.borrow(), input, JuicerTestSupport::hash_input_identity(parameters), static_cast<std::uint32_t>(cases[index].route), expected[index]);
             }
             if (runtime.close().category != FJ_STATUS_SUCCESS)
                 throw std::runtime_error("production state contract Runtime close");
-            operation_event.passed();
-            case_log.finish();
             return 0;
         }
 #endif
@@ -5330,7 +4906,6 @@ int main(int argc, char** argv) try {
 #endif
         }
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-        const std::string_view case_caller = stateContract ? "state_contract" : "prepared_boundary";
         std::vector<std::string> render_path_ids;
         render_path_ids.reserve(stateContract ? 5 : 4);
         for (const Case& test : cases) {
@@ -5341,20 +4916,14 @@ int main(int argc, char** argv) try {
             if (stateContract)
                 render_path_ids.push_back(std::string(test.name) + "/grain-boundary");
         }
-        JuicerTests::Cohort render_path_rows("processor_render_path", render_path_ids);
 #else
-        const std::string_view case_caller = "processor_reference";
 #endif
-        JuicerTests::Cohort cases_cohort(std::string(case_caller), intended_cases);
-        std::vector<std::unique_ptr<JuicerTests::CaseEvent>> case_events;
-        case_events.reserve(intended_cases.size());
         for (std::size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
             const auto& test = cases[caseIndex];
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
             if (preparedCase != test.name)
                 continue;
 #endif
-            case_events.push_back(std::make_unique<JuicerTests::CaseEvent>(case_caller, test.name));
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
             preparedCaseFound = true;
             // Each CTest case starts a fresh process and owner. C crosses the
@@ -5362,11 +4931,8 @@ int main(int argc, char** argv) try {
             std::cerr << "cold C case: " << test.name << '\n';
             JuicerTestSupport::InstanceFixture boundaryState;
             MembershipRetirement boundaryStateRetirement{runtime, boundaryState};
-            JuicerTests::CaseEvent boundary_path("processor_render_path", std::string(test.name) + "/boundary-cold");
             const auto boundary = render_case(runtime, test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::StateContract : ExecutionPath::Boundary);
-            JuicerTests::CaseEvent warm_boundary_path("processor_render_path", std::string(test.name) + "/boundary-warm");
             const auto warmBoundary = render_case(runtime, test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::State : ExecutionPath::Boundary, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "warm");
-            JuicerTests::CaseEvent direct_path("processor_render_path", std::string(test.name) + "/direct-executor");
             const auto direct = [&] {
                 JuicerTestSupport::InstanceFixture directState;
                 MembershipRetirement directStateRetirement{runtime, directState};
@@ -5374,7 +4940,6 @@ int main(int argc, char** argv) try {
             }();
 #endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-            JuicerTests::CaseEvent processor_path("processor_render_path", std::string(test.name) + "/processor-render");
 #endif
             std::cerr << "processor case: " << test.name << '\n';
             const std::vector<float> pixels = [&] {
@@ -5487,9 +5052,7 @@ int main(int argc, char** argv) try {
                     grainParameters.values.grain.active = true;
                     JuicerTestSupport::InstanceFixture grainState;
                     MembershipRetirement grainStateRetirement{runtime, grainState};
-                    JuicerTests::CaseEvent grain_path("processor_render_path", std::string(test.name) + "/grain-boundary");
                     (void)render_case(runtime, test, grainParameters, grainState, false, ExecutionPath::GrainDispatch, DestinationLayout::Matching, 2);
-                    grain_path.passed();
                 }
 #endif
             }
@@ -5506,10 +5069,6 @@ int main(int argc, char** argv) try {
             }
 #endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-            boundary_path.passed();
-            warm_boundary_path.passed();
-            direct_path.passed();
-            processor_path.passed();
 #endif
         }
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
@@ -5538,10 +5097,6 @@ int main(int argc, char** argv) try {
         if (!stateContract && preparedCase == "negative-print")
             JuicerCudaTest::check_shipping_print_preflash(JUICER_TEST_RESOURCE_DIR, parameters_for(kProcessorCases[1]));
 #endif
-        for (auto& event : case_events)
-            event->passed();
-        operation_event.passed();
-        case_log.finish();
         return 0;
     } catch (const JuicerCuda::ExecutionFailure& error) {
         const auto& failure = error.failure;

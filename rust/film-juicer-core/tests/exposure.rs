@@ -4,9 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use film_juicer_core::{data_io, exposure, reconstruction};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::Value;
 
 fn repository() -> PathBuf {
@@ -44,9 +41,26 @@ fn sensitivity_matches_frozen_leaves_and_actual_producer_inputs() {
                 .unwrap_or_else(|| format!("sensitivity/{i}"))
         })
         .collect();
-    let mut cases = RowCases::new("exposure-sensitivity-inputs", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "exposure-sensitivity-inputs"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "exposure-sensitivity-inputs"
+    );
     for (row, id) in rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let source = &row["input"];
         let expected = &row["expected"];
         let linear = rgb(&source["linear"]);
@@ -119,9 +133,15 @@ fn sensitivity_matches_frozen_leaves_and_actual_producer_inputs() {
                 index.map(exposure::HashFailure::NonfiniteOperand)
             );
         }
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -144,9 +164,26 @@ fn reference_matches_native_sampling_reflection_and_failure_priority() {
                 .unwrap_or_else(|| format!("reference/{i}"))
         })
         .collect();
-    let mut cases = RowCases::new("exposure-reference-white-rows", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "exposure-reference-white-rows"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "exposure-reference-white-rows"
+    );
     for (row, id) in rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let index = row["source_index"].as_u64().map(|v| v as usize);
         let saved = index.map(|i| procedural[i]);
         if let Some(index) = index {
@@ -177,9 +214,15 @@ fn reference_matches_native_sampling_reflection_and_failure_priority() {
         if let (Some(index), Some(saved)) = (index, saved) {
             procedural[index] = saved;
         }
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 fn mallett_fixture() -> Value {
@@ -222,9 +265,26 @@ fn focused_mallett_uses_independent_color_composition_and_bgr_expectations() {
                 .unwrap_or_else(|| format!("focused/{i}"))
         })
         .collect();
-    let mut cases = RowCases::new("focused-mallett-cases", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "focused-mallett-cases"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "focused-mallett-cases"
+    );
     for (row, id) in rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let input = &row["input"];
         let basis = rgb(&input["basis"]);
         let illuminant = spectrum(&input["illuminant"]);
@@ -261,9 +321,15 @@ fn focused_mallett_uses_independent_color_composition_and_bgr_expectations() {
             ],
             &expected["normalization"],
         );
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 #[test]
 fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
@@ -272,9 +338,26 @@ fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
     let source_ids: Vec<String> = (0..source_rows.len())
         .map(|i| format!("source/{i}"))
         .collect();
-    let mut sources = RowCases::new("mallett-reference-source-ev", &source_ids);
+    let sources_ids: Vec<_> = IntoIterator::into_iter(&source_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !sources_ids.is_empty(),
+        "empty case set: {}",
+        "mallett-reference-source-ev"
+    );
+    let sources_count = sources_ids.len();
+    let mut sources_remaining = sources_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        sources_remaining.len(),
+        sources_count,
+        "duplicate case IDs: {}",
+        "mallett-reference-source-ev"
+    );
     for (row, id) in source_rows.iter().zip(&source_ids) {
-        let case = sources.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let result = exposure::reference_source(word(&row["ev"]));
         assert_eq!(result.is_ok(), row["built"].as_bool().unwrap());
         match result {
@@ -284,16 +367,39 @@ fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
             ),
             Err(error) => assert_eq!(error.kind(), exposure::ErrorKind::ReferenceSource),
         }
-        case.passed();
+        assert!(
+            sources_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    sources.finish();
+    assert!(
+        sources_remaining.is_empty(),
+        "missing comparisons: {sources_remaining:?}"
+    );
     let reference_rows = fixture["references"].as_array().unwrap();
     let reference_ids: Vec<String> = (0..reference_rows.len())
         .map(|i| format!("reference/{i}"))
         .collect();
-    let mut references = RowCases::new("mallett-reference-raw-cases", &reference_ids);
+    let references_ids: Vec<_> = IntoIterator::into_iter(&reference_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !references_ids.is_empty(),
+        "empty case set: {}",
+        "mallett-reference-raw-cases"
+    );
+    let references_count = references_ids.len();
+    let mut references_remaining = references_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        references_remaining.len(),
+        references_count,
+        "duplicate case IDs: {}",
+        "mallett-reference-raw-cases"
+    );
     for (row, id) in reference_rows.iter().zip(&reference_ids) {
-        let case = references.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let basis = rgb(&row["basis"]);
         let illuminant = spectrum(&row["illuminant"]);
         let sensitivity = rgb(&row["sensitivity"]);
@@ -309,9 +415,15 @@ fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
             Ok(value) => exact_words(value.rgb(), &row["expected"]),
             Err(error) => assert_eq!(error.kind(), exposure::ErrorKind::ReferenceRaw),
         }
-        case.passed();
+        assert!(
+            references_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    references.finish();
+    assert!(
+        references_remaining.is_empty(),
+        "missing comparisons: {references_remaining:?}"
+    );
 }
 #[test]
 fn tc_green_threshold_zero_sign_and_reciprocal_match_independent_expectations() {
@@ -322,9 +434,26 @@ fn tc_green_threshold_zero_sign_and_reciprocal_match_independent_expectations() 
     let ids: Vec<String> = (0..rows.len())
         .map(|i| format!("normalization/{i}"))
         .collect();
-    let mut cases = RowCases::new("mallett-normalization-inputs", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "mallett-normalization-inputs"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "mallett-normalization-inputs"
+    );
     for (row, id) in rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let result = exposure::tc_midgray(word(&row["green"]));
         assert_eq!(
             result.raw_green().to_bits(),
@@ -334,7 +463,13 @@ fn tc_green_threshold_zero_sign_and_reciprocal_match_independent_expectations() 
             result.scale().to_bits(),
             word(&row["expected"][2]).to_bits()
         );
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }

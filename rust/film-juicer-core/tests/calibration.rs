@@ -14,9 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use film_juicer_core::data_io::calibration::{ErrorKind, Field, load_neutral_calibration};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -99,18 +96,41 @@ fn bundled_calibration() {
                 .map(move |film| format!("{print}/{film}/TH-KG3"))
         })
         .collect();
-    let mut cases = RowCases::new("bundled-print-film-lookups", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-print-film-lookups"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-print-film-lookups"
+    );
     for print in PRINTS {
         for film in FILMS {
-            let row = cases.case(format!("{print}/{film}/TH-KG3"));
+            let row = AsRef::<str>::as_ref(&(format!("{print}/{film}/TH-KG3"))).to_owned();
             let cmy = calibration.lookup(print, "TH-KG3", film).unwrap().unwrap();
             for byte in cmy.into_iter().flat_map(f32::to_le_bytes) {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
             }
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     assert_eq!(PRINTS.len() * FILMS.len(), 160);
     assert_eq!(hash, 0x3ef4_3845_b118_f2f9);
     let cmy = calibration
@@ -143,13 +163,36 @@ fn missing_file_and_entry() {
         .enumerate()
         .map(|(i, _)| format!("missing-selection/{i}"))
         .collect();
-    let mut rows = RowCases::new("missing-calibration-selection-paths", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "missing-calibration-selection-paths"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "missing-calibration-selection-paths"
+    );
     for (keys, id) in selections.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(calibration.lookup(keys[0], keys[1], keys[2]).unwrap(), None);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -168,9 +211,26 @@ fn selected_branch_errors() {
     let ids: Vec<String> = (0..cases.len())
         .map(|i| format!("selected-malformed-branch/{i}"))
         .collect();
-    let mut rows = RowCases::new("selected-calibration-branch-errors", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "selected-calibration-branch-errors"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "selected-calibration-branch-errors"
+    );
     for ((root, field), id) in cases.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let path = directory.json(root);
         let calibration = load_neutral_calibration(&path).unwrap();
         let error = calibration.lookup("paper", "light", "film").unwrap_err();
@@ -178,9 +238,15 @@ fn selected_branch_errors() {
         assert_eq!(error.path(), path);
         assert_eq!(error.selection(), Some(["paper", "light", "film"]));
         assert!(error.to_string().contains("paper/light/film"));
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -199,18 +265,41 @@ fn unused_malformed_branches() {
     let ids: Vec<String> = (0..selections.len())
         .map(|i| format!("unused-malformed-branch/{i}"))
         .collect();
-    let mut rows = RowCases::new("unused-malformed-calibration-branches", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "unused-malformed-calibration-branches"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "unused-malformed-calibration-branches"
+    );
     for (keys, id) in selections.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert!(calibration.lookup(keys[0], keys[1], keys[2]).is_err());
         let cmy = calibration
             .lookup("paper", "light", "film")
             .unwrap()
             .unwrap();
         assert_eq!(cmy.map(f32::to_bits), [0, 1118886691, 1121107011]);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -236,9 +325,26 @@ fn coefficient_conversion_bits() {
         "f64-overflow-underflow",
         "decimal-midpoint-neighbor",
     ];
-    let mut rows = RowCases::new("calibration-coefficient-conversion", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "calibration-coefficient-conversion"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "calibration-coefficient-conversion"
+    );
     for ((bytes, expected), id) in cases.into_iter().zip(ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let calibration = load_neutral_calibration(directory.write(bytes)).unwrap();
         assert_eq!(
             calibration
@@ -248,9 +354,15 @@ fn coefficient_conversion_bits() {
                 .map(f32::to_bits),
             expected
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -268,15 +380,38 @@ fn malformed_root() {
     let ids: Vec<String> = (0..documents.len())
         .map(|i| format!("malformed-json/{i}"))
         .collect();
-    let mut rows = RowCases::new("malformed-calibration-root-documents", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "malformed-calibration-root-documents"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "malformed-calibration-root-documents"
+    );
     for (bytes, id) in documents.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = load_neutral_calibration(directory.write(bytes)).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Malformed(Field::Root));
         assert_eq!(error.selection(), None);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     let calibration =
         load_neutral_calibration(directory.write(b"\xef\xbb\xbf{\"p\":{\"i\":{\"f\":[1,2,3]}}}"))
             .unwrap();

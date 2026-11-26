@@ -2,10 +2,6 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(test)]
-#[path = "../../film-juicer-core/tests/support/case_results.rs"]
-mod test_cases;
-
 #[allow(
     unsafe_code,
     reason = "checked color fixture operations validate initialized, disjoint foreign storage at this private raw edge"

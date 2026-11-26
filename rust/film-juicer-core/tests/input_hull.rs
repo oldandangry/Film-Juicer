@@ -1,8 +1,5 @@
 #![cfg(feature = "test-support")]
 use film_juicer_core::gamut::{self, fixtures};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::{json, Value};
 use std::fs;
 
@@ -99,9 +96,26 @@ fn native_ordered_math_and_shared_ray_bits() {
         .iter()
         .map(|row| format!("math/{}", row["id"].as_u64().unwrap()))
         .collect();
-    let mut row_cases = RowCases::new("input-hull-native-math-cases", &ids);
+    let row_cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !row_cases_ids.is_empty(),
+        "empty case set: {}",
+        "input-hull-native-math-cases"
+    );
+    let row_cases_count = row_cases_ids.len();
+    let mut row_cases_remaining = row_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        row_cases_remaining.len(),
+        row_cases_count,
+        "duplicate case IDs: {}",
+        "input-hull-native-math-cases"
+    );
     for (row, id) in math_rows.iter().zip(&ids) {
-        let case_row = row_cases.case(id);
+        let case_row = AsRef::<str>::as_ref(&(id)).to_owned();
         let failures_before = failures.len();
         let id = row["id"].as_u64().unwrap();
         let sources: [[f32; 81]; 4] = std::array::from_fn(|c| {
@@ -175,7 +189,10 @@ fn native_ordered_math_and_shared_ray_bits() {
             ),
         }
         assert_eq!(failures.len(), failures_before, "input-hull math row {id}");
-        case_row.passed();
+        assert!(
+            row_cases_remaining.remove(&case_row),
+            "unexpected or repeated comparison: {case_row}"
+        );
         cases += 1;
     }
     let locus: [[f64; 2]; 66] =
@@ -192,9 +209,26 @@ fn native_ordered_math_and_shared_ray_bits() {
         .iter()
         .map(|row| ray_case_id(row, false))
         .collect();
-    let mut native_ray_cases = RowCases::new("native-ray-intersections", &native_ray_ids);
+    let native_ray_cases_ids: Vec<_> = IntoIterator::into_iter(&native_ray_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !native_ray_cases_ids.is_empty(),
+        "empty case set: {}",
+        "native-ray-intersections"
+    );
+    let native_ray_cases_count = native_ray_cases_ids.len();
+    let mut native_ray_cases_remaining = native_ray_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        native_ray_cases_remaining.len(),
+        native_ray_cases_count,
+        "duplicate case IDs: {}",
+        "native-ray-intersections"
+    );
     for (i, (row, id)) in native_ray_rows.iter().zip(&native_ray_ids).enumerate() {
-        let row_case = native_ray_cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         let failures_before = failures.len();
         let center = pair(&row["origin"]);
         let direction = pair(&row["direction"]);
@@ -212,7 +246,10 @@ fn native_ordered_math_and_shared_ray_bits() {
             &mut count,
         );
         if failures.len() == failures_before {
-            row_case.passed();
+            assert!(
+                native_ray_cases_remaining.remove(&row_case),
+                "unexpected or repeated comparison: {row_case}"
+            );
         }
     }
     square[..5].copy_from_slice(&[[0., 0.], [0., 1.], [1., 1.], [1., 0.], [0., 0.]]);
@@ -225,13 +262,30 @@ fn native_ordered_math_and_shared_ray_bits() {
         .iter()
         .map(|row| ray_case_id(row, true))
         .collect();
-    let mut threshold_ray_cases = RowCases::new("threshold-ray-intersections", &supplement_ray_ids);
+    let threshold_ray_cases_ids: Vec<_> = IntoIterator::into_iter(&supplement_ray_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !threshold_ray_cases_ids.is_empty(),
+        "empty case set: {}",
+        "threshold-ray-intersections"
+    );
+    let threshold_ray_cases_count = threshold_ray_cases_ids.len();
+    let mut threshold_ray_cases_remaining = threshold_ray_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        threshold_ray_cases_remaining.len(),
+        threshold_ray_cases_count,
+        "duplicate case IDs: {}",
+        "threshold-ray-intersections"
+    );
     for (i, (row, id)) in supplement_ray_rows
         .iter()
         .zip(&supplement_ray_ids)
         .enumerate()
     {
-        let row_case = threshold_ray_cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         let failures_before = failures.len();
         let center = pair(&row["origin"]);
         let direction = pair(&row["direction"]);
@@ -248,7 +302,10 @@ fn native_ordered_math_and_shared_ray_bits() {
             &mut count,
         );
         if failures.len() == failures_before {
-            row_case.passed();
+            assert!(
+                threshold_ray_cases_remaining.remove(&row_case),
+                "unexpected or repeated comparison: {row_case}"
+            );
         }
     }
     assert_eq!(cases, 11);
@@ -259,9 +316,18 @@ fn native_ordered_math_and_shared_ray_bits() {
         failures.len(),
         &failures[..failures.len().min(20)]
     );
-    native_ray_cases.finish();
-    threshold_ray_cases.finish();
-    row_cases.finish();
+    assert!(
+        native_ray_cases_remaining.is_empty(),
+        "missing comparisons: {native_ray_cases_remaining:?}"
+    );
+    assert!(
+        threshold_ray_cases_remaining.is_empty(),
+        "missing comparisons: {threshold_ray_cases_remaining:?}"
+    );
+    assert!(
+        row_cases_remaining.is_empty(),
+        "missing comparisons: {row_cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -272,8 +338,25 @@ fn native_primitive_context_bits() {
     )
     .unwrap();
     let data = fs::read(fixture_root().join(member["primitives"].as_str().unwrap())).unwrap();
-    let mut cases = RowCases::new("input-hull-native-arrays", ["trigonometry", "exponentials"]);
-    let row = cases.case("trigonometry");
+    let cases_ids: Vec<_> = IntoIterator::into_iter(["trigonometry", "exponentials"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "input-hull-native-arrays"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "input-hull-native-arrays"
+    );
+    let row = AsRef::<str>::as_ref(&("trigonometry")).to_owned();
     let mut visited = 0;
     assert_eq!(data.len(), 519536 * 32);
     for (index, record) in data.as_chunks::<32>().0.iter().enumerate() {
@@ -284,8 +367,11 @@ fn native_primitive_context_bits() {
         assert_eq!(value.sin().to_bits(), word(16), "sin {index}");
     }
     assert_eq!(visited, 519536);
-    row.passed();
-    let row = cases.case("exponentials");
+    assert!(
+        cases_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("exponentials")).to_owned();
     let mut visited = 0;
     for row in native["weights"].as_array().unwrap() {
         visited += 1;
@@ -293,8 +379,14 @@ fn native_primitive_context_bits() {
         assert_eq!(argument.exp().to_bits(), row["result"].as_u64().unwrap());
     }
     assert_eq!(visited, 1024);
-    row.passed();
-    cases.finish();
+    assert!(
+        cases_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -436,9 +528,26 @@ fn ray_order_and_nonfinite_boundaries() {
         .map(|case| case.0)
         .chain(["degenerate", "zero-polygon"])
         .collect();
-    let mut rows = RowCases::new("input-hull-ray-order-boundaries", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "input-hull-ray-order-boundaries"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "input-hull-ray-order-boundaries"
+    );
     for (id, origin, direction, expected) in cases {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             fixtures::locus_ray(origin, direction, &locus).to_bits(),
             expected.to_bits(),
@@ -449,9 +558,12 @@ fn ray_order_and_nonfinite_boundaries() {
             expected.to_bits(),
             "hull {id}"
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    let row = rows.case("degenerate");
+    let row = AsRef::<str>::as_ref(&("degenerate")).to_owned();
     assert_eq!(
         fixtures::locus_ray([0.0, 0.0], [1.0, 0.0], &degenerate_locus).to_bits(),
         f64::INFINITY.to_bits()
@@ -460,8 +572,11 @@ fn ray_order_and_nonfinite_boundaries() {
         fixtures::hull_ray([0.0, 0.0], [1.0, 0.0], &degenerate_hull).to_bits(),
         f64::INFINITY.to_bits()
     );
-    row.passed();
-    let row = rows.case("zero-polygon");
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    let row = AsRef::<str>::as_ref(&("zero-polygon")).to_owned();
     assert_eq!(
         fixtures::locus_ray([0.0, 0.0], [1.0, 0.0], &[[0.0; 2]; 66]).to_bits(),
         f64::INFINITY.to_bits()
@@ -470,6 +585,12 @@ fn ray_order_and_nonfinite_boundaries() {
         fixtures::hull_ray([0.0, 0.0], [1.0, 0.0], &[[0.0; 2]; 1025]).to_bits(),
         f64::INFINITY.to_bits()
     );
-    row.passed();
-    rows.finish();
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }

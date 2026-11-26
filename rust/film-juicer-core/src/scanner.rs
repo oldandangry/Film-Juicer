@@ -697,7 +697,6 @@ pub fn capture_levels(black: f64, white: f64) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
 
@@ -866,13 +865,23 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new(
-            "scanner-correction-cases",
-            case_rows.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(case_rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(!cases_ids.is_empty(), "scanner-correction-cases");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "scanner-correction-cases"
         );
         for row in &case_rows {
             let id = row["id"].as_str().unwrap();
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let normative = &checked["cases"][id];
             match construct(&row["input"], row["spec"]["print"].as_bool().unwrap()) {
                 Ok(value) => {
@@ -904,29 +913,52 @@ mod tests {
                     }
                 }
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let product_rows = captured["products"].as_array().unwrap();
-        let mut products = RowCases::new(
-            "scanner-correction-products",
+        let products_ids: Vec<_> = IntoIterator::into_iter(
             product_rows
                 .iter()
                 .enumerate()
                 .map(|(index, row)| format!("{}/row-{index}", row["id"].as_str().unwrap()))
                 .collect::<Vec<_>>(),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(!products_ids.is_empty(), "scanner-correction-products");
+        let products_count = products_ids.len();
+        let mut products_remaining = products_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            products_remaining.len(),
+            products_count,
+            "scanner-correction-products"
         );
         for (index, row) in product_rows.iter().enumerate() {
             let id = row["id"].as_str().unwrap();
-            let case = products.case(format!("{id}/row-{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("{id}/row-{index}"))).to_owned();
             compare(
                 construct(&row["input"], row["print"].as_bool().unwrap()).unwrap(),
                 &row["native"]["descriptor"],
                 id,
             );
-            case.passed();
+            assert!(
+                products_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        products.finish();
+        assert!(
+            products_remaining.is_empty(),
+            "missing comparisons: {products_remaining:?}"
+        );
     }
 
     #[test]
@@ -943,7 +975,19 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("scanner-demand-byte-flag-route", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "scanner-demand-byte-flag-route");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "scanner-demand-byte-flag-route"
+        );
         for route in 0..=255 {
             for flags in 0..4 {
                 let params = Params {
@@ -958,7 +1002,7 @@ mod tests {
                         "route/{route}/flags/{flags}/{}",
                         if print { "print" } else { "direct" }
                     );
-                    let case = cases.case(id);
+                    let case = AsRef::<str>::as_ref(&(id)).to_owned();
                     let demand = if print {
                         params.print_inputs_required()
                     } else {
@@ -984,11 +1028,17 @@ mod tests {
                         }
                         assert_eq!(reason(result.unwrap_err()), if print { 7 } else { 2 });
                     }
-                    case.passed();
+                    assert!(
+                        cases_remaining.remove(&case),
+                        "unexpected or repeated comparison: {case}"
+                    );
                 }
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]

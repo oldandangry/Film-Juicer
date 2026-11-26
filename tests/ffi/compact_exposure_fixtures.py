@@ -9,7 +9,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = "tests/ffi/fixtures/exposure/"
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")

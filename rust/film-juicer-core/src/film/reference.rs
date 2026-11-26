@@ -362,7 +362,6 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn synthetic_lookup_preserves_endpoint_and_upper_bound_selection() {
@@ -386,19 +385,39 @@ mod tests {
             ("zero", 0.0),
             ("positive-infinity", f32::INFINITY),
         ];
-        let mut cases = RowCases::new(
-            "film-reference-singleton-query",
-            queries.iter().map(|(id, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(queries.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "film-reference-singleton-query"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "film-reference-singleton-query"
         );
         for (id, query) in queries {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 sample_density(query, &[2.0], &[[7.0, 8.0, 9.0]], 2),
                 Some(9.0)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -452,7 +471,24 @@ mod tests {
             "mallett-raw/baseline",
             "mallett-raw/compensated",
         ];
-        let mut cases = RowCases::new("film-reference-exposure-faults", cases_expected);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(cases_expected)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "film-reference-exposure-faults"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "film-reference-exposure-faults"
+        );
         for (selector, operation, operation_id) in [
             (5, Operation::Source, "source"),
             (6, Operation::MallettRaw, "mallett-raw"),
@@ -461,7 +497,8 @@ mod tests {
                 (1, Exposure::Baseline, "baseline"),
                 (2, Exposure::Compensated, "compensated"),
             ] {
-                let case = cases.case(format!("{operation_id}/{exposure_id}"));
+                let case =
+                    AsRef::<str>::as_ref(&(format!("{operation_id}/{exposure_id}"))).to_owned();
                 film::input::testing::arm_exposure(selector, index, 3);
                 assert_eq!(
                     prepare().err(),
@@ -474,9 +511,15 @@ mod tests {
                 assert!(film::input::testing::exposure_consumed(selector, 3));
                 assert!(!film::input::testing::exposure_consumed(selector, 3));
                 assert!(prepare().is_ok());
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

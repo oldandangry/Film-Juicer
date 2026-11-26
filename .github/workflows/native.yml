@@ -1,0 +1,304 @@
+name: Native
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [testing, main]
+  push:
+    branches: [testing, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.platform }} ${{ matrix.profile }} ${{ matrix.suite }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: Linux, runner: ubuntu-24.04, preset: linux-debug, profile: Debug, suite: host, target: x86_64-unknown-linux-gnu}
+          - {platform: Linux, runner: ubuntu-24.04, preset: linux-release, profile: Release, suite: host, target: x86_64-unknown-linux-gnu}
+          - {platform: Linux, runner: ubuntu-24.04, preset: linux-release, profile: Release, suite: package, target: x86_64-unknown-linux-gnu}
+          - {platform: Windows, runner: windows-2025-vs2026, preset: windows-clang-debug, profile: Debug, suite: host, target: x86_64-pc-windows-msvc}
+          - {platform: Windows, runner: windows-2025-vs2026, preset: windows-clang-release, profile: Release, suite: host, target: x86_64-pc-windows-msvc}
+          - {platform: Windows, runner: windows-2025-vs2026, preset: windows-clang-release, profile: Release, suite: package, target: x86_64-pc-windows-msvc}
+    env:
+      PRESET: ${{ matrix.preset }}
+      CMAKE_BUILD_PARALLEL_LEVEL: "3"
+      CUDA_VISIBLE_DEVICES: "-1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      SCCACHE_CACHE_SIZE: 700M
+      SCCACHE_DIR: ${{ github.workspace }}/out/sccache
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Select Linux native toolchain
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo 'CUDACXX=/usr/local/cuda-13.2/bin/nvcc'
+            echo 'CUDAToolkit_ROOT=/usr/local/cuda-13.2'
+            echo 'JUICER_CLANG_TIDY=clang-tidy-22'
+          } >> "$GITHUB_ENV"
+
+      - name: Select Windows CUDA toolkit
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2'
+          "CUDA_PATH=$cuda" >> $env:GITHUB_ENV
+          "CUDA_PATH_V13_2=$cuda" >> $env:GITHUB_ENV
+
+      - name: Install GCC 13, Ninja, CUDA 13.2 compiler and libraries, and LLVM object tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+          wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-13 g++-13 ninja-build \
+            cuda-compiler-13-2 cuda-cudart-dev-13-2 cuda-cccl-13-2 \
+            cuda-driver-dev-13-2 libcufft-dev-13-2 libcurand-dev-13-2
+          wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22 clang-22 clang-format-22 clang-tidy-22 lld-22 libclang1-22
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          llvm-nm-22 --version
+          clang-format-22 --version
+          clang-tidy-22 --version
+          for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
+            test -f "$CUDAToolkit_ROOT/include/$header" || {
+              echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"
+              exit 1
+            }
+          done
+
+      - name: Enter pinned VS 18 x64 developer environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Retain the qualified CUDA 13.2 host toolset across runner image updates.
+          $toolset = "14.51"
+          $installerDir = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $vswhere = Join-Path $installerDir "vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (!$vsPath) { throw "Visual Studio 18 with the x64 C++ tools was not found" }
+          $compiler = Join-Path $vsPath "VC\Tools\MSVC\$toolset.*\bin\Hostx64\x64\cl.exe"
+          if (!(Test-Path -Path $compiler -PathType Leaf)) {
+            $component = "Microsoft.VisualStudio.Component.VC.$toolset.x86.x64"
+            $setup = Join-Path $installerDir "setup.exe"
+            $install = Start-Process -FilePath $setup -ArgumentList @(
+              "modify", "--installPath", "`"$vsPath`"", "--add", $component, "--quiet", "--norestart"
+            ) -WindowStyle Hidden -Wait -PassThru
+            if ($install.ExitCode -notin @(0, 3010) -or !(Test-Path -Path $compiler -PathType Leaf)) {
+              throw "MSVC $toolset installation failed: $($install.ExitCode)"
+            }
+          }
+          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+          $developerEnvironment = & $env:ComSpec /d /s /c `
+            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=$toolset && set"
+          if ($LASTEXITCODE -ne 0) { throw "VS 18 x64 developer environment setup failed" }
+          $selectedToolset = $developerEnvironment -like "VCToolsVersion=$toolset.*"
+          if (!$selectedToolset) { throw "Expected MSVC $toolset" }
+          Write-Host $selectedToolset
+          foreach ($line in $developerEnvironment) {
+            if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
+          }
+          $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
+          $clangFormat = Join-Path $llvmBin "clang-format.exe"
+          $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
+          $llvmBin >> $env:GITHUB_PATH
+          $rustLinker = Join-Path $llvmBin "lld-link.exe"
+          foreach ($tool in @($clangFormat, $clangTidy, $rustLinker)) {
+            if (!(Test-Path $tool -PathType Leaf)) { throw "Required VS 18 LLVM tool missing: $tool" }
+          }
+          "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
+          "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
+
+
+      - name: Install CUDA Toolkit 13.2
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "cuda_13.2.0_windows_network.exe"
+          $uri = "https://developer.download.nvidia.com/compute/cuda/13.2.0/network_installers/cuda_13.2.0_windows_network.exe"
+          Invoke-WebRequest -Uri $uri -OutFile $installer
+          $actualHash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actualHash -ne "e30673c80fd9736b74370d6cc0efcccd42d74e8071cf43c785aeeeb96139975c") {
+            throw "CUDA installer SHA-256 mismatch: $actualHash"
+          }
+          $components = @("-s", "crt_13.2", "cudart_13.2", "cufft_13.2", "cufft_dev_13.2",
+            "curand_13.2", "curand_dev_13.2", "nvcc_13.2", "nvdisasm_13.2", "nvfatbin_13.2",
+            "nvjitlink_13.2", "nvprune_13.2", "nvptxcompiler_13.2", "nvvm_13.2", "thrust_13.2")
+          $install = Start-Process -FilePath $installer -ArgumentList $components -WindowStyle Hidden -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "CUDA Toolkit 13.2 installation failed: $($install.ExitCode)" }
+          $requiredFiles = @("$env:CUDA_PATH_V13_2\bin\nvcc.exe", "$env:CUDA_PATH_V13_2\include\cuda_runtime.h",
+            "$env:CUDA_PATH_V13_2\include\curand_mtgp32_kernel.h", "$env:CUDA_PATH_V13_2\include\cccl\nv\target",
+            "$env:CUDA_PATH_V13_2\lib\x64\cuda.lib", "$env:CUDA_PATH_V13_2\lib\x64\cudart.lib",
+            "$env:CUDA_PATH_V13_2\lib\x64\cufft.lib")
+          foreach ($path in $requiredFiles) { if (!(Test-Path $path)) { throw "CUDA component is missing: $path" } }
+          "$env:CUDA_PATH_V13_2\bin" >> $env:GITHUB_PATH
+          "$env:CUDA_PATH_V13_2\bin\x64" >> $env:GITHUB_PATH
+
+
+      - name: Install standalone CMake and pinned Rust
+        shell: bash
+        run: |
+          version=4.3.1
+          toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$toolchain" --profile minimal --component clippy --component rustfmt
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            package="cmake-$version-windows-x86_64"
+            extension=zip
+          else
+            package="cmake-$version-linux-x86_64"
+            extension=tar.gz
+          fi
+          cd "$RUNNER_TEMP"
+          url="https://github.com/Kitware/CMake/releases/download/v$version"
+          curl -fsSLO "$url/$package.$extension"
+          curl -fsSLO "$url/cmake-$version-SHA-256.txt"
+          grep -F " $package.$extension" "cmake-$version-SHA-256.txt" | sha256sum -c -
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unzip -q "$package.$extension"
+            cygpath -aw "$RUNNER_TEMP/$package/bin" >> "$GITHUB_PATH"
+          else
+            tar xf "$package.$extension"
+            echo "$RUNNER_TEMP/$package/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Fingerprint compiler and SDK for the cache
+        shell: pwsh
+        run: |
+          if ($IsWindows) {
+            $versions = @(clang-cl --version) + @(& "$env:CUDA_PATH_V13_2/bin/nvcc.exe" --version)
+            $versions += $env:VCToolsVersion, $env:WindowsSDKVersion
+          } else {
+            $versions = @(g++-13 --version) + @(& $env:CUDACXX --version)
+            $versions += dpkg-query -W libc6-dev libstdc++-13-dev cuda-cudart-dev-13-2 libcufft-dev-13-2 lld-22
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($versions -join ' '))))
+          "COMPILER_SDK=$digest" >> $env:GITHUB_ENV
+
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.16.0
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            out/build/${{ matrix.preset }}/cargo
+            out/sccache
+          key: native-${{ matrix.runner }}-${{ env.COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-${{ matrix.suite }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'rust/**/Cargo.toml') }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'rust/**/*.rs', 'src/**', 'native/**', 'tests/**/*.c', 'tests/**/*.cpp', 'tests/**/*.h') }}
+          restore-keys: |
+            native-${{ matrix.runner }}-${{ env.COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-${{ matrix.suite }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'rust/**/Cargo.toml') }}-
+
+      - name: Build production package and C11 probes
+        if: matrix.suite == 'package'
+        shell: pwsh
+        run: |
+          cmake --preset $env:PRESET -DBUILD_TESTING=OFF -DJUICER_BUILD_BENCHMARKS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset $env:PRESET --target bundle-archive JuicerProductionOfxProbe JuicerProductionCudaAbiProbe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $arch = if ($IsWindows) { 'Win64' } else { 'Linux-x86-64' }
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          & "./out/build/$env:PRESET/tests/bin/JuicerProductionOfxProbe$extension" "out/stage/$env:PRESET/juicer.ofx.bundle/Contents/$arch/juicer.ofx"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "./out/build/$env:PRESET/tests/bin/JuicerProductionCudaAbiProbe$extension"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Check package exports, dependencies, resources and notices
+        if: matrix.suite == 'package'
+        shell: bash
+        run: python scripts/check.py bundle --stage "out/stage/$PRESET"
+
+      - name: Build default test closure and run host CTest
+        if: matrix.suite == 'host'
+        shell: pwsh
+        run: |
+          python -m pip install -r tests/requirements.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $python = (Get-Command python).Source
+          cmake --preset $env:PRESET -DBUILD_TESTING=ON -DJUICER_BUILD_BENCHMARKS=OFF "-DPython3_EXECUTABLE=$python" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset $env:PRESET
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ctest --preset $env:PRESET -L '^host$' --no-tests=error --output-on-failure
+
+      - name: Analyze Debug native compilation
+        if: matrix.suite == 'host' && matrix.profile == 'Debug'
+        shell: bash
+        run: python scripts/check.py tidy --build-dir "out/build/$PRESET"
+
+      - name: Verify committed CUDA and OFX bindings
+        if: matrix.suite == 'host' && matrix.profile == 'Debug'
+        shell: pwsh
+        run: |
+          cargo install bindgen-cli --locked --version 0.72.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $clang = (Get-Command clang).Source
+          $libclang = if ($IsWindows) { Join-Path (Split-Path $clang) 'libclang.dll' } else { '/usr/lib/llvm-22/lib/libclang-22.so.1' }
+          $formatter = (rustup which rustfmt).Trim()
+          foreach ($api in 'cuda', 'ofx') {
+            python scripts/regenerate-rust-bindings.py --check --api $api --bindgen (Get-Command bindgen).Source --clang $clang --libclang $libclang --rustfmt $formatter
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify warm rebuild after a source edit
+        if: matrix.suite == 'package'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $source = Join-Path $PWD 'tests/ffi/production-ofx.c'
+          $original = [IO.File]::ReadAllText($source)
+          $modified = $original.Replace('plugin->pluginVersionMajor != 1', 'plugin->pluginVersionMajor != 99')
+          if ($modified -eq $original) { throw 'The version assertion to modify was not found' }
+          $arch = if ($IsWindows) { 'Win64' } else { 'Linux-x86-64' }
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          $probe = "./out/build/$env:PRESET/tests/bin/JuicerProductionOfxProbe$extension"
+          $module = "out/stage/$env:PRESET/juicer.ofx.bundle/Contents/$arch/juicer.ofx"
+          try {
+            [IO.File]::WriteAllText($source, $modified)
+            cmake --build --preset $env:PRESET --target JuicerProductionOfxProbe
+            if ($LASTEXITCODE) { throw 'Warm rebuild failed' }
+            & $probe $module
+            if ($LASTEXITCODE -ne 4) { throw 'Probe did not use the edited version assertion' }
+          } finally {
+            [IO.File]::WriteAllText($source, $original)
+          }
+          cmake --build --preset $env:PRESET --target JuicerProductionOfxProbe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $probe $module
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Report compile cache statistics
+        if: always()
+        run: sccache --show-stats

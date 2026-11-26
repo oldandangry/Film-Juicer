@@ -1462,7 +1462,6 @@ mod hooks {
 mod tests {
     use super::*;
     use std::mem::offset_of;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn identity_edge_clears_outputs_and_rejects_rebinding() {
@@ -1698,9 +1697,17 @@ mod tests {
             "failed-write",
             "poisoned-guard",
         ];
-        let mut rows = RowCases::new("instance-write-protocol", cases);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(cases)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "instance-write-protocol");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows_remaining.len(), rows_count, "instance-write-protocol");
         for id in cases {
-            let row = rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             // SAFETY: Local initialized C records are disjoint and every owning
             // handle is consumed once; no raw owner is used after its finish.
             unsafe {
@@ -1789,8 +1796,14 @@ mod tests {
                     FJ_STATUS_SUCCESS
                 );
             }
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 }

@@ -7,7 +7,6 @@ repeatability envelope without trimming or pooling observations.
 
 import math
 
-
 BUDGET = 1.05
 PAIR_ORDER = ("ab", "ba", "ab")
 QUANTILES = (0.5, 0.9)

@@ -1802,7 +1802,6 @@ mod tests {
     use std::sync::Arc;
 
     use film_juicer_core::profile::{ProfileCompletionError, Role};
-    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -1846,7 +1845,19 @@ mod tests {
             "channel-density-cmy",
             "base-density",
         ];
-        let mut span_rows = RowCases::new("foreign-profile-span-bindings", span_ids);
+        let span_rows_ids: Vec<_> = IntoIterator::into_iter(span_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!span_rows_ids.is_empty(), "foreign-profile-span-bindings");
+        let span_rows_count = span_rows_ids.len();
+        let mut span_rows_remaining = span_rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            span_rows_remaining.len(),
+            span_rows_count,
+            "foreign-profile-span-bindings"
+        );
         for ((span, expected), id) in [
             (raw.log_exposure, tables.interpolation_log_exposure()),
             (
@@ -1862,12 +1873,18 @@ mod tests {
         .into_iter()
         .zip(span_ids)
         {
-            let row = span_rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(span.data, expected.as_ptr());
             assert_eq!(span.count, expected.len());
-            row.passed();
+            assert!(
+                span_rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        span_rows.finish();
+        assert!(
+            span_rows_remaining.is_empty(),
+            "missing comparisons: {span_rows_remaining:?}"
+        );
         for layer in 0..3 {
             for channel in 0..3 {
                 let expected = &tables.density_curves_layers()[layer][channel];
@@ -1911,9 +1928,21 @@ mod tests {
     #[test]
     fn consuming_release_reclaims_even_with_malformed_diagnostic() {
         let ids = ["zero-capacity", "null-data", "invalid-capacity"];
-        let mut rows = RowCases::new("malformed-release-diagnostics", ids);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "malformed-release-diagnostics");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            rows_remaining.len(),
+            rows_count,
+            "malformed-release-diagnostics"
+        );
         for malformed in 0..3 {
-            let row = rows.case(ids[malformed]);
+            let row = AsRef::<str>::as_ref(&(ids[malformed])).to_owned();
             let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
             let profile = assets.film("kodak_portra_400").unwrap();
             let weak = Arc::downgrade(&profile);
@@ -1944,17 +1973,35 @@ mod tests {
             );
             assert_eq!(error.length, 0);
             assert!(weak.upgrade().is_none());
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 
     #[test]
     fn unpublished_owner_is_reclaimed_on_failure_and_contained_panic() {
         let ids = ["success", "error", "panic"];
-        let mut rows = RowCases::new("unpublished-owner-terminal-paths", ids);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "unpublished-owner-terminal-paths");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            rows_remaining.len(),
+            rows_count,
+            "unpublished-owner-terminal-paths"
+        );
         for failure in 0..3 {
-            let row = rows.case(ids[failure]);
+            let row = AsRef::<str>::as_ref(&(ids[failure])).to_owned();
             let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
             let profile = assets.film("kodak_portra_400").unwrap();
             let weak = Arc::downgrade(&profile);
@@ -1998,9 +2045,15 @@ mod tests {
             assert_eq!(error.length, 7);
             assert_eq!(bytes[7], 0);
             assert!(weak.upgrade().is_none());
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 }
 

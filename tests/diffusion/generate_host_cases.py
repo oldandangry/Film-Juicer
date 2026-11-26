@@ -4,11 +4,11 @@ import argparse
 import hashlib
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
-
 
 EXPECTED_SCHEMA = "film-juicer.diffusion-reference.v1"
 EXPECTED_FAMILIES = (

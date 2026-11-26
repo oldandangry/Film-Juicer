@@ -1,0 +1,112 @@
+name: Lint and Rust
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [testing, main]
+  push:
+    branches: [testing, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Source and tooling lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: scripts/quality-requirements.txt
+      - name: Install lint tools
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm.gpg" "$RUNNER_TEMP/llvm.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm.gpg" /usr/share/keyrings/llvm.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-22
+          python -m pip install -r scripts/quality-requirements.txt
+      - name: Check formatting, hygiene and tooling
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=HEAD^
+          fi
+          python scripts/check.py format --base "$BASE" --clang-format clang-format-22
+          python scripts/check.py hygiene --base "$BASE"
+          python scripts/check.py tooling
+
+  rust:
+    name: Rust ${{ matrix.platform }} ${{ matrix.profile }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, profile: Debug}
+          - {platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, profile: Release}
+          - {platform: Windows, runner: windows-2025-vs2026, target: x86_64-pc-windows-msvc, profile: Debug}
+          - {platform: Windows, runner: windows-2025-vs2026, target: x86_64-pc-windows-msvc, profile: Release}
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TARGET_DIR: out/build/ci-rust/cargo
+      CARGO_TERM_COLOR: always
+      RUST_FEATURES: film-juicer-plugin/test-support
+      NEXTEST_VERSION: 0.9.143
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust and prebuilt nextest
+        shell: bash
+        run: |
+          toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$toolchain" --profile minimal --component clippy --component rustfmt
+          platform=linux
+          if [[ "$RUNNER_OS" == Windows ]]; then platform=windows-tar; fi
+          curl -fsSL "https://get.nexte.st/$NEXTEST_VERSION/$platform" | tar xzf - -C "$HOME/.cargo/bin"
+          version="$(cargo nextest --version)"
+          [[ "$version" == "cargo-nextest $NEXTEST_VERSION"* ]]
+      - name: Fingerprint the host Rust compiler and SDK
+        shell: bash
+        run: |
+          {
+            rustc -Vv
+            printf '%s\n' "${ImageVersion:-}" "${ImageOS:-}"
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              dpkg-query -W libc6-dev
+            fi
+          } | sha256sum | cut -d ' ' -f 1 | sed 's/^/RUST_COMPILER_SDK=/' >> "$GITHUB_ENV"
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            out/build/ci-rust/cargo
+          key: rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-production-and-test-support-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-${{ hashFiles('rust/**/*.rs') }}
+          restore-keys: |
+            rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-production-and-test-support-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-
+      - name: Run Rust checks and tests
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          options=()
+          if [[ "$PROFILE" == Release ]]; then options+=(--release); fi
+          python scripts/check.py rust "${options[@]}"
+          cargo nextest run --workspace --locked --features "$RUST_FEATURES" --test-threads 1 "${options[@]}"
+          cargo test --workspace --doc --locked "${options[@]}"

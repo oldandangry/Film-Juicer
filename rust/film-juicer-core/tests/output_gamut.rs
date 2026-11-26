@@ -1,9 +1,6 @@
 #![cfg(feature = "test-support")]
 use film_juicer_core::color;
 use film_juicer_core::gamut::{self, fixtures};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::Value;
 use std::fs;
 
@@ -85,17 +82,40 @@ fn native_primitive_intermediate_full_family_bits() {
     );
     let directions = records["directions"].as_array().unwrap();
     let direction_ids: Vec<String> = (0..directions.len()).map(|i| format!("hue/{i}")).collect();
-    let mut direction_cases = RowCases::new("output-gamut-directions", &direction_ids);
+    let direction_cases_ids: Vec<_> = IntoIterator::into_iter(&direction_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !direction_cases_ids.is_empty(),
+        "empty case set: {}",
+        "output-gamut-directions"
+    );
+    let direction_cases_count = direction_cases_ids.len();
+    let mut direction_cases_remaining = direction_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        direction_cases_remaining.len(),
+        direction_cases_count,
+        "duplicate case IDs: {}",
+        "output-gamut-directions"
+    );
     for (i, direction) in directions.iter().enumerate() {
-        let row_case = direction_cases.case(&direction_ids[i]);
+        let row_case = AsRef::<str>::as_ref(&(&direction_ids[i])).to_owned();
         assert_eq!(
             serde_json::json!(bits(fixtures::output_direction(i))),
             *direction,
             "hue libm {i}"
         );
-        row_case.passed();
+        assert!(
+            direction_cases_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    direction_cases.finish();
+    assert!(
+        direction_cases_remaining.is_empty(),
+        "missing comparisons: {direction_cases_remaining:?}"
+    );
     let primitive_rows: Vec<_> = records["primitives"]
         .as_array()
         .unwrap()
@@ -105,25 +125,71 @@ fn native_primitive_intermediate_full_family_bits() {
     let primitive_ids: Vec<String> = (0..primitive_rows.len())
         .map(|i| format!("primitive/{i}"))
         .collect();
-    let mut primitive_cases = RowCases::new("output-gamut-primitives", &primitive_ids);
+    let primitive_cases_ids: Vec<_> = IntoIterator::into_iter(&primitive_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !primitive_cases_ids.is_empty(),
+        "empty case set: {}",
+        "output-gamut-primitives"
+    );
+    let primitive_cases_count = primitive_cases_ids.len();
+    let mut primitive_cases_remaining = primitive_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        primitive_cases_remaining.len(),
+        primitive_cases_count,
+        "duplicate case IDs: {}",
+        "output-gamut-primitives"
+    );
     for (row, id) in primitive_rows.iter().zip(&primitive_ids) {
-        let row_case = primitive_cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         primitive(row);
-        row_case.passed();
+        assert!(
+            primitive_cases_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    primitive_cases.finish();
+    assert!(
+        primitive_cases_remaining.is_empty(),
+        "missing comparisons: {primitive_cases_remaining:?}"
+    );
     let cube_rows = extra["cube"].as_array().unwrap();
     let cube_ids: Vec<String> = (0..cube_rows.len()).map(|i| format!("cube/{i}")).collect();
-    let mut cube_cases = RowCases::new("output-gamut-cube-boundaries", &cube_ids);
+    let cube_cases_ids: Vec<_> = IntoIterator::into_iter(&cube_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cube_cases_ids.is_empty(),
+        "empty case set: {}",
+        "output-gamut-cube-boundaries"
+    );
+    let cube_cases_count = cube_cases_ids.len();
+    let mut cube_cases_remaining = cube_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cube_cases_remaining.len(),
+        cube_cases_count,
+        "duplicate case IDs: {}",
+        "output-gamut-cube-boundaries"
+    );
     for (row, id) in cube_rows.iter().zip(&cube_ids) {
-        let row_case = cube_cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             fixtures::output_cube(f64::from_bits(row["value"].as_u64().unwrap())),
             row["inside"].as_bool().unwrap()
         );
-        row_case.passed();
+        assert!(
+            cube_cases_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    cube_cases.finish();
+    assert!(
+        cube_cases_remaining.is_empty(),
+        "missing comparisons: {cube_cases_remaining:?}"
+    );
     let transform_rows: Vec<_> = records["rows"]
         .as_array()
         .unwrap()
@@ -135,9 +201,26 @@ fn native_primitive_intermediate_full_family_bits() {
         .enumerate()
         .map(|(i, row)| format!("transform/{i}/tag/{}", row["tag"].as_u64().unwrap_or(0)))
         .collect();
-    let mut transforms = RowCases::new("output-gamut-transform-rows", &transform_ids);
+    let transforms_ids: Vec<_> = IntoIterator::into_iter(&transform_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !transforms_ids.is_empty(),
+        "empty case set: {}",
+        "output-gamut-transform-rows"
+    );
+    let transforms_count = transforms_ids.len();
+    let mut transforms_remaining = transforms_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        transforms_remaining.len(),
+        transforms_count,
+        "duplicate case IDs: {}",
+        "output-gamut-transform-rows"
+    );
     for (row, id) in transform_rows.iter().zip(&transform_ids) {
-        let row_case = transforms.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         let source = &row["source"];
         let rgb = floats(&source["rgb_to_xyz"]);
         let xyz = floats(&source["xyz_to_rgb"]);
@@ -156,7 +239,10 @@ fn native_primitive_intermediate_full_family_bits() {
             Ok(t) => t,
             Err(e) => {
                 assert_eq!(e.to_string(), row["diagnostic"].as_str().unwrap());
-                row_case.passed();
+                assert!(
+                    transforms_remaining.remove(&row_case),
+                    "unexpected or repeated comparison: {row_case}"
+                );
                 continue;
             }
         };
@@ -215,9 +301,15 @@ fn native_primitive_intermediate_full_family_bits() {
             }
             Err(e) => assert_eq!(e.to_string(), row["boundary_diagnostic"].as_str().unwrap()),
         }
-        row_case.passed();
+        assert!(
+            transforms_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    transforms.finish();
+    assert!(
+        transforms_remaining.is_empty(),
+        "missing comparisons: {transforms_remaining:?}"
+    );
     assert_eq!(
         fixtures::output_reserve_failure(),
         gamut::BoundaryError::AllocationFailure

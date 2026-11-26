@@ -11,7 +11,6 @@
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/case_results.h"
 
 namespace {
 
@@ -39,39 +38,24 @@ namespace {
 
 } // namespace
 
-int main(int argc, char** argv) try {
-    constexpr std::array<std::string_view, 6> operations{
-        "entry-factory", "noncreating-unload", "load-close-reload", "failed-unload-retention", "consumed-unload", "replacement-blocked"};
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto operation : operations)
-            JuicerTests::list_case("ofx.owner_unload", operation);
-        return 0;
-    }
-    JuicerTests::CaseLog case_log;
+int main() try {
     try {
-        JuicerTests::CaseEvent entry("ofx.owner_unload", operations[0]);
         require(OfxGetNumberOfPlugins() == 1, "expected one plugin");
         OfxPlugin* plugin = OfxGetPlugin(0);
         require(plugin && plugin->mainEntry, "plugin entry point is missing");
         ofx_test::InstanceHost host;
-        entry.passed();
 
         // Exercise the actual standard module lifecycle and its terminal precheck.
-        JuicerTests::CaseEvent empty_unload("ofx.owner_unload", operations[1]);
         require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "unbound unload failed");
         require_no_owner();
-        empty_unload.passed();
-        JuicerTests::CaseEvent reload("ofx.owner_unload", operations[2]);
         plugin->setHost(host.binding());
         require(plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) == kOfxStatOK, "module load failed");
         require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "module unload failed");
         require_no_owner();
         require(plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) == kOfxStatOK, "module reload failed");
-        reload.passed();
 
         // Exercise the real module unload while a native callback is active.
         // Its terminal precheck must retain the Runtime and its Assets.
-        JuicerTests::CaseEvent failed_unload("ofx.owner_unload", operations[3]);
         {
             const FjRuntimeView activeView = loaded_runtime();
             JuicerCuda::NativeCall active(activeView.cuda);
@@ -104,22 +88,16 @@ int main(int argc, char** argv) try {
                 "failed module unload reopened native admission");
         require(!fj_test_ofx_assets() && !fj_test_ofx_native(),
                 "failed legal module close did not consume its Runtime");
-        failed_unload.passed();
 
-        JuicerTests::CaseEvent consumed_unload("ofx.owner_unload", operations[4]);
         require(JuicerCuda::ResourceManager::registry_note_submission_end(key),
                 "could not end registry submission");
         require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "consumed module unload failed");
         require(JuicerCuda::ResourceManager::registry_begin_owner_retire(key, snapshot),
                 "repeated module unload retried context retirement");
-        consumed_unload.passed();
-        JuicerTests::CaseEvent replacement_blocked("ofx.owner_unload", operations[5]);
         FjCuda* replacement = nullptr;
         const FjStatus result = fj_cuda_create(&replacement, nullptr);
         require(result.category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                 "failed module unload allowed a replacement owner");
-        replacement_blocked.passed();
-        case_log.finish();
         std::puts("PASS module unload: noncreating teardown, close/reload, fatal OFX status and consume-once retention");
         return 0;
     } catch (const std::exception& error) {

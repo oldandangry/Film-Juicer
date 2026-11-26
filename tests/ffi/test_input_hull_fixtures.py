@@ -2,8 +2,8 @@
 
 import hashlib
 import json
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures/input_hull"
 
@@ -16,29 +16,6 @@ class InputHullFixtures(unittest.TestCase):
             member["records"]: json.loads(payloads[member["records"]])
             for member in manifest["preset_membership"].values()
         }
-        self.subtest_cases = tuple(
-            [f"preset/{preset}" for preset in manifest["preset_membership"]]
-            + [f"sha256/{name}" for name in manifest["sha256"]]
-            + [
-                f"math/{name}/{index}"
-                for name, records in records_by_name.items()
-                for index, _ in enumerate(records["math"])
-            ]
-            + [
-                (
-                    f"product/{name}/control/{index}-{row['method']}-{row['compression']}"
-                    if "polarity" not in row
-                    else f"product/{name}/{row['polarity']}-{row['route']}-{row['method']}-{row['compression']}"
-                )
-                for name, records in records_by_name.items()
-                for index, row in enumerate(records["products"])
-            ]
-            + [f"tables/{name}" for name in {member["tables"] for member in manifest["preset_membership"].values()}]
-            + [
-                f"primitives/{name}"
-                for name in {member["primitives"] for member in manifest["preset_membership"].values()}
-            ]
-        )
         self.assertEqual(manifest["parent"], "e9b4abbb8b146ffdd0f4fbc5f8c61e7e87134c2a")
         self.assertEqual(
             set(manifest["preset_membership"]),
@@ -90,8 +67,6 @@ class InputHullFixtures(unittest.TestCase):
         for name in {member["primitives"] for member in manifest["preset_membership"].values()}:
             with self.subTest(case=f"primitives/{name}"):
                 self.assertEqual(len(payloads[name]), 519536 * 32)
-
-    test_provenance_membership_bits_and_sharing.required_subtests = True
 
 
 if __name__ == "__main__":

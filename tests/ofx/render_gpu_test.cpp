@@ -1,7 +1,6 @@
 
 #include "render_gpu_fixture.h"
 #include "render_assertions.h"
-#include "../ffi/case_results.h"
 
 #include <algorithm>
 #include <array>
@@ -20,7 +19,6 @@
 #include <vector>
 
 namespace {
-    constexpr std::string_view kCaller = "ofx.gpu.render";
     constexpr auto kRoutes = std::span(ofx_test::kRenderReferenceCases).first<4>();
 
     constexpr std::array kBoostRows{"highlight/negative-direct", "highlight/negative-print-enlarger", "highlight/positive-direct-camera", "highlight/positive-print-composed"};
@@ -149,7 +147,7 @@ namespace {
     }
 
     constexpr std::array kGeometryRows{"format/rgb", "format/rgba", "geometry/padding", "geometry/pitch", "geometry/bounds", "geometry/coverage", "geometry/overlap"};
-    void geometry_case(std::string_view name, const JuicerTests::Cohort& rows, const ofx_test::RenderPixels& expected) {
+    void geometry_case(std::string_view name, const ofx_test::RenderPixels& expected) {
         const int components = name == "format/rgba" ? 4 : 3;
         const int x = name == "geometry/bounds" ? 11 : 0;
         const int y = name == "geometry/bounds" ? -3 : 0;
@@ -189,13 +187,10 @@ namespace {
                 ofx_test::require_cuda(cudaMemcpy(bytes + images.bytes(), images.destination(), images.destination_bytes(), cudaMemcpyDeviceToDevice), "initialize shared destination");
                 fixture.host().set_image_property(fixture.effect(), "Source", kOfxImagePropData, {shared});
                 fixture.host().set_image_property(fixture.effect(), "Output", kOfxImagePropData, {static_cast<void*>(bytes + images.bytes())});
-                auto disjoint = rows.case_event("overlap/disjoint");
                 ofx_test::require_render(fixture.render() == kOfxStatOK, "disjoint ranges in shared allocation rejected");
                 ofx_test::require_cuda(cudaDeviceSynchronize(), "complete disjoint render");
                 ofx_test::require_cuda(cudaMemcpy(images.destination(), bytes + images.bytes(), images.destination_bytes(), cudaMemcpyDeviceToDevice), "read shared destination");
                 RenderAssertions::compare_pixels("disjoint shared allocation", images.pixels(images.read()), expected.at("route/negative-direct"));
-                disjoint.passed();
-                auto partial = rows.case_event("overlap/partial");
                 std::vector<float> before(images.bytes() / sizeof(float));
                 ofx_test::require_cuda(cudaMemcpy(before.data(), shared, images.bytes(), cudaMemcpyDeviceToHost), "snapshot overlapping source");
                 fixture.host().set_image_property(fixture.effect(), "Output", kOfxImagePropData, {static_cast<void*>(bytes + sizeof(float))});
@@ -203,7 +198,6 @@ namespace {
                 std::vector<float> after(before.size());
                 ofx_test::require_cuda(cudaMemcpy(after.data(), shared, images.bytes(), cudaMemcpyDeviceToHost), "read rejected overlap");
                 RenderAssertions::compare_bits("overlap source unchanged", after, before);
-                partial.passed();
             } catch (...) {
                 (void)cudaFree(shared);
                 throw;
@@ -356,25 +350,7 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto& route : kRoutes)
-            JuicerTests::list_case(kCaller, route.id);
-        for (const auto* id : kBoostRows)
-            JuicerTests::list_case(kCaller, id);
-        for (const auto* id : kGeometryRows)
-            JuicerTests::list_case(kCaller, id);
-        for (const auto* id : kStreamRows)
-            JuicerTests::list_case(kCaller, id);
-        JuicerTests::list_case(kCaller, "overlap/disjoint");
-        JuicerTests::list_case(kCaller, "overlap/partial");
-        JuicerTests::list_case(kCaller, "stream/wrong-context");
-        JuicerTests::list_case(kCaller, "cancel/then_success");
-        JuicerTests::list_case(kCaller, "owners/two_instances");
-        JuicerTests::list_case(kCaller, "owners/teardown");
-        return 0;
-    }
     ofx_test::require_render(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: GPU render fixture --reference file");
-    JuicerTests::CaseLog log;
     const auto expected = ofx_test::read_render_reference(argv[2], JUICER_SPECTRAL_TRACE_PRESET, true);
     std::vector<std::string> ids;
     ids.reserve(20);
@@ -392,43 +368,27 @@ int main(int argc, char** argv) try {
     ids.emplace_back("cancel/then_success");
     ids.emplace_back("owners/two_instances");
     ids.emplace_back("owners/teardown");
-    JuicerTests::Cohort rows(std::string(kCaller), ids);
     for (const auto& route : kRoutes) {
-        auto row = rows.case_event(route.id);
         route_case(route, expected);
-        row.passed();
     }
     for (std::size_t i = 0; i < kBoostRows.size(); ++i) {
-        auto row = rows.case_event(kBoostRows[i]);
         highlight_case(i);
-        row.passed();
     }
     for (const auto* id : kGeometryRows) {
-        auto row = rows.case_event(id);
-        geometry_case(id, rows, expected);
-        row.passed();
+        geometry_case(id, expected);
     }
     for (const auto* id : kStreamRows) {
-        auto row = rows.case_event(id);
         stream_case(id, expected);
-        row.passed();
     }
     {
-        auto row = rows.case_event("stream/wrong-context");
         wrong_context_case();
-        row.passed();
     }
     {
-        auto row = rows.case_event("cancel/then_success");
         cancellation_case(expected);
-        row.passed();
     }
     for (const auto* id : {"owners/two_instances", "owners/teardown"}) {
-        auto row = rows.case_event(id);
         owners_case(std::string_view(id) == "owners/teardown");
-        row.passed();
     }
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "GPU render fixture: %s\n", error.what());

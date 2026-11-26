@@ -17,7 +17,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[3]
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".tmp/diffusion/matplotlib"))
 
@@ -27,7 +26,6 @@ from spektrafilm.model.diffusion import (  # noqa: E402
     diffusion_filter_psf,
 )
 from spektrafilm.runtime.params_schema import DiffusionFilterParams  # noqa: E402
-
 
 SCHEMA = "film-juicer.diffusion-cuda-convolution.v1"
 HASH_SCHEMA = "film-juicer.diffusion-cuda-convolution-hashes.v1"

@@ -290,7 +290,6 @@ pub fn capture_gamma(raw: f64) -> Result<f32, &'static str> {
 mod tests {
     use super::{curve_hash, normalize_curves};
     use crate::hash;
-    use crate::test_cases::RowCases;
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -307,15 +306,29 @@ mod tests {
             .join(format!("{preset}-primitive.json"));
         let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let normalization = fixture["normalization"].as_array().unwrap();
-        let mut normalization_cases = RowCases::new(
-            "film-primitive-normalization",
+        let normalization_cases_ids: Vec<_> = IntoIterator::into_iter(
             normalization
                 .iter()
                 .enumerate()
                 .map(|(index, _)| format!("normalization/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !normalization_cases_ids.is_empty(),
+            "film-primitive-normalization"
+        );
+        let normalization_cases_count = normalization_cases_ids.len();
+        let mut normalization_cases_remaining = normalization_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            normalization_cases_remaining.len(),
+            normalization_cases_count,
+            "film-primitive-normalization"
         );
         for (index, row) in normalization.iter().enumerate() {
-            let case = normalization_cases.case(format!("normalization/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("normalization/{index}"))).to_owned();
             let mut curves: Vec<[f32; 3]> = row["authored"]
                 .as_array()
                 .unwrap()
@@ -342,19 +355,36 @@ mod tests {
                 curve_hash(curves.as_flattened()),
                 row["hash"].as_u64().unwrap()
             );
-            case.passed();
+            assert!(
+                normalization_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        normalization_cases.finish();
+        assert!(
+            normalization_cases_remaining.is_empty(),
+            "missing comparisons: {normalization_cases_remaining:?}"
+        );
         let hashes = fixture["hash"].as_array().unwrap();
-        let mut hash_cases = RowCases::new(
-            "film-primitive-hashes",
+        let hash_cases_ids: Vec<_> = IntoIterator::into_iter(
             hashes
                 .iter()
                 .enumerate()
                 .map(|(index, _)| format!("hash/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(!hash_cases_ids.is_empty(), "film-primitive-hashes");
+        let hash_cases_count = hash_cases_ids.len();
+        let mut hash_cases_remaining = hash_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            hash_cases_remaining.len(),
+            hash_cases_count,
+            "film-primitive-hashes"
         );
         for (index, row) in hashes.iter().enumerate() {
-            let case = hash_cases.case(format!("hash/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("hash/{index}"))).to_owned();
             let samples: Vec<f32> = row["values"]
                 .as_array()
                 .unwrap()
@@ -365,8 +395,14 @@ mod tests {
             assert_eq!(pair.values, row["value_hash"].as_u64().unwrap());
             assert_eq!(pair.nan_mask, row["mask_hash"].as_u64().unwrap());
             assert_eq!(curve_hash(&samples), row["hash"].as_u64().unwrap());
-            case.passed();
+            assert!(
+                hash_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        hash_cases.finish();
+        assert!(
+            hash_cases_remaining.is_empty(),
+            "missing comparisons: {hash_cases_remaining:?}"
+        );
     }
 }

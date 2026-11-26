@@ -15,7 +15,6 @@
 #include "juicer_cuda_owner.h"
 #include "module_host.h"
 #include "module_test.h"
-#include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 
 namespace {
@@ -80,32 +79,12 @@ namespace {
     }
 
     void platform() {
-        const JuicerTests::Cohort rows("ofx.module.platform", {"abi", "current_module", "unicode", "lexical", "relative", "no_parent", "one_parent", "lookup_failure", "native_units", "root_module", "root_directory", "immediate_dot", "repeated_separators", "trailing_separator", "parent_component"
-#ifdef _WIN32
-                                                               ,
-                                                               "growth",
-                                                               "drive_relative",
-                                                               "mixed_separators",
-                                                               "unc_path",
-                                                               "unc_parent",
-                                                               "unc_root_parent",
-                                                               "device_parent",
-                                                               "device_drive_parent",
-                                                               "drive_relative_parent",
-                                                               "separator_root",
-                                                               "drive_root"
-#endif
-                                                              });
         {
-            auto row = rows.case_event("abi");
             require(fj_test_ofx_platform_c() == 1, "native C11/platform ABI mismatch");
-            row.passed();
         }
         {
-            auto row = rows.case_event("current_module");
             const auto path = path_observation(0);
             require(!path.empty() && path == JuicerProcess::data_directory(), "actual containing-module path mismatch");
-            row.passed();
         }
         const std::vector<std::pair<std::string_view, std::filesystem::path>> paths{
             {"unicode", std::filesystem::path(u"/tmp/å中/Contents/Linux-x86-64/Juicer.ofx")},
@@ -137,33 +116,26 @@ namespace {
 #endif
         };
         for (const auto& [id, input] : paths) {
-            auto row = rows.case_event(id);
             std::filesystem::path expected;
             if (id != "lookup_failure" && !input.parent_path().empty() && !input.parent_path().parent_path().empty()) {
                 expected = (input.parent_path().parent_path() / "Resources").lexically_normal().make_preferred();
             }
             require(path_observation(id == "lookup_failure" ? 2 : 1, input) == expected,
                     "native path units or lexical parent normalization changed");
-            row.passed();
         }
 #ifdef _WIN32
         {
-            auto row = rows.case_event("growth");
             require(path_observation(3) == path_observation(0), "native module-name growth changed path");
-            row.passed();
         }
 #endif
     }
 
-    void construction(OfxPlugin* plugin, ofx_test::Host& host, std::string_view caller) {
+    void construction(OfxPlugin* plugin, ofx_test::Host& host) {
         {
-            JuicerTests::CaseEvent test(caller, "platform");
             platform();
             no_owner();
-            test.passed();
         }
         for (const auto& [id, stages] : std::array<std::pair<const char*, std::vector<uint32_t>>, 3>{{{"before_native", {1}}, {"after_native", {2}}, {"panic", {4, 5}}}}) {
-            JuicerTests::CaseEvent test(caller, id);
             std::vector<std::string> ids;
             for (const auto stage : stages) {
                 ids.push_back(std::to_string(stage));
@@ -172,9 +144,7 @@ namespace {
                 ids.emplace_back("load_panic_replacement");
                 ids.emplace_back("invalidated_rollback");
             }
-            const JuicerTests::Cohort rows(std::string("ofx.module.construction.") + id, ids);
             for (const auto stage : stages) {
-                auto row = rows.case_event(std::to_string(stage));
                 plugin->setHost(host.binding());
                 fj_test_runtime_fault(stage);
                 require(action(plugin, kOfxActionLoad) == (stage < 4 ? kOfxStatErrMemory : kOfxStatFailed),
@@ -186,11 +156,9 @@ namespace {
                         "construction recovery failed");
                 require(action(plugin, kOfxActionUnload) == kOfxStatOK, "construction recovery close");
                 no_owner();
-                row.passed();
             }
             if (std::string_view(id) == "panic") {
                 {
-                    auto row = rows.case_event("load_panic_replacement");
                     plugin->setHost(host.binding());
                     PausedAction failed([&] {
                         fj_test_runtime_fault(5);
@@ -215,10 +183,8 @@ namespace {
                             "old construction panic invalidated replacement");
                     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "panic replacement close");
                     no_owner();
-                    row.passed();
                 }
                 {
-                    auto row = rows.case_event("invalidated_rollback");
                     plugin->setHost(host.binding());
                     PausedAction invalidated([&] {
                         return action(plugin, kOfxActionLoad);
@@ -243,22 +209,17 @@ namespace {
                     require(action(plugin, kOfxActionLoad) == kOfxStatOK, "load after complete rollback failed");
                     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "rollback replacement close");
                     no_owner();
-                    row.passed();
                 }
             }
-            test.passed();
         }
     }
 
-    void panic_controls(OfxPlugin* plugin, ofx_test::Host& host, std::string_view caller) {
+    void panic_controls(OfxPlugin* plugin, ofx_test::Host& host) {
         for (const auto& [id, stage] : std::array<std::pair<const char*, uint32_t>, 2>{{{"action", 1}, {"void", 2}}}) {
-            JuicerTests::CaseEvent test(caller, id);
             const std::vector<std::string> ids = stage == 1
                                                      ? std::vector<std::string>{"serial", "admitted_panic", "describe_replacement"}
                                                      : std::vector<std::string>{"serial"};
-            const JuicerTests::Cohort rows(std::string("ofx.module.panic.") + id, ids);
             {
-                auto row = rows.case_event("serial");
                 plugin->setHost(host.binding());
                 require(action(plugin, kOfxActionLoad) == kOfxStatOK, "panic control load");
                 const auto* original = fj_test_ofx_native();
@@ -277,11 +238,9 @@ namespace {
                 plugin->setHost(host.binding());
                 require(action(plugin, kOfxActionLoad) == kOfxStatOK, "panic recovery load");
                 require(action(plugin, kOfxActionUnload) == kOfxStatOK, "panic recovery close");
-                row.passed();
             }
             if (stage == 1) {
                 {
-                    auto row = rows.case_event("admitted_panic");
                     plugin->setHost(host.binding());
                     require(action(plugin, kOfxActionLoad) == kOfxStatOK, "admitted panic load");
                     auto* original = fj_test_ofx_native();
@@ -302,10 +261,8 @@ namespace {
                             "panic did not invalidate its own module");
                     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "admitted panic terminal cleanup");
                     no_owner();
-                    row.passed();
                 }
                 {
-                    auto row = rows.case_event("describe_replacement");
                     plugin->setHost(host.binding());
                     require(action(plugin, kOfxActionLoad) == kOfxStatOK, "old Describe load");
                     PausedAction failed([&] {
@@ -327,24 +284,19 @@ namespace {
                             "old Describe panic invalidated later lifecycle");
                     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "Describe replacement close");
                     no_owner();
-                    row.passed();
                 }
             }
-            test.passed();
         }
     }
 
-    void terminal(OfxPlugin* plugin, ofx_test::Host& host, std::string_view caller) {
+    void terminal(OfxPlugin* plugin, ofx_test::Host& host) {
         plugin->setHost(host.binding());
         require(action(plugin, kOfxActionLoad) == kOfxStatOK, "terminal load");
         auto* native = fj_test_ofx_native();
         const auto* assets = fj_test_ofx_assets();
         require(native && assets, "terminal owner backing missing");
         {
-            JuicerTests::CaseEvent test(caller, "active_borrow");
-            const JuicerTests::Cohort rows("ofx.module.terminal.precheck", {"callback", "native_call"});
             {
-                auto row = rows.case_event("callback");
                 host.reset_trace();
                 host.reentry = [&] {
                     require(action(plugin, kOfxActionUnload) == kOfxStatErrFatal, "active callback close accepted");
@@ -352,10 +304,8 @@ namespace {
                 };
                 require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK && !host.callback_error,
                         "reentrant host callback lost admission");
-                row.passed();
             }
             {
-                auto row = rows.case_event("native_call");
                 {
                     JuicerCuda::NativeCall call(native);
                     require(action(plugin, kOfxActionUnload) == kOfxStatErrFatal, "native precheck rejection not fatal");
@@ -363,15 +313,12 @@ namespace {
                 }
                 host.reset_trace();
                 require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK, "rejected precheck poisoned live owner");
-                row.passed();
             }
-            test.passed();
         }
         static int context_token;
         const JuicerCuda::ResourceManager::DeviceContextKey key{0, &context_token};
         JuicerCuda::ResourceManager::RegistryContextSnapshot snapshot{};
         {
-            JuicerTests::CaseEvent test(caller, "close_failure");
             require(JuicerCuda::ResourceManager::registry_begin_submission(key, snapshot), "metadata submission setup");
             require(action(plugin, kOfxActionUnload) == kOfxStatErrFatal, "consuming native failure not fatal");
             require(!fj_test_ofx_native() && fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0,
@@ -380,16 +327,12 @@ namespace {
                     "consuming failure lost authoritative native retention");
             require(!JuicerCuda::borrow_root(native).begin_frame_preparation().active(), "retention reopened admission");
             require(JuicerCuda::ResourceManager::registry_note_submission_end(key), "metadata submission end");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test(caller, "consumed");
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "consumed unload retried owner");
             require(JuicerCuda::ResourceManager::registry_begin_owner_retire(key, snapshot), "consumed unload retried native retirement");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test(caller, "replacement_blocked");
             FjCuda* replacement = nullptr;
             require(fj_cuda_create(&replacement, nullptr).category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                     "retained native graph permitted replacement");
@@ -397,7 +340,6 @@ namespace {
             require(action(plugin, kOfxActionLoad) == kOfxStatFailed && !fj_test_ofx_native() && fj_test_assets_live_owners() == 0,
                     "failed native replacement published candidate Runtime");
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "failed replacement cleanup");
-            test.passed();
         }
     }
 } // namespace
@@ -405,29 +347,20 @@ namespace {
 int main(int argc, char** argv) try {
     require(argc >= 2, "expected construction/panic/terminal mode");
     const std::string_view mode(argv[1]);
-    const std::string caller = std::string("ofx.module.") + std::string(mode);
     const std::vector<std::string_view> cases = mode == "construction" ? std::vector<std::string_view>{"platform", "before_native", "after_native", "panic"}
                                                 : mode == "panic"      ? std::vector<std::string_view>{"action", "void"}
                                                 : mode == "terminal"   ? std::vector<std::string_view>{"active_borrow", "close_failure", "consumed", "replacement_blocked"}
                                                                        : throw std::runtime_error("unknown module control mode");
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto id : cases) {
-            JuicerTests::list_case(caller, id);
-        }
-        return 0;
-    }
-    JuicerTests::CaseLog log;
     auto* plugin = fj_ofx_plugin(0);
     require(plugin && plugin->mainEntry && plugin->setHost, "real module callbacks missing");
     ofx_test::Host host;
     if (mode == "construction") {
-        construction(plugin, host, caller);
+        construction(plugin, host);
     } else if (mode == "panic") {
-        panic_controls(plugin, host, caller);
+        panic_controls(plugin, host);
     } else {
-        terminal(plugin, host, caller);
+        terminal(plugin, host);
     }
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "module control fixture: %s\n", error.what());

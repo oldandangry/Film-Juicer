@@ -70,7 +70,6 @@ class FusedEquivalenceTests(unittest.TestCase):
 
     def test_numeric_zero_bound_passes(self) -> None:
         cases = (("integer-zero", 0), ("float-zero", 0.0))
-        self.subtest_cases = tuple(case_id for case_id, _ in cases)
         for case_id, zero in cases:
             with self.subTest(case=case_id):
                 record = dict(self.frozen)
@@ -85,8 +84,8 @@ class FusedEquivalenceTests(unittest.TestCase):
 
     def test_boolean_applicable_measurements_fail(self) -> None:
         cases = tuple((side, measurement) for side in ("candidate", "frozen") for measurement in (False, True))
-        self.subtest_cases = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
-        for case_id, (side, measurement) in zip(self.subtest_cases, cases):
+        case_ids = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
+        for case_id, (side, measurement) in zip(case_ids, cases, strict=True):
             with self.subTest(case=case_id):
                 candidate = dict(self.frozen)
                 frozen = dict(self.frozen)
@@ -110,8 +109,8 @@ class FusedEquivalenceTests(unittest.TestCase):
             "fused_maximum_absolute_difference": 0.0,
         }
         measurements = (False, True)
-        self.subtest_cases = ("false", "true")
-        for case_id, measurement in zip(self.subtest_cases, measurements):
+        case_ids = ("false", "true")
+        for case_id, measurement in zip(case_ids, measurements, strict=True):
             with self.subTest(case=case_id):
                 frozen = {
                     "case": "negative-direct",
@@ -156,7 +155,7 @@ class FusedEquivalenceTests(unittest.TestCase):
         changed_applicability["fused_maximum_absolute_difference"] = None
         malformed_cases.append(("changed-applicability", changed_applicability))
 
-        self.subtest_cases = (
+        case_ids = (
             "nan",
             "positive-infinity",
             "negative-infinity",
@@ -166,7 +165,7 @@ class FusedEquivalenceTests(unittest.TestCase):
             "wrong-case",
             "changed-applicability",
         )
-        for case_id, (_, candidate) in zip(self.subtest_cases, malformed_cases):
+        for case_id, (_, candidate) in zip(case_ids, malformed_cases, strict=True):
             with self.subTest(case=case_id):
                 result, failures = self.compare(candidate)
                 self.assertTrue(failures)
@@ -258,8 +257,8 @@ class CommandLineFailureTests(unittest.TestCase):
             candidate = root / "candidate.json"
             frozen = root / "frozen.json"
             cases = tuple((side, measurement) for side in ("candidate", "frozen") for measurement in (False, True))
-            self.subtest_cases = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
-            for case_id, (side, measurement) in zip(self.subtest_cases, cases):
+            case_ids = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
+            for case_id, (side, measurement) in zip(case_ids, cases, strict=True):
                 with self.subTest(case=case_id):
                     records = {
                         name: {
@@ -318,37 +317,6 @@ class CommandLineFailureTests(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertEqual(report["status"], "failed")
         self.assertIn("fused difference", report["failures"][0])
-
-
-FusedEquivalenceTests.test_numeric_zero_bound_passes.required_subtests = True
-FusedEquivalenceTests.test_numeric_zero_bound_passes.subtest_cases = ("integer-zero", "float-zero")
-FusedEquivalenceTests.test_boolean_applicable_measurements_fail.required_subtests = True
-FusedEquivalenceTests.test_boolean_applicable_measurements_fail.subtest_cases = (
-    "candidate-boolean-false",
-    "candidate-boolean-true",
-    "frozen-boolean-false",
-    "frozen-boolean-true",
-)
-FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.required_subtests = True
-FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.subtest_cases = ("false", "true")
-FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.required_subtests = True
-FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.subtest_cases = (
-    "nan",
-    "positive-infinity",
-    "negative-infinity",
-    "negative-bound",
-    "missing-difference",
-    "missing-applicability",
-    "wrong-case",
-    "changed-applicability",
-)
-CommandLineFailureTests.test_boolean_measurements_exit_failed.required_subtests = True
-CommandLineFailureTests.test_boolean_measurements_exit_failed.subtest_cases = (
-    "candidate-boolean-false",
-    "candidate-boolean-true",
-    "frozen-boolean-false",
-    "frozen-boolean-true",
-)
 
 
 if __name__ == "__main__":

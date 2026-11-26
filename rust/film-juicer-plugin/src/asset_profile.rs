@@ -203,7 +203,6 @@ mod tests {
     use std::path::Path;
 
     use film_juicer_core::assets::Assets;
-    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -248,7 +247,19 @@ mod tests {
             "channel-density-cmy",
             "base-density",
         ];
-        let mut span_rows = RowCases::new("foreign-profile-span-bindings", span_ids);
+        let span_rows_ids: Vec<_> = IntoIterator::into_iter(span_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!span_rows_ids.is_empty(), "foreign-profile-span-bindings");
+        let span_rows_count = span_rows_ids.len();
+        let mut span_rows_remaining = span_rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            span_rows_remaining.len(),
+            span_rows_count,
+            "foreign-profile-span-bindings"
+        );
         for ((span, expected), id) in [
             (
                 view.interpolation_log_exposure,
@@ -267,12 +278,18 @@ mod tests {
         .into_iter()
         .zip(span_ids)
         {
-            let row = span_rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(span.as_ptr(), expected.as_ptr());
             assert_eq!(span.len(), expected.len());
-            row.passed();
+            assert!(
+                span_rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        span_rows.finish();
+        assert!(
+            span_rows_remaining.is_empty(),
+            "missing comparisons: {span_rows_remaining:?}"
+        );
         for layer in 0..3 {
             for channel in 0..3 {
                 let expected = &tables.density_curves_layers()[layer][channel];

@@ -677,7 +677,6 @@ mod tests {
     use crate::film::{self, Development};
     use crate::profile::Polarity;
     use crate::route::ScanRoute;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -787,14 +786,32 @@ mod tests {
         let with_layers = development(&assets, row, true);
         let without_layers = development(&assets, row, false);
         let rows = captured["controls"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "grain-controls",
+        let cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .enumerate()
                 .map(|(index, row)| format!("{}/row-{index}", row["id"].as_str().unwrap())),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-controls"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "grain-controls"
         );
         for (index, row) in rows.iter().enumerate() {
-            let case = cases.case(format!("{}/row-{index}", row["id"].as_str().unwrap()));
+            let case =
+                AsRef::<str>::as_ref(&(format!("{}/row-{index}", row["id"].as_str().unwrap())))
+                    .to_owned();
             let development = if row["source_layers_hash"].as_u64().unwrap() == 0 {
                 &without_layers
             } else {
@@ -819,9 +836,15 @@ mod tests {
                     row["id"]
                 );
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let mut controls = params(&row["controls"]);
         controls.particle_area_um2 = 0.0;
         assert_eq!(
@@ -835,19 +858,38 @@ mod tests {
         let captured = fixture("values");
         assert_eq!(captured["metadata"].as_array().unwrap().len(), 144);
         let rows = captured["metadata"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "grain-metadata",
+        let cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .enumerate()
                 .map(|(index, _)| format!("row/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-metadata"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "grain-metadata"
         );
         for (index, row) in rows.iter().enumerate() {
-            let case = cases.case(format!("row/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("row/{index}"))).to_owned();
             if row["polarity"] == 2 {
                 // Unsupported native polarity has no representation in a completed Development.
                 assert_eq!(row["finite"], json!(([false; 3])));
                 assert_eq!(row["prefix"], json!(([[0u32; 16]; 3])));
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
                 continue;
             }
             let curves: Vec<[f32; 3]> = row["normalized"]
@@ -864,9 +906,15 @@ mod tests {
             let (finite, prefix) = axis_search_metadata(&curves, polarity);
             assert_eq!(json!(finite), row["finite"]);
             assert_eq!(json!(prefix.map(|v| v.map(f32::to_bits))), row["prefix"]);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -875,14 +923,33 @@ mod tests {
             let captured = fixture(kind);
             assert_eq!(captured["products"].as_array().unwrap().len(), count);
             let rows = captured["products"].as_array().unwrap();
-            let mut cases = RowCases::new(
-                format!("grain-products-{kind}"),
+            let cases_ids: Vec<_> = IntoIterator::into_iter(
                 rows.iter()
                     .enumerate()
                     .map(|(index, row)| format!("{}/row-{index}", row["key"].as_str().unwrap())),
+            )
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+            assert!(
+                !cases_ids.is_empty(),
+                "empty case set: {}",
+                format_args!("grain-products-{kind}")
+            );
+            let cases_count = cases_ids.len();
+            let mut cases_remaining = cases_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                cases_remaining.len(),
+                cases_count,
+                "duplicate case IDs: {}",
+                format_args!("grain-products-{kind}")
             );
             for (index, row) in rows.iter().enumerate() {
-                let case = cases.case(format!("{}/row-{index}", row["key"].as_str().unwrap()));
+                let case = AsRef::<str>::as_ref(
+                    &(format!("{}/row-{index}", row["key"].as_str().unwrap())),
+                )
+                .to_owned();
                 let directory = if let Some(name) = row["source"].as_str() {
                     root()
                         .join("tests/film/grain-fixtures/synthetic")
@@ -924,9 +991,15 @@ mod tests {
                 assets.release_cached_payloads().unwrap();
                 drop(assets);
                 assert_eq!(project(&recipe), row["grain"], "{}", row["key"]);
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
-            cases.finish();
+            assert!(
+                cases_remaining.is_empty(),
+                "missing comparisons: {cases_remaining:?}"
+            );
         }
     }
 

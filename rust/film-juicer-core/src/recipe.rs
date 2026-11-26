@@ -785,6 +785,28 @@ impl RenderState {
     pub fn exposure_tables(&self) -> &spectral::Tables {
         &self.contents[0].exposure_tables
     }
+    /// Inverse spectral matrix borrowed from the prepared render state.
+    ///
+    /// A caller can read the matrix while the state remains in scope.
+    ///
+    /// ```
+    /// use film_juicer_core::recipe::RenderState;
+    ///
+    /// fn first_coefficient(state: RenderState) -> f32 {
+    ///     let matrix = state.s_inverse();
+    ///     matrix[0]
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0505
+    /// use film_juicer_core::recipe::RenderState;
+    ///
+    /// fn first_coefficient(state: RenderState) -> f32 {
+    ///     let matrix = state.s_inverse();
+    ///     drop(state);
+    ///     matrix[0]
+    /// }
+    /// ```
     pub fn s_inverse(&self) -> &[f32; 9] {
         &self.contents[0].s_inverse
     }
@@ -2421,7 +2443,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use super::test_support::{assets, params};
-    use crate::test_cases::RowCases;
 
     #[test]
     fn scanner_recipe_binds_the_raw_digest_after_the_profile_label() {
@@ -2581,15 +2602,22 @@ mod tests {
             ScanRoute::PositiveDirect,
             ScanRoute::PositivePrint,
         ];
-        let mut cases = RowCases::new(
-            "recipe-route-methods",
-            routes.iter().flat_map(|route| {
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(routes.iter().flat_map(|route| {
                 (0..3).map(move |method| format!("{}/{method}", route_key(*route)))
-            }),
-        );
+            }))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "recipe-route-methods");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "recipe-route-methods");
         for route in routes {
             for method in 0..3 {
-                let case = cases.case(format!("{}/{method}", route_key(route)));
+                let case =
+                    AsRef::<str>::as_ref(&(format!("{}/{method}", route_key(route)))).to_owned();
                 let state = prepare(&assets, &params(route, method)).unwrap_or_else(|error| {
                     panic!("route={} method={method}: {error}", route_key(route))
                 });
@@ -2618,11 +2646,17 @@ mod tests {
                     );
                 }
                 count += 1;
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
         assert_eq!(count, 12);
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[cfg(feature = "test-support")]
     #[test]

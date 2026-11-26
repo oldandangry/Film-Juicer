@@ -979,24 +979,17 @@ int film_v1_apertures() {
     driver.check(driver.get_current(&original), "read aperture CUDA context");
     ContextRestore restore(driver, original);
     require_cuda(cudaSetDevice(0), "select aperture CUDA device");
-    JuicerTests::CaseLog cases;
-    std::vector<std::string> ids;
-    ids.reserve(kOfxApertures.size());
-    for (const auto& witness : kOfxApertures)
-        ids.emplace_back(witness.id);
-    cases.membership(kApertureCaller, ids);
+    std::set<std::string_view> compared;
     bool passed = true;
     for (const auto& witness : kOfxApertures) {
-        JuicerTests::CaseEvent event(kApertureCaller, witness.id);
         try {
             check_aperture(driver, witness);
-            event.passed();
+            require(compared.insert(witness.id).second, "duplicate Film v1 aperture case");
         } catch (const std::exception& error) {
             std::cerr << witness.id << ": " << error.what() << '\n';
             passed = false;
         }
     }
-    cases.finish();
     restore.restore();
-    return passed ? 0 : 1;
+    return passed && compared.size() == 11 ? 0 : 1;
 }

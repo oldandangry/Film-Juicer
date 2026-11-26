@@ -9,7 +9,6 @@
 #include "ScanRoute.h"
 #include "route_fixture.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/case_results.h"
 
 namespace {
 
@@ -51,7 +50,6 @@ namespace {
         }
         for (int index = 0; index < static_cast<int>(expected.size()); ++index) {
             const auto& row = expected[static_cast<std::size_t>(index)];
-            JuicerTests::CaseEvent event("route_bridge.metadata", row.key);
             const auto& actual = Spektrafilm::scan_route_metadata(row.route);
             const auto fallback = row.route == ScanRoute::NegativeDirectScan ? ScanRoute::PositivePrintScan : ScanRoute::NegativeDirectScan;
             if (!verify(
@@ -73,20 +71,15 @@ namespace {
                     "route metadata reference lifetime mismatch")) {
                 return false;
             }
-            event.passed();
         }
         for (const int index : {std::numeric_limits<int>::min(), -1, 4, std::numeric_limits<int>::max()}) {
-            JuicerTests::CaseEvent event("route_bridge.invalid_option_index", std::to_string(index));
             if (!verify(std::string(JuicerTestFixture::Route::scan_route_option_key(index)).empty() &&
                             std::string(JuicerTestFixture::Route::scan_route_option_label(index)).empty(),
                         "invalid route option must be empty")) {
                 return false;
             }
-            event.passed();
         }
         for (const auto route : {static_cast<ScanRoute>(4), static_cast<ScanRoute>(255)}) {
-            const auto route_id = std::to_string(static_cast<unsigned>(route));
-            JuicerTests::CaseEvent event("route_bridge.invalid_metadata", route_id);
             for (int operation = 0; operation < 4; ++operation) {
                 bool rejected = false;
                 try {
@@ -111,9 +104,7 @@ namespace {
                     return false;
                 }
             }
-            event.passed();
         }
-        JuicerTests::CaseEvent default_event("route_bridge", "default_metadata");
         const Spektrafilm::ScanRouteMetadata defaults;
         const bool defaults_valid = verify(
             defaults.route == ScanRoute::NegativePrintScan && defaults.capturePolarity == ProfilePolarity::Negative &&
@@ -122,27 +113,13 @@ namespace {
                 JuicerTestFixture::Route::default_scan_route_for_polarity(ProfilePolarity::Unsupported) == defaults.route &&
                 JuicerTestFixture::Route::default_scan_route_for_polarity(static_cast<ProfilePolarity>(255)) == defaults.route,
             "route default metadata/polarity fallback mismatch");
-        default_event.complete(defaults_valid);
         return defaults_valid;
     }
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main() {
     try {
-        JuicerTests::CaseLog case_log;
-        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
-            for (const char* id : {"NegativeDirectScan", "NegativePrintScan", "PositiveDirectScan", "PositivePrintScan"})
-                JuicerTests::list_case("route_bridge.metadata", id);
-            for (int index : {std::numeric_limits<int>::min(), -1, 4, std::numeric_limits<int>::max()})
-                JuicerTests::list_case("route_bridge.invalid_option_index", std::to_string(index));
-            for (unsigned route : {4u, 255u})
-                JuicerTests::list_case("route_bridge.invalid_metadata", std::to_string(route));
-            JuicerTests::list_case("route_bridge", "default_metadata");
-            for (const char* id : {"resolve.negative.0", "resolve.negative.1", "resolve.negative.2", "resolve.negative.3", "resolve.positive.0", "resolve.positive.1", "resolve.positive.2", "resolve.positive.3", "resolve.unsupported.0", "resolve.unsupported.1", "resolve.unsupported.2", "resolve.unsupported.3", "abi.failures", "native.invalid-polarity", "native.invalid-selection", "defaults"})
-                JuicerTests::list_case("route_bridge", id);
-            return 0;
-        }
         if (!verify_metadata()) {
             return 1;
         }
@@ -154,9 +131,6 @@ int main(int argc, char** argv) {
         for (std::uint8_t polarity = 0; polarity < expected.size(); ++polarity) {
             for (std::uint8_t selection = 0; selection < expected[0].size(); ++selection) {
                 std::uint8_t route = 99;
-                JuicerTests::CaseEvent event("route_bridge", std::string("resolve.") + (polarity == 0 ? "negative." : polarity == 1 ? "positive."
-                                                                                                                                    : "unsupported.") +
-                                                                 std::to_string(selection));
                 if (!verify(
                         fj_test_resolve_route(polarity, selection, &route) ==
                                 FJ_LEGACY_ROUTE_SUCCESS &&
@@ -177,12 +151,10 @@ int main(int argc, char** argv) {
                         "native route adapter mismatch")) {
                     return 1;
                 }
-                event.passed();
             }
         }
 
         {
-            JuicerTests::CaseEvent event("route_bridge", "abi.failures");
             std::uint8_t route = 99;
             if (!verify(
                     fj_test_resolve_route(3, 0, &route) == FJ_LEGACY_ROUTE_INVALID_POLARITY &&
@@ -192,13 +164,11 @@ int main(int argc, char** argv) {
                     "route ABI failure contract mismatch")) {
                 return 1;
             }
-            event.passed();
         }
 
         Spektrafilm::ScanRoute nativeRoute = Spektrafilm::ScanRoute::PositivePrintScan;
         std::string diagnostic;
         {
-            JuicerTests::CaseEvent event("route_bridge", "native.invalid-polarity");
             if (!verify(
                     !JuicerTestFixture::Route::resolve_scan_route(
                         static_cast<Spektrafilm::ProfilePolarity>(3),
@@ -211,10 +181,8 @@ int main(int argc, char** argv) {
                     "native invalid-polarity mapping mismatch")) {
                 return 1;
             }
-            event.passed();
         }
         {
-            JuicerTests::CaseEvent event("route_bridge", "native.invalid-selection");
             diagnostic.clear();
             if (!verify(
                     !JuicerTestFixture::Route::resolve_scan_route(
@@ -228,11 +196,9 @@ int main(int argc, char** argv) {
                     "native invalid-selection mapping mismatch")) {
                 return 1;
             }
-            event.passed();
         }
 
         {
-            JuicerTests::CaseEvent event("route_bridge", "defaults");
             const auto negativeDefault = JuicerTestFixture::Route::default_scan_route_for_polarity(
                 Spektrafilm::ProfilePolarity::Negative);
             const auto positiveDefault = JuicerTestFixture::Route::default_scan_route_for_polarity(
@@ -245,8 +211,6 @@ int main(int argc, char** argv) {
                     "route default and key fallback mismatch")) {
                 return 1;
             }
-            event.passed();
-            case_log.finish();
             return 0;
         }
     } catch (...) {

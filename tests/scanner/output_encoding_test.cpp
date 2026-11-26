@@ -25,8 +25,6 @@
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
-#include "../ffi/case_results.h"
-#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, const JuicerCuda::ScannerSpectra&, void*, JuicerCuda::CameraFilmLinearExposurePlanes);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, const JuicerCuda::ScannerSpectra&, void*, JuicerCuda::CameraFilmLinearExposurePlanes);
@@ -319,22 +317,15 @@ namespace {
                     ids.push_back("components-" + std::to_string(components) + "/" + pipeline +
                                   "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
                                   "/identity-" + (inputIsOutput ? "on" : "off"));
-        JuicerTests::GtestCohort cases("transfer-" + pipeline + "-components-" +
-                                           std::to_string(components),
-                                       ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
             for (bool cctf : {false, true}) {
                 for (bool inputIsOutput : {false, true}) {
-                    auto row = cases.case_event("components-" + std::to_string(components) + "/" + pipeline +
-                                                "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
-                                                "/identity-" + (inputIsOutput ? "on" : "off"));
                     SCOPED_TRACE(testing::Message() << "space=" << space << " cctf=" << cctf << " identity=" << inputIsOutput << " components=" << components);
                     const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), cctf, inputIsOutput};
                     p.scanStage.scanColor.encoding = encoding(settings);
                     image.clear_output();
                     launch_post(p, image.planes.get());
                     image.compare(image.output.download(), image.oracle(values, settings), !cctf && inputIsOutput);
-                    row.passed();
                 }
             }
         }
@@ -389,16 +380,13 @@ namespace {
         ids.reserve(static_cast<std::size_t>(OutputEncoding::ColorSpace::Count));
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space)
             ids.push_back("space-" + std::to_string(space));
-        JuicerTests::GtestCohort cases("output-space", ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
-            auto row = cases.case_event("space-" + std::to_string(space));
             const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), true, true};
             p.scanStage.scanColor.encoding = encoding(settings);
             image.planes.upload(values);
             image.clear_output();
             launch_post(p, image.planes.get(), effects);
             image.compare(image.output.download(), image.oracle(observed, settings), false);
-            row.passed();
         }
 
         Image offsetImage({5, 5}, 4);
@@ -413,9 +401,8 @@ namespace {
         offsets.mask = offsetMask.get();
         offsets.maskWidth = 4;
         offsets.maskHeight = 4;
-        JuicerTests::GtestCohort offsetCases("gate-offsets", {"direct", "print"});
         const auto verifyOffsets = [&]<typename Params>(std::string_view id) {
-            auto row = offsetCases.case_event(id);
+            SCOPED_TRACE(id);
             const auto params = offsetImage.params<Params>();
             const auto check = [&](std::array<int, 2> origin, float expected) {
                 offsets.defects.roiOffsetX = origin[0];
@@ -443,7 +430,6 @@ namespace {
             check({0, 3}, 39.0F / 128.0F);
             check({1, 0}, 17.0F / 128.0F);
             check({0, 0}, 15.0F / 128.0F);
-            row.passed();
         };
         verifyOffsets.template operator()<JuicerCuda::DirectPipelineRunParams>("direct");
         verifyOffsets.template operator()<JuicerCuda::PrintPipelineRunParams>("print");
@@ -785,9 +771,6 @@ namespace {
         }
         template <typename Params>
         void check_nonfinite_spectral_output(const RouteInputs& inputs, const std::string& caller) {
-            JuicerTests::GtestCohort cases(
-                "spectral-transmission-" + caller,
-                {"nonfinite-normalization", "omitted-overflow", "active-overflow", "zero-weight-overflow", "partial-weights", "positive-float-limit", "negative-float-limit", "positive-dot-overflow", "cancelled-dot-overflow"});
             Image image({17, 9}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
@@ -802,7 +785,6 @@ namespace {
             Buffer densities(3u * image.count);
             Buffer scanOutput(3u * image.count);
             densities.upload(std::vector<float>(3u * image.count, 0.25f));
-            auto nonfinite = cases.case_event("nonfinite-normalization");
             auto spectra = *frame.focused_resources().scannerSpectra;
             spectra.inverseYNormalization = std::numeric_limits<float>::infinity();
             SCOPED_TRACE(caller);
@@ -827,7 +809,6 @@ namespace {
             for (float value : scanOutput.download()) {
                 EXPECT_EQ(std::bit_cast<std::uint32_t>(value), 0u);
             }
-            nonfinite.passed();
 
             auto& color = params.scanStage.scanColor;
             params.scanStage.correctionActive = 0;
@@ -869,49 +850,33 @@ namespace {
             const float omitted = std::numeric_limits<float>::quiet_NaN();
             spectra.wavelengths[0] = {1.0F, 0.0F, 0.0F, 0.0F, omitted, omitted, omitted};
             spectra.wavelengths[1] = {0.0F, 0.0F, 0.0F, 0.0F, 0.25F, 0.5F, 0.75F};
-            auto omittedOverflow = cases.case_event("omitted-overflow");
             evaluate({-64.0F, 0.0F, 0.0F}, spectra, 0, {0.25 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10});
-            omittedOverflow.passed();
 
-            auto activeOverflow = cases.case_event("active-overflow");
             spectra.wavelengths[0].weightX = 0.25F;
             evaluate({-64.0F, 0.0F, 0.0F}, spectra, 1, {});
-            activeOverflow.passed();
 
-            auto zeroWeightOverflow = cases.case_event("zero-weight-overflow");
             spectra.wavelengths[0].weightX = 0.0F;
             evaluate({-64.0F, 0.0F, 0.0F}, spectra, 1, {});
-            zeroWeightOverflow.passed();
 
-            auto partialWeights = cases.case_event("partial-weights");
             spectra.wavelengths[0].weightX = 0.25F;
             spectra.wavelengths[0].weightZ = 0.5F;
             const double transmission = std::pow(10.0, -0.5);
             evaluate({0.5F, 0.0F, 0.0F}, spectra, 0, {0.25 + 0.25 * transmission + 1e-10, 0.5 + 1e-10, 0.75 + 0.5 * transmission + 1e-10});
-            partialWeights.passed();
 
             constexpr float maxDot = std::numeric_limits<float>::max();
             constexpr std::array unaffectedXyz{0.25 + 1e-10, 0.5 + 1e-10, 0.75 + 1e-10};
             spectra.wavelengths[0] = {maxDot * 0.5F, 0.0F, 0.0F, 0.0F, 0.25F, omitted, omitted};
-            auto positiveLimit = cases.case_event("positive-float-limit");
             evaluate({2.0F, 0.0F, 0.0F}, spectra, 0, unaffectedXyz);
-            positiveLimit.passed();
 
-            auto negativeLimit = cases.case_event("negative-float-limit");
             evaluate({-2.0F, 0.0F, 0.0F}, spectra, 1, {});
-            negativeLimit.passed();
 
-            auto positiveDotOverflow = cases.case_event("positive-dot-overflow");
             spectra.wavelengths[0].dyeC = maxDot;
             // A positive dot beyond the Float32 range takes the nonfinite-result path.
             evaluate({2.0F, 0.0F, 0.0F}, spectra, 1, {});
-            positiveDotOverflow.passed();
 
-            auto cancelledDotOverflow = cases.case_event("cancelled-dot-overflow");
             spectra.wavelengths[0].dyeM = -maxDot;
             // An overflowing Float32 product prevents the signed terms from cancelling.
             evaluate({2.0F, 2.0F, 0.0F}, spectra, 1, {});
-            cancelledDotOverflow.passed();
 
             clear_device_flag(params.scanStage.scanErrorFlag);
             require(
@@ -1225,9 +1190,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (const auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.glare_active = false;
@@ -1295,7 +1258,6 @@ namespace {
             EXPECT_EQ(restored.printValues, active.printValues);
             EXPECT_EQ(held.recipeHash, heldHash);
             EXPECT_EQ(held.scannerRecipeHash, heldScannerHash);
-            row.passed();
         }
     }
 
@@ -1313,7 +1275,6 @@ namespace {
                               "/gamut-" + (enabled ? "on" : "off"));
             }
         }
-        JuicerTests::GtestCohort cases("route-gamut-pass", ids);
         for (const auto route : routes) {
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.glare_active = false;
@@ -1332,9 +1293,6 @@ namespace {
             const std::array inputsByPass{&disabled, &enabled, &disabled, &enabled};
             for (std::size_t pass = 0; pass < inputsByPass.size(); ++pass) {
                 const auto* inputs = inputsByPass[pass];
-                auto row = cases.case_event(route_case_key(route) + "/pass-" +
-                                            std::to_string(pass) + "/gamut-" +
-                                            (inputs->outputGamut.enabled ? "on" : "off"));
                 const auto& gamut = inputs->outputGamut;
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " gamut=" << gamut.enabled);
                 std::cout << "prepared gamut route=" << static_cast<int>(route) << " enabled=" << gamut.enabled << '\n';
@@ -1369,7 +1327,6 @@ namespace {
                     EXPECT_EQ(disabled.outputGamut.hash, disabledHash);
                     EXPECT_EQ(enabled.outputGamut.hash, enabledHash);
                 }
-                row.passed();
             }
         }
     }
@@ -1383,9 +1340,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (const auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.glare_active = true;
             controls.values.glare_percent = 2.0f;
@@ -1491,7 +1446,6 @@ namespace {
             EXPECT_FALSE(off.scanner_post_effects_resources(off.workspace_lease(), 0).active);
             EXPECT_FALSE(off.scanner_workspace(off.workspace_lease()).active);
             require(off.finish(nullptr, failure), failure.diagnostic);
-            row.passed();
         }
     }
 
@@ -1507,12 +1461,9 @@ namespace {
                 for (const int space : {0, 7})
                     ids.push_back(route_case_key(route) + "/gamut-" + (gamut ? "on" : "off") +
                                   "/space-" + std::to_string(space));
-        JuicerTests::GtestCohort cases("route-gamut-space", ids);
         for (auto route : routes) {
             for (bool gamut : {false, true}) {
                 for (int space : {0, 7}) {
-                    auto row = cases.case_event(route_case_key(route) + "/gamut-" +
-                                                (gamut ? "on" : "off") + "/space-" + std::to_string(space));
                     SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " space=" << space << " gamut=" << gamut);
                     RouteInputs inputs(runtime, route, space, gamut);
                     if (Spektrafilm::scan_route_is_print(route)) {
@@ -1520,29 +1471,23 @@ namespace {
                     } else {
                         check_route<JuicerCuda::DirectPipelineRunParams>(inputs);
                     }
-                    row.passed();
                 }
             }
         }
     }
 
     TEST_F(ScannerRoutes, NonfiniteSpectralOutputIsReportedByBothScannerCallers) {
-        JuicerTests::GtestCohort cases("caller", {"direct", "print"});
-        auto directRow = cases.case_event("direct");
         RouteInputs direct(runtime,
                            Spektrafilm::ScanRoute::NegativeDirectScan,
                            0,
                            false);
         check_nonfinite_spectral_output<JuicerCuda::DirectPipelineRunParams>(direct, "direct");
-        directRow.passed();
 
-        auto printRow = cases.case_event("print");
         RouteInputs print(runtime,
                           Spektrafilm::ScanRoute::PositivePrintScan,
                           0,
                           false);
         check_nonfinite_spectral_output<JuicerCuda::PrintPipelineRunParams>(print, "print");
-        printRow.passed();
     }
 
     TEST_F(ScannerRoutes, SpectralPlaneMatchesIndependentFloat64Reference) {
@@ -1564,9 +1509,7 @@ namespace {
         for (const auto& row : rows) {
             ids.emplace_back(row.id);
         }
-        JuicerTests::GtestCohort cases("medium", ids);
         for (const auto& row : rows) {
-            auto event = cases.case_event(row.id);
             SCOPED_TRACE(row.id);
             auto controls = RouteInputs::controls_for_route(row.route);
             controls.film_key = row.filmKey;
@@ -1578,7 +1521,6 @@ namespace {
                 RouteInputs inputs(runtime, controls, 0, false);
                 check_spectral_reference<JuicerCuda::DirectPipelineRunParams>(inputs);
             }
-            event.passed();
         }
     }
 
@@ -1593,7 +1535,6 @@ namespace {
         for (const auto route : routes)
             for (const int bits : bitsCases)
                 ids.push_back(route_case_key(route) + "/readback-" + std::to_string(bits));
-        JuicerTests::GtestCohort cases("route-readback-bits", ids);
         for (const auto route : routes) {
             RouteInputs inputs(runtime, route, 0, false);
             const auto otherRoute = static_cast<Spektrafilm::ScanRoute>(static_cast<unsigned>(route) ^ 1U);
@@ -1609,7 +1550,6 @@ namespace {
             // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
             // with the failed DIR channels in bits 9-11.
             for (const int bits : bitsCases) {
-                auto row = cases.case_event(route_case_key(route) + "/readback-" + std::to_string(bits));
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " bits=" << bits);
                 JuicerCuda::Failure error;
                 auto submitted = prepare_route(inputs, image);
@@ -1663,7 +1603,6 @@ namespace {
                 // Inactive-frame failure cannot retain the prior DIR disposition.
                 EXPECT_EQ(next.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed);
                 EXPECT_EQ(flag, nullptr);
-                row.passed();
             }
         }
     }
@@ -1677,9 +1616,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("encoding-pair", ids);
         for (const auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.values.output_cctf_encoding = 1;
             RouteInputs encoded(runtime, controls, 0, false);
@@ -1702,14 +1639,12 @@ namespace {
             EXPECT_NE(encodedBefore.output, linearBefore.output);
             EXPECT_EQ(encodedAfter.output, encodedBefore.output);
             EXPECT_EQ(linearAfter.output, linearBefore.output);
-            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {
         const std::vector<std::string> scenarios{
             "retained-default", "retained-gamma", "illuminant-change", "main-filter-change", "preflash-enabled", "preflash-disabled", "normalization-disabled", "normalization-enabled", "print-profile-change"};
-        JuicerTests::GtestCohort cases("print-cache-scenario", scenarios);
         JuicerTestSupport::PreparationInput defaultControls =
             RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
         JuicerTestSupport::PreparationInput gammaControls = defaultControls;
@@ -1719,24 +1654,18 @@ namespace {
 
         auto check_print = [&](const char* scenario, JuicerTestSupport::PreparationInput controls) {
             SCOPED_TRACE(scenario);
-            auto row = cases.case_event(scenario);
             RouteInputs inputs(runtime, std::move(controls), 0, false);
             check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
-            row.passed();
         };
 
         {
             SCOPED_TRACE("retained default publication");
-            auto row = cases.case_event("retained-default");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
-            row.passed();
         }
         {
             SCOPED_TRACE("retained gamma publication");
-            auto row = cases.case_event("retained-gamma");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedGamma);
-            row.passed();
         }
 
         JuicerTestSupport::PreparationInput illuminantControls = defaultControls;
@@ -1773,9 +1702,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (const auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.film_key = "kodak_portra_400";
@@ -1795,7 +1722,6 @@ namespace {
             EXPECT_NE(before.output, after.output);
             EXPECT_EQ(restored.spectra, before.spectra);
             EXPECT_EQ(restored.output, before.output);
-            row.passed();
         }
     }
 
@@ -1808,9 +1734,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("spectral-packet", ids);
         for (const auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             const RouteInputs inputs(runtime, route, 0, false);
             FjPreparedStateView held{};
             std::array<char, 256> diagnostic{};
@@ -1841,7 +1765,6 @@ namespace {
                                     ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs)
                                     : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
             EXPECT_EQ(actual.spectra, expected);
-            row.passed();
         }
     }
 } // namespace
@@ -1850,9 +1773,7 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
-    case_log.finish();
     return result;
 } catch (...) {
     return 1;

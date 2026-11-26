@@ -1,7 +1,4 @@
 use film_juicer_core::reconstruction::{self, Input, Method, TcError};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn constant_lut(negative: bool) -> reconstruction::FilmTcLut {
     let mut spectra = vec![0.0; reconstruction::SPECTRA_SAMPLE_COUNT];
@@ -27,12 +24,26 @@ fn constant_lut(negative: bool) -> reconstruction::FilmTcLut {
 #[test]
 fn owned_result_survives_source_expiry_and_preserves_signed_exposure() {
     let polarities = [(false, "negative"), (true, "positive")];
-    let mut cases = RowCases::new(
-        "tc-lut-polarity-results",
-        polarities.iter().map(|(_, id)| *id),
+    let cases_ids: Vec<_> = IntoIterator::into_iter(polarities.iter().map(|(_, id)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "tc-lut-polarity-results"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "tc-lut-polarity-results"
     );
     for (negative, id) in polarities {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let lut = constant_lut(negative);
         let expected = if negative {
             [-1.0_f32, -2.0, -4.0]
@@ -60,9 +71,15 @@ fn owned_result_survives_source_expiry_and_preserves_signed_exposure() {
             }
         });
         std::thread::spawn(move || drop(lut)).join().unwrap();
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 #[test]
 fn consuming_transfer_preserves_original_allocation() {

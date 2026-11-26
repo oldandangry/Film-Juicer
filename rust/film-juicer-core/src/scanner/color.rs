@@ -180,7 +180,6 @@ impl Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     fn words(values: &[f32]) -> Value {
@@ -202,12 +201,27 @@ mod tests {
         .unwrap();
         assert_eq!(fixture["schema"], "scanner-binding-fixture-v1");
         let rows = fixture["vectors"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "scanner-spectral-binding",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-spectral-binding"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "scanner-spectral-binding"
         );
         for row in rows {
-            let case = cases.case(row["id"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["id"].as_str().unwrap())).to_owned();
             assert_eq!(row["schema_word"], 1);
             assert_eq!(row["encoding_schema"], 1);
             assert_eq!(row["encoding_kind"], 3);
@@ -257,9 +271,15 @@ mod tests {
                 ),
                 expected
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn independent_complete_values_and_owned_results() {
@@ -272,21 +292,53 @@ mod tests {
         )
         .unwrap();
         let rows = fixture["cases"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "scanner-color-inputs",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-color-inputs"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "scanner-color-inputs"
         );
         let successful = rows
             .iter()
             .filter(|row| row["input"]["illuminant_hash"].as_u64().unwrap() != 0)
             .map(|row| row["id"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
-        let mut result_cases = RowCases::new("scanner-color-results", successful);
+        let result_cases_ids: Vec<_> = IntoIterator::into_iter(successful)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !result_cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-color-results"
+        );
+        let result_cases_count = result_cases_ids.len();
+        let mut result_cases_remaining = result_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            result_cases_remaining.len(),
+            result_cases_count,
+            "duplicate case IDs: {}",
+            "scanner-color-results"
+        );
         let mut held = Vec::new();
         for row in rows {
             let i = &row["input"];
             let id = row["id"].as_str().unwrap();
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let input = ColorInput {
                 medium: i["medium"].as_u64().unwrap() as u8,
                 output_space: i["output_space"].as_u64().unwrap() as u8,
@@ -299,16 +351,25 @@ mod tests {
             };
             if input.illuminant_hash == 0 {
                 assert!(matches!(Color::new(input), Err(ColorError::Illuminant)));
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
                 continue;
             }
             let value = Color::new(input).unwrap();
             held.push((id.to_owned(), value, row["expected"].clone()));
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         for (id, value, expected) in held {
-            let case = result_cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(words(value.cat02()), expected["cat02"]);
             assert_eq!(words(value.xyz_to_rgb()), expected["xyz_to_rgb"]);
             assert_eq!(words(value.illuminant_xyz()), expected["illuminant_xyz"]);
@@ -335,9 +396,15 @@ mod tests {
                 words(value.dwg_to_output()),
                 expected["encoding"]["dwg_to_output"]
             );
-            case.passed();
+            assert!(
+                result_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        result_cases.finish();
+        assert!(
+            result_cases_remaining.is_empty(),
+            "missing comparisons: {result_cases_remaining:?}"
+        );
     }
     #[cfg(feature = "test-support")]
     #[test]
@@ -356,9 +423,26 @@ mod tests {
             (3, ColorError::Cat02Boundary),
         ];
         let ids = ["output-boundary", "cat02-boundary"];
-        let mut cases = RowCases::new("scanner-color-faults", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "scanner-color-faults"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "scanner-color-faults"
+        );
         for ((operation, error), id) in rows.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             testing::arm_color(operation, 2, 1);
             assert!(matches!(
                 Color::new(ColorInput {
@@ -374,8 +458,14 @@ mod tests {
             assert!(matches!(Color::new(input), Err(found) if found == error));
             assert!(Color::new(input).is_ok());
             testing::clear_color();
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

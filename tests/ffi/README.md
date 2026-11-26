@@ -1,74 +1,16 @@
 # Foreign ABI evidence
 
-The ABI declarations, probes and binding procedure below describe their
-current consumers. For cleanup, the [contributor checks](../../CONTRIBUTING.md#required-checks)
-supersede the migration verifier, receipt and timeout instructions. The
-tagged baseline retains those commands for reproducing its results.
+See [native ABI and binding maintenance](../../docs/ffi.md) for the active
+ABI inventory and regeneration commands.
 
-`Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
-C++20 consumers. It compares 615 size, alignment, offset, tag and flag facts,
-including the opaque owner's pointer and the nullable abort callback. Both
-native languages check the reviewed values in `cuda_abi_facts.inc`. Bindgen's
-constant layout assertions also compile in Rust. All six operation signatures
-and the callback signature are type-checked without referencing or defining the
-new CUDA operations in a linked binary. The fixture contains no CUDA build or
-render implementation.
+## Rust borrow coverage
 
-`Rust.Bridge` additionally runs the plugin's internal ABI tests. The fixture's
-Test exports are gated by the nondefault `test-support` feature selected by
-CMake for facade/fault consumers with `BUILD_TESTING=ON`. Shipping and production
-witnesses always select the separate `cargo/production` archive; test-support
-consumers select `cargo/test-support`. Enabling tests does not switch shipping
-features. Product builds consume committed bindings without bindgen or libclang.
-See the [ownership and maintenance map](../../CONTRIBUTING.md#ownership-and-maintenance-map).
+The paired `RenderState::s_inverse` examples exercise a successful borrow and
+reject dropping the backing state before the borrowed value's final use. Run
+`cargo test --workspace --doc --locked` or add `--release` for Release. The
+[tagged FFI guide][tagged-ffi] records the migration compiler probes and their coverage.
 
-## OFX C ABI evidence
-
-`Ffi.Host.OfxAbi` links the real test-support Rust archive and native core with
-independent strict C11 and C++20 consumers of `native/ofx_bindings.h`. Its six
-custom cases are `layout`, `constants`, `signatures`, `callbacks`, `parameters`
-and `messages`. The frozen inventory in `ofx_abi_facts.inc` and exact field types
-in `ofx_abi_test.h` come from the vendored headers, independently of bindgen:
-
-- 111 layout observations: size/alignment of 11 complete records, status/time
-  and six distinct opaque handles, plus all 73 field offsets.
-- Exact declared types of all 73 fields, including signed rectangle/point
-  coordinates, unsigned plugin versions, pointer constness and all 50 suite slots.
-- 17 numeric constants and 143 exact string values including terminating NUL.
-- 53 callback/slot signatures, preserving nullable C function pointers and
-  variadic tails. Both native languages and handwritten Rust type-check them.
-
-The callbacks case exercises generated Host/Plugin fields in both directions
-with exact tokens, arguments, writes and status. The parameters case calls actual
-C variadic stubs through generated slots for int, bool, choice, string-choice,
-double, double2D and double3D: current/at-time get/set, 28 calls. The message
-case calls the generated V1 slot with literal `%s` and text containing `%`.
-Fact counts are checked before indexed comparisons and mismatch reports identify
-the field/constant. Rust exports and native spans are test-support-only and
-immutable/library-lived; fixture tokens are never dereferenced. Rust unit tests
-compile declarations and type evidence without linking the C fixture stubs.
-
-The selected records are Host, Plugin, PropertySuiteV1 (18 slots),
-ParameterSuiteV1 (18), ImageEffectSuiteV1 (13), MessageSuiteV1 (1), RangeD,
-PointI/D and RectI/D. Complete suite layouts retain unused slots. The standard discovery exports are defined by `native/ofx_exports.cpp` and
-delegate count and descriptor lookup to Rust. Rust owns OFX callbacks, lifecycle,
-reentry, image ownership and borrowed host strings; native CUDA Root retains CUDA
-resources and frame admission. Installed Resolve behavior remains outside these
-fixture claims.
-
-Run through the maintained owner in any native preset:
-
-```sh
-python -B scripts/verify.py development --preset linux-debug \
-  --tests Ffi.Host.OfxAbi --runtime host --run-id ofx-abi-change
-```
-
-This product-linked host test requires CUDA compilation and executes no GPU
-work. `Ffi.Host.BuildArtifacts` includes it in its actual native link/feature
-closure; selecting that registration builds the broader artifact consumers
-without running their unrelated runtime tests. New ABI acceptance also requires
-the two native stable Release OFF production-contract closures before either
-Release ON restoration, followed by the affected ON checks.
+[tagged-ffi]: https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/ffi/README.md
 
 ## Profile and resource terminology
 
@@ -121,10 +63,6 @@ names remain governed by `native/juicer_cuda_api.h`.
 Prepare and run the focused evidence through the maintained owner (substitute
 any of the four supported presets):
 
-```sh
-python -B scripts/verify.py development --preset linux-debug \
-  --tests Ffi.Host.CudaAbi Rust.Bridge --runtime host
-```
 
 ## Native owner lifecycle
 
@@ -213,117 +151,18 @@ operations directly.
 
 ## Release production probes
 
-With testing ON, `Ffi.Host.PreparedValues` and
-`Ffi.Host.OutputColorValues` register complete prepared-value and output-color
-checks as two strict-C11 cases. Their test-only C sources call direct checked
-facade operations; the prepared-values case consumes the existing generated
-`production-probes/production-film-expected.h` and synthetic duplicate-film
-fixture arguments.
+Use the [testing-OFF package commands](../README.md#release-package-checks)
+for the strict C11 probes. `JuicerProductionOfxProbe` loads the staged module and
+checks discovery and the plug-in descriptor. `JuicerProductionCudaAbiProbe`
+checks CUDA ABI layouts and signatures, owner lifecycle, the reflected spatial
+DIR boundary and diffusion failure clearing. CMake links the shipping module
+and the CUDA ABI probe to the production Rust archive. The package export check
+verifies that the staged module exports exactly `OfxGetNumberOfPlugins` and
+`OfxGetPlugin`.
 
-The Release testing-OFF contract uses strict-C11 standard OFX discovery and
-native CUDA ABI probes plus the prepared-render/native-CUDA contract. It records
-ten logical commands in `production-contract-v2`; the offline reader continues
-to accept historical v1 reports. The ON value fixtures are not OFF probes.
-
-`python -B tests/ffi/production_contract.py --preset <release-preset>
---artifacts <directory> --generate-expected-header` runs the same fixture conversion without native
-commands or driver access. It generates a C header from existing expectations;
-it does not regenerate scientific fixtures. The OFF contract writes a v2 command report for standard discovery, native ABI
-and actual prepared rendering. It does not generate the ON value fixture header;
-the offline collector continues to read historical v1 command reports.
-
-## Binding maintenance
-
-The only regeneration entry point is `scripts/regenerate-rust-bindings.py`.
-Install **bindgen-cli 0.72.1** separately on each native host:
-
-```sh
-cargo +1.98.1 install bindgen-cli --version 0.72.1 --locked
-```
-
-Use native x64 tools. Linux generation is qualified with Clang/libclang 22.1.8;
-Windows uses VS 18's Clang/libclang 22.1.3. Both use the repository's Rust 1.98.1
-rustfmt component, `rustfmt 1.9.0-stable (48a229ceae 2026-09-01)`. The entry point
-checks each version and records the exact commands and output SHA-256.
-
-Linux example (paths may be supplied explicitly for a local tool installation):
-
-```sh
-python3 scripts/regenerate-rust-bindings.py \
-  --bindgen "$HOME/.cargo/bin/bindgen" \
-  --clang /usr/bin/clang-22 \
-  --libclang /usr/lib/llvm-22/lib/libclang-22.so.1 \
-  --rustfmt "$HOME/.cargo/bin/rustfmt" --check
-```
-
-Windows PowerShell example:
-
-```powershell
-$llvm = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin'
-python scripts/regenerate-rust-bindings.py `
-  --bindgen "$env:USERPROFILE\.cargo\bin\bindgen.exe" `
-  --clang "$llvm\clang.exe" --libclang "$llvm\libclang.dll" `
-  --rustfmt "$env:USERPROFILE\.cargo\bin\rustfmt.exe" --check
-```
-
-When invoking PowerShell from WSL, first set
-`$env:PATHEXT = '.COM;.EXE;.BAT;.CMD'`. The pinned Rust installation must be
-selected in that environment; Windows tools do not qualify Linux generation.
-
-The default `--api cuda` preserves the existing CUDA generation command.
-Remove `--check` to update `rust/film-juicer-plugin/src/cuda/sys.rs`. Review the
-header, generated diff and explicit C/Rust fact lists together. Never regenerate
-layout expectations during ordinary tests. CUDA generation uses each host's native
-target, C11 freestanding mode and only that Clang's resource headers; there is
-no dependency on CUDA, OFX or a system SDK's definitions. The bindgen Rust syntax
-target is 1.85 (its supported stable syntax baseline); actual compilation and
-formatting use the pinned Rust 1.98.1 toolchain. Output uses native `usize` and
-`isize` for address/count and signed-stride types and is identical on both hosts.
-
-Bindgen 0.72.1 with Clang 22 emits warnings for unselected builtin type cursors.
-They remain visible in generation logs. The emitted allowlist contains complete
-named C fields and no opaque storage replacement except the intentional
-incomplete `FjCuda` handle. C/C++/Rust field evidence and byte-for-byte native
-regeneration qualify this output; these checks do not prove render lifetime.
-The CUDA inventory contains 624 facts. It pins the 752-byte `FjFilmGrain`
-layout, including the signed double `sample_origin` at byte 736.
-
-For OFX, add `--api ofx` to the same native command. The wrapper includes
-`ofxCore.h`, `ofxProperty.h`, `ofxParam.h`, `ofxImageEffect.h`, `ofxMessage.h`,
-`ofxImageEffectExt.h` and `ofxParamExt.h` from
-`third_party/ofxs/OpenFX-1.4/include/`; image-effect transitive headers are
-read without importing their unrelated suites. The only vendored compatibility
-patch selects `<cstdarg>` in C++ and `<stdarg.h>` in C in `ofxParamExt.h`.
-All foreign declarations, macros and identifiers remain unchanged.
-
-The exact, explicit allowlists are `OFX_TYPES` and `OFX_CONSTANTS` in
-[`regenerate-rust-bindings.py`](../../scripts/regenerate-rust-bindings.py).
-The 14 named types and their referenced opaque handles implement the record
-inventory above. The 160 constants cover current descriptor, dispatch,
-property/parameter, image/render and message readers, including string-choice
-and the four CUDA properties. `tests/ofx/descriptor_manifest.json` is an
-expectation reader; it does not replace the vendored declarations. Generic
-OFXS suite fetches alone do not justify additional capabilities.
-
-OFX uses the same pinned bindgen/Clang/rustfmt versions and native targets
-`x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`. Its flags add exact anchored
-allowlists, `--clang-macro-fallback --default-macro-constant-type signed`
-(for cast status macros), and the explicit vendored `-I` root to the common
-`-x c -std=c11 -ffreestanding -nostdinc` and Clang resource include arguments.
-Generation disables incidental include discovery and clears inherited bindgen
-and C include overrides. Output logs contain wrapper/vendor hashes, full command,
-allowlists, target and versions. It never regenerates CUDA as a side effect.
-
-Native Linux Clang/libclang 22.1.8 and Windows 22.1.3 reproduce one common
-`rust/film-juicer-plugin/src/ofx/sys.rs`, SHA-256
-`a8c8446a08804cf2a992731970038ffaeb87fb625a9b36fea53dbd7ba0880bae`.
-Reproduce on both native hosts before updating that identity or selecting target
-files; a Linux cross-target run does not qualify Windows output. Product builds
-consume committed declarations without a build script, bindgen or libclang.
-Ordinary tests never regenerate bindings or independently frozen expectations.
-
-References: [bindgen release](https://github.com/rust-lang/rust-bindgen/releases/tag/v0.72.1),
-[libclang requirements](https://rust-lang.github.io/rust-bindgen/requirements.html).
+The staged prepared-render and Film v1 witnesses run with GPU CTest in the
+testing-enabled build.
+`Ffi.Host.OutputColorValues` remains a test-support host probe.
 
 ## Raw CUDA frame inspection
 
@@ -380,8 +219,9 @@ The checked test facade returns one completed immutable owner or a typed failure
 arrays are not detached application storage. Create nulls the owner output before
 work, view clears every defined field on failure, and release consumes one hold
 even when diagnostic admission fails. The test facade calls the same private
-construction and projection as production. Rust compiler fixtures reject public
-construction, Default, mutation and detached borrowing in both feature forms.
+construction and projection as production. The [tagged FFI guide][tagged-ffi]
+records the compiler probes for public construction, `Default`, mutation and
+detached borrowing in both feature forms.
 
 The three asset-bound illuminant, input-hull and output-boundary families share
 the entries used by complete preparation. Their holds retain live backing across
@@ -426,10 +266,6 @@ These focused checks supplement the affected family, owner and downstream GPU
 groups. They do not establish installed-host or visual acceptance.
 
 ## Native render entry
-
-`Ffi.Host.NativeBoundary` checks the native message/OFX exclusion, direct C++
-production routing, the implemented operation set, and absence of live-context
-reset calls. These structural checks supplement the runtime evidence below.
 
 `Ffi.Gpu.PreparedBoundary.*` calls the real `fj_cuda_render` from C11 and checks
 bit-exact equivalence between cold/warm C-boundary execution, the direct C++
@@ -556,7 +392,7 @@ signatures against Rust, exact exposure/CMY/layer transport using analytical
 center/endpoint expectations, metadata/default tags, nullable spectra, failure
 outputs, diagnostic bounds/uninitialized output, concurrent immutable reads,
 release pairing and independent-copy lifetime.
-`Rust.Bridge` compares projection pointers/bits and tokens directly with the
+The plug-in's Rust cases compare projection pointers, bits and tokens with the
 complete core owner, tests retention after explicit cache release, and uses Weak
 for reclamation on release (including malformed diagnostics), unpublished
 input/capacity failure and contained panic. No test dereferences an expired pointer.
@@ -581,9 +417,10 @@ allocation aborts remain outside panic recovery. Normal `BUILD_TESTING=OFF`
 does not compile this fixture facade. Safe production owner/projection modules
 remain available; the non-default `test-support` feature enables the fixture interface.
 
-After configuring/building with tests explicitly ON, run the new boundary and
-its Rust owner checks with `ctest --preset <preset> -R
-'^(Ffi.Host.ProfileOwner|Rust.Bridge)$' --output-on-failure`. The fixture record is named `FjFilmFixtureView`; its 264-byte layout and
+After building with tests on, run `ctest --preset <preset> -R
+'^Ffi[.]Host[.]ProfileOwner$' --no-tests=error --output-on-failure`.
+Run the Rust companion cases through [workspace nextest](../README.md).
+The fixture record is named `FjFilmFixtureView`. Its 264-byte layout and
 numerical oracle remain independent of the production profile records.
 
 ## Production catalog bridge
@@ -690,7 +527,7 @@ numerical oracle or fixture tolerance. Full-resolution captures use Hanatos and
 remain separate evidence.
 
 After configuring/building with tests ON, run the affected host groups with
-`ctest --preset <preset> -R 'Spectral|Rust.Bridge|Quality.RustBoundaries|NativeBoundary'`.
+`ctest --preset <preset> -R 'Spectral'`.
 Capacity receipts report requested payload bytes and actual capacities, excluding
 allocator metadata/RSS. Each LUT has one 11,943,936-byte Rust source; opaque raw
 holds retain its backing without an equally sized native copy. Source and
@@ -752,9 +589,9 @@ asset panic/capacity cases exercise the shared admission boundary separately.
 address/content/identity reuse across Hanatos/Mallett direct/print CCTF-only and
 warm transitions. It records bounded preparation times and retires only its idle
 test-owned context between completed triplets.
-The host groups execute no device operation. Ordinary CTest processes have no
-elapsed deadline (`TIMEOUT 0`); explicit fault-control bounds remain. No ordinary
-run generates or changes expectations.
+The host groups execute without a device. Ordinary CTest processes have a
+300-second timeout. Explicit fault-control bounds still apply. Test runs read
+the checked-in expectations.
 
 `fixtures/color/manifest.json` records native-parent provenance, representation,
 case membership and exact identity order. Finite values, signed zero and infinity
@@ -882,8 +719,9 @@ metadata/RSS; Rust capacities are cumulative allocations, not a live high-water 
 Closed TLS fault selectors prove intended raw-export consumption and independence
 from CSV/color slots and the facade's own slot. Checked scratch-capacity errors map
 to AllocationFailure in production. Panic containment does not recover ordinary
-Box/Arc allocator abort. Compiler probes reject default/field construction and
-mutation of private `LensInput`; the safe core exposes only slice/value APIs.
+Box/Arc allocator abort. The safe core exposes slice and value APIs for
+`LensInput`. The [tagged FFI guide][tagged-ffi] records the compiler probes for
+default and field construction and mutation.
 
 Construction/admission tests retain old publications while rejecting failed
 replacement and allow subsequent recovery. EQUAL construction fails before
@@ -923,10 +761,9 @@ release, exact operation counts and recovery. A controlled CMF scaling reaches
 actual float-reciprocal overflow and proves inverse suppression. Fixture-only
 replacement of C++ allocation rejects the actual 324-byte native vector request;
 Rust fixed-array math allocates no heap. Reported vector capacities are not RSS
-or live-peak measurements. Compiler probes accept normal result consumers and
-reject Default, field construction, direct mutation and readonly-view mutation
-with and without test support. Definition-specific source controls guard the
-removed native producers.
+or live-peak measurements. The [tagged FFI guide][tagged-ffi] records compiler
+coverage of normal result consumers, construction and mutation with and without
+test support, along with the source controls for the retired native producers.
 
 Products run in disposable resource copies under the selected validation tree.
 These groups require no driver/device at runtime. Existing scanner GPU reuse,
@@ -1003,7 +840,7 @@ is automated numerical capture; no visual comparison images are generated.
 
 ## Output gamut construction
 
-`Rust.Core` (the `output_gamut` integration binary) checks all nine transforms and complete 64×720 boundary
+The Rust `output_gamut` integration binary checks all nine transforms and complete 64×720 boundary
 arrays against the four-preset native characterizations, including ordered
 primitives, intermediate cubics, platform libm bits and raw identities.
 `Gamut.Host.Output.boundary` checks both production exports and direct facades,
@@ -1033,12 +870,8 @@ exercises the same actual fallible reserve boundary separately.
 
 The optional Debug-only `JUICER_PREPARED_FFI_SANITIZERS` CMake option defaults to
 OFF. For a focused run, configure either native Debug preset with
-`-DBUILD_TESTING=ON -DJUICER_PREPARED_FFI_SANITIZERS=ON`. Build
-`JuicerPreparedSanitizerTests` and `JuicerPreparedSanitizerControl` with
-`scripts/verify.py prepare --preset <preset> --testing ON --targets` followed by
-those two target names. Run the four pilot registrations with
-`ctest --preset <preset> -L sanitizer`. Complete qualification uses the scope
-specified by its checkpoint.
+`-DBUILD_TESTING=ON -DJUICER_PREPARED_FFI_SANITIZERS=ON`. Build the default target with `cmake --build --preset <preset>`. Run the four
+pilot registrations with `ctest --preset <preset> -L '^sanitizer$' --no-tests=error --output-on-failure`.
 
 The pilot compiles the prepared-host sources, the spatial-optics fixture, the
 fault control, and production `native/juicer_cuda_prepared.cpp` and
@@ -1046,13 +879,11 @@ fault control, and production `native/juicer_cuda_prepared.cpp` and
 `-fsanitize=address,undefined -fno-sanitize-recover=undefined`; Linux also retains
 frame pointers. The prepared suite uses the configured preset at compilation
 and runtime to select frozen projection inputs. It links the Rust test-support
-archive and uses the shared GoogleTest runner for case logging. The control
+archive and uses GoogleTest. The control
 executable links the production Rust archive. Four host processes cover the
 prepared-host cases, a clean runtime control, production-decoder use-after-free
 and signed integer overflow. Each intentional fault must exit nonzero and report
-its expected sanitizer diagnostic. Raw failure output and executable/log hashes
-are retained under the preset's `prepared-sanitizers/` artifact directory in
-separate fresh run directories.
+its expected sanitizer diagnostic. CTest records the raw control output.
 
 Windows uses the selected Clang compiler's ASan DLL and symbolizer directories in
 these tests' environment only; configure fails if the required DLL is missing.
@@ -1075,8 +906,7 @@ changes. This pilot adds no CI lane.
 
 ## Bounded cache and owner repetition
 
-For this explicit maintenance campaign, prepare the owning native Debug targets
-through `verify.py prepare` before running this exact
+For this explicit maintenance campaign, build the testing-enabled native Debug preset before running this
 seven-group host cohort (replace `linux-debug` with `windows-clang-debug` on
 native Windows). Create a fresh campaign directory under the preset's validation
 root and retain the verbose output, log and JUnit from that invocation:
@@ -1095,13 +925,8 @@ ctest --preset linux-debug --parallel 1 --no-tests=error --repeat until-fail:20 
 Confirm discovery contains exactly these seven groups before execution. Each
 successful invocation runs 140 independent test processes. Repetition launches
 fresh processes rather than looping inside a retained process owner. Existing
-arguments and `RUN_SERIAL`/resource-lock properties remain. Ordinary processes
-use `TIMEOUT 0` with no elapsed deadline. This cohort executes no GPU work or
-Cargo operation. Keep configuration/build
-writers and other CTest invocations out of the same build tree while it runs.
-Keep the finite repetition count and injected-control bounds. Historical campaign
-deadlines and timings retain their observation-time meaning; ordinary execution
-now has no outer elapsed kill deadline.
+arguments and resource locks apply, with the 300-second per-test timeout.
+Run one CTest invocation per build tree.
 
 The cache test retains its W1–W7 acknowledged gates, matching/conflicting fixed
 operands, all table-word comparisons, fault codes, generation exhaustion,
@@ -1112,43 +937,18 @@ PRNG; fixture bytes and forced schedules are the reproducibility inputs. Do not
 add shuffling, change seeds in another test, widen numeric bounds or regenerate
 fixtures for this investigation.
 
-`until-fail` stops a test at its first failure. Preserve that original log and
-receipt, stop the investigation on any failure/skip/timeout or missing group,
+`until-fail` stops a test at its first failure. Preserve that original log,
+stop the investigation on any failure, skip, timeout or missing group,
 and diagnose before a separately named retry. A later pass cannot explain away
 an earlier failure; do not substitute `until-pass` or `after-timeout`. JUnit
 records the final result per group rather than every repeat: retain verbose
 output and verify all 20 executions per named group. A clean bounded run proves
 these repetitions, not exhaustive interleaving coverage or future absence of
 flakiness. No required group moves to optional/nightly execution.
-# CMake/Cargo build regression
+## CMake and Cargo builds
 
-`Ffi.Host.RustBuild` runs `run_rust_build_contract.py` with the configured native
-Cargo, CMake, Ninja and C compiler. It exercises Debug and Release in miniature
-workspaces isolated from the product Cargo directory: fresh/no-op completion,
-test-only inputs, missing outputs, source/feature/glob propagation and failed
-Cargo retries. Command logs and failing inputs remain under the preset's
-`ffi/rust-build/` validation directory; successful fixture build caches are
-removed. No GPU or reference-generation environment is required.
-
-`Ffi.Host.OutputColor` checks the completed fixed output-color export and its
-independent direct facade. Its frozen native characterization covers all nine
-outputs and the distinct linear DWG source, exact f32 matrix/coefficient words,
-canonical-zero component hashes, scanner fields and original fallback tags.
-C11/C++/Rust assert the coordinated encoding/preparation/enclosing layouts.
-Fresh concurrent first access, independently valid output clearing, canaries,
-strict raw tags, status-only faults and operation-specific consume-once panics
-remain separate witnesses. The catalogue has no fallible allocation contract.
-
-`Ffi.Host.PreparedProjection` and the complete C render fixtures carry schema 1
-encoding records through normal and cold preparation. Missing/unknown schemas
-and kinds outside 0–5 fail even with CCTF disabled. Admission binds caller-owned
-values without Rust calls or coefficient-based readiness. Both routes, both
-encoding flags, complete value round trips and source expiry are covered.
-Cold callers remain responsible for matching tags, prepared values, identities
-and live initialized aligned extents. The scanner double encoder is a continuing
-test-only oracle with frozen native f32 inputs/matrices and its original f64
-arithmetic; candidate setup uses migrated preparation.
-
+The [build guide](../../docs/building.md) documents default builds, separate
+production archives, and direct CTest and Cargo invocations.
 
 ### Shared capture storage
 
@@ -1197,13 +997,14 @@ failure remain separate witnesses; the vanished C++ translator is not recreated.
 The raw result is complete input preparation, not a completed render state.
 
 `Ffi.Host.FilmInput` and `Film.Host.InputProducts` own ABI/value/failure and actual
-consumer coverage. `Quality.RustBoundaries` rejects default, field, mutation and
-partial construction; source review/guards restrict internal complete-color
-assembly to the recipe constructor. The existing input-color, exposure,
+consumer coverage. The [tagged FFI guide][tagged-ffi] records
+`Quality.RustBoundaries` coverage of default, field and partial construction and
+mutation. Source review restricts internal complete-color assembly to the recipe
+constructor. The existing input-color, exposure,
 development and scanner-reuse groups retain their independent expectations.
-The Release production gate compares C11 fixed values with the frozen native
-capture, checks failure/clearing behavior and scans archive/module/PDB artifacts
-for fixture/fault isolation. No per-frame preparation or CPU pixel path is added.
+The [tagged FFI guide][tagged-ffi] records the retired Release checks for Film
+Input values against the frozen native capture, failure clearing, and
+fixture/fault isolation scans of the archive, module and PDB.
 
 ## Capture-film DIR and density bounds
 
@@ -1231,10 +1032,12 @@ callers authorize initialized live storage, and views expire on consuming releas
 
 See [immutable native characterization](../film/dir-fixtures/README.md).
 `Ffi.Host.FilmRecipes` covers raw/C11/facade ownership and
-`Film.Host.DirDensityProducts` covers complete callers/admission. Construction
-compiler controls reject Default, partial field assembly, private storage access
-and mutation. Both normal Release production probes cover the new symbols,
-C11 values/failures and absence of test fault/facade code in final artifacts.
+`Film.Host.DirDensityProducts` covers complete callers/admission. The
+[tagged FFI guide][tagged-ffi] records compiler coverage of `Default`, partial
+field assembly, private storage access and mutation, as well as the historical
+Release artifact scans. The current [Release CUDA ABI probe](#release-production-probes)
+exercises the reflected spatial DIR boundary, including failure clearing and
+independent owner expiry.
 
 The spatial-optics owner is `film_juicer_core::optics::Recipe`: a complete fixed
 value with private storage and named read-only getters. Actual complete-state

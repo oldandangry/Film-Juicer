@@ -945,7 +945,6 @@ pub fn diffusion(active: bool, family: i32, values: [f64; 9]) -> DiffusionParams
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
@@ -1182,13 +1181,26 @@ mod tests {
         let rows = captured["cases"].as_array().unwrap();
         assert_eq!(rows.len(), 553);
         let mut mismatches = Vec::new();
-        let mut cases = RowCases::new(
-            "optics-frozen-native-words-identities-failures",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "optics-frozen-native-words-identities-failures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "optics-frozen-native-words-identities-failures"
         );
         for row in rows {
             let id = row["id"].as_str().unwrap();
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             match Recipe::new(params(&row["input"])) {
                 Ok(recipe) => {
                     let actual = project(&recipe);
@@ -1196,7 +1208,10 @@ mod tests {
                         mismatches
                             .push(json!({"id":row["id"],"expected":row["recipe"],"actual":actual}));
                     } else {
-                        case.passed();
+                        assert!(
+                            cases_remaining.remove(&case),
+                            "unexpected or repeated comparison: {case}"
+                        );
                     }
                 }
                 Err(error) => {
@@ -1206,7 +1221,10 @@ mod tests {
                             json!({"id":row["id"],"error":actual,"expected":row["diagnostic"]}),
                         );
                     } else {
-                        case.passed();
+                        assert!(
+                            cases_remaining.remove(&case),
+                            "unexpected or repeated comparison: {case}"
+                        );
                     }
                 }
             }
@@ -1222,22 +1240,34 @@ mod tests {
             "{} frozen native optics mismatches",
             mismatches.len()
         );
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn completed_profile_defaults_are_copied_and_owned() {
         let captured = fixture("defaults");
         let rows = captured["completed_profile_defaults"].as_array().unwrap();
         assert_eq!(rows.len(), 12);
-        let mut cases = RowCases::new(
-            "optics-completed-profile-defaults",
-            rows.iter().map(|row| {
-                format!(
-                    "{}/print={}",
-                    row["key"].as_str().unwrap(),
-                    row["input"]["print"].as_bool().unwrap()
-                )
-            }),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(rows.iter().map(|row| {
+            format!(
+                "{}/print={}",
+                row["key"].as_str().unwrap(),
+                row["input"]["print"].as_bool().unwrap()
+            )
+        }))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(!cases_ids.is_empty(), "optics-completed-profile-defaults");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "optics-completed-profile-defaults"
         );
         for row in rows {
             let id = format!(
@@ -1245,15 +1275,21 @@ mod tests {
                 row["key"].as_str().unwrap(),
                 row["input"]["print"].as_bool().unwrap()
             );
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let recipe = {
                 let input = params(&row["input"]);
                 Recipe::new(input).unwrap()
             };
             assert_eq!(project(&recipe), row["recipe"], "{}", row["key"]);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn real_resolved_hash_guard_is_call_bounded_and_thread_local() {

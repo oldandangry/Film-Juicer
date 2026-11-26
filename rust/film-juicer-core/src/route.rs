@@ -31,7 +31,6 @@ pub fn resolve(capture_polarity: CapturePolarity, selection: RouteSelection) -> 
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::{CapturePolarity, RouteSelection, ScanRoute, resolve};
 
     #[test]
@@ -64,12 +63,30 @@ mod tests {
             "positive/direct",
             "positive/print",
         ];
-        let mut row_cases = RowCases::new("route-resolution", ids);
+        let row_cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!row_cases_ids.is_empty(), "route-resolution");
+        let row_cases_count = row_cases_ids.len();
+        let mut row_cases_remaining = row_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            row_cases_remaining.len(),
+            row_cases_count,
+            "route-resolution"
+        );
         for ((polarity, selection, expected), id) in cases.into_iter().zip(ids) {
-            let case = row_cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(resolve(polarity, selection), expected);
-            case.passed();
+            assert!(
+                row_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        row_cases.finish();
+        assert!(
+            row_cases_remaining.is_empty(),
+            "missing comparisons: {row_cases_remaining:?}"
+        );
     }
 }

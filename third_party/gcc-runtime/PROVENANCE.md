@@ -5,10 +5,11 @@ runtime libraries so their implementation symbols remain local to the plug-in.
 This prevents host libraries that contain another libstdc++ implementation from
 interposing incompatible C++ runtime symbols across the OFX C API boundary.
 
-The validated native build uses the Arch Linux `gcc13-libs` package version
-`13.4.1+r80+gd6ebfe4-1`. The distributable module must be rebuilt with the
-supported GCC selected by the CMake preset and rechecked for dynamic GNU runtime
-dependencies and exported symbols.
+The Linux presets select GCC 13. The archives come from the selected
+compiler's GNU runtime development packages. On Ubuntu 24.04 these are
+provided by `libstdc++-13-dev` and `libgcc-13-dev`. Package inspection checks
+that the module has no dynamic GNU C++ dependency. The Rust toolchain links
+the system `libgcc_s.so.1` for unwinding.
 
 The linked runtime code is governed by GPL version 3 together with the GCC
 Runtime Library Exception version 3.1. Copies of both texts are retained in this

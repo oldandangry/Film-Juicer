@@ -568,7 +568,6 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn foreign_tags_preserve_the_reference_table() {
@@ -579,15 +578,31 @@ mod tests {
                     .map(move |selection| format!("polarity-{polarity}/selection-{selection}"))
             })
             .collect();
-        let mut rows = RowCases::new("foreign-route-table", &ids);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "foreign-route-table");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows_remaining.len(), rows_count, "foreign-route-table");
         for (polarity, routes) in expected.into_iter().enumerate() {
             for (selection, route) in routes.into_iter().enumerate() {
-                let row = rows.case(format!("polarity-{polarity}/selection-{selection}"));
+                let row =
+                    AsRef::<str>::as_ref(&(format!("polarity-{polarity}/selection-{selection}")))
+                        .to_owned();
                 assert_eq!(resolve_foreign(polarity as u8, selection as u8), Ok(route));
-                row.passed();
+                assert!(
+                    rows_remaining.remove(&row),
+                    "unexpected or repeated comparison: {row}"
+                );
             }
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 
     #[test]
