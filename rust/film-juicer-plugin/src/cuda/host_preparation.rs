@@ -10,7 +10,8 @@ use crate::cuda::{edge, sys};
 use crate::cuda::optics;
 
 #[derive(Default)]
-struct Backing {
+pub(super) struct Backing {
+    pub(super) boundaries: Vec<film_juicer_core::film::dir::boundary::Boundary>,
     gaussians: Vec<film_juicer_core::optics::GaussianKernel>,
 }
 
@@ -29,10 +30,11 @@ impl Call {
         }
     }
 
-    pub(super) fn raw(&self) -> edge::FjHostPreparation {
-        edge::FjHostPreparation {
+    pub(super) fn raw(&self) -> sys::FjHostPreparation {
+        sys::FjHostPreparation {
             user: self.backing.get().cast(),
             gaussian: Some(gaussian),
+            dir_boundary: Some(super::dir_boundary::prepare),
         }
     }
 }
@@ -53,9 +55,9 @@ fn valid<T>(pointer: *const T) -> bool {
 /// keep the context supplied by `Call::raw` alive through this invocation.
 unsafe extern "C" fn gaussian(
     user: *mut c_void,
-    input: *const optics::FjGaussianKernelInput,
-    out: *mut optics::FjGaussianKernelView,
-    failure: *mut optics::FjGaussianKernelFailure,
+    input: *const sys::FjGaussianKernelInput,
+    out: *mut sys::FjGaussianKernelView,
+    failure: *mut sys::FjGaussianKernelFailure,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -80,9 +82,9 @@ unsafe extern "C" fn gaussian(
 /// exclusively accessed `Backing`.
 unsafe fn gaussian_call(
     user: *mut c_void,
-    input: *const optics::FjGaussianKernelInput,
-    out: *mut optics::FjGaussianKernelView,
-    failure: *mut optics::FjGaussianKernelFailure,
+    input: *const sys::FjGaussianKernelInput,
+    out: *mut sys::FjGaussianKernelView,
+    failure: *mut sys::FjGaussianKernelFailure,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
     if !valid(user.cast::<Backing>()) {

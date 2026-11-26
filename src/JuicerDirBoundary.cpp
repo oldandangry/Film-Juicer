@@ -36,25 +36,6 @@ namespace JuicerDirBoundary {
             JuicerCuda::set_failure(failure, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "spatial DIR reflected-boundary view is invalid");
         }
 
-        bool envelope(const FjDirBoundaryInput& input, FjStatus status, const FjDirBoundaryFailure& failure, const FjErrorBuffer& error, const std::array<char, 256>& text) {
-            constexpr std::array<std::uint32_t, 14> categories{0, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 8};
-            if (failure.reason >= categories.size() || status.category != categories[failure.reason] || status.api != FJ_API_NONE || status.native_code != 0 ||
-                error.data != text.data() || error.capacity != text.size() || error.length >= text.size() || text[error.length] != '\0' ||
-                std::string_view(text.data(), error.length) != kMessages[failure.reason])
-                return false;
-            if (failure.axis > 2 || (failure.axis == 0 ? failure.length != 0 : failure.length != (failure.axis == 1 ? input.width : input.height)))
-                return false;
-            if (failure.reason == FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION)
-                return failure.axis != 0 && failure.row < 3 &&
-                       std::bit_cast<std::uint32_t>(failure.sigma_px) == std::bit_cast<std::uint32_t>(input.component.sigma_px) &&
-                       std::bit_cast<std::uint64_t>(failure.tolerance) == std::bit_cast<std::uint64_t>(input.component.boundary_certification_tolerance);
-            if (failure.row != 3 || std::bit_cast<std::uint32_t>(failure.sigma_px) || std::bit_cast<std::uint64_t>(failure.sum) || std::bit_cast<std::uint64_t>(failure.tolerance))
-                return false;
-            if (failure.reason <= 2 || failure.reason == 11 || failure.reason == 13)
-                return failure.axis == 0;
-            return failure.reason == 12 || failure.axis != 0;
-        }
-
         void reject(FjStatus status, const FjDirBoundaryFailure& failure, JuicerCuda::Failure& out) {
             if (failure.reason == FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION) {
                 std::ostringstream detail;
@@ -67,17 +48,6 @@ namespace JuicerDirBoundary {
             } else {
                 JuicerCuda::set_failure(out, status, kMessages[failure.reason]);
             }
-        }
-
-        bool empty(const FjDirBoundaryView& view) {
-            return !view.weights && !view.count && !view.identity && !view.width && !view.height && !view.horizontal_length && !view.vertical_length &&
-                   !view.horizontal_terminal_size && !view.vertical_terminal_size &&
-                   std::all_of(std::begin(view.horizontal_terminal), std::end(view.horizontal_terminal), [](double value) {
-                       return std::bit_cast<std::uint64_t>(value) == 0;
-                   }) &&
-                   std::all_of(std::begin(view.vertical_terminal), std::end(view.vertical_terminal), [](double value) {
-                       return std::bit_cast<std::uint64_t>(value) == 0;
-                   });
         }
 
         bool terminal(const double (&matrix)[9], int size) {
@@ -126,74 +96,35 @@ namespace JuicerDirBoundary {
         c.boundary_truncation_accuracy = component.boundaryTruncationAccuracy;
         c.boundary_certification_tolerance = component.boundaryCertificationTolerance;
         c.boundary_derivation_version = component.boundaryDerivationVersion;
+        c.boundary_identity = component.boundaryIdentity;
         input.width = dimensions[0];
         input.height = dimensions[1];
         return input;
     }
 
-    bool describe(const FjDirBoundaryInput& input, std::uint64_t& key, JuicerCuda::Failure& out) {
-        out = {};
-        key = 0;
-        FjDirBoundaryFailure failure{};
-        std::array<char, 256> text{};
-        FjErrorBuffer error{text.data(), text.size(), 0};
-        const auto status = fj_dir_boundary_describe(&input, &key, &failure, &error);
-        if (!envelope(input, status, failure, error, text) || (failure.reason != 0 && failure.reason != 1 && failure.reason != 2 && failure.reason != 13) ||
-            (status.category != FJ_STATUS_SUCCESS && key != 0)) {
-            key = 0;
-            invalid(out);
+    bool prepare(const FjHostPreparation* host, const FjDirBoundaryInput& input, FjDirBoundaryView& view, JuicerCuda::Failure& out) {
+        if (!host || !host->dir_boundary) {
+            JuicerCuda::set_failure(out, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing spatial DIR boundary callback");
             return false;
         }
+        FjDirBoundaryFailure detail{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = host->dir_boundary(host->user, &input, &view, &detail, &error);
         if (status.category != FJ_STATUS_SUCCESS) {
-            reject(status, failure, out);
+            if (detail.reason > FJ_DIR_BOUNDARY_NONE && detail.reason < kMessages.size() &&
+                status.api == FJ_API_NONE && status.native_code == 0) {
+                reject(status, detail, out);
+            } else {
+                invalid(out);
+            }
+            return false;
+        }
+        if (status.api != FJ_API_NONE || status.native_code != 0 ||
+            detail.reason != FJ_DIR_BOUNDARY_NONE || !admit(input, input.component.boundary_identity, view)) {
+            invalid(out);
             return false;
         }
         return true;
-    }
-
-    void Boundary::Release::operator()(FjDirBoundaryOwner* owner) const noexcept {
-        (void)fj_dir_boundary_release(owner, nullptr);
-    }
-    Boundary::Boundary(std::unique_ptr<FjDirBoundaryOwner, Release> owner, FjDirBoundaryView view) noexcept : _owner(std::move(owner)), _view(view) {}
-    Boundary::Boundary(Boundary&&) noexcept = default;
-    Boundary& Boundary::operator=(Boundary&&) noexcept = default;
-    FjDirBoundaryView Boundary::view() const noexcept {
-        return _owner ? _view : FjDirBoundaryView{};
-    }
-
-    std::optional<Boundary> Boundary::acquire(const FjDirBoundaryInput& input, std::uint64_t key, JuicerCuda::Failure& out) {
-        out = {};
-        FjDirBoundaryOwner* raw = nullptr;
-        FjDirBoundaryFailure failure{};
-        std::array<char, 256> text{};
-        FjErrorBuffer error{text.data(), text.size(), 0};
-        auto status = fj_dir_boundary_acquire(&input, &raw, &failure, &error);
-        std::unique_ptr<FjDirBoundaryOwner, Release> owner(raw);
-        if (!envelope(input, status, failure, error, text) || (status.category == FJ_STATUS_SUCCESS ? !raw : raw != nullptr)) {
-            invalid(out);
-            return std::nullopt;
-        }
-        if (status.category != FJ_STATUS_SUCCESS) {
-            reject(status, failure, out);
-            return std::nullopt;
-        }
-        FjDirBoundaryView view{};
-        status = fj_dir_boundary_view(owner.get(), &view, &failure, &error);
-        if (!envelope(input, status, failure, error, text) || (failure.reason != 0 && failure.reason != 1 && failure.reason != 13)) {
-            invalid(out);
-            return std::nullopt;
-        }
-        if (status.category != FJ_STATUS_SUCCESS) {
-            if (empty(view))
-                reject(status, failure, out);
-            else
-                invalid(out);
-            return std::nullopt;
-        }
-        if (!admit(input, key, view)) {
-            invalid(out);
-            return std::nullopt;
-        }
-        return Boundary(std::move(owner), view);
     }
 } // namespace JuicerDirBoundary

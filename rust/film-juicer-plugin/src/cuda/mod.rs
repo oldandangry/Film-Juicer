@@ -18,12 +18,7 @@ pub(crate) mod edge;
 
 #[allow(
     unsafe_code,
-    reason = "the C11 diffusion entry validates and writes call-local foreign records"
-)]
-mod diffusion;
-#[allow(
-    unsafe_code,
-    reason = "the C11 DIR entry validates borrows and consumes its boundary owner"
+    reason = "the cold DIR callback projects into render-local backing"
 )]
 mod dir_boundary;
 mod dir_frame;
@@ -125,5 +120,4 @@ impl fmt::Debug for Failure {
     }
 }
 
-pub(crate) use edge::{Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome};
-pub(crate) use render::render;
+pub(crate) use edge::FramePolicy;

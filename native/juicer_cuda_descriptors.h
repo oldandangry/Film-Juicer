@@ -31,6 +31,7 @@ namespace JuicerCuda {
     bool decode_prepared_descriptors(
         const FjPreparedHostData& source,
         PreparedDescriptors& out,
-        std::string& diagnostic);
+        std::string& diagnostic,
+        float pixelSizeUm);
 
 } // namespace JuicerCuda

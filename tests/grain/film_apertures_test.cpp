@@ -17,7 +17,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Hash.h"
 #include "film_oracle.h"
-#include "juicer_cuda_call_scope.h"
+#include "juicer_cuda_api.h"
 #include "juicer_cuda_prepared.h"
 
 namespace {
@@ -275,15 +275,10 @@ namespace {
             FjCudaContext context{};
             std::array<char, 1024> text{};
             FjErrorBuffer error{text.data(), text.size(), 0};
-            std::string diagnostic;
-            {
-                JuicerCuda::NativeCall call(owner.get());
-                ASSERT_EQ(call.inspect(&frame, &context, &error).category, FJ_STATUS_SUCCESS) << text.data();
-                JuicerCuda::PendingContextLossRecovery recovery{};
-                ASSERT_EQ(call.render(&context, &frame, &submission, &prepared, {}, recovery, diagnostic).status.category,
-                          FJ_STATUS_SUCCESS)
-                    << diagnostic;
-            }
+            ASSERT_EQ(fj_cuda_inspect(owner.get(), &frame, &context, &error).category, FJ_STATUS_SUCCESS) << text.data();
+            ASSERT_EQ(fj_cuda_render(owner.get(), &context, &frame, &submission, &prepared, nullptr, {}, &error).status.category,
+                      FJ_STATUS_SUCCESS)
+                << text.data();
             ASSERT_EQ(cudaMemcpyAsync(host.data(), guarded, guardedBytes, cudaMemcpyDeviceToHost, rawStream), cudaSuccess);
             ASSERT_EQ(cudaStreamSynchronize(rawStream), cudaSuccess);
             EXPECT_EQ(host.front(), kCanary);

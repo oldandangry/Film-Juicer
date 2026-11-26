@@ -1,5 +1,12 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <array>
+#include <bit>
+#include <fstream>
+#include <numbers>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -13,6 +20,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "../resource/observed_operations.h"
 
@@ -20,7 +28,7 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Hash.h"
-#include "juicer_cuda_call_scope.h"
+#include "juicer_cuda_api.h"
 #include "juicer_cuda_prepared.h"
 
 namespace {
@@ -170,7 +178,6 @@ namespace {
                 dir.compensated_axes_hash = 15;
                 dir.hash = 16;
                 auto& spatial = value.spatial_dir;
-                spatial.hash = 17;
                 spatial.recipe_hash = dir.hash;
                 spatial.render_extent = spatial.full_frame_extent = spatial.filter_domain_extent = {0, 0, kWidth, kHeight};
                 spatial.component_count = 1;
@@ -187,8 +194,6 @@ namespace {
                 effects.flags = FJ_EFFECTS_FILM;
                 effects.render_extent = effects.full_frame_extent = {0, 0, kWidth, kHeight};
                 effects.sample_step_x_mm = effects.sample_step_y_mm = 1.F;
-                effects.gate_width = kWidth;
-                effects.gate_height = kHeight;
                 effects.weave_cos_rot = 1.F;
                 effects.recipe_hash = effects.hash = 18;
             }
@@ -210,6 +215,7 @@ namespace {
             frame.source = {reinterpret_cast<std::uintptr_t>(source), {0, 0, kWidth, kHeight}, kPitch * sizeof(float), FJ_COMPONENTS_RGBA, FJ_DEPTH_FLOAT32};
             frame.destination = {reinterpret_cast<std::uintptr_t>(output), frame.source.bounds, frame.source.row_bytes, FJ_COMPONENTS_RGBA, FJ_DEPTH_FLOAT32};
             frame.render_window = frame.full_frame_extent = frame.source.bounds;
+            frame.effects_geometry.pixel_definition = {0, 0, kWidth, kHeight};
             frame.pixel_size_um = 1000.F;
             frame.frame_rate = 24.;
             frame.stream = reinterpret_cast<std::uintptr_t>(stream);
@@ -253,15 +259,15 @@ namespace {
             FjCudaContext context{};
             std::array<char, 1024> text{};
             FjErrorBuffer error{text.data(), text.size(), 0};
-            JuicerCuda::NativeCall call(owner);
-            const auto inspected = call.inspect(&frame, &context, &error);
+            const auto inspected = fj_cuda_inspect(owner, &frame, &context, &error);
             if (inspected.category != FJ_STATUS_SUCCESS) {
                 diagnostic.assign(text.data(), error.length);
-                return {inspected, 0};
+                return {inspected, 0, {}};
             }
-            JuicerCuda::PendingContextLossRecovery recovery{};
-            const FjHostPreparation host{this, gaussian};
-            return call.render(&context, &frame, &selected, &value, abort, recovery, diagnostic, &host);
+            const FjHostPreparation host{this, gaussian, nullptr};
+            const auto outcome = fj_cuda_render(owner, &context, &frame, &selected, &value, &host, abort, &error);
+            diagnostic.assign(text.data(), error.length);
+            return outcome;
         }
 
         void reset() {
@@ -464,7 +470,7 @@ namespace {
             EXPECT_EQ(result.status.category, FJ_STATUS_PREPARATION_FAILURE) << diagnostic;
             EXPECT_EQ(result.status.api, FJ_API_NONE);
             EXPECT_EQ(result.status.native_code, 0);
-            EXPECT_EQ(result.flags, dir ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U);
+            EXPECT_EQ(result.flags, FJ_RENDER_ADMITTED | (dir ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U));
             EXPECT_NE(diagnostic.find("profile=producer-film"), std::string::npos) << diagnostic;
             EXPECT_EQ(diagnostic.find("reporting-film"), std::string::npos) << diagnostic;
             EXPECT_NE(diagnostic.find("submission_id=" + std::to_string(producingId)), std::string::npos) << diagnostic;
@@ -532,6 +538,119 @@ namespace {
         }
     }
 
+    TEST_F(ProductionScan, CameraDiffusionMatchesConvolutionOfTaggedComponentWords) {
+        const auto fixture = nlohmann::json::parse(std::ifstream(JUICER_DIFFUSION_FRAME_FIXTURE));
+        const auto& cases = fixture.at("products");
+        const auto row = std::ranges::find_if(cases, [](const nlohmann::json& value) {
+            return value.at("input").at("name") == "product/0/family/3";
+        });
+        ASSERT_NE(row, cases.end());
+        const auto scalar = [](const nlohmann::json& word) {
+            return std::bit_cast<double>(word.get<std::uint64_t>());
+        };
+        const auto& camera = row->at("frame").at("camera");
+        const auto& lanes = row->at("samples").at(0).at("components");
+        const auto readLanes = [&](const char* name, std::span<double, 9> out) {
+            std::ranges::transform(lanes.at(name), out.begin(), scalar);
+        };
+        const Input backing(true);
+        auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
+        input.scanner_correction = {0, 1.F, 0.F, 1.F};
+        input.optics.flags = FJ_OPTICS_CAMERA_DIFFUSION;
+        input.optics.full_frame = {0, 0, kWidth, kHeight};
+        input.optics.diffusion_hash = row->at("frame").at("hash").get<std::uint64_t>();
+        auto& wire = input.optics.camera;
+        wire.scatter_fraction = scalar(camera.at("scatter"));
+        wire.radius_px = camera.at("sample").at("radius").get<int>();
+        ASSERT_EQ(wire.radius_px, 1);
+        wire.sample_hash = camera.at("sample").at("hash").get<std::uint64_t>();
+        wire.hash = camera.at("hash").get<std::uint64_t>();
+        readLanes("lambda", wire.lambda_px);
+        readLanes("red", wire.red_weights);
+        readLanes("green", wire.green_weights);
+        readLanes("blue", wire.blue_weights);
+        frame.pixel_size_um = static_cast<float>(scalar(camera.at("sample").at("pixel")));
+        const auto exposure = [](int x, int y) -> float {
+            return x == 3 && y == 2 ? 0.8F : 0.02F;
+        };
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const auto index = static_cast<std::size_t>(y) * kPitch + static_cast<std::size_t>(x) * 4;
+                std::fill_n(pixels.data() + index, 3, exposure(x, y));
+            }
+        }
+        ASSERT_EQ(cudaMemcpy(source, pixels.data(), sizeof(pixels), cudaMemcpyHostToDevice), cudaSuccess);
+        ASSERT_EQ(render(input, 1).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+        std::array<float, kFrameWords> actual{};
+        ASSERT_EQ(cudaMemcpy(actual.data(), output, sizeof(actual), cudaMemcpyDeviceToHost), cudaSuccess);
+
+        // Scalar nine-tap convolution of the archived C++ component words.
+        // At this radius half-sample reflection clamps a one-pixel border.
+        const std::array<std::span<const double, 9>, 3> weights{
+            wire.red_weights, wire.green_weights, wire.blue_weights};
+        for (std::size_t channel = 0; channel < weights.size(); ++channel) {
+            std::array<double, 9> taps{};
+            double sum = 0.;
+            for (int index = 0; index < 9; ++index) {
+                const auto radius = std::hypot(index % 3 - 1, index / 3 - 1);
+                double value = 0.;
+                for (std::size_t lane = 0; lane < 9; ++lane) {
+                    const auto lambda = wire.lambda_px[lane];
+                    value += weights[channel][lane] * std::exp(-radius / lambda) /
+                             (2. * std::numbers::pi * lambda * lambda);
+                }
+                const auto tap = static_cast<double>(static_cast<float>(value));
+                taps[static_cast<std::size_t>(index)] = tap;
+                sum += tap;
+            }
+            for (int y = 0; y < kHeight; ++y) {
+                for (int x = 0; x < kWidth; ++x) {
+                    double filtered = 0.;
+                    for (int index = 0; index < 9; ++index) {
+                        const int xx = std::clamp(x + index % 3 - 1, 0, kWidth - 1);
+                        const int yy = std::clamp(y + index / 3 - 1, 0, kHeight - 1);
+                        filtered += taps[static_cast<std::size_t>(index)] / sum * exposure(xx, yy);
+                    }
+                    const auto mixed = std::lerp(static_cast<double>(exposure(x, y)), filtered, wire.scatter_fraction);
+                    const auto density = kFilmDensity[channel] + kFilmSlope * std::log10(243. * mixed);
+                    const auto index = static_cast<std::size_t>(y) * kPitch + static_cast<std::size_t>(x) * 4;
+                    const auto observed = -std::log10(std::sqrt(static_cast<double>(actual[index + channel])) - 1e-10);
+                    EXPECT_NEAR(observed, density, 5e-5) << x << ' ' << y << ' ' << channel;
+                    EXPECT_EQ(actual[index + 3], 0.18F);
+                }
+            }
+        }
+    }
+
+    TEST_F(ProductionScan, CancelsBeforeAdmissionAndLeavesAnIdleEpoch) {
+        const Input backing;
+        const auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
+        frame.flags = 0;
+        frame.stream = 0;
+        FjCudaContext context{};
+        ASSERT_EQ(fj_cuda_inspect(owner, &frame, &context, nullptr).category, FJ_STATUS_SUCCESS);
+        unsigned queries = 0;
+        const FjAbortCallback abort{
+            [](void* user) -> std::uint32_t {
+                ++*static_cast<unsigned*>(user);
+                return FJ_ABORT_REQUESTED;
+            },
+            &queries};
+        const auto copies = JuicerTest::calls.copies;
+        const auto records = JuicerTest::calls.eventRecords;
+        const auto syncs = JuicerTest::calls.synchronizations;
+        const auto outcome = render(input, 1, abort);
+        EXPECT_EQ(outcome.status.category, FJ_STATUS_CANCELLED) << diagnostic;
+        EXPECT_EQ(outcome.flags, 0U);
+        EXPECT_EQ(queries, 1U);
+        EXPECT_EQ(JuicerTest::calls.copies, copies);
+        EXPECT_EQ(JuicerTest::calls.eventRecords, records);
+        EXPECT_EQ(JuicerTest::calls.synchronizations, syncs);
+        const FjCudaRetirement idle{context, 0, 0};
+        EXPECT_EQ(fj_cuda_retire_context(owner, &idle, nullptr).category, FJ_STATUS_SUCCESS);
+    }
+
     TEST_F(ProductionScan, CancelsAfterScanAndFencesTheAbortedFrame) {
         const Input backing;
         const auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
@@ -547,6 +666,7 @@ namespace {
         const auto outcome = render(input, 2, abort);
         EXPECT_EQ(queries, 3U);
         ASSERT_EQ(outcome.status.category, FJ_STATUS_CANCELLED) << diagnostic;
+        EXPECT_NE(outcome.flags & FJ_RENDER_ADMITTED, 0U);
         EXPECT_EQ(JuicerTest::calls.eventRecords, records + 1);
         compare({kFilmDensity, kD50, 0.F});
         ASSERT_EQ(render(input, 3).status.category, FJ_STATUS_SUCCESS) << diagnostic;
@@ -602,6 +722,151 @@ namespace {
         compare({kFilmDensity, kD50, 0.F});
     }
 
+    TEST_F(ProductionScan, ReportsDeferredDirAndTheProducingEpochWhenImplicitCompletionFails) {
+        const Input backing;
+        auto producer = backing.prepared(FJ_ROUTE_POSITIVE_DIRECT, Schedule::FusedDir);
+        producer.dir_couplers.receiver_c_ref_rgb[1] = 0.1F;
+        producer.dir_couplers.receiver_kr_rgb[1] = 0.F;
+        frame.flags = 0;
+        frame.stream = 0;
+        ASSERT_EQ(render(producer, 1).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        auto reporter = backing.prepared(FJ_ROUTE_POSITIVE_DIRECT, Schedule::FusedDir);
+        reporter.film_profile_key = {"reporting-film", 14};
+        reporter.film_profile_asset_version = 42;
+        FjCudaContext epoch{};
+        ASSERT_EQ(fj_cuda_inspect(owner, &frame, &epoch, nullptr).category, FJ_STATUS_SUCCESS);
+        const FjAbortCallback failCompletion{
+            [](void*) -> std::uint32_t {
+                JuicerTest::calls.nextSynchronization = cudaErrorContextIsDestroyed;
+                return FJ_ABORT_CONTINUE;
+            },
+            nullptr};
+        const auto result = render(reporter, 2, failCompletion);
+        EXPECT_EQ(result.status.category, FJ_STATUS_CONTEXT_LOSS) << diagnostic;
+        EXPECT_EQ(result.status.api, FJ_API_CUDA_RUNTIME);
+        EXPECT_EQ(result.status.native_code, cudaErrorContextIsDestroyed);
+        EXPECT_EQ(result.flags, FJ_RENDER_ADMITTED | FJ_RENDER_DEFERRED_DIR_ERROR | FJ_RENDER_CONTEXT_LOSS_PENDING);
+        EXPECT_EQ(result.retirement.context.context, epoch.context);
+        EXPECT_EQ(result.retirement.context.epoch, epoch.epoch);
+        EXPECT_EQ(result.retirement.instance_token, 1U);
+        EXPECT_EQ(result.retirement.submission_id, 2U);
+        EXPECT_EQ(render(reporter, 3).status.category, FJ_STATUS_PREPARATION_FAILURE) << diagnostic;
+        ASSERT_EQ(fj_cuda_retire_context(owner, &result.retirement, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(render(reporter, 4).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        compare({kFilmDensity, kD50, 0.F});
+    }
+
+    struct StreamWork {
+        std::mutex mutex;
+        std::condition_variable wake;
+        bool allowed = false;
+        std::atomic<bool> finished{false};
+        unsigned queries = 0;
+        cudaStream_t stream = nullptr;
+        bool cancel = false;
+        bool implicit = false;
+
+        void release() {
+            {
+                const std::lock_guard lock(mutex);
+                allowed = true;
+            }
+            wake.notify_all();
+        }
+
+        ~StreamWork() {
+            release();
+            (void)cudaStreamSynchronize(stream);
+        }
+
+        static void CUDART_CB finish(void* user) {
+            auto& work = *static_cast<StreamWork*>(user);
+            std::unique_lock lock(work.mutex);
+            work.finished.store(work.wake.wait_for(lock, std::chrono::seconds(10), [&] {
+                return work.allowed;
+            }));
+        }
+
+        static std::uint32_t after_scan(void* user) {
+            auto& work = *static_cast<StreamWork*>(user);
+            if (++work.queries != 3) {
+                return FJ_ABORT_CONTINUE;
+            }
+            EXPECT_EQ(cudaLaunchHostFunc(work.stream, finish, &work), cudaSuccess);
+            if (work.implicit) {
+                JuicerTest::calls.beforeSynchronization = [](void* user) {
+                    static_cast<StreamWork*>(user)->release();
+                };
+                JuicerTest::calls.beforeSynchronizationUser = &work;
+            }
+            return work.cancel ? FJ_ABORT_REQUESTED : FJ_ABORT_CONTINUE;
+        }
+    };
+
+    TEST_F(ProductionScan, StreamPresenceControlsWhetherEnqueuedWorkMayRemainPending) {
+        const Input backing;
+        const auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
+        std::uint64_t id = 1;
+        for (const auto mode : {0, 1, 2}) {
+            frame.flags = mode == 0 ? 0U : FJ_FRAME_STREAM_PRESENT;
+            auto* selectedStream = mode == 2 ? stream : nullptr;
+            frame.stream = reinterpret_cast<std::uintptr_t>(selectedStream);
+            ASSERT_EQ(render(input, id++).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+            ASSERT_EQ(cudaStreamSynchronize(selectedStream), cudaSuccess);
+            for (const bool cancel : {false, true}) {
+                reset();
+                StreamWork work;
+                work.stream = selectedStream;
+                work.cancel = cancel;
+                work.implicit = mode == 0;
+                const auto waits = JuicerTest::calls.synchronizations;
+                const auto outcome = render(input, id++, {StreamWork::after_scan, &work});
+                EXPECT_EQ(outcome.status.category, cancel ? FJ_STATUS_CANCELLED : FJ_STATUS_SUCCESS) << diagnostic;
+                EXPECT_EQ(work.queries, 3U);
+                EXPECT_EQ(work.finished.load(), work.implicit);
+                EXPECT_EQ(cudaStreamQuery(selectedStream), work.implicit ? cudaSuccess : cudaErrorNotReady);
+                EXPECT_EQ(JuicerTest::calls.synchronizations, waits + (work.implicit ? 1 : 0));
+                EXPECT_EQ(JuicerTest::calls.beforeSynchronization, nullptr);
+                work.release();
+                ASSERT_EQ(cudaStreamSynchronize(selectedStream), cudaSuccess);
+                EXPECT_TRUE(work.finished.load());
+                compare({kFilmDensity, kD50, 0.F});
+            }
+        }
+    }
+
+    TEST_F(ProductionScan, AdmissionRevalidatesCurrentContextAndStream) {
+        const Input backing;
+        auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
+        input.auto_exposure = meter;
+        const auto selected = submission(input, 1);
+        FjCudaContext context{};
+        ASSERT_EQ(fj_cuda_inspect(owner, &frame, &context, nullptr).category, FJ_STATUS_SUCCESS);
+        CUcontext original = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&original), CUDA_SUCCESS);
+        CUcontext foreign = nullptr;
+        ASSERT_EQ(cuCtxCreate(&foreign, nullptr, 0, 0), CUDA_SUCCESS);
+        cudaStream_t foreignStream = nullptr;
+        ASSERT_EQ(cudaStreamCreateWithFlags(&foreignStream, cudaStreamNonBlocking), cudaSuccess);
+        const auto copies = JuicerTest::calls.copies;
+        const auto moved = fj_cuda_render(owner, &context, &frame, &selected, &input, nullptr, {}, nullptr);
+        EXPECT_NE(moved.status.category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(moved.flags, 0U);
+        ASSERT_EQ(cuCtxSetCurrent(original), CUDA_SUCCESS);
+        auto wrong = frame;
+        wrong.stream = reinterpret_cast<std::uintptr_t>(foreignStream);
+        const auto result = fj_cuda_render(owner, &context, &wrong, &selected, &input, nullptr, {}, nullptr);
+        EXPECT_EQ(result.status.category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(result.flags, 0U);
+        EXPECT_EQ(JuicerTest::calls.copies, copies);
+        ASSERT_EQ(cuCtxSetCurrent(foreign), CUDA_SUCCESS);
+        EXPECT_EQ(cudaStreamDestroy(foreignStream), cudaSuccess);
+        EXPECT_EQ(cuCtxDestroy(foreign), CUDA_SUCCESS);
+        ASSERT_EQ(cuCtxSetCurrent(original), CUDA_SUCCESS);
+        ASSERT_EQ(render(input, 1).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        compare({kFilmDensity, kD50, 0.F});
+    }
+
     TEST_F(ProductionScan, FrameUseFailureSurvivesAbortCleanup) {
         const Input backing;
         const auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
@@ -640,6 +905,46 @@ namespace {
         compare({kFilmDensity, kD50, 0.F});
     }
 
+    TEST_F(ProductionScan, DestroySkipsAnInspectionOnlyEpochWhoseContextWasDestroyed) {
+        const Input backing;
+        const auto input = backing.prepared(FJ_ROUTE_NEGATIVE_DIRECT, Schedule::Source);
+        ASSERT_EQ(render(input, 1).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+        CUcontext current = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
+        ASSERT_NE(current, nullptr);
+
+        CUcontext other = nullptr;
+        ASSERT_EQ(cuCtxCreate(&other, nullptr, 0, 0), CUDA_SUCCESS);
+        const auto destroyOther = [current](CUcontext context) {
+            EXPECT_EQ(cuCtxSetCurrent(current), CUDA_SUCCESS);
+            EXPECT_EQ(cuCtxDestroy(context), CUDA_SUCCESS);
+        };
+        std::unique_ptr<std::remove_pointer_t<CUcontext>, decltype(destroyOther)> otherContext(other, destroyOther);
+        CUdeviceptr otherSource = 0, otherOutput = 0;
+        ASSERT_EQ(cuMemAlloc(&otherSource, sizeof(pixels)), CUDA_SUCCESS);
+        ASSERT_EQ(cuMemAlloc(&otherOutput, sizeof(pixels)), CUDA_SUCCESS);
+        auto otherFrame = frame;
+        otherFrame.source.address = otherSource;
+        otherFrame.destination.address = otherOutput;
+        otherFrame.stream = 0;
+        otherFrame.flags = 0;
+        FjCudaContext inspected{};
+        ASSERT_EQ(fj_cuda_inspect(owner, &otherFrame, &inspected, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(inspected.context, reinterpret_cast<std::uintptr_t>(other));
+        EXPECT_NE(inspected.epoch, 0U);
+        ASSERT_EQ(cuMemFree(otherOutput), CUDA_SUCCESS);
+        ASSERT_EQ(cuMemFree(otherSource), CUDA_SUCCESS);
+        otherContext.reset();
+        CUcontext restored = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&restored), CUDA_SUCCESS);
+        ASSERT_EQ(restored, current);
+
+        std::array<char, 512> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        EXPECT_EQ(fj_cuda_destroy(std::exchange(owner, nullptr), &error).category, FJ_STATUS_SUCCESS) << message.data();
+    }
+
     TEST_F(ProductionScan, SyncContextLossRetiresOnlyTheFaultedEpoch) {
         namespace Registry = JuicerCuda::ResourceManager;
         const Input backing;
@@ -658,10 +963,8 @@ namespace {
         const std::unique_ptr<std::remove_pointer_t<CUcontext>, decltype(destroyOther)> otherContext(other, destroyOther);
         ASSERT_EQ(cuCtxSetCurrent(current), CUDA_SUCCESS);
         const Registry::DeviceContextKey key{0, current}, otherKey{0, other};
-        using Fixture = std::remove_pointer_t<decltype(this)>;
-        Registry::RegistryContextSnapshot otherEpoch{};
-        ASSERT_TRUE(Registry::registry_begin_submission(otherKey, otherEpoch));
-        ASSERT_TRUE(Registry::registry_note_submission_end(otherKey));
+        const auto otherEpoch = Registry::registry_inspect_context(otherKey);
+        ASSERT_NE(otherEpoch, 0U);
 
         enum class LossSite : std::uint8_t {
             FrameUse,
@@ -672,9 +975,8 @@ namespace {
         };
         for (const auto site : {LossSite::FrameUse, LossSite::AbortFence, LossSite::ImplicitCompletion, LossSite::FrameUseThenImplicitCompletion, LossSite::PinnedOverwrite}) {
             SCOPED_TRACE(static_cast<int>(site));
-            Registry::RegistryContextSnapshot previous{};
-            ASSERT_TRUE(Registry::registry_begin_submission(key, previous));
-            ASSERT_TRUE(Registry::registry_note_submission_end(key));
+            const auto previous = Registry::registry_inspect_context(key);
+            ASSERT_NE(previous, 0U);
             if (site == LossSite::PinnedOverwrite) {
                 ++input.film_development.density_curves_hash;
                 ++input.film_development.hash;
@@ -682,115 +984,91 @@ namespace {
             }
             reset();
             input.auto_exposure = meter;
-            struct Attempt {
-                Fixture* fixture = nullptr;
-                const FjPreparedHostData* input = nullptr;
-                FjSubmission selected{};
-                std::uint64_t probeId = 0;
-                LossSite site{};
-                std::uint32_t retired = 0;
-                void* quarantinedStaging = nullptr;
-            } attempt{this, &input, submission(input, id++), id++, site};
-            const auto continueCall = [](void* user, FjCudaCallAccess access) -> FjCallCompletionResult {
-                auto& pending = *static_cast<Attempt*>(user);
-                auto& fixture = *pending.fixture;
-                std::array<char, 2048> text{};
-                FjErrorBuffer error{text.data(), text.size(), 0};
-                const auto admission = access.admit(access.user, &error);
-                if (admission.category != FJ_STATUS_SUCCESS) {
-                    return {{admission, 0}, 1};
-                }
-                FjCudaContext context{};
-                auto frame = fixture.frame;
-                const bool implicit = pending.site == LossSite::ImplicitCompletion ||
-                                      pending.site == LossSite::FrameUseThenImplicitCompletion;
-                if (implicit) {
-                    frame.flags = 0;
-                    frame.stream = 0;
-                }
-                const auto inspected = access.inspect(access.user, &frame, &context, &error);
-                if (inspected.category != FJ_STATUS_SUCCESS) {
-                    access.release(access.user);
-                    return {{inspected, 0}, 1};
-                }
-                struct Query {
-                    LossSite site = LossSite::FrameUse;
-                    unsigned count = 0;
-                } query{pending.site};
-                FjAbortCallback abort{};
-                const auto copies = JuicerTest::calls.copies;
-                const auto syncs = JuicerTest::calls.synchronizations;
-                const auto records = JuicerTest::calls.eventRecords;
-                if (pending.site == LossSite::PinnedOverwrite) {
-                    JuicerTest::calls.nextRecord = cudaErrorInvalidResourceHandle;
-                    JuicerTest::calls.nextSynchronization = cudaErrorContextIsDestroyed;
+            auto inputFrame = frame;
+            const bool implicit = site == LossSite::ImplicitCompletion || site == LossSite::FrameUseThenImplicitCompletion;
+            if (implicit) {
+                inputFrame.flags = 0;
+                inputFrame.stream = 0;
+            }
+            void* quarantinedStaging = nullptr;
+            std::array<char, 2048> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            FjCudaContext context{};
+            ASSERT_EQ(fj_cuda_inspect(owner, &inputFrame, &context, &error).category, FJ_STATUS_SUCCESS);
+            const auto selected = submission(input, id++);
+            struct Query {
+                LossSite site = LossSite::FrameUse;
+                unsigned count = 0;
+            } query{site};
+            FjAbortCallback abort{};
+            const auto copies = JuicerTest::calls.copies;
+            const auto syncs = JuicerTest::calls.synchronizations;
+            const auto records = JuicerTest::calls.eventRecords;
+            if (site == LossSite::PinnedOverwrite) {
+                JuicerTest::calls.nextRecord = cudaErrorInvalidResourceHandle;
+                JuicerTest::calls.nextSynchronization = cudaErrorContextIsDestroyed;
+            } else {
+                abort = {[](void* user) -> std::uint32_t {
+                             auto& query = *static_cast<Query*>(user);
+                             if (++query.count != 3) {
+                                 return FJ_ABORT_CONTINUE;
+                             }
+                             if (query.site != LossSite::ImplicitCompletion) {
+                                 JuicerTest::calls.nextRecord = cudaErrorInvalidResourceHandle;
+                             }
+                             if (query.site == LossSite::FrameUseThenImplicitCompletion) {
+                                 // Rollback waits between the first fence and final completion.
+                                 JuicerTest::calls.nextSynchronization = cudaErrorInvalidValue;
+                                 JuicerTest::calls.scheduledSynchronization =
+                                     JuicerTest::SynchronizationFault{JuicerTest::calls.synchronizations + 3, cudaErrorContextIsDestroyed};
+                                 return FJ_ABORT_CONTINUE;
+                             }
+                             JuicerTest::calls.nextSynchronization = cudaErrorContextIsDestroyed;
+                             return query.site == LossSite::FrameUse ? FJ_ABORT_CONTINUE : FJ_ABORT_REQUESTED;
+                         },
+                         &query};
+            }
+            const FjHostPreparation host{this, gaussian, nullptr};
+            const auto outcome = fj_cuda_render(owner, &context, &inputFrame, &selected, &input, &host, abort, &error);
+            EXPECT_EQ(JuicerTest::calls.nextRecord, cudaSuccess);
+            EXPECT_EQ(JuicerTest::calls.nextSynchronization, cudaSuccess);
+            EXPECT_FALSE(JuicerTest::calls.scheduledSynchronization);
+            if (site == LossSite::PinnedOverwrite) {
+                EXPECT_NE(std::string_view(text.data(), error.length).find("pinned staging"), std::string_view::npos) << text.data();
+                EXPECT_EQ(JuicerTest::calls.copies, copies + 1);
+                quarantinedStaging = JuicerTest::calls.lastStaging;
+            } else {
+                EXPECT_EQ(query.count, 3U);
+                if (site == LossSite::FrameUse || site == LossSite::FrameUseThenImplicitCompletion) {
+                    EXPECT_NE(std::string_view(text.data(), error.length).find("frame use"), std::string_view::npos) << text.data();
                 } else {
-                    abort = {[](void* user) -> std::uint32_t {
-                                 auto& query = *static_cast<Query*>(user);
-                                 if (++query.count != 3) {
-                                     return FJ_ABORT_CONTINUE;
-                                 }
-                                 if (query.site != LossSite::ImplicitCompletion) {
-                                     JuicerTest::calls.nextRecord = cudaErrorInvalidResourceHandle;
-                                 }
-                                 if (query.site == LossSite::FrameUseThenImplicitCompletion) {
-                                     // Rollback waits between the first fence and final completion.
-                                     JuicerTest::calls.nextSynchronization = cudaErrorInvalidValue;
-                                     JuicerTest::calls.scheduledSynchronization =
-                                         JuicerTest::SynchronizationFault{JuicerTest::calls.synchronizations + 3, cudaErrorContextIsDestroyed};
-                                     return FJ_ABORT_CONTINUE;
-                                 }
-                                 JuicerTest::calls.nextSynchronization = cudaErrorContextIsDestroyed;
-                                 return query.site == LossSite::FrameUse ? FJ_ABORT_CONTINUE : FJ_ABORT_REQUESTED;
-                             },
-                             &query};
-                }
-                const FjHostPreparation host{&fixture, gaussian};
-                const auto outcome = access.render(access.user, &context, &frame, &pending.selected, pending.input, &host, abort, &error);
-                EXPECT_EQ(JuicerTest::calls.nextRecord, cudaSuccess);
-                EXPECT_EQ(JuicerTest::calls.nextSynchronization, cudaSuccess);
-                EXPECT_FALSE(JuicerTest::calls.scheduledSynchronization);
-                if (pending.site == LossSite::PinnedOverwrite) {
-                    EXPECT_NE(std::string_view(text.data(), error.length).find("pinned staging"), std::string_view::npos) << text.data();
-                    EXPECT_EQ(JuicerTest::calls.copies, copies + 1);
-                    pending.quarantinedStaging = JuicerTest::calls.lastStaging;
-                } else {
-                    EXPECT_EQ(query.count, 3U);
-                    if (pending.site == LossSite::FrameUse || pending.site == LossSite::FrameUseThenImplicitCompletion) {
-                        EXPECT_NE(std::string_view(text.data(), error.length).find("frame use"), std::string_view::npos) << text.data();
-                    } else {
-                        EXPECT_EQ(JuicerTest::calls.synchronizations, syncs + 1);
-                        EXPECT_EQ(JuicerTest::calls.eventRecords, records + (implicit ? 1 : 0));
-                        if (implicit) {
-                            EXPECT_EQ(cudaStreamSynchronize(nullptr), cudaSuccess);
-                        }
-                        fixture.compare({kFilmDensity, kD50, 0.F});
+                    EXPECT_EQ(JuicerTest::calls.synchronizations, syncs + 1);
+                    EXPECT_EQ(JuicerTest::calls.eventRecords, records + (implicit ? 1 : 0));
+                    if (implicit) {
+                        EXPECT_EQ(cudaStreamSynchronize(nullptr), cudaSuccess);
                     }
+                    compare({kFilmDensity, kD50, 0.F});
                 }
-                if (pending.site == LossSite::FrameUseThenImplicitCompletion) {
-                    EXPECT_EQ(JuicerTest::calls.synchronizations, syncs + 3);
-                    EXPECT_EQ(cudaStreamQuery(nullptr), cudaSuccess);
-                    fixture.compare({kFilmDensity, kD50, 0.F});
-                }
-                access.release(access.user);
-                // Ask the same root for another frame before the pending
-                // completion gets the opportunity to retire this context.
-                if (pending.site != LossSite::ImplicitCompletion) {
-                    EXPECT_NE(fixture.render(*pending.input, pending.probeId).status.category, FJ_STATUS_SUCCESS);
-                    EXPECT_NE(fixture.diagnostic.find("quarantined"), std::string::npos) << fixture.diagnostic;
-                }
-                const FjCallCompletionInput completion{outcome, {}, 1, 0, 1, 1, context, 0};
-                return access.complete(access.user, &completion);
-            };
-            // The flat completion ABI fixes the order of the two opaque arguments.
-            // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-            const auto completeCall = [](void* user, void* scope, const FjCallCompletionInput* completion) -> FjCudaCompletion {
-                auto& pending = *static_cast<Attempt*>(user);
-                pending.retired = fj_cuda_call_retire_context(scope, completion);
-                return {{completion->outcome, 1}, pending.retired, {}, 0};
-            };
-            const auto result = fj_cuda_call(owner, input.route, continueCall, completeCall, &attempt);
-            const auto status = result.outcome.status;
+            }
+            if (site == LossSite::FrameUseThenImplicitCompletion) {
+                EXPECT_EQ(JuicerTest::calls.synchronizations, syncs + 3);
+                EXPECT_EQ(cudaStreamQuery(nullptr), cudaSuccess);
+                compare({kFilmDensity, kD50, 0.F});
+            }
+            ASSERT_NE(outcome.flags & FJ_RENDER_CONTEXT_LOSS_PENDING, 0U);
+            EXPECT_NE(outcome.flags & FJ_RENDER_ADMITTED, 0U);
+            EXPECT_EQ(outcome.retirement.context.device_id, context.device_id);
+            EXPECT_EQ(outcome.retirement.context.context, context.context);
+            EXPECT_EQ(outcome.retirement.context.epoch, context.epoch);
+            EXPECT_EQ(outcome.retirement.instance_token, selected.instance_token);
+            EXPECT_EQ(outcome.retirement.submission_id, selected.submission_id);
+            // Admission is already closed for this epoch, before retirement.
+            EXPECT_EQ(render(input, id++).status.category, FJ_STATUS_PREPARATION_FAILURE);
+            EXPECT_NE(diagnostic.find("retiring"), std::string::npos) << diagnostic;
+            const FjCudaRetirement wrongId{context, selected.instance_token, selected.submission_id + 1};
+            EXPECT_NE(fj_cuda_retire_context(owner, &wrongId, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(fj_cuda_retire_context(owner, &outcome.retirement, nullptr).category, FJ_STATUS_SUCCESS);
+            const auto status = outcome.status;
             if (site == LossSite::AbortFence) {
                 EXPECT_EQ(status.category, FJ_STATUS_CANCELLED);
                 EXPECT_EQ(status.api, FJ_API_NONE);
@@ -804,32 +1082,39 @@ namespace {
                 EXPECT_EQ(status.api, FJ_API_CUDA_RUNTIME);
                 EXPECT_EQ(status.native_code, cudaErrorInvalidResourceHandle);
             }
-            ASSERT_EQ(attempt.retired, 3U);
             std::vector<Registry::DeviceContextKey> live;
             Registry::registry_snapshot_context_keys(live);
             EXPECT_EQ(std::ranges::find(live, key), live.end());
             EXPECT_NE(std::ranges::find(live, otherKey), live.end());
-            Registry::RegistryContextSnapshot preserved{};
-            ASSERT_TRUE(Registry::registry_begin_submission(otherKey, preserved));
-            EXPECT_EQ(preserved.contextEpoch, otherEpoch.contextEpoch);
-            ASSERT_TRUE(Registry::registry_note_submission_end(otherKey));
+            EXPECT_EQ(Registry::registry_inspect_context(otherKey), otherEpoch);
             if (site == LossSite::PinnedOverwrite) {
                 // The fault is injected. The real stream can finish and the
                 // test can free the detached block the owner had to abandon.
                 ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
-                ASSERT_NE(attempt.quarantinedStaging, nullptr);
-                EXPECT_EQ(cudaFreeHost(attempt.quarantinedStaging), cudaSuccess);
+                ASSERT_NE(quarantinedStaging, nullptr);
+                EXPECT_EQ(cudaFreeHost(quarantinedStaging), cudaSuccess);
             }
             reset();
             ASSERT_EQ(render(input, id++).status.category, FJ_STATUS_SUCCESS) << diagnostic;
             compare({kFilmDensity, kD50, 0.F});
-            Registry::RegistryContextSnapshot recovered{};
-            ASSERT_TRUE(Registry::registry_begin_submission(key, recovered));
-            EXPECT_NE(recovered.contextEpoch, previous.contextEpoch);
-            ASSERT_TRUE(Registry::registry_note_submission_end(key));
+            const auto recovered = Registry::registry_inspect_context(key);
+            EXPECT_NE(recovered, previous);
+            const auto before = JuicerTest::calls.copies;
+            const auto lateSelection = submission(input, id++);
+            for (const auto* delayed : {&selected, &lateSelection}) {
+                const auto stale = fj_cuda_render(owner, &context, &inputFrame, delayed, &input, &host, {}, nullptr);
+                EXPECT_EQ(stale.status.category, FJ_STATUS_PREPARATION_FAILURE);
+                EXPECT_EQ(stale.flags, 0U);
+            }
+            EXPECT_EQ(JuicerTest::calls.copies, before);
+            for (int retry = 0; retry < 2; ++retry) {
+                EXPECT_NE(fj_cuda_retire_context(owner, &outcome.retirement, nullptr).category, FJ_STATUS_SUCCESS);
+            }
+            EXPECT_EQ(Registry::registry_inspect_context(key), recovered);
+            ASSERT_EQ(render(input, id - 2).status.category, FJ_STATUS_SUCCESS) << diagnostic;
+            compare({kFilmDensity, kD50, 0.F});
         }
-        Registry::RegistryContextSnapshot retiring{};
-        ASSERT_TRUE(Registry::registry_begin_owner_retire(otherKey, retiring));
-        EXPECT_TRUE(Registry::registry_retire(otherKey));
+        const FjCudaRetirement otherIdentity{{0, reinterpret_cast<std::uintptr_t>(other), otherEpoch}, 0, 0};
+        EXPECT_EQ(fj_cuda_retire_context(owner, &otherIdentity, nullptr).category, FJ_STATUS_SUCCESS);
     }
 } // namespace

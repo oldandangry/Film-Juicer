@@ -26,31 +26,18 @@ namespace Spektrafilm {
         std::uint64_t hash = 0;
     };
 
-    struct DiffusionPsfSampleDescriptor {
-        DiffusionFilterFamily family = DiffusionFilterFamily::BlackProMist;
-        std::array<double, 3> groupWeightsCoreHaloBloom{};
-        std::array<double, 3> groupCenterLambdaUm{};
-        double effectiveWarmth = 0.0;
-        double spatialScale = 0.0;
-        double pixelSizeUm = 0.0;
-        int radiusPixels = 0;
-        std::uint64_t hash = 0;
-    };
-
     struct DiffusionPsfComponents {
         static constexpr std::size_t kCount = 9;
-
         std::array<double, kCount> lambdaPixels{};
         std::array<double, kCount> redWeights{};
         std::array<double, kCount> greenWeights{};
         std::array<double, kCount> blueWeights{};
     };
 
-} // namespace Spektrafilm
+    struct DiffusionPsfSampleDescriptor {
+        DiffusionPsfComponents components;
+        int radiusPixels = 0;
+        std::uint64_t hash = 0;
+    };
 
-namespace JuicerCuda {
-    struct Failure;
-}
-namespace JuicerDiffusion {
-    bool prepare_components(const Spektrafilm::DiffusionPsfSampleDescriptor&, Spektrafilm::DiffusionPsfComponents&, JuicerCuda::Failure&);
-}
+} // namespace Spektrafilm

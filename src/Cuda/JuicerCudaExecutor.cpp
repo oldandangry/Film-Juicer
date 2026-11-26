@@ -754,16 +754,11 @@ namespace {
 
 namespace JuicerCuda {
     void PendingContextLossRecovery::observe(const char* stageTag, const Failure& observed) noexcept {
-        if (pending) {
-            return;
-        }
-        const auto loss = context_loss_status(observed);
-        if (loss) {
-            pending = true;
-            set_failure(failure, *loss, observed.diagnostic);
-            stage = stageTag;
+        if (!lossStage && context_loss_status(observed).has_value()) {
+            lossStage = stageTag;
         }
     }
+
     bool pack_scan_color(
         ScanColorPayload& destination,
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,

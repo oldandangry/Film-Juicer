@@ -21,6 +21,8 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaResourceOperations.h"
 #include "ProcessRoot.h"
+#include "Logging.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 struct FjCuda final {
     enum class Lifecycle : std::uint8_t {
@@ -135,7 +137,7 @@ namespace {
 
     bool invalid_render_arguments(const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared) {
         return !context || !frame || !submission || !prepared ||
-               context->device_id < 0 || context->context == 0 ||
+               context->device_id < 0 || context->context == 0 || context->epoch == 0 ||
                submission->instance_token == 0 || submission->submission_id == 0 ||
                !std::isfinite(frame->time_frames) || frame->time_frames < -0x1p63 || frame->time_frames >= 0x1p63 ||
                !std::isfinite(frame->frame_rate) || frame->frame_rate < 0 ||
@@ -272,8 +274,11 @@ FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error) {
 }
 
 FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_context, FjErrorBuffer* error) {
+    if (!valid_diagnostic(error)) {
+        return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    }
     try {
-        if (!cuda || !frame || !out_context || (error && error->capacity && !error->data)) {
+        if (!cuda || !frame || !out_context) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA inspection arguments");
         }
         JuicerCuda::NativeCall call(cuda);
@@ -289,7 +294,7 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
     }
 }
 
-FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error) {
+static FjStatus inspect_frame(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error, const FjCudaContext* expected = nullptr) {
     try {
         if (!frame || !outContext || (error && error->capacity && !error->data)) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA inspection arguments");
@@ -322,12 +327,17 @@ FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* ou
         if (overlapping_rows(source, destinationWindow)) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "overlapping CUDA source/destination pixel ranges");
         }
+        if (expected && !JuicerCuda::ResourceManager::registry_accepts_epoch(
+                            {expected->device_id, reinterpret_cast<void*>(expected->context)}, expected->epoch)) {
+            return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA render epoch is stale or retiring");
+        }
         void* context = nullptr;
         int driverCode = 0;
         std::string diagnostic;
         if (!JuicerCuda::query_current_cuda_context(context, diagnostic, &driverCode)) {
             return driver_failure(error, diagnostic, driverCode);
         }
+        outContext->context = reinterpret_cast<std::uintptr_t>(context);
         int device = -1;
         for (const auto& image : {source, destination}) {
             cudaPointerAttributes attributes{};
@@ -358,7 +368,7 @@ FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* ou
                 return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA allocation does not cover image bounds");
             }
         }
-        *outContext = FjCudaContext{device, reinterpret_cast<std::uintptr_t>(context)};
+        *outContext = FjCudaContext{device, reinterpret_cast<std::uintptr_t>(context), 0};
         return status(FJ_STATUS_SUCCESS, error, "");
     } catch (const std::bad_alloc&) {
         return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA inspection allocation failed");
@@ -369,26 +379,71 @@ FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* ou
     }
 }
 
-FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error) {
+FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error) {
+    FjCudaContext context{};
+    const auto result = inspect_frame(frame, &context, error);
+    if (result.category != FJ_STATUS_SUCCESS) {
+        return result;
+    }
+    context.epoch = ResourceManager::registry_inspect_context(
+        {context.device_id, reinterpret_cast<void*>(context.context)});
+    if (context.epoch == 0) {
+        return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA context epoch is retiring");
+    }
+    *outContext = context;
+    return result;
+}
+
+FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, const FjHostPreparation* host_preparation, FjAbortCallback abort_callback, FjErrorBuffer* error) {
+    if (!valid_diagnostic(error)) {
+        return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0, {}};
+    }
     try {
-        if (!cuda || invalid_render_arguments(context, frame, submission, prepared) ||
-            (error && error->capacity && !error->data)) {
-            return {status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA render arguments"), 0};
-        }
-        JuicerCuda::NativeCall call(cuda);
+        // The fixture provider observes Rust's selection before the native gate.
+        JuicerCuda::ResourceOperations::before_render_admission(cuda, context, submission);
         JuicerCuda::PendingContextLossRecovery recovery;
         std::string diagnostic;
-        const auto outcome = call.render(context, frame, submission, prepared, abort_callback, recovery, diagnostic);
+        FjRenderOutcome outcome{};
+        {
+            JuicerCuda::NativeCall call(cuda);
+            outcome = call.render(context, frame, submission, prepared, abort_callback, recovery, diagnostic, host_preparation);
+            if (recovery.submissionAdmitted) {
+                outcome.flags |= FJ_RENDER_ADMITTED;
+            }
+            if (recovery.lossStage) {
+                const JuicerCuda::ResourceManager::DeviceContextKey key{
+                    context->device_id, reinterpret_cast<void*>(context->context)};
+                outcome.retirement = {*context, submission->instance_token, submission->submission_id};
+                JuicerCuda::ResourceManager::registry_fail_epoch(key, outcome.retirement);
+                outcome.flags |= FJ_RENDER_CONTEXT_LOSS_PENDING;
+            }
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (recovery.submissionAdmitted && (frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0) {
+            try {
+                JuicerLogging::write("CUDALIFE",
+                                     "event=render_outcome snapshot_id=" + std::to_string(submission->submission_id) +
+                                         " instance_token=" + std::to_string(submission->instance_token) +
+                                         " status=" + std::to_string(outcome.status.category) +
+                                         " scanner_hash=" + std::to_string(submission->scanner_hash) +
+                                         " paper_version=" + std::to_string(prepared->print_profile_asset_version) +
+                                         (recovery.lossStage ? std::string(" context_loss_stage=") + recovery.lossStage : ""),
+                                     true);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+#endif
         JuicerCuda::write_status(outcome.status, diagnostic, error);
         return outcome;
     } catch (const JuicerCuda::ExecutionFailure& failure) {
-        return {JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error), 0};
+        return {JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error), 0, {}};
     } catch (const std::bad_alloc&) {
-        return {status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA render allocation failed"), 0};
+        return {status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA render allocation failed"), 0, {}};
     } catch (const std::exception& detail) {
-        return {status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what()), 0};
+        return {status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what()), 0, {}};
     } catch (...) {
-        return {status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA render failed with unknown exception"), 0};
+        return {status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA render failed with unknown exception"), 0, {}};
     }
 }
 
@@ -396,8 +451,12 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
     const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic, const FjHostPreparation* hostPreparation) {
     diagnostic.clear();
     const auto result = [&](FjStatus selected, std::string_view message) -> FjRenderOutcome {
-        diagnostic.assign(message);
-        return {selected, 0};
+        try {
+            diagnostic.assign(message);
+        } catch (...) {
+            diagnostic.clear();
+        }
+        return {selected, 0, {}};
     };
     try {
         if (invalid_render_arguments(context, frame, submission, prepared)) {
@@ -410,10 +469,15 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
         FjCudaContext inspected{};
         std::array<char, 512> inspectionMessage{};
         FjErrorBuffer inspectionError{inspectionMessage.data(), inspectionMessage.size(), 0};
-        const auto inspection = inspect(frame, &inspected, &inspectionError);
+        const ResourceManager::DeviceContextKey key{context->device_id, reinterpret_cast<void*>(context->context)};
+        const auto inspection = inspect_frame(frame, &inspected, &inspectionError, context);
         if (inspection.category != FJ_STATUS_SUCCESS) {
-            diagnostic.assign(inspectionMessage.data(), inspectionError.length);
-            return {inspection, 0};
+            // Attribute a revalidation failure only after the driver confirmed
+            // the current context and the registry matched the inspected epoch.
+            if (inspected.context == context->context) {
+                recovery.observe("render_image_revalidation", {inspection, {}});
+            }
+            return result(inspection, {inspectionMessage.data(), inspectionError.length});
         }
         if (context->device_id != inspected.device_id || context->context != inspected.context) {
             return result({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "CUDA render context differs from inspected current context");
@@ -427,11 +491,14 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
              !sameRect(frame->render_window, frame->full_frame_extent))) {
             return result({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "CUDA optics require the complete frame domain");
         }
-        if (frame->stream != 0) {
+        auto* const stream = reinterpret_cast<cudaStream_t>(frame->stream);
+        if (stream && stream != cudaStreamLegacy && stream != cudaStreamPerThread) {
             void* streamContext = nullptr;
             int driverCode = 0;
             if (!JuicerCuda::query_cuda_stream_context(frame->stream, streamContext, driverCode, diagnostic)) {
-                return {driver_failure_status(driverCode), 0};
+                const auto failure = driver_failure_status(driverCode);
+                recovery.observe("render_stream_revalidation", {failure, {}});
+                return {failure, 0, {}};
             }
             if (reinterpret_cast<std::uintptr_t>(streamContext) != inspected.context) {
                 return result({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "CUDA stream does not belong to the current context");
@@ -463,10 +530,10 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
         const JuicerCuda::ExecutionFrame execution{
             rect(frame->source.bounds), rect(frame->render_window), rect(frame->full_frame_extent), reinterpret_cast<const unsigned char*>(frame->source.address), reinterpret_cast<const unsigned char*>(address(frame->source)), reinterpret_cast<unsigned char*>(address(frame->destination)), frame->source.row_bytes, frame->destination.row_bytes, static_cast<int>(frame->source.components), reinterpret_cast<void*>(frame->stream), diffusion, halation, effects, frame->pixel_size_um, frame->time_frames, frame->frame_rate, frame->session_seed, static_cast<std::uintptr_t>(frame->clip_token), metering, (frame->flags & FJ_FRAME_TRACE_INFO) != 0, (frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0};
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
-            {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
+            {submission->instance_token}, {submission->frame_token}, submission->submission_id, key, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}, context->epoch};
         const auto complete = [&]() {
             Failure completion{{FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}};
-            if ((frame->flags & FJ_FRAME_STREAM_PRESENT) == 0) {
+            if (recovery.submissionAdmitted && (frame->flags & FJ_FRAME_STREAM_PRESENT) == 0) {
                 const auto code = ResourceOperations::synchronize_stream(reinterpret_cast<cudaStream_t>(frame->stream));
                 if (code != cudaSuccess) {
                     set_failure(completion, runtime_failure_status(code), cudaGetErrorString(code));
@@ -475,31 +542,35 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
             }
             return completion;
         };
-        const auto completionResult = [&](Failure completion) -> FjRenderOutcome {
+        const auto completionResult = [&](Failure completion, std::uint32_t flags = 0) -> FjRenderOutcome {
             diagnostic = std::move(completion.diagnostic);
-            return {completion.status, 0};
+            return {completion.status, flags, {}};
         };
         try {
             if (!JuicerCuda::execute_prepared_host_data(_cuda->root, *prepared, execution, snapshot, recovery, abortCallback, diagnostic, hostPreparation)) {
-                return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
+                return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0, {}};
             }
-        } catch (const JuicerCuda::ExecutionFailure& failure) {
+        } catch (const ExecutionFailure& failure) {
+            recovery.observe("native_render", failure.failure);
             auto completion = complete();
-            // Cancellation stops further work, but work already enqueued on
-            // the implicit stream still needs successful completion.
-            if (failure.failure.status.category == FJ_STATUS_CANCELLED &&
+            // A deferred report describes earlier work, independent of this
+            // completion. A failed fence still keeps its own primary error.
+            if ((failure.failure.status.category == FJ_STATUS_CANCELLED || failure.deferredDirError) &&
                 completion.status.category != FJ_STATUS_SUCCESS) {
-                return completionResult(std::move(completion));
+                return completionResult(std::move(completion), failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U);
             }
             throw;
         } catch (...) {
-            (void)complete();
+            auto completion = complete();
+            if (completion.status.category != FJ_STATUS_SUCCESS) {
+                return completionResult(std::move(completion));
+            }
             throw;
         }
         return completionResult(complete());
     } catch (JuicerCuda::ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);
-        return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U};
+        return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U, {}};
     } catch (const std::bad_alloc&) {
         return result({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA render allocation failed");
     } catch (const std::exception& detail) {
@@ -507,6 +578,47 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
     } catch (...) {
         return result({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA render failed with unknown exception");
     }
+}
+
+FjStatus fj_cuda_retire_context(FjCuda* cuda, const FjCudaRetirement* identity, FjErrorBuffer* error) {
+    if (!valid_diagnostic(error)) {
+        return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    }
+    if (!identity || identity->context.device_id < 0 || identity->context.context == 0 ||
+        identity->context.epoch == 0 || ((identity->instance_token == 0) != (identity->submission_id == 0))) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA context retirement identity");
+    }
+    try {
+        JuicerCuda::NativeCall call(cuda);
+        JuicerCuda::Failure failure;
+        if (!call.root().retire_context(*identity, failure)) {
+            return JuicerCuda::write_status(failure.status, failure.diagnostic, error);
+        }
+        return status(FJ_STATUS_SUCCESS, error, "");
+    } catch (const JuicerCuda::ExecutionFailure& failure) {
+        return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
+    } catch (const std::bad_alloc&) {
+        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA context retirement allocation failed");
+    } catch (...) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA context retirement failed");
+    }
+}
+
+FjStatus fj_cuda_metering(const FjRect* bounds, uint32_t method, FjAutoExposure* out, FjErrorBuffer* error) {
+    if (out) {
+        *out = {};
+    }
+    if (!valid_diagnostic(error)) {
+        return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    }
+    if (!bounds || !out || !ordered_rect(*bounds) || method > FJ_METER_HIGHLIGHT_WEIGHTED) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid auto-exposure preview arguments");
+    }
+    const JuicerCuda::FrameRect rect{bounds->x1, bounds->y1, bounds->x2, bounds->y2};
+    const auto preview = JuicerCuda::make_auto_exposure_preview_descriptor(
+        rect, rect, static_cast<Spektrafilm::AutoExposureMethod>(method));
+    *out = {*bounds, *bounds, preview.previewWidth, preview.previewHeight, method, preview.hash};
+    return status(FJ_STATUS_SUCCESS, error, "");
 }
 
 FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error) {
@@ -654,3 +766,64 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
+
+uint32_t fj_cuda_trace_flags(void) {
+    try {
+        return (JTRACE_ENABLED(1) ? FJ_FRAME_TRACE_INFO : 0u) |
+               (JTRACE_ENABLED(3) ? FJ_FRAME_TRACE_VERBOSE : 0u);
+    } catch (...) {
+        return 0;
+    }
+}
+
+void fj_cuda_trace_cutoff(FjStringView text) {
+    try {
+#if JUICER_DIAGNOSTICS_COMPILED
+        const std::string_view message = text.data ? std::string_view(text.data, text.count) : std::string_view{};
+        JTRACE("SPEKTRAFILM", std::string(message));
+#else
+        (void)text;
+#endif
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
+}
+
+void fj_cuda_trace_failure(FjStringView text) {
+    try {
+#if JUICER_DIAGNOSTICS_COMPILED
+        const std::string_view message = text.data ? std::string_view(text.data, text.count) : std::string_view{};
+        JTRACE("CUDA", std::string(message));
+#else
+        (void)text;
+#endif
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
+}
+
+void fj_cuda_trace_submission(const FjFrame* frame, const FjSubmission* submission, std::uint32_t reused) {
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (!frame || !submission ||
+        (frame->flags & FJ_FRAME_TRACE_VERBOSE) == 0) {
+        return;
+    }
+    try {
+        std::string message = "path=cuda action=";
+        message += reused != 0 ? "reuse" : "new";
+        message += " frame_token=";
+        message += std::to_string(submission->frame_token);
+        message += " snapshot_id=";
+        message += std::to_string(submission->submission_id);
+        message += " instance_token=";
+        message += std::to_string(submission->instance_token);
+        JTRACE_VERBOSE("MSSNP", message);
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
+#else
+    (void)frame;
+    (void)submission;
+    (void)reused;
+#endif
+}

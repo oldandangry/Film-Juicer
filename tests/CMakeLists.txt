@@ -268,6 +268,8 @@ set_tests_properties(Scanner.Gpu.PreGlareXyz PROPERTIES LABELS "gpu" TIMEOUT 300
 add_executable(JuicerScannerRouteTests
     scanner/routes_test.cpp resource/observed_operations.cpp
     ofx/cancellation_test.cpp ofx/instance_host.cpp ofx/production_images.cpp)
+target_compile_definitions(JuicerScannerRouteTests PRIVATE
+    JUICER_DIFFUSION_FRAME_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/native-payload.json")
 target_link_libraries(JuicerScannerRouteTests PRIVATE
     juicer_core film_juicer_rust juicer_dependencies juicer_ofx_headers CUDA::cuda_driver
     GTest::gtest juicer_host_gtest_main)

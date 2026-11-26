@@ -20,6 +20,9 @@ namespace JuicerCuda {
                 std::uint64_t activeSubmissionCount = 0;
                 std::uint64_t contextEpoch = 1;
                 bool retiring = false;
+                bool submitted = false;
+                std::uint64_t failedInstance = 0;
+                std::uint64_t failedSubmission = 0;
             };
 
             struct RegistryState {
@@ -27,9 +30,15 @@ namespace JuicerCuda {
                 std::unordered_map<DeviceContextKey, RegistryEntry, DeviceContextKeyHash> byDeviceContext;
             };
 
+            constinit std::atomic<RegistryState*> gInitializedRegistry{nullptr};
+
             RegistryState& registry_state() {
-                static RegistryState state{};
-                return state;
+                static RegistryState& registry = []() -> RegistryState& {
+                    static RegistryState state{};
+                    gInitializedRegistry.store(&state, std::memory_order_release);
+                    return state;
+                }();
+                return registry;
             }
 
             std::uint64_t next_nonzero_epoch() noexcept {
@@ -122,62 +131,47 @@ namespace JuicerCuda {
 
         } // namespace
 
-        bool registry_begin_submission(
-            const DeviceContextKey& key,
-            RegistryContextSnapshot& outSnapshot) noexcept {
-            outSnapshot = RegistryContextSnapshot{};
-            try {
-                const bool traceEnabled = JTRACE_ENABLED(2);
-                RegistryTrace trace{};
-                bool accepted = false;
-                RegistryState& state = registry_state();
-                {
-                    std::lock_guard<std::mutex> lock(state.mutex);
-                    auto [it, inserted] = state.byDeviceContext.try_emplace(key);
-                    RegistryEntry& entry = it->second;
-                    if (inserted) {
-                        entry.contextEpoch = next_nonzero_epoch();
-                        trace = snapshot_registry_trace(
-                            state,
-                            key,
-                            &entry,
-                            "create",
-                            true,
-                            "create_for_submission",
-                            traceEnabled);
-                    }
+        std::uint64_t registry_inspect_context(const DeviceContextKey& key) {
+            RegistryState& state = registry_state();
+            const std::lock_guard<std::mutex> lock(state.mutex);
+            auto [it, inserted] = state.byDeviceContext.try_emplace(key);
+            if (inserted) {
+                it->second.contextEpoch = next_nonzero_epoch();
+            }
+            return it->second.retiring ? 0 : it->second.contextEpoch;
+        }
 
-                    if (entry.retiring) {
-                        trace = snapshot_registry_trace(
-                            state,
-                            key,
-                            &entry,
-                            "submission_begin",
-                            false,
-                            "context_retiring",
-                            traceEnabled);
-                    } else if (entry.activeSubmissionCount ==
-                               std::numeric_limits<std::uint64_t>::max()) {
-                        trace = snapshot_registry_trace(
-                            state,
-                            key,
-                            &entry,
-                            "submission_begin",
-                            false,
-                            "active_submission_count_overflow",
-                            traceEnabled);
-                    } else {
-                        ++entry.activeSubmissionCount;
-                        outSnapshot.contextEpoch = entry.contextEpoch;
-                        accepted = true;
-                    }
-                }
-                trace_registry_event(trace);
-                return accepted;
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-                outSnapshot = RegistryContextSnapshot{};
+        bool registry_accepts_epoch(const DeviceContextKey& key, std::uint64_t epoch) {
+            RegistryState& state = registry_state();
+            const std::lock_guard<std::mutex> lock(state.mutex);
+            const auto it = state.byDeviceContext.find(key);
+            return it != state.byDeviceContext.end() && !it->second.retiring && it->second.contextEpoch == epoch;
+        }
+
+        bool registry_begin_submission(const DeviceContextKey& key, std::uint64_t epoch) {
+            RegistryState& state = registry_state();
+            const std::lock_guard<std::mutex> lock(state.mutex);
+            const auto it = state.byDeviceContext.find(key);
+            if (it == state.byDeviceContext.end() || it->second.retiring ||
+                it->second.contextEpoch != epoch ||
+                it->second.activeSubmissionCount == std::numeric_limits<std::uint64_t>::max()) {
                 return false;
+            }
+            ++it->second.activeSubmissionCount;
+            it->second.submitted = true;
+            return true;
+        }
+
+        void registry_fail_epoch(const DeviceContextKey& key, const FjCudaRetirement& identity) noexcept {
+            // The native gate keeps the admitted epoch present until this mark.
+            // Updating its existing entry requires no allocation.
+            auto* const state = gInitializedRegistry.load(std::memory_order_acquire);
+            const std::lock_guard<std::mutex> lock(state->mutex);
+            const auto it = state->byDeviceContext.find(key);
+            if (it != state->byDeviceContext.end() && it->second.contextEpoch == identity.context.epoch) {
+                it->second.retiring = true;
+                it->second.failedInstance = identity.instance_token;
+                it->second.failedSubmission = identity.submission_id;
             }
         }
 
@@ -233,51 +227,33 @@ namespace JuicerCuda {
 
         bool registry_begin_owner_retire(
             const DeviceContextKey& key,
-            RegistryContextSnapshot& outSnapshot) noexcept {
-            outSnapshot = RegistryContextSnapshot{};
-            try {
-                const bool traceEnabled = JTRACE_ENABLED(2);
-                RegistryTrace trace{};
-                bool accepted = false;
-                RegistryState& state = registry_state();
-                {
-                    std::lock_guard<std::mutex> lock(state.mutex);
-                    const auto it = state.byDeviceContext.find(key);
-                    if (it != state.byDeviceContext.end()) {
-                        RegistryEntry& entry = it->second;
-                        if (entry.activeSubmissionCount != 0) {
-                            trace = snapshot_registry_trace(
-                                state,
-                                key,
-                                &entry,
-                                "owner_retire_begin",
-                                false,
-                                "active_submissions",
-                                traceEnabled);
-                        } else {
-                            if (!entry.retiring) {
-                                entry.retiring = true;
-                                trace = snapshot_registry_trace(
-                                    state,
-                                    key,
-                                    &entry,
-                                    "owner_retire_begin",
-                                    true,
-                                    "context_retiring",
-                                    traceEnabled);
-                            }
-                            outSnapshot.contextEpoch = entry.contextEpoch;
-                            accepted = true;
-                        }
-                    }
-                }
-                trace_registry_event(trace);
-                return accepted;
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-                outSnapshot = RegistryContextSnapshot{};
+            const FjCudaRetirement* identity,
+            RegistryContextSnapshot& outSnapshot) {
+            outSnapshot = {};
+            RegistryState& state = registry_state();
+            const std::lock_guard<std::mutex> lock(state.mutex);
+            const auto it = state.byDeviceContext.find(key);
+            if (it == state.byDeviceContext.end() || it->second.activeSubmissionCount != 0) {
                 return false;
             }
+            RegistryEntry& entry = it->second;
+            const bool inspectionOnly = !entry.submitted && entry.failedSubmission == 0;
+            if (identity) {
+                if (entry.contextEpoch != identity->context.epoch) {
+                    return false;
+                }
+                if (identity->submission_id == 0) {
+                    if (!inspectionOnly) {
+                        return false;
+                    }
+                } else if (entry.failedInstance != identity->instance_token ||
+                           entry.failedSubmission != identity->submission_id) {
+                    return false;
+                }
+            }
+            entry.retiring = true;
+            outSnapshot = {entry.contextEpoch, inspectionOnly};
+            return true;
         }
 
         bool registry_retire(const DeviceContextKey& key) noexcept {

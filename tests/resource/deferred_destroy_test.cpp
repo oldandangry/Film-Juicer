@@ -62,7 +62,7 @@ namespace {
         // A runtime call fails after the exact-context batch has been detached.
         failFree = true;
         JuicerCuda::Failure failure;
-        require(!JuicerCuda::drain_deferred_resources(key, failure), "faulted drain succeeded");
+        require(!JuicerCuda::drain_deferred_resources(key, 1, failure), "faulted drain succeeded");
         require(failure.status.category == FJ_STATUS_CUDA_FAILURE &&
                     failure.status.api == FJ_API_CUDA_RUNTIME &&
                     failure.status.native_code == cudaErrorInvalidValue,
@@ -71,16 +71,16 @@ namespace {
                 "failure discarded the batch or its ledger charges");
         require(freeAttempts == 1, "failed drain retried or freed a later entry");
         require(cuCtxSetCurrent(contexts[0]) == CUDA_SUCCESS, "restore owner after fault");
-        require(JuicerCuda::drain_deferred_resources(key, failure), "explicit drain after clearing fault");
+        require(JuicerCuda::drain_deferred_resources(key, 1, failure), "explicit drain after clearing fault");
         std::printf("after retry charged=%llu records=%llu attempts=%u\n",
                     static_cast<unsigned long long>(ledger->snapshot().chargedBytes),
                     static_cast<unsigned long long>(ledger->snapshot().recordCount),
                     freeAttempts);
         require(ledger->snapshot().chargedBytes == 4096 && ledger->snapshot().recordCount == 1, "failed or unprocessed owner lost, duplicated or unrelated owner freed");
         require(ledger->record_count_for_context(unrelated, 1) == 1, "unrelated exact-context entry changed");
-        require(JuicerCuda::drain_deferred_resources(key, failure), "empty drain failed");
+        require(JuicerCuda::drain_deferred_resources(key, 1, failure), "empty drain failed");
         require(cuCtxSetCurrent(contexts[1]) == CUDA_SUCCESS, "restore unrelated owner");
-        require(JuicerCuda::drain_deferred_resources(unrelated, failure), "unrelated deferred drain");
+        require(JuicerCuda::drain_deferred_resources(unrelated, 1, failure), "unrelated deferred drain");
         require(ledger->snapshot().chargedBytes == 0 && ledger->snapshot().recordCount == 0, "deferred ownership did not drain to zero");
         require(freeAttempts == 4u, "deferred entries duplicated or reprocessed");
         for (auto* context : contexts) {
@@ -90,6 +90,8 @@ namespace {
 } // namespace
 
 namespace JuicerCuda::ResourceOperations {
+    void before_render_admission(FjCuda*, const FjCudaContext*, const FjSubmission*) {}
+
     cudaError_t allocate_upload(void** destination, std::size_t bytes) {
         return cudaMallocHost(destination, bytes);
     }
@@ -98,6 +100,9 @@ namespace JuicerCuda::ResourceOperations {
     }
     cudaError_t copy_upload(void* destination, const void* source, std::size_t bytes, cudaStream_t stream) {
         return cudaMemcpyAsync(destination, source, bytes, cudaMemcpyHostToDevice, stream);
+    }
+    cudaError_t read_scan_error(int* host, const int* device, cudaStream_t stream) {
+        return cudaMemcpyAsync(host, device, sizeof(*host), cudaMemcpyDeviceToHost, stream);
     }
     cudaError_t record_event(cudaEvent_t event, cudaStream_t stream) {
         return cudaEventRecord(event, stream);

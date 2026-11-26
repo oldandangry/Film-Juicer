@@ -197,7 +197,7 @@ fn scanner_correction(value: &film_juicer_core::scanner::Correction) -> sys::FjS
 pub(super) fn host_data(
     state: &recipe::RenderState,
     optics: &sys::FjOptics,
-    descriptors: &super::edge::FjNativeFrameDescriptors,
+    descriptors: &super::edge::FrameDescriptors,
     preview: &sys::FjAutoExposure,
     noise: Option<&crate::asset_noise::NoiseView<'_>>,
 ) -> Result<sys::FjPreparedHostData, &'static str> {

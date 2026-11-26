@@ -30,7 +30,7 @@ namespace {
             }
         }
         void reject(const FjFrame& frame) {
-            FjCudaContext context{73, 91};
+            FjCudaContext context{73, 91, 17};
             std::array<char, 9> text{};
             FjErrorBuffer error{text.data(), text.size(), 42};
             const auto result = fj_cuda_inspect(owner, &frame, &context, &error);
@@ -39,6 +39,7 @@ namespace {
             EXPECT_EQ(result.native_code, 0);
             EXPECT_EQ(context.device_id, 73);
             EXPECT_EQ(context.context, 91U);
+            EXPECT_EQ(context.epoch, 17U);
             EXPECT_EQ(error.length, text.size() - 1);
             EXPECT_EQ(text.back(), '\0');
         }
@@ -48,7 +49,7 @@ namespace {
 #if !defined(JUICER_CUDA_INSPECT_GPU_TEST)
     TEST_F(InspectHost, InvalidArgumentsLeaveOutputUnchanged) {
         auto frame = frame_at();
-        FjCudaContext context{73, 91};
+        FjCudaContext context{73, 91, 17};
         EXPECT_EQ(fj_cuda_inspect(nullptr, &frame, &context, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_cuda_inspect(owner, nullptr, &context, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_cuda_inspect(owner, &frame, nullptr, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
@@ -61,11 +62,11 @@ namespace {
     TEST_F(InspectHost, RenderRejectsInvalidArgumentsBeforeCudaDiscovery) {
         auto frame = frame_at();
         frame.source.address = 0;
-        const FjCudaContext context{0, 1};
+        const FjCudaContext context{0, 1, 1};
         const FjSubmission submission{1, 0, 1, 1, 1, 1, 1};
         const FjPreparedHostData prepared{};
         const auto category = [&](FjCuda* inputOwner, const FjCudaContext* inputContext, const FjFrame* inputFrame, const FjSubmission* inputSubmission, const FjPreparedHostData* inputPrepared, FjErrorBuffer* error) {
-            return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, {}, error).status.category;
+            return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, nullptr, {}, error).status.category;
         };
         EXPECT_EQ(category(nullptr, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(category(owner, nullptr, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -197,6 +198,23 @@ namespace {
         ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
         EXPECT_EQ(context.device_id, 0);
         EXPECT_EQ(context.context, reinterpret_cast<std::uintptr_t>(current));
+    }
+
+    TEST_F(InspectGpu, RepeatedInspectionLeavesAnIdleRetirableEpoch) {
+        const auto input = frame();
+        FjCudaContext first{}, again{}, next{};
+        ASSERT_EQ(fj_cuda_inspect(owner, &input, &first, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_cuda_inspect(owner, &input, &again, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_NE(first.epoch, 0U);
+        EXPECT_EQ(first.epoch, again.epoch);
+        const FjCudaRetirement idle{first, 0, 0};
+        ASSERT_EQ(fj_cuda_retire_context(owner, &idle, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_cuda_inspect(owner, &input, &next, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(next.context, first.context);
+        EXPECT_NE(next.epoch, first.epoch);
+        EXPECT_NE(fj_cuda_retire_context(owner, &idle, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_inspect(owner, &input, &again, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(again.epoch, next.epoch);
     }
 
     TEST_F(InspectGpu, AllocationCoverageIncludesFullSourceAndDestinationBounds) {

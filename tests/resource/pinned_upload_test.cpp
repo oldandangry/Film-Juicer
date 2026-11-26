@@ -20,7 +20,8 @@
 
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResourceOperations.h"
-#include "juicer_dir_boundary_api.h"
+#include "juicer_cuda_api.h"
+#include "RenderValues.h"
 
 #include "observed_operations.h"
 
@@ -111,7 +112,7 @@ namespace {
             if (ledger) {
                 EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
             }
-            JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, PinnedUploadPurgeDisposition::NormalRetire);
+            JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire);
             if (destination) {
                 EXPECT_EQ(cudaFree(destination), cudaSuccess);
             }
@@ -365,13 +366,13 @@ namespace {
         require_cuda(cudaStreamSynchronize(stream));
         EXPECT_EQ(read<std::uint8_t>(destination, bytes), source);
         EXPECT_FALSE(gate.timed_out());
-        JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, PinnedUploadPurgeDisposition::NormalRetire);
+        JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire);
         require_cuda(cudaFreeHost(quarantined));
     }
 
     INSTANTIATE_TEST_SUITE_P(RecordFailure, PinnedUploadRecordFailure, testing::Values(cudaErrorInvalidResourceHandle, cudaErrorContextIsDestroyed));
 
-    TEST_F(PinnedUpload, DirOwnerExpiresWhileWeightsArePending) {
+    TEST_F(PinnedUpload, DirColdCallbackInstallsBothMatricesAndStagesWeights) {
         const auto fixture = Json::parse(std::ifstream(JUICER_DIR_BOUNDARY_FIXTURE));
         ASSERT_EQ(fixture.at("preset"), JUICER_TEST_PRESET_NAME);
         const auto& rows = fixture.at("cases");
@@ -386,52 +387,119 @@ namespace {
         const auto verticalWeights = vertical.at("weights").get<std::vector<std::uint64_t>>();
         expected.insert(expected.end(), verticalWeights.begin(), verticalWeights.end());
 
-        const FjDirBoundaryInput input{
-            .component = {
-                .sigma_px = 4.0F,
-                .weight = 1.0F,
-                .radius = 12,
-                .reference_operator = FJ_DIR_OPERATOR_YVV_REFLECT,
-                .feedforward = 0.5,
-                .feedback = {0.5, 0.0, 0.0},
-                .normalization_denominator = 2.0,
-                .feedforward_numerator = 1.0,
-                .feedback_numerators = {1.0, 0.0, 0.0},
-                .boundary_truncation_accuracy = 1e-11,
-                .boundary_certification_tolerance = 1e-6,
-                .boundary_derivation_version = 1,
-            },
-            .width = 9,
-            .height = 6,
-        };
-        const auto release = [](FjDirBoundaryOwner* owner) {
-            (void)fj_dir_boundary_release(owner, nullptr);
-        };
-        FjDirBoundaryOwner* raw = nullptr;
-        FjDirBoundaryFailure detail{};
-        ASSERT_EQ(fj_dir_boundary_acquire(&input, &raw, &detail, nullptr).category, FJ_STATUS_SUCCESS);
-        std::unique_ptr<FjDirBoundaryOwner, decltype(release)> owner(raw, release);
-        FjDirBoundaryView view{};
-        ASSERT_EQ(fj_dir_boundary_view(owner.get(), &view, &detail, nullptr).category, FJ_STATUS_SUCCESS);
-        ASSERT_EQ(view.count, expected.size());
-        EXPECT_EQ(view.identity, row->at("key").get<std::uint64_t>());
-        for (std::size_t i = 0; i < 9; ++i) {
-            EXPECT_EQ(std::bit_cast<std::uint64_t>(view.horizontal_terminal[i]), horizontal.at("terminal").at(i).get<std::uint64_t>());
-            EXPECT_EQ(std::bit_cast<std::uint64_t>(view.vertical_terminal[i]), vertical.at("terminal").at(i).get<std::uint64_t>());
-        }
+        Spektrafilm::DirGaussianComponentPlan component{};
+        component.sigmaPixels = 4.0F;
+        component.weight = 1.F;
+        component.radius = 12;
+        component.referenceOperator = Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect;
+        component.iir.feedforward = 0.5;
+        component.iir.feedback = {0.5, 0.0, 0.0};
+        component.iir.normalizationDenominator = 2.0;
+        component.iir.feedforwardNumerator = 1.0;
+        component.iir.feedbackNumerators = {1.0, 0.0, 0.0};
+        component.boundaryTruncationAccuracy = 1e-11;
+        component.boundaryCertificationTolerance = 1e-6;
+        component.boundaryDerivationVersion = 1;
+        component.boundaryIdentity = row->at("key").get<std::uint64_t>();
 
-        const std::vector<double> warm(view.count, 0.0);
-        ASSERT_TRUE(upload(warm.data(), warm.size() * sizeof(double))) << failure.diagnostic;
-        require_cuda(cudaStreamSynchronize(stream));
-        UploadGate gate(stream);
-        ASSERT_TRUE(upload(view.weights, view.count * sizeof(double))) << failure.diagnostic;
+        using Boundary = JuicerCuda::Resources::DeviceSpatialDirBoundary;
+        Boundary& boundary = resources->spatialDirBoundaries[0];
+        struct Preparation {
+            FjDirBoundaryView view{};
+            bool fail = true;
+            unsigned calls = 0;
+        } preparation{};
+        auto candidate = std::make_unique<double[]>(expected.size());
+        std::ranges::transform(expected, candidate.get(), [](std::uint64_t word) {
+            return std::bit_cast<double>(word);
+        });
+        preparation.view = {
+            candidate.get(), expected.size(), component.boundaryIdentity, 9, 6, static_cast<int>(horizontal.at("weights").size() / 3), static_cast<int>(vertical.at("weights").size() / 3), horizontal.at("terminal_size").get<int>(), vertical.at("terminal_size").get<int>(), {}, {}};
+        for (std::size_t i = 0; i < 9; ++i) {
+            preparation.view.horizontal_terminal[i] = std::bit_cast<double>(horizontal.at("terminal").at(i).get<std::uint64_t>());
+            preparation.view.vertical_terminal[i] = std::bit_cast<double>(vertical.at("terminal").at(i).get<std::uint64_t>());
+        }
+        const FjHostPreparation host{&preparation, nullptr, [](void* user, const FjDirBoundaryInput* input, FjDirBoundaryView* out, FjDirBoundaryFailure* detail, FjErrorBuffer*) -> FjStatus {
+                                         auto& data = *static_cast<Preparation*>(user);
+                                         ++data.calls;
+                                         EXPECT_EQ(input->component.boundary_identity, data.view.identity);
+                                         EXPECT_EQ(input->width, data.view.width);
+                                         EXPECT_EQ(input->height, data.view.height);
+                                         if (data.fail) {
+                                             detail->reason = FJ_DIR_BOUNDARY_ALLOCATION;
+                                             return {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0};
+                                         }
+                                         *out = data.view;
+                                         return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+                                     }};
+        const auto ensure = [&] {
+            return JuicerCuda::ensure_spatial_dir_boundary(*resources, boundary, component, 9, 6, stream, failure, &host);
+        };
+        EXPECT_FALSE(ensure());
+        EXPECT_EQ(failure.status.category, FJ_STATUS_ALLOCATION_FAILURE);
+        EXPECT_EQ(boundary.weights, nullptr);
+        preparation.fail = false;
+
+        std::optional<UploadGate> gate;
+        calls.beforeCopyUser = &gate;
+        calls.beforeCopy = [](cudaStream_t stream, void* target) {
+            static_cast<std::optional<UploadGate>*>(target)->emplace(stream);
+        };
+        ASSERT_TRUE(ensure()) << failure.diagnostic;
+        ASSERT_TRUE(gate);
+        EXPECT_EQ(boundary.horizontalTerminalSize, preparation.view.horizontal_terminal_size);
+        EXPECT_EQ(boundary.verticalTerminalSize, preparation.view.vertical_terminal_size);
+        for (std::size_t i = 0; i < 9; ++i) {
+            EXPECT_EQ(std::bit_cast<std::uint64_t>(boundary.horizontalTerminalMatrix[i]), horizontal.at("terminal").at(i).get<std::uint64_t>());
+            EXPECT_EQ(std::bit_cast<std::uint64_t>(boundary.verticalTerminalMatrix[i]), vertical.at("terminal").at(i).get<std::uint64_t>());
+        }
+        auto* const first = boundary.weights;
         auto* const pending = calls.lastEvent;
         ASSERT_EQ(cudaEventQuery(pending), cudaErrorNotReady);
-        ASSERT_EQ(fj_dir_boundary_release(owner.release(), nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_TRUE(ensure()) << failure.diagnostic;
+        EXPECT_EQ(preparation.calls, 2U);
+        EXPECT_EQ(boundary.weights, first);
+        candidate.reset();
         ASSERT_EQ(cudaEventQuery(pending), cudaErrorNotReady);
-        gate.release();
+        gate->release();
         require_cuda(cudaEventSynchronize(pending));
+        EXPECT_EQ(read<std::uint64_t>(boundary.weights, expected.size()), expected);
+        EXPECT_FALSE(gate->timed_out());
+
+        // Begin the old boundary's last read after the replacement allocates.
+        // This keeps it pending through installation even with a synchronous
+        // device allocator. The retirement event follows that queued read.
+        gate.reset();
+        candidate = std::make_unique<double[]>(expected.size());
+        std::ranges::transform(expected, candidate.get(), [](std::uint64_t word) {
+            return std::bit_cast<double>(word);
+        });
+        component.boundaryIdentity ^= 1U;
+        preparation.view.identity = component.boundaryIdentity;
+        preparation.view.weights = candidate.get();
+        struct LastRead {
+            std::optional<UploadGate>& gate;
+            const double* oldWeights;
+            void* destination;
+            std::size_t bytes;
+        } lastRead{gate, first, destination, expected.size() * sizeof(double)};
+        calls.beforeCopyUser = &lastRead;
+        calls.beforeCopy = [](cudaStream_t stream, void* user) {
+            auto& read = *static_cast<LastRead*>(user);
+            read.gate.emplace(stream);
+            EXPECT_EQ(cudaMemcpyAsync(read.destination, read.oldWeights, read.bytes, cudaMemcpyDeviceToDevice, stream), cudaSuccess);
+        };
+        ASSERT_TRUE(ensure()) << failure.diagnostic;
+        ASSERT_TRUE(gate);
+        EXPECT_NE(boundary.weights, first);
+        EXPECT_EQ(boundary.identity, component.boundaryIdentity);
+        EXPECT_EQ(preparation.calls, 3U);
+        EXPECT_EQ(cudaStreamQuery(stream), cudaErrorNotReady);
+        candidate.reset();
+        gate->release();
+        require_cuda(cudaStreamSynchronize(stream));
+        EXPECT_FALSE(gate->timed_out());
         EXPECT_EQ(read<std::uint64_t>(destination, expected.size()), expected);
-        EXPECT_FALSE(gate.timed_out());
+        EXPECT_EQ(read<std::uint64_t>(boundary.weights, expected.size()), expected);
     }
 } // namespace

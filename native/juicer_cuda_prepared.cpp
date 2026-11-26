@@ -237,7 +237,7 @@ namespace {
             meter.preview_width != metering.previewWidth || meter.preview_height != metering.previewHeight || meter.hash != metering.hash) {
             return malformed(diagnostic, "auto_exposure.frame");
         }
-        if (source.spatial_dir.hash != 0 &&
+        if (source.spatial_dir.recipe_hash != 0 &&
             (source.spatial_dir.recipe_hash != source.dir_couplers.hash ||
              !sameExtent(source.spatial_dir.render_extent, frame.renderWindow) ||
              !sameExtent(source.spatial_dir.render_extent, frame.fullFrameExtent) ||
@@ -245,7 +245,7 @@ namespace {
              !sameExtent(source.spatial_dir.full_frame_extent, frame.fullFrameExtent))) {
             return malformed(diagnostic, "spatial_dir.frame");
         }
-        if (source.grain.hash != 0 &&
+        if (source.grain.recipe_hash != 0 &&
             (!sameExtent(source.grain.render_extent, frame.renderWindow) ||
              !sameExtent(source.grain.full_frame_extent, frame.fullFrameExtent) ||
              source.grain.session_seed != frame.sessionSeed || source.grain.clip_token != frame.clipToken ||
@@ -257,6 +257,10 @@ namespace {
         if (source.effects.hash != 0 &&
             (!sameExtent(source.effects.render_extent, frame.renderWindow) ||
              !sameExtent(source.effects.full_frame_extent, frame.fullFrameExtent) ||
+             source.effects.full_frame_extent.x != frame.effectsGeometry.pixelDefinition.x ||
+             source.effects.full_frame_extent.y != frame.effectsGeometry.pixelDefinition.y ||
+             source.effects.full_frame_extent.width != frame.effectsGeometry.pixelDefinition.width ||
+             source.effects.full_frame_extent.height != frame.effectsGeometry.pixelDefinition.height ||
              source.effects.session_seed != frame.sessionSeed || source.effects.clip_token != frame.clipToken)) {
             return malformed(diagnostic, "effects.frame");
         }
@@ -305,7 +309,7 @@ namespace JuicerCuda {
         const FjHostPreparation* hostPreparation) {
         diagnostic.clear();
         PreparedDescriptors descriptors;
-        if (!decode_prepared_descriptors(source, descriptors, diagnostic) || !validate_spans(source, diagnostic) ||
+        if (!decode_prepared_descriptors(source, descriptors, diagnostic, frame.pixelSizeUm) || !validate_spans(source, diagnostic) ||
             !validate_frame_binding(source, frame, snapshot, diagnostic)) {
             return false;
         }

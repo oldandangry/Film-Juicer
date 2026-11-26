@@ -438,9 +438,10 @@ namespace JuicerCuda {
         Failure& outError) noexcept;
     void destroy(Resources* resources) noexcept;
     void invalidate_deferred_resources_after_proven_context_loss(
-        const ResourceManager::DeviceContextKey& key);
+        const ResourceManager::DeviceContextKey& key, std::uint64_t epoch);
     bool drain_deferred_resources(
         const ResourceManager::DeviceContextKey& key,
+        std::uint64_t epoch,
         Failure& outError);
 
     bool drain_for_context_retire(
@@ -501,7 +502,8 @@ namespace JuicerCuda {
         int width,
         int height,
         void* cudaStreamOpaque,
-        Failure& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation);
     bool clear_spatial_dir_boundary_binding(
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
@@ -625,6 +627,7 @@ namespace JuicerCuda {
     void purge_pinned_upload_staging_for_context(
         int deviceId,
         void* contextOpaque,
+        std::uint64_t epoch,
         PinnedUploadPurgeDisposition disposition) noexcept;
 
 

@@ -1,6 +1,7 @@
 #include "juicer_cuda_descriptors.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -15,10 +16,6 @@ namespace {
     static_assert(static_cast<std::uint32_t>(Spektrafilm::ScanRoute::PositivePrintScan) == FJ_ROUTE_POSITIVE_PRINT);
     static_assert(static_cast<std::uint32_t>(Spektrafilm::ProfilePolarity::Negative) == FJ_POLARITY_NEGATIVE);
     static_assert(static_cast<std::uint32_t>(Spektrafilm::ProfilePolarity::Positive) == FJ_POLARITY_POSITIVE);
-    static_assert(static_cast<std::uint32_t>(Spektrafilm::DiffusionFilterFamily::Glimmerglass) == FJ_DIFFUSION_GLIMMERGLASS);
-    static_assert(static_cast<std::uint32_t>(Spektrafilm::DiffusionFilterFamily::BlackProMist) == FJ_DIFFUSION_BLACK_PRO_MIST);
-    static_assert(static_cast<std::uint32_t>(Spektrafilm::DiffusionFilterFamily::ProMist) == FJ_DIFFUSION_PRO_MIST);
-    static_assert(static_cast<std::uint32_t>(Spektrafilm::DiffusionFilterFamily::Cinebloom) == FJ_DIFFUSION_CINEBLOOM);
     static_assert(static_cast<std::uint32_t>(Spektrafilm::DirReferenceOperator::None) == FJ_DIR_OPERATOR_NONE);
     static_assert(static_cast<std::uint32_t>(Spektrafilm::DirReferenceOperator::Identity) == FJ_DIR_OPERATOR_IDENTITY);
     static_assert(static_cast<std::uint32_t>(Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect) == FJ_DIR_OPERATOR_FIR_REFLECT);
@@ -185,19 +182,28 @@ namespace {
         Spektrafilm::DiffusionLinearStage stage,
         Spektrafilm::DiffusionStageFrameDescriptor& out,
         std::string& diagnostic) {
-        if (source.family > FJ_DIFFUSION_CINEBLOOM ||
-            source.hash == 0 || source.sample_hash == 0) {
+        if (source.hash == 0 || source.sample_hash == 0 || source.radius_px <= 0 ||
+            !std::isfinite(source.scatter_fraction) ||
+            !std::ranges::all_of(source.lambda_px, [](double value) {
+                return std::isfinite(value) && value > 0.0;
+            })) {
             return invalid_descriptor(diagnostic, "optics.diffusion");
+        }
+        const auto validWeight = [](double value) {
+            return std::isfinite(value) && value >= 0.0;
+        };
+        if (!std::ranges::all_of(source.red_weights, validWeight) ||
+            !std::ranges::all_of(source.green_weights, validWeight) ||
+            !std::ranges::all_of(source.blue_weights, validWeight)) {
+            return invalid_descriptor(diagnostic, "optics.diffusion.weights");
         }
         out.stage = stage;
         out.scatterFraction = source.scatter_fraction;
         out.hash = source.hash;
-        out.sample.family = static_cast<Spektrafilm::DiffusionFilterFamily>(source.family);
-        std::copy_n(source.group_weights, 3, out.sample.groupWeightsCoreHaloBloom.begin());
-        std::copy_n(source.group_lambda_um, 3, out.sample.groupCenterLambdaUm.begin());
-        out.sample.effectiveWarmth = source.warmth;
-        out.sample.spatialScale = source.spatial_scale;
-        out.sample.pixelSizeUm = source.pixel_size_um;
+        std::ranges::copy(source.lambda_px, out.sample.components.lambdaPixels.begin());
+        std::ranges::copy(source.red_weights, out.sample.components.redWeights.begin());
+        std::ranges::copy(source.green_weights, out.sample.components.greenWeights.begin());
+        std::ranges::copy(source.blue_weights, out.sample.components.blueWeights.begin());
         out.sample.radiusPixels = source.radius_px;
         out.sample.hash = source.sample_hash;
         return true;
@@ -324,17 +330,15 @@ namespace {
 
     bool decode_spatial_dir(
         const FjSpatialDir& source,
+        float pixelSizeUm,
         JuicerCuda::PreparedDescriptors& out,
         std::string& diagnostic) {
         if (source.component_count > static_cast<std::size_t>(Spektrafilm::DirFilterPlan::kMaxComponents)) {
             return invalid_descriptor(diagnostic, "spatial_dir.component_count");
         }
-        if (source.hash == 0) {
+        if (source.recipe_hash == 0 || source.component_count == 0) {
             return (source.component_count == 0 && source.recipe_hash == 0) ||
-                   invalid_descriptor(diagnostic, "spatial_dir.inactive");
-        }
-        if (source.component_count == 0 || source.recipe_hash == 0) {
-            return invalid_descriptor(diagnostic, "spatial_dir.identity");
+                   invalid_descriptor(diagnostic, "spatial_dir.identity");
         }
         Spektrafilm::SpatialDirDescriptor& descriptor = out.spatialDir;
         descriptor.dirRecipeHash = source.recipe_hash;
@@ -343,12 +347,12 @@ namespace {
         descriptor.fullFrameExtent = decode_extent<Spektrafilm::DirFrameExtent>(source.full_frame_extent);
         descriptor.filterDomainExtent = decode_extent<Spektrafilm::DirFrameExtent>(source.filter_domain_extent);
         descriptor.traceRouteLabel = Spektrafilm::scan_route_is_print(out.route) ? "print" : "direct";
-        descriptor.hash = source.hash;
         descriptor.filterPlan.componentCount = static_cast<int>(source.component_count);
         for (std::size_t index = 0; index < source.component_count; ++index) {
             const FjDirGaussian& input = source.components[index];
             if (input.reference_operator == FJ_DIR_OPERATOR_NONE ||
-                input.reference_operator > FJ_DIR_OPERATOR_YVV_REFLECT) {
+                input.reference_operator > FJ_DIR_OPERATOR_YVV_REFLECT ||
+                (input.boundary_identity != 0) != (input.reference_operator == FJ_DIR_OPERATOR_YVV_REFLECT && input.weight > 0.0f)) {
                 return invalid_descriptor(diagnostic, "spatial_dir.reference_operator");
             }
             Spektrafilm::DirGaussianComponentPlan& output = descriptor.filterPlan.components[index];
@@ -364,9 +368,10 @@ namespace {
             output.boundaryTruncationAccuracy = input.boundary_truncation_accuracy;
             output.boundaryCertificationTolerance = input.boundary_certification_tolerance;
             output.boundaryDerivationVersion = input.boundary_derivation_version;
+            output.boundaryIdentity = input.boundary_identity;
         }
-        Spektrafilm::resolve_spatial_dir_scratch(descriptor);
-        return true;
+        return Spektrafilm::finish_spatial_dir_descriptor(pixelSizeUm, descriptor) ||
+               invalid_descriptor(diagnostic, "spatial_dir.hash");
     }
 
     Spektrafilm::VisualGrainGaussian decode_grain_gaussian(const FjGrainGaussian& source) {
@@ -389,10 +394,14 @@ namespace {
             return invalid_descriptor(diagnostic, "grain.flags_or_count");
         }
         if ((source.flags & FJ_GRAIN_ACTIVE) == 0) {
-            return (source.flags == 0 && source.hash == 0 && source.recipe_hash == 0) ||
+            return (source.flags == 0 && source.recipe_hash == 0) ||
                    invalid_descriptor(diagnostic, "grain.inactive");
         }
-        if (source.hash == 0 || source.recipe_hash == 0) {
+        if (source.recipe_hash == 0 || source.sublayer_count == 0 ||
+            (((source.flags & FJ_GRAIN_SUBLAYERS) != 0) != (source.density_layers_hash != 0)) ||
+            source.render_extent.width <= 0 || source.render_extent.height <= 0 ||
+            source.full_frame_extent.width <= 0 || source.full_frame_extent.height <= 0 ||
+            source.pitch_px != source.full_frame_extent.height) {
             return invalid_descriptor(diagnostic, "grain.identity");
         }
         JuicerCuda::VisualGrainPayloadInput& payload = out.grainPayload;
@@ -445,7 +454,6 @@ namespace {
         descriptor.requiresFullFrame = (source.flags & FJ_GRAIN_FULL_FRAME) != 0;
         descriptor.recipeHash = source.recipe_hash;
         descriptor.densityCurvesLayersHash = source.density_layers_hash;
-        descriptor.hash = source.hash;
         descriptor.scratchShape = Spektrafilm::visual_grain_scratch_shape(coefficients);
         std::copy_n(source.density_max_cmy, 3, descriptor.densityMaxCmy.begin());
         std::copy_n(source.n_particles_cmy, 3, descriptor.nParticlesCmy.begin());
@@ -459,6 +467,23 @@ namespace {
             for (std::size_t channel = 0; channel < descriptor.dyeCloud[layer].size(); ++channel) {
                 descriptor.dyeCloud[layer][channel] = decode_grain_gaussian(source.dye_cloud[layer][channel]);
             }
+        }
+        const auto validGaussian = [](const FjGrainGaussian& value) {
+            return value.radius == 0
+                       ? (std::bit_cast<std::uint32_t>(value.sigma_px) == 0 && value.hash == 0)
+                       : value.radius >= 1 && value.radius <= 75 && std::isfinite(value.sigma_px) && value.sigma_px > 0.0f;
+        };
+        bool requiresFullFrame = false;
+        const auto checkGaussian = [&](const FjGrainGaussian& value) {
+            requiresFullFrame = requiresFullFrame || value.radius > 0;
+            return validGaussian(value);
+        };
+        if (!std::ranges::all_of(source.correlation, checkGaussian) ||
+            !std::ranges::all_of(source.dye_cloud, [&](const auto& layer) {
+                return std::ranges::all_of(layer, checkGaussian);
+            }) ||
+            requiresFullFrame != descriptor.requiresFullFrame || (requiresFullFrame && (source.render_extent.x != source.full_frame_extent.x || source.render_extent.y != source.full_frame_extent.y || source.render_extent.width != source.full_frame_extent.width || source.render_extent.height != source.full_frame_extent.height)) || !Spektrafilm::finish_visual_grain_descriptor(descriptor)) {
+            return invalid_descriptor(diagnostic, "grain.gaussian_or_domain");
         }
         out.grain = descriptor;
         return true;
@@ -481,6 +506,40 @@ namespace {
         if (source.hash == 0 || source.recipe_hash == 0) {
             return invalid_descriptor(diagnostic, "effects.identity");
         }
+        const auto zero = [](float value) {
+            return std::bit_cast<std::uint32_t>(value) == 0;
+        };
+        const bool weave = (source.flags & FJ_EFFECTS_WEAVE) != 0;
+        const bool film = (source.flags & FJ_EFFECTS_FILM) != 0;
+        const bool gate = (source.flags & FJ_EFFECTS_GATE_TRANSMITTANCE) != 0;
+        const bool output = (source.flags & FJ_EFFECTS_GATE_OUTPUT) != 0;
+        const bool full = (source.flags & FJ_EFFECTS_FULL_FRAME) != 0;
+        if (output != (weave || gate) || full != weave ||
+            (weave && (source.render_extent.x != source.full_frame_extent.x ||
+                       source.render_extent.y != source.full_frame_extent.y ||
+                       source.render_extent.width != source.full_frame_extent.width ||
+                       source.render_extent.height != source.full_frame_extent.height)) ||
+            ((film || gate) && (!std::isfinite(source.sample_step_x_mm) || !(source.sample_step_x_mm > 0) ||
+                                !std::isfinite(source.sample_step_y_mm) || !(source.sample_step_y_mm > 0))) ||
+            (!(film || gate) && (!zero(source.sample_step_x_mm) || !zero(source.sample_step_y_mm))) ||
+            source.roi_offset_x < 0 || source.roi_offset_y < 0 ||
+            (gate ? (source.gate_width <= 0 || source.gate_height <= 0 ||
+                     source.gate_width > source.full_frame_extent.width || source.gate_height > source.full_frame_extent.height)
+                  : (source.gate_width != 0 || source.gate_height != 0)) ||
+            !std::isfinite(source.weave_dx_px) || !std::isfinite(source.weave_dy_px) ||
+            !std::isfinite(source.weave_cos_rot) || !std::isfinite(source.weave_sin_rot) ||
+            (!weave && (!zero(source.weave_dx_px) || !zero(source.weave_dy_px) ||
+                        source.weave_cos_rot != 1.0f || !zero(source.weave_sin_rot)))) {
+            return invalid_descriptor(diagnostic, "effects.geometry");
+        }
+        for (const FjDefectOrigin& origin : source.origins) {
+            if (std::abs(static_cast<double>(origin.cell_x)) >= 4503599627370496.0 ||
+                std::abs(static_cast<double>(origin.cell_y)) >= 4503599627370496.0 ||
+                !std::isfinite(origin.local_x_mm) || origin.local_x_mm < 0 ||
+                !std::isfinite(origin.local_y_mm) || origin.local_y_mm < 0) {
+                return invalid_descriptor(diagnostic, "effects.origin");
+            }
+        }
         Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor{};
         descriptor.renderExtent = decode_extent<Spektrafilm::FilmJuicerEffectsFrameExtent>(source.render_extent);
         descriptor.fullFrameExtent = decode_extent<Spektrafilm::FilmJuicerEffectsFrameExtent>(source.full_frame_extent);
@@ -500,15 +559,15 @@ namespace {
         descriptor.gateHeight = source.gate_height;
         descriptor.sessionSeed = source.session_seed;
         descriptor.clipToken = source.clip_token;
-        descriptor.weaveActive = (source.flags & FJ_EFFECTS_WEAVE) != 0;
+        descriptor.weaveActive = weave;
         descriptor.weaveDxPx = source.weave_dx_px;
         descriptor.weaveDyPx = source.weave_dy_px;
         descriptor.weaveCosRot = source.weave_cos_rot;
         descriptor.weaveSinRot = source.weave_sin_rot;
-        descriptor.filmActive = (source.flags & FJ_EFFECTS_FILM) != 0;
-        descriptor.gateTransmittanceActive = (source.flags & FJ_EFFECTS_GATE_TRANSMITTANCE) != 0;
-        descriptor.gateOutputActive = (source.flags & FJ_EFFECTS_GATE_OUTPUT) != 0;
-        descriptor.requiresFullFrame = (source.flags & FJ_EFFECTS_FULL_FRAME) != 0;
+        descriptor.filmActive = film;
+        descriptor.gateTransmittanceActive = gate;
+        descriptor.gateOutputActive = output;
+        descriptor.requiresFullFrame = full;
         descriptor.recipeHash = source.recipe_hash;
         descriptor.hash = source.hash;
         out.effects = descriptor;
@@ -522,7 +581,8 @@ namespace JuicerCuda {
     bool decode_prepared_descriptors(
         const FjPreparedHostData& source,
         PreparedDescriptors& out,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        float pixelSizeUm) {
         out = {};
         diagnostic.clear();
         if (source.route > FJ_ROUTE_POSITIVE_PRINT ||
@@ -589,7 +649,7 @@ namespace JuicerCuda {
         std::copy_n(color.d65_xyz_to_native_rgb, 9, gamut.transform.d65XyzToNativeRgb.begin());
         gamut.transform.outputColorSpace = decoded.color.encoding.colorSpace;
         if (!decode_optics(source.optics, decoded, diagnostic) ||
-            !decode_spatial_dir(source.spatial_dir, decoded, diagnostic) ||
+            !decode_spatial_dir(source.spatial_dir, pixelSizeUm, decoded, diagnostic) ||
             !decode_grain(source.grain, decoded, diagnostic) ||
             !decode_effects(source.effects, decoded, diagnostic)) {
             return false;

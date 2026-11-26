@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
         JuicerCuda::PreparedDescriptors descriptors;
         std::string diagnostic;
         // The report must originate in the instrumented production decoder.
-        return JuicerCuda::decode_prepared_descriptors(*borrowed, descriptors, diagnostic) ? 0 : 1;
+        return JuicerCuda::decode_prepared_descriptors(*borrowed, descriptors, diagnostic, 1.0f) ? 0 : 1;
     }
     if (mode == "undefined") {
         volatile int maximum = std::numeric_limits<int>::max();

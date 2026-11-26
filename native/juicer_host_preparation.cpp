@@ -6,7 +6,6 @@
 #include <string_view>
 
 #include "Cuda/JuicerCudaFailure.h"
-#include "juicer_cuda_call_scope.h"
 
 namespace JuicerCuda {
     namespace {

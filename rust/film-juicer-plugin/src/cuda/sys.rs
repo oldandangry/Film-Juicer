@@ -13,9 +13,11 @@ pub const FJ_API_NONE: u32 = 0;
 pub const FJ_API_CUDA_RUNTIME: u32 = 1;
 pub const FJ_API_CUDA_DRIVER: u32 = 2;
 pub const FJ_API_CUFFT: u32 = 3;
-pub const FJ_RENDER_DEFERRED_DIR_ERROR: u32 = 1;
 pub const FJ_PATH_UNIX_BYTES: u32 = 1;
 pub const FJ_PATH_WINDOWS_WIDE: u32 = 2;
+pub const FJ_RENDER_DEFERRED_DIR_ERROR: u32 = 1;
+pub const FJ_RENDER_ADMITTED: u32 = 2;
+pub const FJ_RENDER_CONTEXT_LOSS_PENDING: u32 = 4;
 pub const FJ_COMPONENTS_UNKNOWN: u32 = 0;
 pub const FJ_COMPONENTS_RGB: u32 = 3;
 pub const FJ_COMPONENTS_RGBA: u32 = 4;
@@ -111,6 +113,30 @@ pub const FJ_EFFECTS_FILM: u32 = 2;
 pub const FJ_EFFECTS_GATE_TRANSMITTANCE: u32 = 4;
 pub const FJ_EFFECTS_GATE_OUTPUT: u32 = 8;
 pub const FJ_EFFECTS_FULL_FRAME: u32 = 16;
+pub const FJ_GAUSSIAN_KERNEL_NONE: u32 = 0;
+pub const FJ_GAUSSIAN_KERNEL_RAW: u32 = 1;
+pub const FJ_GAUSSIAN_KERNEL_RADIUS: u32 = 2;
+pub const FJ_GAUSSIAN_KERNEL_SIGMA: u32 = 3;
+pub const FJ_GAUSSIAN_KERNEL_ALLOCATION: u32 = 4;
+pub const FJ_GAUSSIAN_KERNEL_PANIC: u32 = 5;
+pub const FJ_DIR_BOUNDARY_NONE: u32 = 0;
+pub const FJ_DIR_BOUNDARY_RAW: u32 = 1;
+pub const FJ_DIR_BOUNDARY_REQUEST: u32 = 2;
+pub const FJ_DIR_BOUNDARY_AXIS_SIZE: u32 = 3;
+pub const FJ_DIR_BOUNDARY_POLICY: u32 = 4;
+pub const FJ_DIR_BOUNDARY_CAUSAL_SINGULAR: u32 = 5;
+pub const FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS: u32 = 6;
+pub const FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION: u32 = 7;
+pub const FJ_DIR_BOUNDARY_TAIL_ESCAPE: u32 = 8;
+pub const FJ_DIR_BOUNDARY_TERMINAL_SINGULAR: u32 = 9;
+pub const FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION: u32 = 10;
+pub const FJ_DIR_BOUNDARY_STORAGE_SIZE: u32 = 11;
+pub const FJ_DIR_BOUNDARY_ALLOCATION: u32 = 12;
+pub const FJ_DIR_BOUNDARY_PANIC: u32 = 13;
+pub const FJ_DIR_BOUNDARY_NO_AXIS: u32 = 0;
+pub const FJ_DIR_BOUNDARY_HORIZONTAL: u32 = 1;
+pub const FJ_DIR_BOUNDARY_VERTICAL: u32 = 2;
+pub const FJ_DIR_BOUNDARY_NO_ROW: u32 = 3;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct FjCuda {
@@ -131,21 +157,6 @@ const _: () = {
     ["Offset of field: FjStatus::api"][::core::mem::offset_of!(FjStatus, api) - 4usize];
     ["Offset of field: FjStatus::native_code"]
         [::core::mem::offset_of!(FjStatus, native_code) - 8usize];
-};
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct FjRenderOutcome {
-    pub status: FjStatus,
-    pub flags: u32,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of FjRenderOutcome"][::core::mem::size_of::<FjRenderOutcome>() - 16usize];
-    ["Alignment of FjRenderOutcome"][::core::mem::align_of::<FjRenderOutcome>() - 4usize];
-    ["Offset of field: FjRenderOutcome::status"]
-        [::core::mem::offset_of!(FjRenderOutcome, status) - 0usize];
-    ["Offset of field: FjRenderOutcome::flags"]
-        [::core::mem::offset_of!(FjRenderOutcome, flags) - 12usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -224,15 +235,54 @@ const _: () = {
 pub struct FjCudaContext {
     pub device_id: i32,
     pub context: usize,
+    pub epoch: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjCudaContext"][::core::mem::size_of::<FjCudaContext>() - 16usize];
+    ["Size of FjCudaContext"][::core::mem::size_of::<FjCudaContext>() - 24usize];
     ["Alignment of FjCudaContext"][::core::mem::align_of::<FjCudaContext>() - 8usize];
     ["Offset of field: FjCudaContext::device_id"]
         [::core::mem::offset_of!(FjCudaContext, device_id) - 0usize];
     ["Offset of field: FjCudaContext::context"]
         [::core::mem::offset_of!(FjCudaContext, context) - 8usize];
+    ["Offset of field: FjCudaContext::epoch"]
+        [::core::mem::offset_of!(FjCudaContext, epoch) - 16usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjCudaRetirement {
+    pub context: FjCudaContext,
+    pub instance_token: u64,
+    pub submission_id: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjCudaRetirement"][::core::mem::size_of::<FjCudaRetirement>() - 40usize];
+    ["Alignment of FjCudaRetirement"][::core::mem::align_of::<FjCudaRetirement>() - 8usize];
+    ["Offset of field: FjCudaRetirement::context"]
+        [::core::mem::offset_of!(FjCudaRetirement, context) - 0usize];
+    ["Offset of field: FjCudaRetirement::instance_token"]
+        [::core::mem::offset_of!(FjCudaRetirement, instance_token) - 24usize];
+    ["Offset of field: FjCudaRetirement::submission_id"]
+        [::core::mem::offset_of!(FjCudaRetirement, submission_id) - 32usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjRenderOutcome {
+    pub status: FjStatus,
+    pub flags: u32,
+    pub retirement: FjCudaRetirement,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjRenderOutcome"][::core::mem::size_of::<FjRenderOutcome>() - 56usize];
+    ["Alignment of FjRenderOutcome"][::core::mem::align_of::<FjRenderOutcome>() - 8usize];
+    ["Offset of field: FjRenderOutcome::status"]
+        [::core::mem::offset_of!(FjRenderOutcome, status) - 0usize];
+    ["Offset of field: FjRenderOutcome::flags"]
+        [::core::mem::offset_of!(FjRenderOutcome, flags) - 12usize];
+    ["Offset of field: FjRenderOutcome::retirement"]
+        [::core::mem::offset_of!(FjRenderOutcome, retirement) - 16usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -806,39 +856,34 @@ const _: () = {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct FjDiffusion {
-    pub family: u32,
     pub scatter_fraction: f64,
-    pub group_weights: [f64; 3usize],
-    pub group_lambda_um: [f64; 3usize],
-    pub warmth: f64,
-    pub spatial_scale: f64,
-    pub pixel_size_um: f64,
+    pub lambda_px: [f64; 9usize],
+    pub red_weights: [f64; 9usize],
+    pub green_weights: [f64; 9usize],
+    pub blue_weights: [f64; 9usize],
     pub radius_px: i32,
     pub sample_hash: u64,
     pub hash: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjDiffusion"][::core::mem::size_of::<FjDiffusion>() - 112usize];
+    ["Size of FjDiffusion"][::core::mem::size_of::<FjDiffusion>() - 320usize];
     ["Alignment of FjDiffusion"][::core::mem::align_of::<FjDiffusion>() - 8usize];
-    ["Offset of field: FjDiffusion::family"][::core::mem::offset_of!(FjDiffusion, family) - 0usize];
     ["Offset of field: FjDiffusion::scatter_fraction"]
-        [::core::mem::offset_of!(FjDiffusion, scatter_fraction) - 8usize];
-    ["Offset of field: FjDiffusion::group_weights"]
-        [::core::mem::offset_of!(FjDiffusion, group_weights) - 16usize];
-    ["Offset of field: FjDiffusion::group_lambda_um"]
-        [::core::mem::offset_of!(FjDiffusion, group_lambda_um) - 40usize];
-    ["Offset of field: FjDiffusion::warmth"]
-        [::core::mem::offset_of!(FjDiffusion, warmth) - 64usize];
-    ["Offset of field: FjDiffusion::spatial_scale"]
-        [::core::mem::offset_of!(FjDiffusion, spatial_scale) - 72usize];
-    ["Offset of field: FjDiffusion::pixel_size_um"]
-        [::core::mem::offset_of!(FjDiffusion, pixel_size_um) - 80usize];
+        [::core::mem::offset_of!(FjDiffusion, scatter_fraction) - 0usize];
+    ["Offset of field: FjDiffusion::lambda_px"]
+        [::core::mem::offset_of!(FjDiffusion, lambda_px) - 8usize];
+    ["Offset of field: FjDiffusion::red_weights"]
+        [::core::mem::offset_of!(FjDiffusion, red_weights) - 80usize];
+    ["Offset of field: FjDiffusion::green_weights"]
+        [::core::mem::offset_of!(FjDiffusion, green_weights) - 152usize];
+    ["Offset of field: FjDiffusion::blue_weights"]
+        [::core::mem::offset_of!(FjDiffusion, blue_weights) - 224usize];
     ["Offset of field: FjDiffusion::radius_px"]
-        [::core::mem::offset_of!(FjDiffusion, radius_px) - 88usize];
+        [::core::mem::offset_of!(FjDiffusion, radius_px) - 296usize];
     ["Offset of field: FjDiffusion::sample_hash"]
-        [::core::mem::offset_of!(FjDiffusion, sample_hash) - 96usize];
-    ["Offset of field: FjDiffusion::hash"][::core::mem::offset_of!(FjDiffusion, hash) - 104usize];
+        [::core::mem::offset_of!(FjDiffusion, sample_hash) - 304usize];
+    ["Offset of field: FjDiffusion::hash"][::core::mem::offset_of!(FjDiffusion, hash) - 312usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -946,19 +991,19 @@ pub struct FjOptics {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjOptics"][::core::mem::size_of::<FjOptics>() - 3056usize];
+    ["Size of FjOptics"][::core::mem::size_of::<FjOptics>() - 3472usize];
     ["Alignment of FjOptics"][::core::mem::align_of::<FjOptics>() - 8usize];
     ["Offset of field: FjOptics::flags"][::core::mem::offset_of!(FjOptics, flags) - 0usize];
     ["Offset of field: FjOptics::full_frame"]
         [::core::mem::offset_of!(FjOptics, full_frame) - 4usize];
     ["Offset of field: FjOptics::camera"][::core::mem::offset_of!(FjOptics, camera) - 24usize];
-    ["Offset of field: FjOptics::enlarger"][::core::mem::offset_of!(FjOptics, enlarger) - 136usize];
+    ["Offset of field: FjOptics::enlarger"][::core::mem::offset_of!(FjOptics, enlarger) - 344usize];
     ["Offset of field: FjOptics::diffusion_hash"]
-        [::core::mem::offset_of!(FjOptics, diffusion_hash) - 248usize];
+        [::core::mem::offset_of!(FjOptics, diffusion_hash) - 664usize];
     ["Offset of field: FjOptics::scatter_halation"]
-        [::core::mem::offset_of!(FjOptics, scatter_halation) - 256usize];
+        [::core::mem::offset_of!(FjOptics, scatter_halation) - 672usize];
     ["Offset of field: FjOptics::highlight_boost"]
-        [::core::mem::offset_of!(FjOptics, highlight_boost) - 3024usize];
+        [::core::mem::offset_of!(FjOptics, highlight_boost) - 3440usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -975,10 +1020,11 @@ pub struct FjDirGaussian {
     pub boundary_truncation_accuracy: f64,
     pub boundary_certification_tolerance: f64,
     pub boundary_derivation_version: u32,
+    pub boundary_identity: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjDirGaussian"][::core::mem::size_of::<FjDirGaussian>() - 112usize];
+    ["Size of FjDirGaussian"][::core::mem::size_of::<FjDirGaussian>() - 120usize];
     ["Alignment of FjDirGaussian"][::core::mem::align_of::<FjDirGaussian>() - 8usize];
     ["Offset of field: FjDirGaussian::sigma_px"]
         [::core::mem::offset_of!(FjDirGaussian, sigma_px) - 0usize];
@@ -1004,6 +1050,8 @@ const _: () = {
         [::core::mem::offset_of!(FjDirGaussian, boundary_certification_tolerance) - 96usize];
     ["Offset of field: FjDirGaussian::boundary_derivation_version"]
         [::core::mem::offset_of!(FjDirGaussian, boundary_derivation_version) - 104usize];
+    ["Offset of field: FjDirGaussian::boundary_identity"]
+        [::core::mem::offset_of!(FjDirGaussian, boundary_identity) - 112usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1014,11 +1062,10 @@ pub struct FjSpatialDir {
     pub component_count: usize,
     pub components: [FjDirGaussian; 4usize],
     pub recipe_hash: u64,
-    pub hash: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjSpatialDir"][::core::mem::size_of::<FjSpatialDir>() - 520usize];
+    ["Size of FjSpatialDir"][::core::mem::size_of::<FjSpatialDir>() - 544usize];
     ["Alignment of FjSpatialDir"][::core::mem::align_of::<FjSpatialDir>() - 8usize];
     ["Offset of field: FjSpatialDir::render_extent"]
         [::core::mem::offset_of!(FjSpatialDir, render_extent) - 0usize];
@@ -1031,8 +1078,7 @@ const _: () = {
     ["Offset of field: FjSpatialDir::components"]
         [::core::mem::offset_of!(FjSpatialDir, components) - 56usize];
     ["Offset of field: FjSpatialDir::recipe_hash"]
-        [::core::mem::offset_of!(FjSpatialDir, recipe_hash) - 504usize];
-    ["Offset of field: FjSpatialDir::hash"][::core::mem::offset_of!(FjSpatialDir, hash) - 512usize];
+        [::core::mem::offset_of!(FjSpatialDir, recipe_hash) - 536usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1100,11 +1146,10 @@ pub struct FjVisualGrain {
     pub layer_axis_block_prefix_max: [[f32; 16usize]; 3usize],
     pub recipe_hash: u64,
     pub density_layers_hash: u64,
-    pub hash: u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjVisualGrain"][::core::mem::size_of::<FjVisualGrain>() - 808usize];
+    ["Size of FjVisualGrain"][::core::mem::size_of::<FjVisualGrain>() - 800usize];
     ["Alignment of FjVisualGrain"][::core::mem::align_of::<FjVisualGrain>() - 8usize];
     ["Offset of field: FjVisualGrain::flags"]
         [::core::mem::offset_of!(FjVisualGrain, flags) - 0usize];
@@ -1196,8 +1241,6 @@ const _: () = {
         [::core::mem::offset_of!(FjVisualGrain, recipe_hash) - 784usize];
     ["Offset of field: FjVisualGrain::density_layers_hash"]
         [::core::mem::offset_of!(FjVisualGrain, density_layers_hash) - 792usize];
-    ["Offset of field: FjVisualGrain::hash"]
-        [::core::mem::offset_of!(FjVisualGrain, hash) - 800usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1687,7 +1730,7 @@ pub struct FjPreparedHostData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6712usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 7144usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1724,15 +1767,188 @@ const _: () = {
     ["Offset of field: FjPreparedHostData::optics"]
         [::core::mem::offset_of!(FjPreparedHostData, optics) - 1400usize];
     ["Offset of field: FjPreparedHostData::spatial_dir"]
-        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4456usize];
+        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 4872usize];
     ["Offset of field: FjPreparedHostData::grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, grain) - 4976usize];
+        [::core::mem::offset_of!(FjPreparedHostData, grain) - 5416usize];
     ["Offset of field: FjPreparedHostData::effects"]
-        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5784usize];
+        [::core::mem::offset_of!(FjPreparedHostData, effects) - 6216usize];
     ["Offset of field: FjPreparedHostData::noise"]
-        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6616usize];
+        [::core::mem::offset_of!(FjPreparedHostData, noise) - 7048usize];
     ["Offset of field: FjPreparedHostData::film_grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 6704usize];
+        [::core::mem::offset_of!(FjPreparedHostData, film_grain) - 7136usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjGaussianKernelInput {
+    pub radius: i32,
+    pub sigma_px: f32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjGaussianKernelInput"][::core::mem::size_of::<FjGaussianKernelInput>() - 8usize];
+    ["Alignment of FjGaussianKernelInput"]
+        [::core::mem::align_of::<FjGaussianKernelInput>() - 4usize];
+    ["Offset of field: FjGaussianKernelInput::radius"]
+        [::core::mem::offset_of!(FjGaussianKernelInput, radius) - 0usize];
+    ["Offset of field: FjGaussianKernelInput::sigma_px"]
+        [::core::mem::offset_of!(FjGaussianKernelInput, sigma_px) - 4usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjGaussianKernelView {
+    pub radius: i32,
+    pub sigma_px: f32,
+    pub weights: FjFloatSpan,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjGaussianKernelView"][::core::mem::size_of::<FjGaussianKernelView>() - 24usize];
+    ["Alignment of FjGaussianKernelView"][::core::mem::align_of::<FjGaussianKernelView>() - 8usize];
+    ["Offset of field: FjGaussianKernelView::radius"]
+        [::core::mem::offset_of!(FjGaussianKernelView, radius) - 0usize];
+    ["Offset of field: FjGaussianKernelView::sigma_px"]
+        [::core::mem::offset_of!(FjGaussianKernelView, sigma_px) - 4usize];
+    ["Offset of field: FjGaussianKernelView::weights"]
+        [::core::mem::offset_of!(FjGaussianKernelView, weights) - 8usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjGaussianKernelFailure {
+    pub reason: u32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjGaussianKernelFailure"][::core::mem::size_of::<FjGaussianKernelFailure>() - 4usize];
+    ["Alignment of FjGaussianKernelFailure"]
+        [::core::mem::align_of::<FjGaussianKernelFailure>() - 4usize];
+    ["Offset of field: FjGaussianKernelFailure::reason"]
+        [::core::mem::offset_of!(FjGaussianKernelFailure, reason) - 0usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjDirBoundaryInput {
+    pub component: FjDirGaussian,
+    pub width: i32,
+    pub height: i32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjDirBoundaryInput"][::core::mem::size_of::<FjDirBoundaryInput>() - 128usize];
+    ["Alignment of FjDirBoundaryInput"][::core::mem::align_of::<FjDirBoundaryInput>() - 8usize];
+    ["Offset of field: FjDirBoundaryInput::component"]
+        [::core::mem::offset_of!(FjDirBoundaryInput, component) - 0usize];
+    ["Offset of field: FjDirBoundaryInput::width"]
+        [::core::mem::offset_of!(FjDirBoundaryInput, width) - 120usize];
+    ["Offset of field: FjDirBoundaryInput::height"]
+        [::core::mem::offset_of!(FjDirBoundaryInput, height) - 124usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjDirBoundaryView {
+    pub weights: *const f64,
+    pub count: usize,
+    pub identity: u64,
+    pub width: i32,
+    pub height: i32,
+    pub horizontal_length: i32,
+    pub vertical_length: i32,
+    pub horizontal_terminal_size: i32,
+    pub vertical_terminal_size: i32,
+    pub horizontal_terminal: [f64; 9usize],
+    pub vertical_terminal: [f64; 9usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjDirBoundaryView"][::core::mem::size_of::<FjDirBoundaryView>() - 192usize];
+    ["Alignment of FjDirBoundaryView"][::core::mem::align_of::<FjDirBoundaryView>() - 8usize];
+    ["Offset of field: FjDirBoundaryView::weights"]
+        [::core::mem::offset_of!(FjDirBoundaryView, weights) - 0usize];
+    ["Offset of field: FjDirBoundaryView::count"]
+        [::core::mem::offset_of!(FjDirBoundaryView, count) - 8usize];
+    ["Offset of field: FjDirBoundaryView::identity"]
+        [::core::mem::offset_of!(FjDirBoundaryView, identity) - 16usize];
+    ["Offset of field: FjDirBoundaryView::width"]
+        [::core::mem::offset_of!(FjDirBoundaryView, width) - 24usize];
+    ["Offset of field: FjDirBoundaryView::height"]
+        [::core::mem::offset_of!(FjDirBoundaryView, height) - 28usize];
+    ["Offset of field: FjDirBoundaryView::horizontal_length"]
+        [::core::mem::offset_of!(FjDirBoundaryView, horizontal_length) - 32usize];
+    ["Offset of field: FjDirBoundaryView::vertical_length"]
+        [::core::mem::offset_of!(FjDirBoundaryView, vertical_length) - 36usize];
+    ["Offset of field: FjDirBoundaryView::horizontal_terminal_size"]
+        [::core::mem::offset_of!(FjDirBoundaryView, horizontal_terminal_size) - 40usize];
+    ["Offset of field: FjDirBoundaryView::vertical_terminal_size"]
+        [::core::mem::offset_of!(FjDirBoundaryView, vertical_terminal_size) - 44usize];
+    ["Offset of field: FjDirBoundaryView::horizontal_terminal"]
+        [::core::mem::offset_of!(FjDirBoundaryView, horizontal_terminal) - 48usize];
+    ["Offset of field: FjDirBoundaryView::vertical_terminal"]
+        [::core::mem::offset_of!(FjDirBoundaryView, vertical_terminal) - 120usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjDirBoundaryFailure {
+    pub reason: u32,
+    pub axis: u32,
+    pub row: u32,
+    pub length: i32,
+    pub sigma_px: f32,
+    pub sum: f64,
+    pub tolerance: f64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjDirBoundaryFailure"][::core::mem::size_of::<FjDirBoundaryFailure>() - 40usize];
+    ["Alignment of FjDirBoundaryFailure"][::core::mem::align_of::<FjDirBoundaryFailure>() - 8usize];
+    ["Offset of field: FjDirBoundaryFailure::reason"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, reason) - 0usize];
+    ["Offset of field: FjDirBoundaryFailure::axis"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, axis) - 4usize];
+    ["Offset of field: FjDirBoundaryFailure::row"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, row) - 8usize];
+    ["Offset of field: FjDirBoundaryFailure::length"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, length) - 12usize];
+    ["Offset of field: FjDirBoundaryFailure::sigma_px"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, sigma_px) - 16usize];
+    ["Offset of field: FjDirBoundaryFailure::sum"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, sum) - 24usize];
+    ["Offset of field: FjDirBoundaryFailure::tolerance"]
+        [::core::mem::offset_of!(FjDirBoundaryFailure, tolerance) - 32usize];
+};
+pub type FjDirBoundaryQuery = ::core::option::Option<
+    unsafe extern "C" fn(
+        arg1: *mut ::core::ffi::c_void,
+        arg2: *const FjDirBoundaryInput,
+        arg3: *mut FjDirBoundaryView,
+        arg4: *mut FjDirBoundaryFailure,
+        arg5: *mut FjErrorBuffer,
+    ) -> FjStatus,
+>;
+pub type FjGaussianQuery = ::core::option::Option<
+    unsafe extern "C" fn(
+        arg1: *mut ::core::ffi::c_void,
+        arg2: *const FjGaussianKernelInput,
+        arg3: *mut FjGaussianKernelView,
+        arg4: *mut FjGaussianKernelFailure,
+        arg5: *mut FjErrorBuffer,
+    ) -> FjStatus,
+>;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjHostPreparation {
+    pub user: *mut ::core::ffi::c_void,
+    pub gaussian: FjGaussianQuery,
+    pub dir_boundary: FjDirBoundaryQuery,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjHostPreparation"][::core::mem::size_of::<FjHostPreparation>() - 24usize];
+    ["Alignment of FjHostPreparation"][::core::mem::align_of::<FjHostPreparation>() - 8usize];
+    ["Offset of field: FjHostPreparation::user"]
+        [::core::mem::offset_of!(FjHostPreparation, user) - 0usize];
+    ["Offset of field: FjHostPreparation::gaussian"]
+        [::core::mem::offset_of!(FjHostPreparation, gaussian) - 8usize];
+    ["Offset of field: FjHostPreparation::dir_boundary"]
+        [::core::mem::offset_of!(FjHostPreparation, dir_boundary) - 16usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;
@@ -1755,9 +1971,41 @@ unsafe extern "C" {
         frame: *const FjFrame,
         submission: *const FjSubmission,
         prepared: *const FjPreparedHostData,
+        host_preparation: *const FjHostPreparation,
         abort_callback: FjAbortCallback,
         error: *mut FjErrorBuffer,
     ) -> FjRenderOutcome;
+}
+unsafe extern "C" {
+    pub fn fj_cuda_retire_context(
+        cuda: *mut FjCuda,
+        identity: *const FjCudaRetirement,
+        error: *mut FjErrorBuffer,
+    ) -> FjStatus;
+}
+unsafe extern "C" {
+    pub fn fj_cuda_metering(
+        bounds: *const FjRect,
+        method: u32,
+        out: *mut FjAutoExposure,
+        error: *mut FjErrorBuffer,
+    ) -> FjStatus;
+}
+unsafe extern "C" {
+    pub fn fj_cuda_trace_flags() -> u32;
+}
+unsafe extern "C" {
+    pub fn fj_cuda_trace_cutoff(text: FjStringView);
+}
+unsafe extern "C" {
+    pub fn fj_cuda_trace_failure(text: FjStringView);
+}
+unsafe extern "C" {
+    pub fn fj_cuda_trace_submission(
+        frame: *const FjFrame,
+        submission: *const FjSubmission,
+        reused: u32,
+    );
 }
 unsafe extern "C" {
     pub fn fj_cuda_retire_instance(

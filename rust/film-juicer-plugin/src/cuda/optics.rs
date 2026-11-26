@@ -1,4 +1,6 @@
 //! Checked optics values and call-local host preparation.
+
+use super::sys::{FjGaussianKernelInput, FjGaussianKernelView, FjGaussianKernelFailure};
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -82,21 +84,8 @@ impl Write for Diagnostic {
 }
 
 // Gaussian input and borrowed coefficients for call-local host preparation.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjGaussianKernelInput {
-    pub(crate) radius: i32,
-    pub(crate) sigma_px: f32,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjGaussianKernelView {
-    pub(crate) radius: i32,
-    pub(crate) sigma_px: f32,
-    pub(crate) weights: crate::cuda::sys::FjFloatSpan,
-}
 impl FjGaussianKernelView {
-    pub(crate) fn empty() -> Self {
+    fn empty() -> Self {
         Self {
             radius: 0,
             sigma_px: 0.0,
@@ -134,11 +123,6 @@ pub(crate) unsafe fn fail_host_gaussian_view(
         // SAFETY: The failure record was admitted above.
         unsafe { failure.write(FjGaussianKernelFailure { reason }) };
     }
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjGaussianKernelFailure {
-    pub(crate) reason: u32,
 }
 #[derive(Clone, Copy)]
 enum GaussianRejection {

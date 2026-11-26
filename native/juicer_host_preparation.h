@@ -1,7 +1,7 @@
 #pragma once
 
 
-#include "juicer_cuda_frame_values.h"
+#include "juicer_cuda_api.h"
 
 struct FjHostPreparation;
 namespace JuicerCuda {

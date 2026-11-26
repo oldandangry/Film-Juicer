@@ -16,7 +16,6 @@
 #include "GamutCompression.h"
 #include "Scanner.h"
 #include "JuicerDirBoundary.h"
-#include "juicer_cuda_call_scope.h"
 #include "juicer_host_preparation.h"
 
 #include "Logging.h"
@@ -190,11 +189,11 @@ namespace JuicerCuda {
             return count;
         }
 
-        void extract(const ResourceManager::DeviceContextKey& key, DeferredDestroyQueue& ready) noexcept {
+        void extract(const ResourceManager::DeviceContextKey& key, std::uint64_t epoch, DeferredDestroyQueue& ready) noexcept {
             auto** link = &head;
             while (*link) {
                 auto* entry = *link;
-                if (entry->ownerContextKey == key) {
+                if (entry->ownerContextKey == key && (epoch == 0 || entry->contextEpoch == epoch)) {
                     *link = entry->deferredDestroyNext;
                     ready.push(entry);
                 } else {
@@ -326,7 +325,8 @@ namespace JuicerCuda {
     static bool reap_deferred_destroy_queue(
         const char* stage,
         Failure* outError = nullptr,
-        const ResourceManager::DeviceContextKey* requiredContext = nullptr) {
+        const ResourceManager::DeviceContextKey* requiredContext = nullptr,
+        std::uint64_t epoch = 0) {
         DeferredDestroyBatch ready;
         std::size_t remainingDepth = 0;
         int currentDeviceId = -1;
@@ -359,7 +359,7 @@ namespace JuicerCuda {
 
         {
             const DeferredDestroyLock lock;
-            deferred_destroy_queue().extract({currentDeviceId, currentContextOpaque}, ready.entries);
+            deferred_destroy_queue().extract({currentDeviceId, currentContextOpaque}, epoch, ready.entries);
             remainingDepth = deferred_destroy_queue().size();
         }
 
@@ -378,11 +378,11 @@ namespace JuicerCuda {
         return true;
     }
 
-    void invalidate_deferred_resources_after_proven_context_loss(const ResourceManager::DeviceContextKey& key) {
+    void invalidate_deferred_resources_after_proven_context_loss(const ResourceManager::DeviceContextKey& key, std::uint64_t epoch) {
         DeferredDestroyBatch ready;
         {
             const DeferredDestroyLock lock;
-            deferred_destroy_queue().extract(key, ready.entries);
+            deferred_destroy_queue().extract(key, epoch, ready.entries);
         }
         while (auto* retained = ready.entries.head) {
             invalidate_resources_after_proven_context_loss(*retained);
@@ -390,8 +390,8 @@ namespace JuicerCuda {
         }
     }
 
-    bool drain_deferred_resources(const ResourceManager::DeviceContextKey& key, Failure& outError) {
-        return reap_deferred_destroy_queue("context_retire", &outError, &key);
+    bool drain_deferred_resources(const ResourceManager::DeviceContextKey& key, std::uint64_t epoch, Failure& outError) {
+        return reap_deferred_destroy_queue("context_retire", &outError, &key, epoch);
     }
 
     static bool allocate_owned_device(
@@ -2122,10 +2122,9 @@ namespace JuicerCuda {
         int deviceId = -1;
         void* contextOpaque = nullptr;
 
-        bool operator==(const PinnedUploadContextKey& other) const noexcept {
-            return deviceId == other.deviceId &&
-                   contextOpaque == other.contextOpaque;
-        }
+        std::uint64_t epoch = 0;
+
+        bool operator==(const PinnedUploadContextKey&) const noexcept = default;
     };
 
     struct PinnedUploadContextKeyHash {
@@ -2133,7 +2132,8 @@ namespace JuicerCuda {
             const std::size_t hDevice = std::hash<int>{}(key.deviceId);
             const std::size_t hContext = std::hash<std::uintptr_t>{}(
                 reinterpret_cast<std::uintptr_t>(key.contextOpaque));
-            return hDevice ^ (hContext + 0x9e3779b9u + (hDevice << 6u) + (hDevice >> 2u));
+            const auto context = hDevice ^ (hContext + 0x9e3779b9u + (hDevice << 6u) + (hDevice >> 2u));
+            return context ^ std::hash<std::uint64_t>{}(key.epoch);
         }
     };
 
@@ -2897,7 +2897,7 @@ namespace JuicerCuda {
             return false;
         }
         const PinnedUploadContextKey key = resources.deviceId == resources.ownerContextKey.deviceId
-                                               ? PinnedUploadContextKey{resources.deviceId, resources.ownerContextKey.contextOpaque}
+                                               ? PinnedUploadContextKey{resources.deviceId, resources.ownerContextKey.contextOpaque, resources.contextEpoch}
                                                : PinnedUploadContextKey{};
         StagedHostUpload staged;
         return stage_host_to_device_copy(key, request, src, bytes, staged, outError) &&
@@ -2948,7 +2948,7 @@ namespace JuicerCuda {
         const auto key = resources.ownerContextKey;
         const auto epoch = resources.contextEpoch;
         float* const destination = dst;
-        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque};
+        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque, epoch};
         StagedHostUpload staged;
         Failure stagingError;
 
@@ -2984,7 +2984,7 @@ namespace JuicerCuda {
         const auto epoch = resources.contextEpoch;
         const DeviceCurve destination = dst;
         const std::size_t bytes = src.axis.size_bytes();
-        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque};
+        const PinnedUploadContextKey stagingKey{key.deviceId, key.contextOpaque, epoch};
         const char* baseLabel = label ? label : "curve";
         const std::string labelX = std::string(baseLabel) + ".x";
         const std::string labelY = std::string(baseLabel) + ".y";
@@ -3479,13 +3479,14 @@ namespace JuicerCuda {
     void purge_pinned_upload_staging_for_context(
         int deviceId,
         void* contextOpaque,
+        std::uint64_t epoch,
         PinnedUploadPurgeDisposition disposition) noexcept {
         try {
             if (deviceId < 0 || contextOpaque == nullptr) {
                 return;
             }
 
-            const PinnedUploadContextKey key{deviceId, contextOpaque};
+            const PinnedUploadContextKey key{deviceId, contextOpaque, epoch};
             PinnedUploadStagingPolicyState& policyState =
                 pinned_upload_staging_policy_state();
             std::unique_lock<std::mutex> reservationLock(
@@ -5997,19 +5998,17 @@ namespace JuicerCuda {
         int width,
         int height,
         void* cudaStreamOpaque,
-        Failure& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         if (component.referenceOperator !=
                 Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect ||
-            !(component.weight > 0.0f) || width <= 0 || height <= 0) {
+            !(component.weight > 0.0f) || component.boundaryIdentity == 0 || width <= 0 || height <= 0) {
             outError.diagnostic = "spatial DIR reflected-boundary request is invalid";
             return false;
         }
         const auto input = JuicerDirBoundary::project_input(component, {width, height});
-        std::uint64_t identity = 0;
-        if (!JuicerDirBoundary::describe(input, identity, outError)) {
-            return false;
-        }
+        const auto identity = component.boundaryIdentity;
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
@@ -6021,11 +6020,10 @@ namespace JuicerCuda {
             }
         }
 
-        auto hostBoundary = JuicerDirBoundary::Boundary::acquire(input, identity, outError);
-        if (!hostBoundary) {
+        FjDirBoundaryView view{};
+        if (!JuicerDirBoundary::prepare(hostPreparation, input, view, outError)) {
             return false;
         }
-        const auto view = hostBoundary->view();
         const std::size_t bytes = view.count * sizeof(double);
         void* candidateRaw = nullptr;
         if (!alloc_and_upload_bytes(

@@ -18,6 +18,7 @@ static FACTS: &[usize] = &[
     align_of::<FjRenderOutcome>(),
     offset_of!(FjRenderOutcome, status),
     offset_of!(FjRenderOutcome, flags),
+    offset_of!(FjRenderOutcome, retirement),
     FJ_RENDER_DEFERRED_DIR_ERROR as usize,
     size_of::<FjErrorBuffer>(),
     align_of::<FjErrorBuffer>(),
@@ -47,6 +48,7 @@ static FACTS: &[usize] = &[
     align_of::<FjCudaContext>(),
     offset_of!(FjCudaContext, device_id),
     offset_of!(FjCudaContext, context),
+    offset_of!(FjCudaContext, epoch),
     size_of::<FjRect>(),
     align_of::<FjRect>(),
     offset_of!(FjRect, x1),
@@ -227,13 +229,11 @@ static FACTS: &[usize] = &[
     offset_of!(FjPrint, glare_hash),
     size_of::<FjDiffusion>(),
     align_of::<FjDiffusion>(),
-    offset_of!(FjDiffusion, family),
     offset_of!(FjDiffusion, scatter_fraction),
-    offset_of!(FjDiffusion, group_weights),
-    offset_of!(FjDiffusion, group_lambda_um),
-    offset_of!(FjDiffusion, warmth),
-    offset_of!(FjDiffusion, spatial_scale),
-    offset_of!(FjDiffusion, pixel_size_um),
+    offset_of!(FjDiffusion, lambda_px),
+    offset_of!(FjDiffusion, red_weights),
+    offset_of!(FjDiffusion, green_weights),
+    offset_of!(FjDiffusion, blue_weights),
     offset_of!(FjDiffusion, radius_px),
     offset_of!(FjDiffusion, sample_hash),
     offset_of!(FjDiffusion, hash),
@@ -287,6 +287,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjDirGaussian, boundary_truncation_accuracy),
     offset_of!(FjDirGaussian, boundary_certification_tolerance),
     offset_of!(FjDirGaussian, boundary_derivation_version),
+    offset_of!(FjDirGaussian, boundary_identity),
     size_of::<FjSpatialDir>(),
     align_of::<FjSpatialDir>(),
     offset_of!(FjSpatialDir, render_extent),
@@ -295,7 +296,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjSpatialDir, component_count),
     offset_of!(FjSpatialDir, components),
     offset_of!(FjSpatialDir, recipe_hash),
-    offset_of!(FjSpatialDir, hash),
     size_of::<FjGrainGaussian>(),
     align_of::<FjGrainGaussian>(),
     offset_of!(FjGrainGaussian, sigma_px),
@@ -348,7 +348,6 @@ static FACTS: &[usize] = &[
     offset_of!(FjVisualGrain, layer_axis_block_prefix_max),
     offset_of!(FjVisualGrain, recipe_hash),
     offset_of!(FjVisualGrain, density_layers_hash),
-    offset_of!(FjVisualGrain, hash),
     size_of::<FjDust>(),
     align_of::<FjDust>(),
     offset_of!(FjDust, cell_width_mm),
@@ -629,6 +628,61 @@ static FACTS: &[usize] = &[
     FJ_EFFECTS_GATE_TRANSMITTANCE as usize,
     FJ_EFFECTS_GATE_OUTPUT as usize,
     FJ_EFFECTS_FULL_FRAME as usize,
+    size_of::<FjCudaRetirement>(),
+    align_of::<FjCudaRetirement>(),
+    offset_of!(FjCudaRetirement, context),
+    offset_of!(FjCudaRetirement, instance_token),
+    offset_of!(FjCudaRetirement, submission_id),
+    size_of::<FjGaussianKernelInput>(),
+    align_of::<FjGaussianKernelInput>(),
+    offset_of!(FjGaussianKernelInput, radius),
+    offset_of!(FjGaussianKernelInput, sigma_px),
+    size_of::<FjGaussianKernelView>(),
+    align_of::<FjGaussianKernelView>(),
+    offset_of!(FjGaussianKernelView, radius),
+    offset_of!(FjGaussianKernelView, sigma_px),
+    offset_of!(FjGaussianKernelView, weights),
+    size_of::<FjGaussianKernelFailure>(),
+    align_of::<FjGaussianKernelFailure>(),
+    offset_of!(FjGaussianKernelFailure, reason),
+    size_of::<FjDirBoundaryInput>(),
+    align_of::<FjDirBoundaryInput>(),
+    offset_of!(FjDirBoundaryInput, component),
+    offset_of!(FjDirBoundaryInput, width),
+    offset_of!(FjDirBoundaryInput, height),
+    size_of::<FjDirBoundaryView>(),
+    align_of::<FjDirBoundaryView>(),
+    offset_of!(FjDirBoundaryView, weights),
+    offset_of!(FjDirBoundaryView, count),
+    offset_of!(FjDirBoundaryView, identity),
+    offset_of!(FjDirBoundaryView, width),
+    offset_of!(FjDirBoundaryView, height),
+    offset_of!(FjDirBoundaryView, horizontal_length),
+    offset_of!(FjDirBoundaryView, vertical_length),
+    offset_of!(FjDirBoundaryView, horizontal_terminal_size),
+    offset_of!(FjDirBoundaryView, vertical_terminal_size),
+    offset_of!(FjDirBoundaryView, horizontal_terminal),
+    offset_of!(FjDirBoundaryView, vertical_terminal),
+    size_of::<FjDirBoundaryFailure>(),
+    align_of::<FjDirBoundaryFailure>(),
+    offset_of!(FjDirBoundaryFailure, reason),
+    offset_of!(FjDirBoundaryFailure, axis),
+    offset_of!(FjDirBoundaryFailure, row),
+    offset_of!(FjDirBoundaryFailure, length),
+    offset_of!(FjDirBoundaryFailure, sigma_px),
+    offset_of!(FjDirBoundaryFailure, sum),
+    offset_of!(FjDirBoundaryFailure, tolerance),
+    size_of::<FjHostPreparation>(),
+    align_of::<FjHostPreparation>(),
+    offset_of!(FjHostPreparation, user),
+    offset_of!(FjHostPreparation, gaussian),
+    offset_of!(FjHostPreparation, dir_boundary),
+    size_of::<FjGaussianQuery>(),
+    align_of::<FjGaussianQuery>(),
+    size_of::<FjDirBoundaryQuery>(),
+    align_of::<FjDirBoundaryQuery>(),
+    FJ_RENDER_ADMITTED as usize,
+    FJ_RENDER_CONTEXT_LOSS_PENDING as usize,
 ];
 
 // Unused const items check signatures without requiring native symbols
@@ -649,6 +703,7 @@ const _: unsafe extern "C" fn(
     *const FjFrame,
     *const FjSubmission,
     *const FjPreparedHostData,
+    *const FjHostPreparation,
     FjAbortCallback,
     *mut FjErrorBuffer,
 ) -> FjRenderOutcome = fj_cuda_render;
@@ -675,7 +730,7 @@ mod tests {
             })
             .map(|value| value.trim().parse().unwrap())
             .collect();
-        assert_eq!(expected.len(), 624);
+        assert_eq!(expected.len(), 678);
         assert_eq!(FACTS, expected);
     }
 
@@ -695,6 +750,6 @@ mod tests {
         };
         assert_eq!(image.row_bytes, -128);
         assert_eq!(FJ_FRAME_STREAM_PRESENT, 1);
-        assert_eq!(size_of::<FjCudaContext>(), 16);
+        assert_eq!(size_of::<FjCudaContext>(), 24);
     }
 }

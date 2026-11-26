@@ -1,157 +1,24 @@
-//! Foreign admission and synchronous native callback dispatch for held rendering.
+//! Flat native CUDA calls over borrowed frame and callback inputs.
 
-use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
-use crate::cuda::dir_frame::FjDirFrameMath;
-use crate::cuda::effects_frame::FjEffectsFrameMath;
-use crate::cuda::geometry::FjFrameGeometry;
-use crate::cuda::grain_frame::FjGrainFrameMath;
+use crate::cuda::geometry::FrameGeometry;
 
 use super::sys;
 mod ofx;
 pub(crate) use ofx::{render_callback, trace_cutoff, trace_flags};
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjPreparedFramePolicy {
-    pub(super) geometry: FjFrameGeometry,
+pub(crate) struct PreparedFramePolicy {
+    pub(super) geometry: FrameGeometry,
     pub(super) optics: sys::FjOptics,
-    pub(super) recipe_hash: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjGrainCoefficients {
-    pub(super) flags: u32,
-    pub(super) debug_view: u32,
-    pub(super) sublayer_count: usize,
-    pub(super) micro_structure: [f32; 2],
-    pub(super) clump_temporal_mix: f32,
-    pub(super) size_mix_scale: f32,
-    pub(super) amplitude: f32,
-    pub(super) chroma_mix: f32,
-    pub(super) chroma_shared_weight: f32,
-    pub(super) chroma_independent_weight: f32,
-    pub(super) particle_density_min_cmy: [f32; 3],
-    pub(super) uniformity_cmy: [f32; 3],
-    pub(super) layer_axis_block_prefix_max: [[f32; 16]; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjFrameMathInput {
-    pub(super) dir: FjDirFrameMath,
-    pub(super) grain: FjGrainFrameMath,
-    pub(super) effects: FjEffectsFrameMath,
-    pub(super) grain_coefficients: FjGrainCoefficients,
-    pub(super) film_dust: sys::FjDust,
-    pub(super) gate_dust: sys::FjDust,
-    pub(super) film_scratch: sys::FjScratch,
-    pub(super) gate_scratch: sys::FjScratch,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjNativeFrameDescriptors {
+pub(super) struct FrameDescriptors {
     pub(super) spatial_dir: sys::FjSpatialDir,
     pub(super) grain: sys::FjVisualGrain,
     pub(super) effects: sys::FjFilmEffects,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjCallCompletionInput {
-    pub(super) outcome: sys::FjRenderOutcome,
-    pub(super) diagnostic: sys::FjStringView,
-    pub(super) render_outcome_valid: u32,
-    pub(super) abort_failed: u32,
-    pub(super) recovery_scope_entered: u32,
-    pub(super) has_inspected_context: u32,
-    pub(super) inspected_context: sys::FjCudaContext,
-    pub(super) force_fatal: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjCallCompletionResult {
-    pub(crate) outcome: sys::FjRenderOutcome,
-    pub(crate) fatal: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjHostPreparation {
-    pub(super) user: *mut c_void,
-    pub(super) gaussian: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const crate::cuda::optics::FjGaussianKernelInput,
-            *mut crate::cuda::optics::FjGaussianKernelView,
-            *mut crate::cuda::optics::FjGaussianKernelFailure,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjCudaCallAccess {
-    user: *mut c_void,
-    precheck: Option<unsafe extern "C" fn(*mut c_void, *mut sys::FjErrorBuffer) -> sys::FjStatus>,
-    admit: Option<unsafe extern "C" fn(*mut c_void, *mut sys::FjErrorBuffer) -> sys::FjStatus>,
-    release: Option<unsafe extern "C" fn(*mut c_void)>,
-    inspect: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const sys::FjFrame,
-            *mut sys::FjCudaContext,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
-    preview: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const sys::FjRect,
-            *const sys::FjRect,
-            u32,
-            *mut sys::FjAutoExposure,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
-    frame_descriptors: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const FjFrameMathInput,
-            *mut FjNativeFrameDescriptors,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
-    render: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const sys::FjCudaContext,
-            *const sys::FjFrame,
-            *const sys::FjSubmission,
-            *const sys::FjPreparedHostData,
-            *const FjHostPreparation,
-            sys::FjAbortCallback,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjRenderOutcome,
-    >,
-    complete: Option<
-        unsafe extern "C" fn(*mut c_void, *const FjCallCompletionInput) -> FjCallCompletionResult,
-    >,
-    trace_submission: Option<unsafe extern "C" fn(*mut c_void, *const sys::FjSubmission, u32)>,
-}
-
-pub(crate) struct OwnerBorrow<'call> {
-    access: FjCudaCallAccess,
-    scope: PhantomData<&'call mut ()>,
-    thread: PhantomData<Rc<()>>,
 }
 
 pub(crate) struct Frame<'call> {
@@ -161,21 +28,13 @@ pub(crate) struct Frame<'call> {
 }
 
 pub(crate) struct FramePolicy {
-    raw: FjPreparedFramePolicy,
+    raw: PreparedFramePolicy,
 }
 
 pub(crate) struct Abort<'call> {
     raw: sys::FjAbortCallback,
     scope: PhantomData<&'call ()>,
     thread: PhantomData<Rc<()>>,
-}
-
-pub(crate) struct RenderOutcome {
-    pub(super) completion: FjCallCompletionResult,
-}
-
-pub(crate) struct RenderError {
-    pub(super) completion: FjCallCompletionResult,
 }
 
 pub(super) struct Failure {
@@ -285,149 +144,45 @@ fn callback<T>(
     })
 }
 
-impl<'call> OwnerBorrow<'call> {
-    fn admit_access(access: FjCudaCallAccess) -> Result<Self, Failure> {
-        if access.user.is_null()
-            || access.precheck.is_none()
-            || access.admit.is_none()
-            || access.release.is_none()
-            || access.inspect.is_none()
-            || access.preview.is_none()
-            || access.frame_descriptors.is_none()
-            || access.render.is_none()
-            || access.complete.is_none()
-        {
-            return Err(Failure::new(
-                sys::FJ_STATUS_UNSUPPORTED_INPUT,
-                "invalid native call access",
-            ));
-        }
-        Ok(Self {
-            access,
-            scope: PhantomData,
-            thread: PhantomData,
-        })
-    }
-
-    pub(super) fn precheck(&self) -> Result<(), Failure> {
+impl super::Owner {
+    pub(super) fn inspect(&self, frame: &Frame<'_>) -> Result<sys::FjCudaContext, Failure> {
         callback(|error| {
-            // SAFETY: Foreign admission establishes the synchronous callback and user lifetime.
-            (
-                unsafe {
-                    self.access.precheck.expect("admitted call access")(self.access.user, error)
-                },
-                (),
-            )
-        })
-    }
-
-    pub(super) fn admit(&mut self) -> Result<(), Failure> {
-        callback(|error| {
-            // SAFETY: One call guard controls this validated native admission.
-            (
-                unsafe {
-                    self.access.admit.expect("admitted call access")(self.access.user, error)
-                },
-                (),
-            )
-        })
-    }
-
-    pub(super) fn release(&mut self) {
-        // SAFETY: The call guard invokes this once after successful admission.
-        unsafe { self.access.release.expect("admitted call access")(self.access.user) };
-    }
-
-    pub(super) fn inspect(&mut self, frame: &Frame<'_>) -> Result<sys::FjCudaContext, Failure> {
-        callback(|error| {
-            let mut context = sys::FjCudaContext {
-                device_id: 0,
-                context: 0,
-            };
-            // SAFETY: All pointers are initialized, disjoint callback-local records.
-            let result = unsafe {
-                self.access.inspect.expect("admitted call access")(
-                    self.access.user,
-                    frame.raw,
-                    &mut context,
-                    error,
-                )
-            };
+            // SAFETY: The C output is zero-valid. The live frame and owner
+            // are borrowed for this synchronous call.
+            let mut context = unsafe { std::mem::zeroed::<sys::FjCudaContext>() };
+            // SAFETY: Owner and frame are live and the output and diagnostic are exclusive.
+            let result =
+                unsafe { sys::fj_cuda_inspect(self.raw(), frame.raw, &mut context, error) };
             (result, context)
         })
     }
 
-    pub(super) fn preview(
-        &self,
-        frame: &Frame<'_>,
-        method: u32,
-    ) -> Result<sys::FjAutoExposure, Failure> {
-        callback(|error| {
-            // SAFETY: This pointer-free C output is zero-valid and cleared before callback work.
-            let mut preview = unsafe { std::mem::zeroed::<sys::FjAutoExposure>() };
-            // SAFETY: Validated callbacks borrow only these initialized stack records.
-            let result = unsafe {
-                self.access.preview.expect("admitted call access")(
-                    self.access.user,
-                    &frame.raw.source.bounds,
-                    &frame.raw.source.bounds,
-                    method,
-                    &mut preview,
-                    error,
-                )
-            };
-            (result, preview)
-        })
-    }
-
-    pub(super) fn descriptors(
-        &mut self,
-        input: &FjFrameMathInput,
-    ) -> Result<FjNativeFrameDescriptors, Failure> {
-        callback(|error| {
-            // SAFETY: The three fixed C records contain only zero-valid scalar values.
-            let mut output = unsafe { std::mem::zeroed::<FjNativeFrameDescriptors>() };
-            // SAFETY: Complete checked math and writable output remain live through the callback.
-            let result = unsafe {
-                self.access.frame_descriptors.expect("admitted call access")(
-                    self.access.user,
-                    input,
-                    &mut output,
-                    error,
-                )
-            };
-            (result, output)
-        })
-    }
-
     pub(super) fn execute(
-        &mut self,
+        &self,
         context: &sys::FjCudaContext,
         frame: &Frame<'_>,
         submission: &sys::FjSubmission,
         prepared: &sys::FjPreparedHostData,
         abort: &Abort<'_>,
-        host_preparation: &super::host_preparation::Call,
+        preparation: &super::host_preparation::Call,
     ) -> (sys::FjRenderOutcome, String) {
-        let mut bytes = [0u8; 512];
+        let mut bytes = [0u8; 2048];
         let mut error = sys::FjErrorBuffer {
             data: bytes.as_mut_ptr().cast(),
             capacity: bytes.len(),
             length: 0,
         };
-        // SAFETY: Raw projection is immediate, all source owners live through native return,
-        // and asynchronous reads must move into native staging before this returns.
-        let host_preparation = host_preparation.raw();
-        // SAFETY: All source owners and callback backing remain live through this synchronous
-        // native call; the native renderer copies any data needed by asynchronous work.
+        let host = preparation.raw();
+        // SAFETY: Both image leases, the immutable frame data and callback
+        // backing remain live. Native stages asynchronous reads before return.
         let result = unsafe {
-            self.access.render.expect("admitted call access")(
-                self.access.user,
+            sys::fj_cuda_render(
+                self.raw(),
                 context,
                 frame.raw,
                 submission,
                 prepared,
-                &host_preparation,
+                &host,
                 abort.raw,
                 &mut error,
             )
@@ -439,20 +194,50 @@ impl<'call> OwnerBorrow<'call> {
         )
     }
 
-    pub(super) fn complete(&mut self, input: &FjCallCompletionInput) -> FjCallCompletionResult {
-        // SAFETY: The no-throw continuation is synchronous, after native release,
-        // while the call guard still retains its noise result.
-        unsafe { self.access.complete.expect("admitted call access")(self.access.user, input) }
+    pub(super) fn retire_context(&self, identity: &sys::FjCudaRetirement) -> Result<(), Failure> {
+        callback(|error| {
+            // SAFETY: The owner is retained, the producing identity is
+            // immutable, and this entry acquires its own native gate.
+            (
+                unsafe { sys::fj_cuda_retire_context(self.raw(), identity, error) },
+                (),
+            )
+        })
     }
 }
 
-impl OwnerBorrow<'_> {
-    pub(super) fn trace_submission(&self, submission: &sys::FjSubmission, reused: bool) {
-        if let Some(trace) = self.access.trace_submission {
-            // SAFETY: This admitted synchronous observer borrows the decided value
-            // only through return and contains foreign exceptions. It owns no policy.
-            unsafe { trace(self.access.user, submission, u32::from(reused)) };
-        }
+pub(super) fn metering(frame: &Frame<'_>, method: u32) -> Result<sys::FjAutoExposure, Failure> {
+    callback(|error| {
+        // SAFETY: This pointer-free C record is zero-valid. The native
+        // calculation borrows only the immutable bounds and writes the output.
+        let mut preview = unsafe { std::mem::zeroed::<sys::FjAutoExposure>() };
+        // SAFETY: Bounds remain live and the output and diagnostic are disjoint.
+        let result =
+            unsafe { sys::fj_cuda_metering(&frame.raw.source.bounds, method, &mut preview, error) };
+        (result, preview)
+    })
+}
+
+pub(super) fn trace_submission(frame: &Frame<'_>, submission: &sys::FjSubmission, reused: bool) {
+    // SAFETY: The synchronous sink retains neither record.
+    unsafe { sys::fj_cuda_trace_submission(frame.raw, submission, u32::from(reused)) };
+}
+
+pub(super) fn inactive_grain() -> sys::FjVisualGrain {
+    // SAFETY: All fields are zero-valid numeric values or arrays thereof.
+    unsafe { std::mem::zeroed() }
+}
+
+pub(super) fn inactive_effects() -> sys::FjFilmEffects {
+    // SAFETY: All fields are zero-valid numeric values or arrays thereof.
+    unsafe { std::mem::zeroed() }
+}
+
+pub(super) fn failed_outcome(status: sys::FjStatus) -> sys::FjRenderOutcome {
+    // SAFETY: This C record contains only integers and a zero-valid identity.
+    sys::FjRenderOutcome {
+        status,
+        ..unsafe { std::mem::zeroed() }
     }
 }
 
@@ -486,7 +271,7 @@ impl FramePolicy {
     pub(crate) fn pixel_size_um(&self) -> f32 {
         self.raw.geometry.pixel_size_um
     }
-    pub(super) fn raw(&self) -> &FjPreparedFramePolicy {
+    pub(super) fn raw(&self) -> &PreparedFramePolicy {
         &self.raw
     }
 }
@@ -554,6 +339,3 @@ fn abort<'a>(raw: sys::FjAbortCallback) -> Abort<'a> {
         thread: PhantomData,
     }
 }
-
-// Unadmitted caller inputs only; constructing this record grants no capability.
-// The checked operation admits the frame and matching policy in their fixed order.

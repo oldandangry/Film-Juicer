@@ -36,15 +36,6 @@ typedef struct FjStatus {
     int32_t native_code;
 } FjStatus;
 
-/* A previous submission reported DIR receiver arithmetic failure.
- * Render-only provenance, independent of diagnostic wording or truncation.
- * All unassigned bits are reserved and returned as zero. */
-#define FJ_RENDER_DEFERRED_DIR_ERROR 1U
-typedef struct FjRenderOutcome {
-    FjStatus status;
-    uint32_t flags; /* FJ_RENDER_*; deferred DIR failure requests a host message. */
-} FjRenderOutcome;
-
 typedef struct FjErrorBuffer {
     /* char[capacity], diagnostic bytes produced by the native entry for its caller.
      * No units/channel order. Writable until native-call return; never retained.
@@ -93,7 +84,27 @@ typedef struct FjByteSpan {
 typedef struct FjCudaContext {
     int32_t device_id;
     uintptr_t context;
+    uint64_t epoch; /* Nonzero registry identity of this exact context. */
 } FjCudaContext;
+
+typedef struct FjCudaRetirement {
+    FjCudaContext context;
+    /* Both zero for an inspected epoch with no admitted render. */
+    uint64_t instance_token;
+    uint64_t submission_id;
+} FjCudaRetirement;
+
+/* Deferred DIR belongs to a previous submission and is independent of status.
+ * Context loss requests retirement of the producing identity, even if an
+ * earlier operation supplied the primary status. */
+#define FJ_RENDER_DEFERRED_DIR_ERROR 1U
+#define FJ_RENDER_ADMITTED 2U
+#define FJ_RENDER_CONTEXT_LOSS_PENDING 4U
+typedef struct FjRenderOutcome {
+    FjStatus status;
+    uint32_t flags; /* FJ_RENDER_* */
+    FjCudaRetirement retirement;
+} FjRenderOutcome;
 
 typedef struct FjRect {
     int32_t x1;
@@ -414,13 +425,11 @@ typedef struct FjPrint {
 #define FJ_OPTICS_HIGHLIGHT_BOOST 8U
 
 typedef struct FjDiffusion {
-    uint32_t family; /* FJ_DIFFUSION_* */
     double scatter_fraction;
-    double group_weights[3];   /* core, halo, bloom */
-    double group_lambda_um[3]; /* core, halo, bloom */
-    double warmth;
-    double spatial_scale;
-    double pixel_size_um;
+    double lambda_px[9];
+    double red_weights[9];
+    double green_weights[9];
+    double blue_weights[9];
     int32_t radius_px;
     uint64_t sample_hash;
     uint64_t hash;
@@ -491,6 +500,7 @@ typedef struct FjDirGaussian {
     double boundary_truncation_accuracy;
     double boundary_certification_tolerance;
     uint32_t boundary_derivation_version;
+    uint64_t boundary_identity; /* Nonzero only for a weighted YVV operator. */
 } FjDirGaussian;
 
 /* Resolved host operator only. Scratch tiers, roles, aliases and allocation
@@ -502,7 +512,6 @@ typedef struct FjSpatialDir {
     size_t component_count; /* 0..4 initialized entries in components. */
     FjDirGaussian components[4];
     uint64_t recipe_hash;
-    uint64_t hash;
 } FjSpatialDir;
 
 #define FJ_GRAIN_ACTIVE 1U
@@ -574,7 +583,6 @@ typedef struct FjVisualGrain {
     float layer_axis_block_prefix_max[3][16]; /* CMY, axis block */
     uint64_t recipe_hash;
     uint64_t density_layers_hash;
-    uint64_t hash;
 } FjVisualGrain;
 
 /* Fixed resolved defect coefficients consumed by pack_film_juicer_effects_payload.
@@ -795,6 +803,76 @@ typedef struct FjPreparedHostData {
  * No function resets a live host-owned CUDA context; no exception may escape.
  * Non-null record pointers denote one live initialized record for this call. */
 
+#define FJ_GAUSSIAN_KERNEL_NONE 0U
+#define FJ_GAUSSIAN_KERNEL_RAW 1U
+#define FJ_GAUSSIAN_KERNEL_RADIUS 2U
+#define FJ_GAUSSIAN_KERNEL_SIGMA 3U
+#define FJ_GAUSSIAN_KERNEL_ALLOCATION 4U
+#define FJ_GAUSSIAN_KERNEL_PANIC 5U
+
+typedef struct FjGaussianKernelInput {
+    int32_t radius;
+    float sigma_px;
+} FjGaussianKernelInput;
+
+typedef struct FjGaussianKernelView {
+    int32_t radius;
+    float sigma_px;
+    FjFloatSpan weights;
+} FjGaussianKernelView;
+
+typedef struct FjGaussianKernelFailure {
+    uint32_t reason;
+} FjGaussianKernelFailure;
+
+#define FJ_DIR_BOUNDARY_NONE 0U
+#define FJ_DIR_BOUNDARY_RAW 1U
+#define FJ_DIR_BOUNDARY_REQUEST 2U
+#define FJ_DIR_BOUNDARY_AXIS_SIZE 3U
+#define FJ_DIR_BOUNDARY_POLICY 4U
+#define FJ_DIR_BOUNDARY_CAUSAL_SINGULAR 5U
+#define FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS 6U
+#define FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION 7U
+#define FJ_DIR_BOUNDARY_TAIL_ESCAPE 8U
+#define FJ_DIR_BOUNDARY_TERMINAL_SINGULAR 9U
+#define FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION 10U
+#define FJ_DIR_BOUNDARY_STORAGE_SIZE 11U
+#define FJ_DIR_BOUNDARY_ALLOCATION 12U
+#define FJ_DIR_BOUNDARY_PANIC 13U
+#define FJ_DIR_BOUNDARY_NO_AXIS 0U
+#define FJ_DIR_BOUNDARY_HORIZONTAL 1U
+#define FJ_DIR_BOUNDARY_VERTICAL 2U
+#define FJ_DIR_BOUNDARY_NO_ROW 3U
+typedef struct FjDirBoundaryInput {
+    FjDirGaussian component;
+    int32_t width, height;
+} FjDirBoundaryInput;
+typedef struct FjDirBoundaryView {
+    const double* weights;
+    size_t count;
+    uint64_t identity;
+    int32_t width, height, horizontal_length, vertical_length;
+    int32_t horizontal_terminal_size, vertical_terminal_size;
+    double horizontal_terminal[9], vertical_terminal[9];
+} FjDirBoundaryView;
+typedef struct FjDirBoundaryFailure {
+    uint32_t reason, axis, row;
+    int32_t length;
+    float sigma_px;
+    double sum, tolerance;
+} FjDirBoundaryFailure;
+/* Invoke serially on the render thread. Returned views borrow the outer
+ * fj_cuda_render, including across later callback invocations. Weights are
+ * horizontal then vertical, three rows per axis. Each terminal matrix uses its
+ * terminal-size stride. Native stages every queued host read before return. */
+typedef FjStatus (*FjDirBoundaryQuery)(void*, const FjDirBoundaryInput*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
+typedef FjStatus (*FjGaussianQuery)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+typedef struct FjHostPreparation {
+    void* user;
+    FjGaussianQuery gaussian;
+    FjDirBoundaryQuery dir_boundary;
+} FjHostPreparation;
+
 /* Native metadata only: no resource path, host Assets or CUDA discovery.
  * Success publishes exactly one owner in
  * out_cuda; failure publishes none. A duplicate active runtime is rejected. */
@@ -803,17 +881,28 @@ FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error);
 /* Non-consuming registration/reentry precheck; no drain or lifetime exclusion. */
 FjStatus fj_cuda_check_terminal(FjCuda* cuda, FjErrorBuffer* error);
 
-/* Borrows owner/frame; writes exact discovered identity on success only.
- * Coverage, supported strides/aliases and stream completion are qualified by
- * the inspection package before this boundary can be used for production. */
+/* Finds or creates an idle context epoch and writes the inspected identity
+ * on success. No render transaction begins and admission ends at return. */
 FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_context, FjErrorBuffer* error);
 
 /* All prepared spans and abort access expire at return, even on failure.
  * Enqueue/finish/abort and outstanding native-owned staging remain native.
- * Rendering re-inspects the current context under the same native admission as
- * execution. Abort queries run at bounded checkpoints; only CONTINUE/REQUESTED
- * are valid. A null query continues regardless of its unused user value. */
-FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error);
+ * Render revalidates the inspected epoch, current context, images and stream
+ * before native workspace mutation. Without FJ_FRAME_STREAM_PRESENT, the
+ * native entry waits before returning. Supplied streams may retain work,
+ * including an explicitly supplied zero/default stream. Abort queries run at
+ * bounded checkpoints and reject nested native entry. */
+FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, const FjHostPreparation* host_preparation, FjAbortCallback abort_callback, FjErrorBuffer* error);
+
+/* Returns success for retirement of the matching epoch. A stale or repeated
+ * identity is rejected before changing any resource owner. */
+FjStatus fj_cuda_retire_context(FjCuda* cuda, const FjCudaRetirement* identity, FjErrorBuffer* error);
+
+FjStatus fj_cuda_metering(const FjRect* bounds, uint32_t method, FjAutoExposure* out, FjErrorBuffer* error);
+uint32_t fj_cuda_trace_flags(void);
+void fj_cuda_trace_cutoff(FjStringView text);
+void fj_cuda_trace_failure(FjStringView text);
+void fj_cuda_trace_submission(const FjFrame* frame, const FjSubmission* submission, uint32_t reused);
 
 /* Retires only this instance's static-grain membership; borrows the owner. */
 FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error);

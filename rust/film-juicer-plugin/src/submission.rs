@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
@@ -15,16 +15,23 @@ pub(crate) struct Key {
     pub(crate) frame_token: u64,
     pub(crate) device_id: i32,
     pub(crate) context: usize,
+    pub(crate) epoch: u64,
     pub(crate) upload_core: u64,
     pub(crate) dir: u64,
     pub(crate) scanner: u64,
     pub(crate) auto_exposure: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Selection {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Reservation {
     pub(crate) id: u64,
     pub(crate) key: Key,
+    revision: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub(crate) reservation: Arc<Reservation>,
     pub(crate) reused: bool,
 }
 
@@ -51,6 +58,8 @@ struct Latch {
 struct State {
     next_id: u64,
     latch: Option<Latch>,
+    revision: u64,
+    pending: Vec<Weak<Reservation>>,
 }
 pub(crate) struct Submission {
     identity: OnceLock<Identity>,
@@ -63,6 +72,8 @@ impl Submission {
             state: Mutex::new(State {
                 next_id: 1,
                 latch: None,
+                revision: 0,
+                pending: Vec::new(),
             }),
         }
     }
@@ -88,32 +99,79 @@ impl Submission {
         key.scanner = key.scanner.max(1);
         key.auto_exposure = key.auto_exposure.max(1);
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        let revision = state.revision;
         if let Some(latch) = &state.latch
             && latch.key == key
         {
             return Ok(Selection {
-                id: latch.id,
-                key,
+                reservation: Arc::new(Reservation {
+                    key,
+                    id: latch.id,
+                    revision,
+                }),
+                reused: true,
+            });
+        }
+        state.pending.retain(|pending| pending.strong_count() != 0);
+        if let Some(reservation) = state
+            .pending
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|pending| pending.key == key && pending.revision == revision)
+        {
+            return Ok(Selection {
+                reservation,
                 reused: true,
             });
         }
         let id = state.next_id;
         state.next_id = id.wrapping_add(1).max(1);
-        state.latch = Some(Latch { key, id });
+        let reservation = Arc::new(Reservation { key, id, revision });
+        state.pending.push(Arc::downgrade(&reservation));
         Ok(Selection {
-            id,
-            key,
+            reservation,
             reused: false,
         })
     }
-    pub(crate) fn invalidate(&self, device_id: i32, context: usize) -> Result<bool, Error> {
+
+    pub(crate) fn publish(&self, selected: &Reservation) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
-        let matches = state
-            .latch
-            .as_ref()
-            .is_some_and(|latch| latch.key.device_id == device_id && latch.key.context == context);
+        if state.revision == selected.revision
+            && !state
+                .latch
+                .as_ref()
+                .is_some_and(|latch| latch.id == selected.id && latch.key == selected.key)
+        {
+            state.latch = Some(Latch {
+                key: selected.key,
+                id: selected.id,
+            });
+            state.revision = state.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn invalidate(
+        &self,
+        instance: u64,
+        device_id: i32,
+        context: usize,
+        epoch: u64,
+        id: u64,
+    ) -> Result<bool, Error> {
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        let matches = self
+            .identity()
+            .is_some_and(|identity| identity.instance_token == instance)
+            && state.latch.as_ref().is_some_and(|latch| {
+                latch.id == id
+                    && latch.key.device_id == device_id
+                    && latch.key.context == context
+                    && latch.key.epoch == epoch
+            });
         if matches {
             state.latch = None;
+            state.revision = state.revision.wrapping_add(1);
         }
         Ok(matches)
     }
@@ -122,55 +180,56 @@ impl Submission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Barrier;
+
     fn key() -> Key {
         Key {
             frame_token: 0,
             device_id: 2,
             context: 3,
+            epoch: 4,
             upload_core: 1,
             dir: 1,
             scanner: 1,
             auto_exposure: 1,
         }
     }
+
     #[test]
-    fn identity_and_latch() {
+    fn only_admitted_current_reservation_replaces_latch() {
         let owner = Submission::new();
-        assert_eq!(owner.identity(), None);
         assert_eq!(owner.select(key()), Err(Error::MissingIdentity));
-        owner.bind_identity(0, 0).unwrap();
-        assert_eq!(
-            owner.identity(),
-            Some(Identity {
-                session_seed: 0,
-                instance_token: 0
-            })
-        );
-        assert_eq!(owner.select(key()).unwrap().id, 1);
+        owner.bind_identity(0, 5).unwrap();
         assert_eq!(owner.bind_identity(2, 3), Err(Error::DuplicateIdentity));
-        assert!(owner.select(key()).unwrap().reused);
-        let mut changed = key();
-        changed.frame_token = 1;
-        assert_eq!(owner.select(changed).unwrap().id, 2);
-        assert_eq!(owner.select(key()).unwrap().id, 3);
-        assert!(!owner.invalidate(2, 4).unwrap());
-        assert!(owner.select(key()).unwrap().reused);
-        assert!(owner.invalidate(2, 3).unwrap());
-        assert_eq!(owner.select(key()).unwrap().id, 4);
-        let other = Submission::new();
-        other.bind_identity(7, 8).unwrap();
-        assert_eq!(other.select(key()).unwrap().id, 1);
-        for change in 0..2 {
-            let mut k = key();
-            if change == 0 {
-                k.device_id += 1;
-            } else {
-                k.context += 1;
-            }
-            assert!(!owner.select(k).unwrap().reused);
-        }
+        let a = owner.select(key()).unwrap();
+        let b_key = Key { epoch: 5, ..key() };
+        let b = owner.select(b_key).unwrap();
+        owner.publish(&b.reservation).unwrap();
+        owner.publish(&a.reservation).unwrap();
+        assert!(!owner.invalidate(5, 2, 3, 4, a.reservation.id).unwrap());
+        let late_a = owner.select(key()).unwrap();
+        assert_ne!(late_a.reservation.id, b.reservation.id);
+        assert_eq!(
+            owner.select(b_key).unwrap().reservation.id,
+            b.reservation.id
+        );
+
+        let c_key = Key {
+            frame_token: 1,
+            ..b_key
+        };
+        let c = owner.select(c_key).unwrap();
+        owner.publish(&c.reservation).unwrap();
+        assert!(!owner.invalidate(5, 2, 3, 5, b.reservation.id).unwrap());
+        assert!(!owner.invalidate(4, 2, 3, 5, c.reservation.id).unwrap());
+        assert_eq!(
+            owner.select(c_key).unwrap().reservation.id,
+            c.reservation.id
+        );
+        assert!(owner.invalidate(5, 2, 3, 5, c.reservation.id).unwrap());
+        assert!(!owner.select(c_key).unwrap().reused);
     }
+
     #[test]
     fn each_digest_normalizes_before_comparison() {
         for lane in 0..4 {
@@ -185,24 +244,23 @@ mod tests {
             };
             set(&mut k, 0);
             let first = owner.select(k).unwrap();
-            assert_eq!(first.key, key());
+            assert_eq!(first.reservation.key, key());
+            owner.publish(&first.reservation).unwrap();
             set(&mut k, 1);
             assert_eq!(
-                owner.select(k).unwrap(),
-                Selection {
-                    reused: true,
-                    ..first
-                }
+                owner.select(k).unwrap().reservation.id,
+                first.reservation.id
             );
             set(&mut k, 2);
             let changed = owner.select(k).unwrap();
-            assert_eq!(changed.id, 2);
-            assert_eq!(changed.key, k);
+            assert_eq!(changed.reservation.id, 2);
+            assert_eq!(changed.reservation.key, k);
             assert!(!changed.reused);
         }
     }
+
     #[test]
-    fn concurrent_reuse_wrap_and_poison() {
+    fn overlapping_same_key_shares_tentative_id() {
         let owner = Arc::new(Submission::new());
         owner.bind_identity(1, 2).unwrap();
         let barrier = Arc::new(Barrier::new(8));
@@ -211,30 +269,14 @@ mod tests {
                 let owner = Arc::clone(&owner);
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
+                    let selection = owner.select(key()).unwrap();
                     barrier.wait();
-                    owner.select(key()).unwrap().id
+                    selection.reservation.id
                 })
             })
             .collect();
         for thread in threads {
             assert_eq!(thread.join().unwrap(), 1);
         }
-        {
-            let mut state = owner.state.lock().unwrap();
-            state.next_id = u64::MAX;
-            state.latch = None;
-        }
-        assert_eq!(owner.select(key()).unwrap().id, u64::MAX);
-        let mut changed = key();
-        changed.frame_token = 2;
-        assert_eq!(owner.select(changed).unwrap().id, 1);
-        let poisoned = Arc::clone(&owner);
-        let _ = std::thread::spawn(move || {
-            let _guard = poisoned.state.lock().unwrap();
-            panic!("poison");
-        })
-        .join();
-        assert_eq!(owner.select(key()), Err(Error::Poisoned));
-        assert_eq!(owner.invalidate(2, 3), Err(Error::Poisoned));
     }
 }

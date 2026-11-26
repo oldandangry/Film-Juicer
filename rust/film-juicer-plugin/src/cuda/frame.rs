@@ -136,30 +136,6 @@ fn polarity(route: ScanRoute) -> Polarity {
     }
 }
 
-fn grain_coefficients(recipe: &grain::Recipe) -> edge::FjGrainCoefficients {
-    let finite = recipe.axis_finite_cmy();
-    let flags = u32::from(recipe.active())
-        | (u32::from(recipe.sublayers_active()) << 1)
-        | (u32::from(finite[0]) << 3)
-        | (u32::from(finite[1]) << 4)
-        | (u32::from(finite[2]) << 5);
-    edge::FjGrainCoefficients {
-        flags,
-        debug_view: recipe.debug_view() as u32,
-        sublayer_count: recipe.sublayer_count() as usize,
-        micro_structure: *recipe.micro_structure(),
-        clump_temporal_mix: recipe.clump_temporal_mix(),
-        size_mix_scale: recipe.size_mix_scale(),
-        amplitude: recipe.amplitude(),
-        chroma_mix: recipe.chroma_mix(),
-        chroma_shared_weight: recipe.chroma_shared_weight(),
-        chroma_independent_weight: recipe.chroma_independent_weight(),
-        particle_density_min_cmy: *recipe.particle_density_min_cmy(),
-        uniformity_cmy: *recipe.uniformity_cmy(),
-        layer_axis_block_prefix_max: *recipe.axis_block_prefix_max_cmy(),
-    }
-}
-
 #[expect(
     clippy::result_large_err,
     reason = "contain the core's bounded four-slot failure trace without a fallible heap owner"
@@ -169,7 +145,7 @@ fn dir_math(
     frame: &sys::FjFrame,
     render: Domain,
     full: Domain,
-) -> Result<crate::cuda::dir_frame::FjDirFrameMath, edge::Failure> {
+) -> Result<sys::FjSpatialDir, edge::Failure> {
     let source = state.dir();
     let input = dir::frame::Input {
         active: source.active(),
@@ -188,13 +164,13 @@ fn dir_math(
         )
     })?;
     match result {
-        Ok(Some(plan)) => Ok(crate::cuda::dir_frame::projection(
+        Ok(Some(plan)) => crate::cuda::dir_frame::projection(
             plan.recipe_hash(),
             plan.render_extent(),
             plan.full_frame_extent(),
             plan.component_count(),
             plan.components(),
-        )),
+        ),
         Ok(None) => Ok(crate::cuda::dir_frame::empty_math()),
         Err(error) => Err(fail(
             sys::FJ_STATUS_PREPARATION_FAILURE,
@@ -208,11 +184,11 @@ fn grain_math(
     frame: &sys::FjFrame,
     render: Domain,
     full: Domain,
-) -> Result<crate::cuda::grain_frame::FjGrainFrameMath, edge::Failure> {
+) -> Result<sys::FjVisualGrain, edge::Failure> {
     let source = state.grain();
     if !source.active() {
         // Match the caller's inactive optional-descriptor omission.
-        return Ok(crate::cuda::grain_frame::empty_math());
+        return Ok(crate::cuda::grain_frame::empty());
     }
     let development = state.development();
     let curves = development.density_curves_layers();
@@ -260,8 +236,8 @@ fn grain_math(
         )
     })?;
     match result {
-        Ok(Some(plan)) => Ok(crate::cuda::grain_frame::projection(&plan)),
-        Ok(None) => Ok(crate::cuda::grain_frame::empty_math()),
+        Ok(Some(plan)) => Ok(crate::cuda::grain_frame::projection(&plan, source)),
+        Ok(None) => Ok(crate::cuda::grain_frame::empty()),
         Err(error) => {
             let raw = error.layer_access();
             let message = if raw {
@@ -285,11 +261,11 @@ fn effects_math(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
     render: Domain,
-) -> Result<crate::cuda::effects_frame::FjEffectsFrameMath, edge::Failure> {
+) -> Result<sys::FjFilmEffects, edge::Failure> {
     let recipe = state.effects();
     if !recipe.active() {
         // Preserve the native caller's inactive omission: no frame math runs.
-        return Ok(crate::cuda::effects_frame::empty_math());
+        return Ok(crate::cuda::effects_frame::empty());
     }
     let geometry = frame.effects_geometry;
     let input = effects::frame::Input {
@@ -329,8 +305,8 @@ fn effects_math(
             )
         })?;
     match result {
-        Ok(Some(value)) => Ok(crate::cuda::effects_frame::project(&value)),
-        Ok(None) => Ok(crate::cuda::effects_frame::empty_math()),
+        Ok(Some(value)) => Ok(crate::cuda::effects_frame::project(&value, recipe)),
+        Ok(None) => Ok(crate::cuda::effects_frame::empty()),
         Err(effects::frame::Error::InactiveIdentity) => {
             Err(fail(sys::FJ_STATUS_PREPARATION_FAILURE, ""))
         }
@@ -344,30 +320,13 @@ fn effects_math(
 pub(super) fn prepare(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
-    policy: &edge::FjPreparedFramePolicy,
-) -> Result<edge::FjFrameMathInput, edge::Failure> {
+) -> Result<edge::FrameDescriptors, edge::Failure> {
     let render = checked_extent(frame.render_window, "render_extent")?;
     let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
-    let _ = policy;
-    let dir = dir_math(state, frame, render, full)?;
-    let grain = grain_math(state, frame, render, full)?;
-    let effects = effects_math(state, frame, render)?;
-    let grain_recipe = state.grain();
-    let effects_recipe = state.effects();
-
-    Ok(edge::FjFrameMathInput {
-        dir,
-        grain,
-        effects,
-        grain_coefficients: grain_coefficients(grain_recipe),
-        film_dust: crate::cuda::effects_projection::project_dust(effects_recipe.film_dust()),
-        gate_dust: crate::cuda::effects_projection::project_dust(effects_recipe.gate_dust()),
-        film_scratch: crate::cuda::effects_projection::project_scratch(
-            effects_recipe.film_scratch(),
-        ),
-        gate_scratch: crate::cuda::effects_projection::project_scratch(
-            effects_recipe.gate_scratch(),
-        ),
+    Ok(edge::FrameDescriptors {
+        spatial_dir: dir_math(state, frame, render, full)?,
+        grain: grain_math(state, frame, render, full)?,
+        effects: effects_math(state, frame, render)?,
     })
 }
 
