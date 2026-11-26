@@ -22,8 +22,6 @@ pub(crate) struct Owner {
     setup_failed: AtomicBool,
     grain_label: Vec<u8>,
     chroma_hint: Vec<u8>,
-    #[cfg(feature = "test-support")]
-    pub(super) fixture_lifetime: Arc<()>,
 }
 
 // Host-call provenance is local to the synchronous callback chain. An unrelated
@@ -289,9 +287,18 @@ impl Controls<'_> {
         let film = match self.owner.loaded.runtime().assets().film(key) {
             Ok(film) => film,
             Err(error) => {
-                return match crate::asset_bridge::Failure::Asset(error).category() {
-                    crate::cuda::sys::FJ_STATUS_PREPARATION_FAILURE => Ok(None),
-                    crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE => Err(Status::MEMORY),
+                use film_juicer_core::assets::AssetError;
+                use film_juicer_core::profile::ProfileCompletionErrorKind;
+
+                return match error {
+                    AssetError::ProfileCompletion(error)
+                        if error.kind == ProfileCompletionErrorKind::Capacity =>
+                    {
+                        Err(Status::MEMORY)
+                    }
+                    AssetError::ProfileCompletion(_)
+                    | AssetError::MissingProfile { .. }
+                    | AssetError::ProfileDecode(_) => Ok(None),
                     _ => Err(Status::FATAL),
                 };
             }
@@ -339,23 +346,9 @@ impl Owner {
             setup_failed: AtomicBool::new(false),
             grain_label,
             chroma_hint,
-            #[cfg(feature = "test-support")]
-            fixture_lifetime: Arc::new(()),
         })
     }
     pub(super) fn bind_address(&self, address: usize) -> Result<(), Status> {
-        #[cfg(feature = "test-support")]
-        if let Some((seed, token, _)) = super::host::test_support::render_tokens() {
-            return self
-                .state
-                .bind_identity(seed, token)
-                .map_err(|_| Status::FATAL);
-        }
-        #[cfg(feature = "test-support")]
-        let now = super::host::test_support::clock_token()
-            .map(Some)
-            .unwrap_or_else(crate::platform::clock_nanoseconds);
-        #[cfg(not(feature = "test-support"))]
         let now = crate::platform::clock_nanoseconds();
         let seed = seed(now.ok_or(Status::FATAL)?, address as u64);
         self.state
@@ -377,21 +370,6 @@ impl Owner {
         let _call = HostCall::new(self);
         operation()
     }
-    #[cfg(feature = "test-support")]
-    pub(super) fn host_call_active(&self) -> bool {
-        HOST_CALL.get() == Some(std::ptr::from_ref(self) as usize)
-    }
-    #[cfg(feature = "test-support")]
-    pub(super) fn capture_host_input(
-        &self,
-        callback: &Callback<'_>,
-    ) -> Result<film_juicer_core::capture::Captured, CaptureError> {
-        controls::capture(&Controls {
-            callback,
-            owner: self,
-            capture: None,
-        })
-    }
     pub(super) fn initialize(&self, callback: &Callback<'_>) -> Result<(), Status> {
         controls::initialize(&Controls {
             callback,
@@ -406,17 +384,6 @@ impl Owner {
                 .runtime()
                 .native()
                 .retire_instance(identity.instance_token);
-            #[cfg(feature = "test-support")]
-            super::host::test_support::record_retirement(
-                identity.instance_token,
-                self.state
-                    .identity()
-                    .is_some_and(|current| current == identity),
-                match &result {
-                    Ok(status) => *status,
-                    Err(failure) => failure.status,
-                },
-            );
             result.map_err(|_| Status::FATAL)?;
         }
         Ok(())
@@ -433,10 +400,6 @@ impl Owner {
             return Ok(());
         }
         let capture = Capture::new(self, CaptureMode::Change, true)?;
-        #[cfg(feature = "test-support")]
-        if super::host::test_support::instance_fault(4) {
-            panic!("OFX active capture panic");
-        }
         let refresh;
         {
             let controls = Controls {

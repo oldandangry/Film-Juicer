@@ -13,8 +13,6 @@ use film_juicer_core::{
 use super::sys;
 
 pub(super) struct Error {
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) category: u32,
     pub(super) diagnostic: String,
 }
 
@@ -161,8 +159,6 @@ pub(crate) fn empty_halation() -> sys::FjScatterHalation {
 
 fn optics_error(error: diffusion_frame::Error) -> Error {
     Error {
-        #[cfg(any(test, feature = "test-support"))]
-        category: sys::FJ_STATUS_PREPARATION_FAILURE,
         diagnostic: error.diagnostic().to_owned(),
     }
 }
@@ -182,8 +178,6 @@ fn halation_error(error: optics::HalationFrameError) -> Error {
             sigma_px,
         } => {
             return Error {
-                #[cfg(any(test, feature = "test-support"))]
-                category: sys::FJ_STATUS_PREPARATION_FAILURE,
                 diagnostic: format!(
                     "ResourceDescriptorMismatch component=scatter_halation field={} channel={channel} index={index:?} sigma_px={sigma_px} reason=advanced_radius",
                     field.name(),
@@ -204,8 +198,6 @@ fn halation_error(error: optics::HalationFrameError) -> Error {
         } => "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce",
     };
     Error {
-        #[cfg(any(test, feature = "test-support"))]
-        category: sys::FJ_STATUS_PREPARATION_FAILURE,
         diagnostic: diagnostic.to_owned(),
     }
 }
@@ -215,23 +207,17 @@ pub(super) fn prepare(
     full_frame: sys::FjExtent,
 ) -> Result<super::edge::FjPreparedFramePolicy, Error> {
     let geometry = catch_unwind(AssertUnwindSafe(|| {
-        crate::frame_bridge::checked_geometry(
+        crate::cuda::geometry::checked_geometry(
             domain(full_frame),
             state.input().film_format_long_edge_mm(),
         )
     }))
     .map_err(|_| Error {
-        #[cfg(any(test, feature = "test-support"))]
-        category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "frame geometry preparation panicked".to_owned(),
     })?;
 
     let optics_recipe = state.optics();
     let route = route_tag(state.development().route());
-    #[cfg(feature = "test-support")]
-    let diffusion_fault = crate::diffusion_bridge::diffusion_frame_faults::take(3);
-    #[cfg(not(feature = "test-support"))]
-    let diffusion_fault = 0;
     let diffusion_input = diffusion_frame::FrameInput {
         route,
         full_frame: [
@@ -245,30 +231,18 @@ pub(super) fn prepare(
         enlarger: diffusion_input(optics_recipe.enlarger_diffusion()),
     };
     let diffusion = catch_unwind(AssertUnwindSafe(|| {
-        crate::diffusion_bridge::checked_frame_set(diffusion_input, diffusion_fault)
+        diffusion_frame::FrameSet::new(diffusion_input)
     }))
     .map_err(|_| Error {
-        #[cfg(any(test, feature = "test-support"))]
-        category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "diffusion frame preparation panicked".to_owned(),
     })?
     .map_err(optics_error)?;
 
-    #[cfg(feature = "test-support")]
-    let halation_fault = crate::optics_bridge::halation_frame_faults::take();
-    #[cfg(not(feature = "test-support"))]
-    let halation_fault = 0;
     let halation_input = optics::HalationFrameInput::from(optics_recipe.scatter_halation());
     let halation = catch_unwind(AssertUnwindSafe(|| {
-        crate::optics_bridge::checked_halation_frame(
-            halation_input,
-            geometry.pixel_size_um(),
-            halation_fault,
-        )
+        optics::HalationFrame::new(halation_input, geometry.pixel_size_um())
     }))
     .map_err(|_| Error {
-        #[cfg(any(test, feature = "test-support"))]
-        category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "scatter/halation frame preparation panicked".to_owned(),
     })?
     .map_err(halation_error)?;
@@ -327,7 +301,7 @@ pub(super) fn prepare(
     }
 
     Ok(super::edge::FjPreparedFramePolicy {
-        geometry: crate::frame_bridge::FjFrameGeometry {
+        geometry: crate::cuda::geometry::FjFrameGeometry {
             full_frame,
             pixel_size_um: geometry.pixel_size_um(),
         },

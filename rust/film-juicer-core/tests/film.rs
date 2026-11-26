@@ -316,23 +316,6 @@ fn variable_axes_and_reservation_identity_failures() {
         "duplicate case IDs: {}",
         "synthetic-development-cases"
     );
-    #[cfg(feature = "test-support")]
-    let mut fault_ids = Vec::new();
-    #[cfg(feature = "test-support")]
-    for id in &ids {
-        for fault in 1..=3 {
-            fault_ids.push(format!("{id}/reservation-fault/{fault}"));
-        }
-    }
-    #[cfg(feature = "test-support")]
-    let mut fault_rows_remaining = {
-        let expected = fault_ids.len();
-        let remaining = fault_ids
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(remaining.len(), expected, "duplicate reservation fault IDs");
-        remaining
-    };
     for case in cases {
         let id = case["case"].as_str().unwrap();
         let row = AsRef::<str>::as_ref(&(id)).to_owned();
@@ -357,25 +340,6 @@ fn variable_axes_and_reservation_identity_failures() {
         assert_eq!(bits(development.minimum_cmy()), case["minimum"]);
         assert_eq!(bits(development.maximum_cmy()), case["maximum"]);
         assert_eq!(json!(development.normalized_curves_hash()), case["hash"]);
-        #[cfg(feature = "test-support")]
-        for fault in 1..=3 {
-            let fault_row =
-                AsRef::<str>::as_ref(&(format!("{id}/reservation-fault/{fault}"))).to_owned();
-            film_juicer_core::film::test_support::reject_next(fault);
-            let error = Development::new(profile.clone(), params()).err().unwrap();
-            assert_eq!(
-                error,
-                if fault == 1 {
-                    Error::Allocation
-                } else {
-                    Error::ZeroIdentity
-                }
-            );
-            assert!(
-                fault_rows_remaining.remove(&fault_row),
-                "unexpected or repeated comparison: {fault_row}"
-            );
-        }
         assert!(
             ledger_cases_remaining.remove(&row),
             "unexpected or repeated comparison: {row}"
@@ -384,10 +348,5 @@ fn variable_axes_and_reservation_identity_failures() {
     assert!(
         ledger_cases_remaining.is_empty(),
         "missing comparisons: {ledger_cases_remaining:?}"
-    );
-    #[cfg(feature = "test-support")]
-    assert!(
-        fault_rows_remaining.is_empty(),
-        "missing comparisons: {fault_rows_remaining:?}"
     );
 }

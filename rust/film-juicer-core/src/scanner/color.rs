@@ -17,20 +17,12 @@ pub struct ColorInput {
 pub enum ColorError {
     Illuminant,
     Output,
-    #[cfg(feature = "test-support")]
-    OutputBoundary,
-    #[cfg(feature = "test-support")]
-    Cat02Boundary,
 }
 impl fmt::Display for ColorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Illuminant => "scanner illuminant hash invalid for color runtime",
             Self::Output => "generated color space hash invalid",
-            #[cfg(feature = "test-support")]
-            Self::OutputBoundary => "Output color preparation failed",
-            #[cfg(feature = "test-support")]
-            Self::Cat02Boundary => "CAT02 matrix preparation failed",
         })
     }
 }
@@ -53,26 +45,16 @@ impl Color {
         if input.illuminant_hash == 0 {
             return Err(ColorError::Illuminant);
         }
-        #[cfg(feature = "test-support")]
-        crate::film::input::testing::color_fault(11).map_err(|_| ColorError::OutputBoundary)?;
         let space = color::OutputSpace::try_from(u32::from(input.output_space))
             .unwrap_or(color::OutputSpace::Srgb);
         let output = color::output_color(space);
         if output.hash() == 0 {
             return Err(ColorError::Output);
         }
-        let cat02 = match color::checked_cat02_matrix(color::Whites {
+        let cat02 = color::cat02_matrix(color::Whites {
             source_xyz: input.illuminant_xyz,
             destination_xyz: *output.white_xyz(),
-        }) {
-            Ok(matrix) => matrix,
-            #[cfg(feature = "test-support")]
-            Err(color::CheckedError::UnsupportedInput) => {
-                return Err(ColorError::Cat02Boundary);
-            }
-            #[cfg(not(feature = "test-support"))]
-            Err(error) => match error {},
-        };
+        });
         let encoding = hash::u64s(&[
             u64::from(input.output_space),
             u64::from(input.apply_cctf),
@@ -201,6 +183,8 @@ mod tests {
         .unwrap();
         assert_eq!(fixture["schema"], "scanner-binding-fixture-v1");
         let rows = fixture["vectors"].as_array().unwrap();
+        assert_eq!(rows.len(), 9);
+        let original = rows[0]["digest_u64"].as_u64().unwrap();
         let cases_ids: Vec<_> =
             IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
                 .map(|id| AsRef::<str>::as_ref(&id).to_owned())
@@ -261,6 +245,10 @@ mod tests {
                 .collect();
             let expected = row["digest_u64"].as_u64().unwrap();
             assert_eq!(hash::bytes(&bytes), expected);
+            match case.as_str() {
+                "direct-absent-base" | "canonical-equivalent" => assert_eq!(expected, original),
+                _ => assert_ne!(expected, original),
+            }
             assert_eq!(
                 color.spectral_binding_digest(
                     u8::try_from(row["route"].as_u64().unwrap()).unwrap(),
@@ -404,68 +392,6 @@ mod tests {
         assert!(
             result_cases_remaining.is_empty(),
             "missing comparisons: {result_cases_remaining:?}"
-        );
-    }
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn staged_faults_are_thread_local_counted_and_one_shot() {
-        use crate::film::input::testing;
-        let input = ColorInput {
-            medium: 255,
-            output_space: 255,
-            apply_cctf: false,
-            illuminant_xyz: [0.0; 3],
-            illuminant_hash: 1,
-            active_gamut_recipe_hash: 0,
-        };
-        let rows = [
-            (11, ColorError::OutputBoundary),
-            (3, ColorError::Cat02Boundary),
-        ];
-        let ids = ["output-boundary", "cat02-boundary"];
-        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
-            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
-            .collect();
-        assert!(
-            !cases_ids.is_empty(),
-            "empty case set: {}",
-            "scanner-color-faults"
-        );
-        let cases_count = cases_ids.len();
-        let mut cases_remaining = cases_ids
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            cases_remaining.len(),
-            cases_count,
-            "duplicate case IDs: {}",
-            "scanner-color-faults"
-        );
-        for ((operation, error), id) in rows.into_iter().zip(ids) {
-            let case = AsRef::<str>::as_ref(&(id)).to_owned();
-            testing::arm_color(operation, 2, 1);
-            assert!(matches!(
-                Color::new(ColorInput {
-                    illuminant_hash: 0,
-                    ..input
-                }),
-                Err(ColorError::Illuminant)
-            ));
-            std::thread::spawn(move || assert!(Color::new(input).is_ok()))
-                .join()
-                .unwrap();
-            assert!(Color::new(input).is_ok());
-            assert!(matches!(Color::new(input), Err(found) if found == error));
-            assert!(Color::new(input).is_ok());
-            testing::clear_color();
-            assert!(
-                cases_remaining.remove(&case),
-                "unexpected or repeated comparison: {case}"
-            );
-        }
-        assert!(
-            cases_remaining.is_empty(),
-            "missing comparisons: {cases_remaining:?}"
         );
     }
 }

@@ -84,13 +84,6 @@ namespace JuicerCuda {
             Failure& outError);
 
 
-#if defined(JUICER_ALLOCATION_RETRY_TEST_HOOK)
-        bool test_allocation_retry(
-            bool (*action)(Failure&),
-            bool (*reclaim)(std::size_t&, Failure&),
-            Failure& failure);
-#endif
-
         void rollback_submission(SubmissionTransaction& transaction) noexcept;
 
         // Process-wide sequencing and operational state shared across RM paths.

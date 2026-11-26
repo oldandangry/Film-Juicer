@@ -1,5 +1,6 @@
 // Native CUDA execution; the temporary host adapter owns publication and host access.
 
+#include "Cuda/Film/JuicerCudaDensityStages.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include <vector>
 #include <algorithm>
@@ -91,32 +92,6 @@ extern "C" cudaError_t juicer_cuda_direct_camera_film_linear_exposure(
 extern "C" cudaError_t juicer_cuda_print_camera_film_linear_exposure(
     const JuicerCuda::PrintPipelineRunParams* hParams,
     JuicerCuda::CameraFilmLinearExposurePlanes planes,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t
-juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
-    const JuicerCuda::DirectPipelineRunParams* hParams,
-    JuicerCuda::CameraFilmLinearExposurePlanes planes,
-    float* dDensityC,
-    float* dDensityM,
-    float* dDensityY,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t
-juicer_cuda_print_focused_capture_density_from_camera_film_linear(
-    const JuicerCuda::PrintPipelineRunParams* hParams,
-    JuicerCuda::CameraFilmLinearExposurePlanes planes,
-    float* dDensityC,
-    float* dDensityM,
-    float* dDensityY,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t juicer_cuda_print_focused_continue_from_capture_density(
-    const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* dDensityC,
-    float* dDensityM,
-    float* dDensityY,
-    const float* filmDustTransmittance,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
@@ -778,6 +753,17 @@ namespace {
 } // namespace
 
 namespace JuicerCuda {
+    void PendingContextLossRecovery::observe(const char* stageTag, const Failure& observed) noexcept {
+        if (pending) {
+            return;
+        }
+        const auto loss = context_loss_status(observed);
+        if (loss) {
+            pending = true;
+            set_failure(failure, *loss, observed.diagnostic);
+            stage = stageTag;
+        }
+    }
     bool pack_scan_color(
         ScanColorPayload& destination,
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
@@ -896,15 +882,6 @@ namespace {
         JuicerCuda::PendingContextLossRecovery& pendingContextLossRecovery;
         bool traceInfo = false;
         const char* restrictionPrefix = nullptr;
-        void mark_context_loss_recovery(const char* stage, const JuicerCuda::Failure& failure) const {
-            if (pendingContextLossRecovery.pending || !JuicerCuda::context_loss(failure)) {
-                return;
-            }
-            pendingContextLossRecovery.pending = true;
-            JuicerCuda::set_failure(pendingContextLossRecovery.failure, failure.status, failure.diagnostic);
-            pendingContextLossRecovery.stage = stage;
-        }
-
         [[noreturn]] void fail_policy(const char* failurePrefix, JuicerCuda::Failure failure) const {
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
@@ -917,7 +894,7 @@ namespace {
         [[noreturn]] void fail_stage(const char* stageTag, const char* failurePrefix, cudaError_t errorCode) const {
             const char* detail = detail_or_unknown(cudaGetErrorString(errorCode));
             JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(errorCode), detail};
-            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), failure);
+            pendingContextLossRecovery.observe(nonempty_cstr_or(stageTag, "cuda_stage"), failure);
             fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
         }
 
@@ -927,7 +904,7 @@ namespace {
             const auto length = std::snprintf(message.data(), message.size(), "%s: %s", site.prefix, detail);
             JuicerCuda::Failure failure;
             JuicerCuda::set_failure(failure, JuicerCuda::runtime_failure_status(status), length < 0 ? site.prefix : message.data());
-            mark_context_loss_recovery(site.stage, failure);
+            pendingContextLossRecovery.observe(site.stage, failure);
             try {
                 trace_cuda_fatal_prefixed_if(traceInfo, {site.prefix, detail});
             } catch (...) {
@@ -938,15 +915,12 @@ namespace {
         }
 
         [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredDirError = false) const {
-            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "submission_stage"), failure);
+            pendingContextLossRecovery.observe(nonempty_cstr_or(stageTag, "submission_stage"), failure);
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 CudaFailureTrace{
                     nonempty_cstr_or(failurePrefix, "submission stage failed"),
                     cstr_or_null_if_empty(failure.diagnostic)});
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_classification(stageTag, failure, pendingContextLossRecovery.pending);
-#endif
             throw JuicerCuda::ExecutionFailure{failure, deferredDirError};
         }
 
@@ -1196,20 +1170,11 @@ namespace {
         const JuicerProcess::Root::PreparationIdentity& identity,
         const JuicerCuda::ExecutionFrame& frame,
         const ExecutionErrors& errors) {
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        using JuicerCuda::ExecutorTest::CarrierStage;
-        const int width = frame.renderWindow.x2 - frame.renderWindow.x1;
-        const int height = frame.renderWindow.y2 - frame.renderWindow.y1;
-        JuicerCuda::ExecutorTest::observe_carrier({CarrierStage::Exposure, carrier, width, height, frame.stream});
-#endif
         JuicerCuda::Failure failure;
         if (!preparedFrame.enqueue_highlight_boost(carrier, frame.stream, failure)) {
             append_highlight_identity(failure, identity, preparedFrame.admitted_context_epoch());
             errors.fail_submission("highlight_boost_launch", "highlight reconstruction submission failed", failure);
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_carrier({CarrierStage::Boost, carrier, width, height, frame.stream});
-#endif
     }
 
     void check_highlight_reconstruction(
@@ -1285,11 +1250,6 @@ namespace {
             // launch_stage rotates semantic plane pointers after each channel.
             directCameraFilmLinear = camera_film_linear_planes(
                 directCameraDiffusion.stagePlanes);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            if (boostExecutable) {
-                JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::CameraDiffusion, directCameraFilmLinear, run.width, run.height, frame.stream});
-            }
-#endif
         } else if (halationExecutable || boostExecutable) {
             directCameraFilmLinear = preparedFrame.camera_film_linear_carrier();
             const cudaError_t exposureError =
@@ -1329,11 +1289,6 @@ namespace {
                     "direct scatter-halation launch failed",
                     halationDiagnostic);
             }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            if (boostExecutable) {
-                JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::Spatial, directCameraFilmLinear, run.width, run.height, frame.stream});
-            }
-#endif
             // post_halation_camera_film_linear
         }
 
@@ -1421,49 +1376,13 @@ namespace {
                          GrainBinding& grain,
                          const ExecutionErrors& errors) {
         grain.filmBank = preparedFrame.film_grain_bank();
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-        if (JuicerCuda::RenderTest::omit_film_bank())
-            grain.filmBank = nullptr;
-#endif
         const bool direct = route == CaptureRoute::Direct;
         const char* stage = direct ? "direct_film_grain_binding" : "print_film_grain_binding";
         if (!grain.filmBank) {
             errors.fail_grain_stage({stage, direct ? "direct Film grain binding failed: missing frame bank" : "print Film grain binding failed: missing frame bank"}, cudaErrorInvalidValue);
         }
-        using namespace JuicerCuda::FilmGrain;
-        static_assert(std::extent_v<decltype(FjFilmGrain::records)> == kRecords);
-        static_assert(std::extent_v<decltype(FjFilmGrainRecord::mean_light)> == kLevels);
-        static_assert(std::extent_v<decltype(FjFilmGrainRecord::mean_density)> == kLevels);
-        static_assert(std::extent_v<decltype(FjFilmGrainRecord::correlation)> == kLevels);
-        grain.filmTables.footprint = input.sample_pitch;
-        for (int record = 0; record < kRecords; ++record) {
-            const auto& src = input.records[record];
-            auto& dst = grain.filmTables.records[record];
-            dst.minimumGross = src.minimum_gross;
-            dst.maximumGross = src.maximum_gross;
-            dst.offset = src.offset;
-            for (int level = 0; level < kLevels; ++level)
-                dst.levels[level] = {src.mean_light[level], src.mean_density[level], src.correlation[level]};
-        }
-        grain.filmFrame.pitch = input.pitch;
-        grain.filmFrame.originX = 0;
-        grain.filmFrame.originY = 0;
-        grain.filmFrame.width = window.x2 - window.x1;
-        grain.filmFrame.height = window.y2 - window.y1;
-        grain.filmFrame.stride = grain.filmFrame.width;
-        grain.filmFrame.seed = input.seed;
-        grain.filmFrame.nextSeed = input.next_seed;
-        grain.filmFrame.temporalFraction = input.temporal_fraction;
-        grain.filmFrame.chromaFraction = input.chroma_fraction;
-        std::copy_n(input.calibrated_border, 4, grain.filmFrame.calibratedBorder);
-        // Raw admission established either two zero steps or two positive steps.
-        if (input.sample_step[0] > 0.0) {
-            grain.filmFrame.proxyWorkspace = preparedFrame.film_proxy_workspace();
-            std::copy_n(input.sample_extent, 2, grain.filmFrame.proxy.extent);
-            std::copy_n(input.sample_step, 2, grain.filmFrame.proxy.step);
-            std::copy_n(input.sample_origin, 2, grain.filmFrame.proxy.origin);
-        }
-        std::fill_n(grain.filmFrame.amounts, kRecords, input.gain);
+        JuicerCuda::FilmGrain::bind_film_grain(
+            input, {window.x1, window.y1, window.x2 - window.x1, window.y2 - window.y1}, input.sample_step[0] > 0.0 ? preparedFrame.film_proxy_workspace() : nullptr, grain.filmTables, grain.filmFrame);
     }
 
     void bind_grain(
@@ -1637,18 +1556,6 @@ namespace {
         }
         bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
 
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (cameraFilmLinearActive && directDirRequiresCachedLogRaw) {
-            JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::DirLog,
-                                                       {finalScratch.logRawR, finalScratch.logRawG, finalScratch.logRawB, static_cast<std::size_t>(run.width)},
-                                                       run.width,
-                                                       run.height,
-                                                       stream,
-                                                       run.filmExpose.routeCorrectionScale});
-        }
-        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = directDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(directDirAdmittedRoles.cachedLogRawPlanes) : 0u,
-                                                               .final = directDirRequiresCachedLogRaw ? static_cast<unsigned>(directDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
-#endif
         return {directDirUsesSourceBuildCachedLogRaw
                     ? (directDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
                 : directDirRequiresCachedLogRaw ? DirCache::StagedBgr
@@ -1686,10 +1593,6 @@ namespace {
             return;
 
         JuicerCuda::FilmGrain::FilmPlanes planes{density.c, density.m, density.y};
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-        if (JuicerCuda::RenderTest::omit_grain_plane())
-            planes.cyan = nullptr;
-#endif
         const bool direct = route == CaptureRoute::Direct;
         if (model == GrainModel::Film) {
             const auto result = JuicerCuda::FilmGrain::launch_developed(
@@ -1820,6 +1723,7 @@ namespace {
             }
             if (!grainDebugActive) {
                 if (const auto* fused = std::get_if<FusedDirScanner>(&scannerInput)) {
+                    JTRACE_VERBOSE("CUDA_SCAN", "route=direct input=fused_dir");
                     launchError = juicer_cuda_direct_focused_scan_linear_rgb(
                         &run,
                         spectra,
@@ -1830,6 +1734,7 @@ namespace {
                         fused->cameraFilmLinear);
                 } else {
                     const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
+                    JTRACE_VERBOSE("CUDA_SCAN", "route=direct input=developed_planes");
                     launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
                         &run,
                         spectra,
@@ -1889,6 +1794,7 @@ namespace {
                 clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
         } else {
+            JTRACE_VERBOSE("CUDA_SCAN", "route=direct input=source");
             launchError = juicer_cuda_negative_direct_pipeline(
                 &run,
                 spectra,
@@ -2035,11 +1941,6 @@ namespace {
             // launch_stage rotates semantic plane pointers after each channel.
             printCameraFilmLinear = camera_film_linear_planes(
                 printCameraDiffusion.stagePlanes);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            if (boostExecutable) {
-                JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::CameraDiffusion, printCameraFilmLinear, run.width, run.height, frame.stream});
-            }
-#endif
         } else if (halationExecutable || boostExecutable) {
             printCameraFilmLinear = preparedFrame.camera_film_linear_carrier();
             const cudaError_t exposureError =
@@ -2079,11 +1980,6 @@ namespace {
                     "print scatter-halation launch failed",
                     halationDiagnostic);
             }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            if (boostExecutable) {
-                JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::Spatial, printCameraFilmLinear, run.width, run.height, frame.stream});
-            }
-#endif
             // post_halation_camera_film_linear
         }
 
@@ -2279,18 +2175,6 @@ namespace {
         }
         bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
 
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (cameraFilmLinearActive && printDirRequiresCachedLogRaw) {
-            JuicerCuda::ExecutorTest::observe_carrier({JuicerCuda::ExecutorTest::CarrierStage::DirLog,
-                                                       {finalScratch.logRawR, finalScratch.logRawG, finalScratch.logRawB, static_cast<std::size_t>(run.width)},
-                                                       run.width,
-                                                       run.height,
-                                                       stream,
-                                                       run.filmExpose.routeCorrectionScale});
-        }
-        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = printDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(printDirAdmittedRoles.cachedLogRawPlanes) : 0u,
-                                                               .final = printDirRequiresCachedLogRaw ? static_cast<unsigned>(printDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
-#endif
         return {printDirUsesSourceBuildCachedLogRaw
                     ? (printDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
                 : printDirRequiresCachedLogRaw ? DirCache::StagedBgr
@@ -2502,6 +2386,7 @@ namespace {
                  static_cast<std::uint64_t>(srcBounds.y1)});
             if (!grainDebugActive) {
                 if (const auto* fused = std::get_if<FusedDirScanner>(&scannerInput)) {
+                    JTRACE_VERBOSE("CUDA_SCAN", "route=print input=fused_dir");
                     launchError = juicer_cuda_print_focused_scan_linear_rgb(
                         &run,
                         spectra,
@@ -2521,6 +2406,7 @@ namespace {
                         fused->cameraFilmLinear);
                 } else {
                     const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
+                    JTRACE_VERBOSE("CUDA_SCAN", "route=print input=developed_planes");
                     launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
                         &run,
                         spectra,
@@ -2588,6 +2474,7 @@ namespace {
                 clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
         } else {
+            JTRACE_VERBOSE("CUDA_SCAN", "route=print input=source");
             launchError = juicer_cuda_print_focused_pipeline(
                 &run,
                 spectra,
@@ -2632,9 +2519,6 @@ namespace JuicerCuda {
         if (!callback.query) {
             return;
         }
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-        RenderTest::before_abort_query();
-#endif
         switch (callback.query(callback.user)) {
             case FJ_ABORT_CONTINUE:
                 return;
@@ -2682,7 +2566,7 @@ namespace JuicerCuda {
         JuicerCuda::Failure directPrepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, recovery, directPrepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -2758,12 +2642,6 @@ namespace JuicerCuda {
                                            : (spatialOpticsActive || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
                                                ? CaptureExecution::MaterializedDensity
                                                : CaptureExecution::Monolithic;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_handoff(
-            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
-            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
-                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
-#endif
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
@@ -2805,9 +2683,6 @@ namespace JuicerCuda {
         } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
-#endif
         if (descriptors.dir.hash != 0) {
             dirBuild = build_direct_dir(
                 run,
@@ -2823,9 +2698,6 @@ namespace JuicerCuda {
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         JuicerCuda::Failure scanError;
         auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
-#endif
         {
             scanResult = preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError);
         }
@@ -2852,9 +2724,6 @@ namespace JuicerCuda {
                 grainDebugActive,
                 frame.stream,
                 errors);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_workspace_capture();
-#endif
             return MaterializedDensity{optical.density};
         }();
         if (cameraDiffusionActive) {
@@ -2888,9 +2757,6 @@ namespace JuicerCuda {
             gateOutputActive,
             frame,
             errors);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_scanner();
-#endif
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
             const std::string diagnostic = halationExecutable
                                                ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
@@ -2956,7 +2822,7 @@ namespace JuicerCuda {
         JuicerCuda::Failure prepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, recovery, prepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3033,9 +2899,6 @@ namespace JuicerCuda {
         run.filmDevelop = filmPayloads.filmDevelop;
         run.printExpose = printPayloads.expose;
         run.printDevelop = printPayloads.develop;
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-        JuicerCuda::RenderTest::observe_print_launch(preparedPrint, run.printExpose);
-#endif
         auto printCameraFilmLinear = expose_print_camera(
             run,
             preparedFrame,
@@ -3051,12 +2914,6 @@ namespace JuicerCuda {
                                            : (routeDiffusionActive || halationExecutable || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
                                                ? CaptureExecution::MaterializedDensity
                                                : CaptureExecution::Monolithic;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_handoff(
-            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
-            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
-                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
-#endif
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
@@ -3098,9 +2955,6 @@ namespace JuicerCuda {
         } else if (grainModel == GrainModel::Current) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
-#endif
         if (descriptors.dir.hash != 0) {
             dirBuild = build_print_dir(
                 run,
@@ -3116,9 +2970,6 @@ namespace JuicerCuda {
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         JuicerCuda::Failure scanError;
         auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
-#endif
         {
             scanResult = preparedFrame.prepare_scan_error_stage(
                 run.scanStage.scanErrorFlag,
@@ -3155,9 +3006,6 @@ namespace JuicerCuda {
             if (!grainDebugActive) {
                 develop_print_medium(run, preparedFrame, printEnlargerDiffusion, enlargerDiffusionActive, optical, frame.stream, errors);
             }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_workspace_capture();
-#endif
             return MaterializedDensity{optical.density};
         }();
         if (routeDiffusionActive) {
@@ -3194,9 +3042,6 @@ namespace JuicerCuda {
             input.glareHash,
             snapshot,
             errors);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_scanner();
-#endif
         if (!preparedFrame.finalize_scan_error_stage(
                 run.scanStage.scanErrorFlag,
                 frame.stream,

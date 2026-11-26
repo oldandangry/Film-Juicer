@@ -69,10 +69,6 @@ impl Completion<'_> {
     pub(crate) fn diagnostic(&self) -> &str {
         self.diagnostic
     }
-    #[cfg(feature = "test-support")]
-    pub(crate) fn status(&self) -> u32 {
-        self.input.outcome.status.category
-    }
     pub(crate) fn fatal(&self) -> bool {
         self.input.force_fatal != 0
             || self.input.abort_failed != 0

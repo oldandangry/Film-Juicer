@@ -633,29 +633,6 @@ fn print_reference_density(input: PrintInput<'_>, film_density: [f32; 3]) -> Opt
     Some(density)
 }
 
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! { static POST_FAULT: Cell<u32> = const { Cell::new(0) }; }
-    pub fn arm_post_fault(fault: u32) {
-        POST_FAULT.set(fault);
-    }
-    pub(super) fn take_post_fault() -> u32 {
-        POST_FAULT.replace(0)
-    }
-    pub fn lookup(query: f32, axis: &[f32], values: &[f32]) -> Option<f32> {
-        super::interpolate(query, axis.len(), values.len(), |i| axis[i], |i| values[i])
-    }
-    pub fn density_curve(
-        query: f32,
-        axis: &[f32],
-        curves: &[[f32; 3]],
-        channel: usize,
-    ) -> Option<f32> {
-        super::sample_curve(query, axis, curves, channel)
-    }
-}
-
 fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
     if value.is_finite() {
         value.clamp(lo, hi)

@@ -7,15 +7,13 @@
 #include <limits>
 #include <new>
 #include <string_view>
+#include <utility>
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "RenderValues.h"
 #include "ProcessRoot.h"
 #include "Logging.h"
 #include "Cuda/JuicerCudaFailure.h"
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-#include "Cuda/JuicerCudaExecutor.h"
-#endif
 
 namespace {
 
@@ -319,6 +317,21 @@ namespace JuicerCuda {
         if (scope && scope->_call && !scope->_released) {
             scope->_call.reset();
             scope->_released = true;
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (const auto observation = std::exchange(scope->_renderObservation, std::nullopt)) {
+                try {
+                    JuicerLogging::write("CUDALIFE",
+                                         "event=render_outcome snapshot_id=" + std::to_string(observation->snapshot) +
+                                             " instance_token=" + std::to_string(observation->instance) +
+                                             " status=" + std::to_string(observation->status) +
+                                             " scanner_hash=" + std::to_string(observation->scanner) +
+                                             " paper_version=" + std::to_string(observation->paper),
+                                         true);
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+            }
+#endif
         }
     }
 
@@ -457,15 +470,6 @@ namespace JuicerCuda {
             }
             SpatialDirDescriptor dir{};
             const bool dirComposed = Spektrafilm::compose_spatial_dir_descriptor(input->dir, _pixelSizeUm, route_label(*_route), dir);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_dir_frame(
-                static_cast<Spektrafilm::ScanRoute>(*_route),
-                _pixelSizeUm,
-                {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
-                {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
-                dirComposed,
-                dir);
-#endif
             if (!dirComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, "ResourceDescriptorMismatch phase=dir_descriptor field=rust_result");
             }
@@ -474,19 +478,6 @@ namespace JuicerCuda {
             std::string diagnostic;
             const bool grainComposed = Spektrafilm::compose_visual_grain_frame_descriptor(
                 input->grain_coefficients, polarity, input->grain, grain, diagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_grain_frame({static_cast<Spektrafilm::ScanRoute>(*_route),
-                                                           0,
-                                                           {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
-                                                           {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
-                                                           frame.pixel_size_um,
-                                                           frame.time_frames,
-                                                           frame.frame_rate,
-                                                           frame.session_seed,
-                                                           frame.clip_token,
-                                                           grainComposed,
-                                                           grainComposed && input->grain.present != 0 ? std::optional<Spektrafilm::VisualGrainFrameDescriptor>(grain) : std::nullopt});
-#endif
             if (!grainComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, diagnostic.empty() ? kDescriptorMismatch : std::string_view(diagnostic));
             }
@@ -496,33 +487,6 @@ namespace JuicerCuda {
             Spektrafilm::FilmJuicerEffectsFrameDescriptor effects{};
             const bool effectsComposed = JuicerEffects::compose_frame_descriptor(
                 input->effects, input->film_dust, input->film_scratch, input->gate_dust, input->gate_scratch, effects, diagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
-            effectsGeometry.pixelDefinition = {frame.effects_geometry.pixel_definition.x,
-                                               frame.effects_geometry.pixel_definition.y,
-                                               frame.effects_geometry.pixel_definition.width,
-                                               frame.effects_geometry.pixel_definition.height};
-            effectsGeometry.canonicalX = frame.effects_geometry.canonical_x;
-            effectsGeometry.canonicalY = frame.effects_geometry.canonical_y;
-            effectsGeometry.canonicalWidth = frame.effects_geometry.canonical_width;
-            effectsGeometry.canonicalHeight = frame.effects_geometry.canonical_height;
-            effectsGeometry.scaleX = frame.effects_geometry.scale_x;
-            effectsGeometry.scaleY = frame.effects_geometry.scale_y;
-            effectsGeometry.pixelAspectRatio = frame.effects_geometry.pixel_aspect_ratio;
-            JuicerCuda::ExecutorTest::observe_effects_frame({static_cast<Spektrafilm::ScanRoute>(*_route),
-                                                             0,
-                                                             {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
-                                                             {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
-                                                             effectsGeometry,
-                                                             0.0f, // The callback frame facts do not carry film-format policy.
-                                                             frame.pixel_size_um,
-                                                             frame.time_frames,
-                                                             frame.frame_rate,
-                                                             frame.session_seed,
-                                                             frame.clip_token,
-                                                             effectsComposed,
-                                                             effectsComposed && input->effects.present != 0 ? std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>(effects) : std::nullopt});
-#endif
             if (!effectsComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, diagnostic.empty() ? kDescriptorMismatch : std::string_view(diagnostic));
             }
@@ -572,6 +536,11 @@ namespace JuicerCuda {
         try {
             _diagnostic.clear();
             const FjRenderOutcome outcome = _call->render(context, frame, submission, prepared, abort, _recovery, _diagnostic, hostPreparation);
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (submission && prepared && _frame && (_frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0) {
+                _renderObservation = RenderObservation{submission->submission_id, submission->instance_token, submission->scanner_hash, prepared->print_profile_asset_version, outcome.status.category};
+            }
+#endif
             JuicerCuda::write_status(outcome.status, _diagnostic, error);
             return outcome;
         } catch (const ExecutionFailure& failure) {
@@ -626,18 +595,6 @@ namespace {
         try {
             const auto report = completion->completion(completion->user, completion->scope, input);
             completion->scope->finish_recovery();
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            if (input->recovery_scope_entered != 0) {
-                if ((report.retirement & 1u) != 0) {
-                    JuicerCuda::ExecutorTest::observe_context_retirement((report.retirement & 2u) != 0, report.invalidation, report.latch_cleared != 0);
-                }
-                if (!completion->scope->recovery().pending) {
-                    JuicerCuda::ExecutorTest::observe_recovery_end();
-                }
-            }
-            const std::string_view diagnostic(input->diagnostic.data ? input->diagnostic.data : "", input->diagnostic.data ? input->diagnostic.count : 0);
-            JuicerCuda::ExecutorTest::observe_adapter_completion(report.result.outcome, report.result.fatal != 0, diagnostic);
-#endif
             return report.result;
         } catch (...) {
             return {input->outcome, 1};
@@ -667,9 +624,6 @@ uint32_t JuicerCuda::CallScope::retire_context(const FjCallCompletionInput* inpu
         if (!_recovery.pending && input->outcome.status.category == FJ_STATUS_CONTEXT_LOSS) {
             _recovery = {true, {input->outcome.status, std::string{}}, "native_render"};
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_recovery_start(_recovery.pending);
-#endif
         if (!_recovery.pending) {
             return 0;
         }

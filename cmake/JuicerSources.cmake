@@ -13,6 +13,7 @@ set(JUICER_NATIVE_SOURCES
     src/Cuda/JuicerCudaFailure.cpp
     src/Cuda/JuicerCudaDriver.cpp
     src/Cuda/JuicerCudaResources.cpp
+    src/Cuda/Scan/JuicerCudaScannerBinding.cpp
     src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp
     src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp
     src/ProcessRoot.cpp

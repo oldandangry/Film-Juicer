@@ -185,12 +185,6 @@ pub fn describe_post_effects(params: PostEffectsParams) -> Result<PostEffects, P
             });
         }
     }
-    #[cfg(feature = "test-support")]
-    let fault = super::test_support::take_post_fault();
-    #[cfg(feature = "test-support")]
-    if fault == 2 {
-        panic!("scanner post-effects fixture panic");
-    }
     if !glare_active && lens_sigma <= 0.0 && unsharp_sigma <= 0.0 {
         return Ok(PostEffects { fields, hash: 0 });
     }
@@ -203,10 +197,6 @@ pub fn describe_post_effects(params: PostEffectsParams) -> Result<PostEffects, P
         hash::update_bytes(&mut identity, &value.to_le_bytes());
     }
     hash::update_bytes(&mut identity, &SCHEMA.to_le_bytes());
-    #[cfg(feature = "test-support")]
-    if fault == 1 {
-        identity = 0;
-    }
     if identity == 0 {
         return Err(PostEffectsError {
             kind: PostEffectsErrorKind::ZeroHash,

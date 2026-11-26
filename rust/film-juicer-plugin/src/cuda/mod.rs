@@ -16,11 +16,40 @@ pub(super) mod sys;
 )]
 pub(crate) mod edge;
 
+#[allow(
+    unsafe_code,
+    reason = "the C11 diffusion entry validates and writes call-local foreign records"
+)]
+mod diffusion;
+#[allow(
+    unsafe_code,
+    reason = "the C11 DIR entry validates borrows and consumes its boundary owner"
+)]
+mod dir_boundary;
+mod dir_frame;
+mod effects_frame;
+mod effects_projection;
+mod geometry;
+mod grain_frame;
+#[allow(
+    unsafe_code,
+    reason = "Gaussian callback projection validates call-local foreign records"
+)]
+mod optics;
+
+#[cfg(test)]
+mod abi_tests;
+
 mod frame;
+#[cfg(test)]
+pub(crate) fn projected_film_grain(
+    state: &film_juicer_core::recipe::RenderState,
+    raw: &sys::FjFrame,
+) -> Option<sys::FjFilmGrain> {
+    frame::film_grain(state, raw).unwrap_or_else(|_| panic!("Film ABI projection failed"))
+}
 mod frame_policy;
 pub(crate) const FILM_GRAIN_TIME_RANGE: std::ops::RangeInclusive<f64> = -1_000_000.0..=1_000_000.0;
-#[cfg(feature = "test-support")]
-pub(crate) use frame_policy::{empty_halation, halation_projection};
 #[allow(
     unsafe_code,
     reason = "call-local scanner and Gaussian candidates back the synchronous native preparation callbacks"
@@ -63,11 +92,6 @@ impl Failure {
         std::str::from_utf8(&self.diagnostic[..self.length])
             .unwrap_or("native terminal diagnostic is not UTF-8")
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.diagnostic[..self.length]
-    }
 }
 
 impl Write for Failure {
@@ -103,16 +127,3 @@ impl fmt::Debug for Failure {
 
 pub(crate) use edge::{Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome};
 pub(crate) use render::render;
-
-#[cfg(feature = "test-support")]
-pub(crate) use render::{
-    NoiseCallObservation, noise_call_observation, reset_noise_call_observation,
-    set_short_noise_view, short_noise_view_consumed,
-};
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    unsafe_code,
-    reason = "the CMake-linked ABI fixture exports a borrowed static layout table and checks raw signatures"
-)]
-mod abi_tests;

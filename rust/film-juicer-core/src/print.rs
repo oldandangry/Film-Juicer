@@ -668,6 +668,8 @@ mod tests {
 #[cfg(test)]
 mod preflash_tests {
     use super::{PreflashError, PreflashRaw};
+    use crate::recipe::{self, Preflash, PrepareError, PreparedRoute};
+    use crate::route::ScanRoute;
     use serde_json::Value;
 
     #[cfg(all(target_os = "linux", debug_assertions))]
@@ -685,8 +687,7 @@ mod preflash_tests {
         std::array::from_fn(|i| f32::from_bits(words[i].as_u64().unwrap() as u32))
     }
 
-    #[test]
-    fn exact_native_literals_and_actual_caller_inputs() {
+    fn captured_preflash() -> (Value, Value) {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/print/preflash-fixtures");
         let manifest: Value = serde_json::from_str(
@@ -700,6 +701,12 @@ mod preflash_tests {
             .unwrap(),
         )
         .unwrap();
+        (manifest, captured)
+    }
+
+    #[test]
+    fn exact_native_literals_and_actual_caller_inputs() {
+        let (manifest, captured) = captured_preflash();
         assert_eq!(captured["cases"].as_array().unwrap().len(), 19);
         assert_eq!(captured["products"].as_array().unwrap().len(), 72);
         let rows = captured["cases"].as_array().unwrap();
@@ -732,6 +739,14 @@ mod preflash_tests {
                 assert_eq!(
                     result.err(),
                     Some(PreflashError::Channel { channel }),
+                    "{id}"
+                );
+                assert!(
+                    matches!(
+                        Preflash::prepare_raw(&base, &light, &sensitivity),
+                        Err(PrepareError::PrintPreflash(PreflashError::Channel { channel: rejected }))
+                            if rejected == channel
+                    ),
                     "{id}"
                 );
             }
@@ -784,7 +799,7 @@ mod preflash_tests {
                 let flat = floats::<243>(&row["print_sensitivity_cmy"]);
                 let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[i * 3 + c]));
                 assert_eq!(
-                    PreflashRaw::new(&base, &light, &sensitivity)
+                    Preflash::prepare_raw(&base, &light, &sensitivity)
                         .unwrap()
                         .cmy()
                         .map(f32::to_bits),
@@ -800,6 +815,113 @@ mod preflash_tests {
                 "missing comparisons: {product_cases_remaining:?}"
             );
         }
+    }
+
+    #[test]
+    fn print_edits_resolve_only_the_expected_upload_keys_and_retry_raw_words() {
+        let (_, captured) = captured_preflash();
+        let assets = recipe::test_support::assets();
+        let controls_a = || {
+            let mut params = recipe::test_support::params(ScanRoute::NegativePrint, 1);
+            params.camera_auto_exposure_enabled = 0;
+            params.input_compression_enabled = 0;
+            params.output_gamut_compression_enabled = 0;
+            params.print_preflash_exposure = 0.125;
+            params
+        };
+        let prepare = |params: &recipe::Params| recipe::prepare(&assets, params).unwrap();
+        fn print(state: &recipe::RenderState) -> &recipe::PrintState {
+            match state.route() {
+                PreparedRoute::Print(print) => print,
+                PreparedRoute::Direct(_) => panic!("expected Print"),
+            }
+        }
+        let keys = |state| {
+            let keys = print(state).resource_descriptors();
+            [
+                keys.film_density_hash(),
+                keys.profile_tables_hash(),
+                keys.main_illuminant_hash(),
+                keys.preflash_illuminant_hash(),
+            ]
+        };
+        let state_a = prepare(&controls_a());
+        let key_a = keys(&state_a);
+        assert!(key_a.iter().all(|&key| key != 0));
+        let raw = |state| *print(state).preflash().unwrap().raw().cmy();
+        let expected_words = |variant: u64| {
+            let row = captured["products"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["route"] == 1 && row["mode"] == 1 && row["variant"] == variant)
+                .unwrap();
+            floats::<3>(&row["raw"]).map(f32::to_bits)
+        };
+        assert_eq!(raw(&state_a).map(f32::to_bits), expected_words(1));
+
+        let mut viewing = controls_a();
+        viewing.output_cctf_encoding = 0;
+        let viewing = prepare(&viewing);
+        assert_ne!(state_a.scanner_hash(), viewing.scanner_hash());
+        assert_eq!(keys(&viewing), key_a);
+        let mut balance = controls_a();
+        balance.normalize_print_exposure = 0;
+        let balance = prepare(&balance);
+        assert_ne!(
+            print(&balance).balance().hash(),
+            print(&state_a).balance().hash()
+        );
+        assert_eq!(keys(&balance), key_a);
+        let mut amount = controls_a();
+        amount.print_preflash_exposure = 0.25;
+        let amount = prepare(&amount);
+        assert_ne!(
+            print(&amount).exposure().hash(),
+            print(&state_a).exposure().hash()
+        );
+        assert_eq!(keys(&amount), key_a);
+        assert_eq!(raw(&amount).map(f32::to_bits), expected_words(5));
+
+        let mut main = controls_a();
+        main.print_ui_ymc_cc = [2.123_456_789_012_3, 3.234_567_890_123_4, 0.];
+        let main = prepare(&main);
+        let key_main = keys(&main);
+        assert_eq!(
+            [key_main[0], key_main[1], key_main[3]],
+            [key_a[0], key_a[1], key_a[3]]
+        );
+        assert_ne!(key_main[2], key_a[2]);
+        assert_eq!(raw(&main).map(f32::to_bits), expected_words(3));
+
+        let rejected = captured["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "preflash-power-overflow")
+            .unwrap();
+        let flat = floats::<243>(&rejected["print_sensitivity_cmy"]);
+        let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[3 * i + c]));
+        assert!(matches!(
+            Preflash::prepare_raw(
+                &floats(&rejected["film_base_density"]),
+                &floats(&rejected["filtered_illuminant"]),
+                &sensitivity
+            ),
+            Err(PrepareError::PrintPreflash(PreflashError::Channel {
+                channel: 0
+            }))
+        ));
+        assert_eq!(keys(&state_a), key_a);
+        assert_eq!(raw(&state_a).map(f32::to_bits), expected_words(1));
+        let mut retry = controls_a();
+        retry.preflash_m_filter_cc = 5.;
+        retry.preflash_y_filter_cc = -3.;
+        let retry = prepare(&retry);
+        let key_b = keys(&retry);
+        assert_eq!(key_b[..3], key_a[..3]);
+        assert_ne!(key_b[3], key_a[3]);
+        assert_eq!(raw(&retry).map(f32::to_bits), expected_words(2));
     }
 
     #[test]

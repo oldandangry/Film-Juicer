@@ -31,6 +31,8 @@ namespace Scanner {
 } // namespace Scanner
 
 namespace JuicerCuda {
+    struct PendingContextLossRecovery;
+
     namespace FilmGrain {
         struct ProxyWorkspace;
     }
@@ -66,12 +68,6 @@ namespace JuicerProcess {
 
     namespace TestSupport {
         class RootLifetimeObserver;
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        // Injects a one-shot context drain failure in the isolated prepared-frame tests.
-        bool arm_context_drain_failure_once(
-            const JuicerCuda::ResourceManager::DeviceContextKey& key) noexcept;
-        void clear_context_drain_failure() noexcept;
-#endif
     } // namespace TestSupport
 
     class Root {
@@ -432,6 +428,7 @@ namespace JuicerProcess {
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
+            JuicerCuda::PendingContextLossRecovery& recovery,
             JuicerCuda::Failure& outError,
             const FjHostPreparation* hostPreparation = nullptr);
 
@@ -439,7 +436,7 @@ namespace JuicerProcess {
         friend class TestSupport::RootLifetimeObserver;
         friend struct ::FjCuda;
 
-        PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::Failure& outError);
+        PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::PendingContextLossRecovery& recovery, JuicerCuda::Failure& outError);
         PreparedCudaFrame prepare_cuda_frame(
             PreparedCudaFrame frame,
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,

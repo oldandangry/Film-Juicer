@@ -198,10 +198,6 @@ pub(crate) fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, Status> {
 }
 
 pub(super) fn terminated(bytes: &[u8]) -> Result<Vec<u8>, Status> {
-    #[cfg(feature = "test-support")]
-    if super::test_support::instance_fault(8) {
-        return Err(Status::MEMORY);
-    }
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let mut owned = Vec::new();
     owned
@@ -257,10 +253,6 @@ impl Callback<'_> {
     pub(super) fn create(&self) -> Result<(), Status> {
         let handles = self.instance_handles()?;
         let value = Owner::new(self, handles)?;
-        #[cfg(feature = "test-support")]
-        if super::test_support::instance_fault(1) {
-            return Err(Status::MEMORY);
-        }
         let layout = std::alloc::Layout::new::<Owner>();
         // SAFETY: Allocate the exact nonzero Owner layout once; null remains a
         // recoverable allocation failure before publication. Initialization and
@@ -275,27 +267,13 @@ impl Callback<'_> {
         }
         // SAFETY: Exactly one initialized Owner in the global allocator allocation.
         let owner = unsafe { Box::from_raw(pointer) };
-        #[cfg(feature = "test-support")]
-        super::test_support::instance_created();
         let bound = owner.bind_address(pointer as usize);
-        #[cfg(feature = "test-support")]
-        if bound.is_err() {
-            super::test_support::instance_reclaimed();
-        }
         bound?;
         let publication_attempted = std::cell::Cell::new(false);
         let result = catch_unwind(AssertUnwindSafe(|| {
             owner.host_call(|| {
-                #[cfg(feature = "test-support")]
-                if super::test_support::instance_fault(7) {
-                    panic!("OFX unpublished construction panic");
-                }
                 publication_attempted.set(true);
                 self.instance_data(&owner.handles, pointer.cast())?;
-                #[cfg(feature = "test-support")]
-                if super::test_support::instance_fault(3) {
-                    panic!("OFX post-publication construction panic");
-                }
                 owner.initialize(self)?;
                 self.final_instance_check()
             })
@@ -315,8 +293,6 @@ impl Callback<'_> {
                     }
                 };
                 if !publication_attempted.get() {
-                    #[cfg(feature = "test-support")]
-                    super::test_support::instance_reclaimed();
                     drop(owner);
                     return Err(original);
                 }
@@ -324,8 +300,6 @@ impl Callback<'_> {
                     owner.host_call(|| self.instance_data(&owner.handles, std::ptr::null_mut()))
                 }));
                 if matches!(detached, Ok(Ok(()))) {
-                    #[cfg(feature = "test-support")]
-                    super::test_support::instance_reclaimed();
                     drop(owner);
                     Err(original)
                 } else {
@@ -347,24 +321,10 @@ impl Callback<'_> {
         let clear = catch_unwind(AssertUnwindSafe(|| {
             owner.host_call(|| original.instance_data(&owner.handles, std::ptr::null_mut()))
         }));
-        let retire = catch_unwind(AssertUnwindSafe(|| {
-            #[cfg(feature = "test-support")]
-            {
-                super::test_support::instance_retired();
-                if super::test_support::instance_fault(5) {
-                    return Err(Status::FATAL);
-                }
-                if super::test_support::instance_fault(6) {
-                    panic!("OFX terminal retirement panic");
-                }
-            }
-            owner.retire()
-        }));
+        let retire = catch_unwind(AssertUnwindSafe(|| owner.retire()));
         if clear.is_err() || retire.is_err() {
             super::super::fail_admission(&owner.loaded);
         }
-        #[cfg(feature = "test-support")]
-        super::test_support::instance_reclaimed();
         drop(owner);
         if matches!(clear, Ok(Ok(()))) && matches!(retire, Ok(Ok(()))) {
             Ok(())
@@ -694,10 +654,6 @@ impl ParameterAccess<'_> {
         if value.is_null() {
             return Err(Status::BAD_HANDLE);
         }
-        #[cfg(feature = "test-support")]
-        if super::test_support::instance_fault(2) {
-            return Err(Status::MEMORY);
-        }
         // SAFETY: Host bytes are terminated and valid until the next host call.
         // Select the established empty-key default and copy it at this same
         // fallible allocation boundary, before the following parameter getter.
@@ -707,13 +663,6 @@ impl ParameterAccess<'_> {
         } else {
             bytes
         };
-        #[cfg(feature = "test-support")]
-        if default.is_some()
-            && ((name == c"FilmProfileKey" && super::test_support::render_fault(1))
-                || (name == c"PrintProfileKey" && super::test_support::render_fault(2)))
-        {
-            return Err(Status::MEMORY);
-        }
         copy_bytes(bytes)
     }
     pub(crate) fn set_integer(&self, name: &CStr, value: i32) -> Result<(), Status> {

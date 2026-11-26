@@ -106,22 +106,6 @@ impl Submission {
             reused: false,
         })
     }
-    #[cfg(feature = "test-support")]
-    pub(crate) fn observe(&self) -> Result<Option<Selection>, Error> {
-        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
-        Ok(state.latch.as_ref().map(|latch| Selection {
-            id: latch.id,
-            key: latch.key,
-            reused: false,
-        }))
-    }
-    #[cfg(test)]
-    pub(crate) fn poison_for_test(&self) {
-        let _ = std::panic::catch_unwind(|| {
-            let _guard = self.state.lock().unwrap();
-            panic!("poison submission latch");
-        });
-    }
     pub(crate) fn invalidate(&self, device_id: i32, context: usize) -> Result<bool, Error> {
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
         let matches = state

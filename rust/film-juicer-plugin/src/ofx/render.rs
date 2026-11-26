@@ -77,20 +77,12 @@ fn complete_frame_mapping(
     window: [i32; 4],
     canonical: [f64; 4],
 ) -> Option<CompleteFrameMapping> {
-    let [x1, y1, x2, y2] = canonical;
     let [scale_x, scale_y] = args.scale;
     let standard_scale =
         scale_x == scale_y && source.scale == args.scale && destination.scale == args.scale;
     let reduced = scale_x < 1.0 && scale_y < 1.0;
     let resized = reduced && source.scale == [1.0; 2] && destination.scale == [1.0; 2];
-    if !canonical.into_iter().all(f64::is_finite)
-        || x1 >= x2
-        || y1 >= y2
-        || !args
-            .scale
-            .into_iter()
-            .all(|scale| scale.is_finite() && scale > 0.0)
-        || !(standard_scale || resized)
+    if !(standard_scale || resized)
         || source.pixel_aspect_ratio != 1.0
         || destination.pixel_aspect_ratio != 1.0
         || destination.definition != source.definition
@@ -100,17 +92,34 @@ fn complete_frame_mapping(
     {
         return None;
     }
+    complete_frame_mapping_for_bounds(args.scale, source.definition, canonical, standard_scale)
+}
+
+fn complete_frame_mapping_for_bounds(
+    scale: [f64; 2],
+    definition: [i32; 4],
+    canonical: [f64; 4],
+    standard_scale: bool,
+) -> Option<CompleteFrameMapping> {
+    let [x1, y1, x2, y2] = canonical;
+    let reduced = scale[0] < 1.0 && scale[1] < 1.0;
+    if !canonical.into_iter().all(f64::is_finite)
+        || x1 >= x2
+        || y1 >= y2
+        || !scale
+            .into_iter()
+            .all(|scale| scale.is_finite() && scale > 0.0)
+    {
+        return None;
+    }
     let minimum = [x1.floor(), y1.floor()];
     let extent = [x2.ceil() - minimum[0], y2.ceil() - minimum[1]];
     for axis in 0..2 {
-        let scale = args.scale[axis];
+        let scale = scale[axis];
         let endpoints = [canonical[axis], canonical[axis + 2]];
         let scaled = endpoints.map(|endpoint| endpoint * scale);
         let outward = [scaled[0].floor(), scaled[1].ceil()];
-        let observed = [
-            f64::from(source.definition[axis]),
-            f64::from(source.definition[axis + 2]),
-        ];
+        let observed = [f64::from(definition[axis]), f64::from(definition[axis + 2])];
         if !reduced {
             if observed != outward {
                 return None;
@@ -152,11 +161,11 @@ fn complete_frame_mapping(
         canonical,
         candidate_full_grid: reduced.then(|| ProxyGrid {
             extent,
-            step: args.scale.map(f64::recip),
+            step: scale.map(f64::recip),
             origin: std::array::from_fn(|axis| {
-                f64::from(source.definition[axis]) / args.scale[axis] - minimum[axis]
+                f64::from(definition[axis]) / scale[axis] - minimum[axis]
             }),
-            size: std::array::from_fn(|axis| source.definition[axis + 2] - source.definition[axis]),
+            size: std::array::from_fn(|axis| definition[axis + 2] - definition[axis]),
         }),
     })
 }
@@ -221,7 +230,7 @@ fn allocation(error: &state::Error) -> bool {
             failure.kind() == state::CaptureFailureKind::Allocation
         }
         state::Error::Preparation(error) => {
-            crate::preparation::failure_category(error) == cuda::sys::FJ_STATUS_ALLOCATION_FAILURE
+            failure_category(error) == cuda::sys::FJ_STATUS_ALLOCATION_FAILURE
         }
         _ => false,
     }
@@ -236,10 +245,6 @@ fn cutoff(callback: &Callback<'_>, owner: &super::instance::Owner) -> Result<(),
         .and_then(|size| size.checked_add(print.len()))
         .ok_or(Status::MEMORY)?;
     let mut diagnostic = Vec::new();
-    #[cfg(feature = "test-support")]
-    if super::host::test_support::render_fault(3) {
-        return Err(Status::MEMORY);
-    }
     diagnostic
         .try_reserve_exact(capacity)
         .map_err(|_| Status::MEMORY)?;
@@ -256,15 +261,9 @@ fn cutoff(callback: &Callback<'_>, owner: &super::instance::Owner) -> Result<(),
 pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     let owner = callback.instance()?;
     owner.require_live()?;
-    #[cfg(feature = "test-support")]
-    super::host::test_support::begin_render();
     let args = callback.render_args()?;
     if !args.cuda {
         return cutoff(callback, owner);
-    }
-    #[cfg(feature = "test-support")]
-    if super::host::test_support::render_fault(4) {
-        panic!("OFX render action panic");
     }
     // Declaration order makes Output release before Source on every return.
     let source = callback.fetch_image(&owner.handles, 0, args.time)?;
@@ -284,8 +283,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         return Ok(());
     }
     let rendered_extent = domain(source.bounds)?;
-    #[cfg(feature = "test-support")]
-    crate::frame_observer::record_full_domain(rendered_extent);
     let assets = owner.loaded.runtime().assets();
     let mut input = owner.state.frame_input();
     if matches!(
@@ -343,8 +340,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         })
     };
     let film_canonical = film_mapping.map(|mapping| mapping.canonical);
-    #[cfg(feature = "test-support")]
-    let input_identity = input.as_ref().map_or(0, state::FrameInput::input_identity);
     let admitted = match input {
         Ok(input) => owner.state.admit_frame(input, assets, film_frame),
         Err(error) => Err(error),
@@ -400,8 +395,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         return Err(Status::FATAL);
     }
     let policy = cuda::FramePolicy::prepare(state, rendered_extent).map_err(|_| Status::FATAL)?;
-    #[cfg(feature = "test-support")]
-    policy.observe_callback(state.development().route() as u32);
     let mut effects = cuda::sys::FjEffectsGeometry {
         pixel_definition: cuda::sys::FjExtent {
             x: 0,
@@ -450,8 +443,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
             scale_y: scale[1],
             pixel_aspect_ratio: source.pixel_aspect_ratio,
         };
-        #[cfg(feature = "test-support")]
-        crate::frame_observer::record_effects_geometry(effects);
     }
     let frame_rate = callback.frame_rate(&owner.handles)?;
     let frame_rate = if frame_rate.is_finite() && frame_rate > 0.0 {
@@ -460,8 +451,6 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         0.0
     };
     let (time, frame_token) = frame_position(args.time)?;
-    #[cfg(feature = "test-support")]
-    super::host::test_support::render_state(&admitted, input_identity, &owner.state);
     callback.render_native(
         owner,
         state,
@@ -478,9 +467,176 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     )
 }
 
+fn failure_category(error: &film_juicer_core::recipe::PrepareError) -> u32 {
+    use crate::cuda::sys::*;
+    use film_juicer_core::recipe::{self, PrepareError as E};
+    match error {
+        E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
+        E::Control(recipe::ControlError::FilmGrain) | E::FilmGrainFootprint { .. } => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        E::Control(
+            recipe::ControlError::InputColorSpace
+            | recipe::ControlError::ReconstructionMethod
+            | recipe::ControlError::Meter
+            | recipe::ControlError::OutputColorSpace
+            | recipe::ControlError::PrintStage,
+        ) => FJ_STATUS_UNSUPPORTED_INPUT,
+        E::Development(
+            film_juicer_core::film::Error::InvalidGamma
+            | film_juicer_core::film::Error::RouteMismatch,
+        ) => FJ_STATUS_UNSUPPORTED_INPUT,
+        E::Development(film_juicer_core::film::Error::Allocation)
+        | E::ReferenceWhite(film_juicer_core::reconstruction::Error::AllocationFailure)
+        | E::Dir {
+            error:
+                film_juicer_core::film::dir::Error::Allocation
+                | film_juicer_core::film::dir::Error::Size,
+            ..
+        }
+        | E::Tc(film_juicer_core::reconstruction::TcError::AllocationFailure)
+        | E::PrintDevelopment(film_juicer_core::profile::PrintDensityError::Capacity) => {
+            FJ_STATUS_ALLOCATION_FAILURE
+        }
+        E::Input(film_juicer_core::film::input::Error::Panic(_)) => FJ_STATUS_INTERNAL_FAILURE,
+        // Assets errors are translated through the same existing asset boundary
+        // before being wrapped, retaining their exact classification.
+        E::Asset(_) => FJ_STATUS_INTERNAL_FAILURE,
+        _ => FJ_STATUS_PREPARATION_FAILURE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::frame_position;
+
+    #[test]
+    fn film_aperture_geometry_matches_native_wire_vectors() {
+        use film_juicer_core::{
+            assets::Assets,
+            capture,
+            film::grain::film_v1::{Controls, ProxyGrid, Raster, Selection},
+            recipe::{self, FilmGrainFrame},
+            route::ScanRoute,
+        };
+        use std::path::Path;
+
+        let mut rows = include_str!("../../../../tests/grain/film-aperture-geometry.txt").lines();
+        assert_eq!(rows.next(), Some("film-aperture-geometry-v1"));
+        let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let mut count = 0;
+        for row in rows {
+            let mut fields = row.split_whitespace();
+            let name = fields.next().unwrap();
+            let print = fields.next().unwrap() == "1";
+            let canonical: [f64; 4] =
+                std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let bounds: [i32; 4] = std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let scale: [f64; 2] = std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let integrated = fields.next().unwrap() == "1";
+            let pitch: f32 = fields.next().unwrap().parse().unwrap();
+            let extent: [f64; 2] = std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let step: [f64; 2] = std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let origin: [f64; 2] = std::array::from_fn(|_| fields.next().unwrap().parse().unwrap());
+            let border: [u8; 4] =
+                std::array::from_fn(|_| fields.next().map_or(0, |s| s.parse().unwrap()));
+            assert_eq!(fields.next(), None, "{name}");
+            let size: [i32; 2] = std::array::from_fn(|axis| bounds[axis + 2] - bounds[axis]);
+            let candidate_full_grid = if name == "border-direct" {
+                // Exercise the settled explicit raster case for an empty leading cell.
+                Some(ProxyGrid {
+                    extent: [3840., 16.],
+                    step: [4.; 2],
+                    origin: [0., -4.],
+                    size,
+                })
+            } else {
+                super::complete_frame_mapping_for_bounds(
+                    scale,
+                    bounds,
+                    canonical,
+                    scale[0] == scale[1],
+                )
+                .unwrap_or_else(|| panic!("invalid OFX geometry for {name}"))
+                .candidate_full_grid
+            };
+            let raster = Raster {
+                rendered_long_edge_px: size[0].max(size[1]),
+                candidate_full_grid,
+            };
+            let mut params = capture::defaults();
+            params.film_profile_key = "kodak_portra_400".into();
+            params.print_profile_key = "kodak_portra_endura".into();
+            params.scan_route = if print {
+                ScanRoute::NegativePrint
+            } else {
+                ScanRoute::NegativeDirect
+            };
+            params.camera_film_format_long_edge_mm = 36.0;
+            params.film_grain = Selection::FilmV1(Controls {
+                amount_ev: 0.0,
+                texel_pitch_um: 1.0,
+                chroma_fraction: 1.0,
+            });
+            let state = recipe::prepare_for_frame(&assets, &params, FilmGrainFrame::Raster(raster))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            use crate::cuda::{self, sys};
+            let [x1, y1, x2, y2] = bounds;
+            let rect = sys::FjRect { x1, y1, x2, y2 };
+            let image = sys::FjImage {
+                address: 0,
+                bounds: rect,
+                row_bytes: 0,
+                components: 4,
+                depth: 0,
+            };
+            let raw = sys::FjFrame {
+                source: image,
+                destination: image,
+                render_window: rect,
+                full_frame_extent: rect,
+                stream: 0,
+                flags: 0,
+                pixel_size_um: 0.,
+                time_frames: 37.375,
+                frame_rate: 24.,
+                session_seed: 42,
+                clip_token: 0x1234,
+                effects_geometry: sys::FjEffectsGeometry {
+                    pixel_definition: sys::FjExtent {
+                        x: x1,
+                        y: y1,
+                        width: size[0],
+                        height: size[1],
+                    },
+                    canonical_x: canonical[0],
+                    canonical_y: canonical[1],
+                    canonical_width: canonical[2] - canonical[0],
+                    canonical_height: canonical[3] - canonical[1],
+                    scale_x: scale[0],
+                    scale_y: scale[1],
+                    pixel_aspect_ratio: 1.,
+                },
+            };
+            let film = cuda::projected_film_grain(&state, &raw)
+                .unwrap_or_else(|| panic!("Film ABI projection inactive for {name}"));
+            assert_eq!(
+                (film.seed, film.next_seed),
+                (1_764_135_136, 195_565_897),
+                "{name}"
+            );
+            assert_eq!(film.temporal_fraction, 0.375, "{name}");
+            assert_eq!(film.pitch, 37.5, "{name}");
+            assert_eq!(film.sample_pitch, pitch, "{name}");
+            assert_eq!(film.calibrated_border, border, "{name}");
+            assert_eq!(film.sample_extent, extent, "{name}");
+            assert_eq!(film.sample_step, step, "{name}");
+            assert_eq!(film.sample_origin, origin, "{name}");
+            assert_eq!(film.sample_step[0] > 0., integrated, "{name}");
+            count += 1;
+        }
+        assert_eq!(count, 8);
+    }
 
     #[test]
     fn frame_positions() {

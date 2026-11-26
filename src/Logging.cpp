@@ -240,7 +240,7 @@ namespace JuicerLogging {
         return diagnostics_level() >= minLevel;
     }
 
-    void write(const char* tag, const std::string& msg) {
+    void write(const char* tag, const std::string& msg, bool flush) {
         if (!tag) {
             return;
         }
@@ -260,6 +260,10 @@ namespace JuicerLogging {
         std::lock_guard<std::mutex> lock(s.m);
         ensure_sink_locked(s);
         write_unchecked_locked(s, tag, msg);
+        if (flush && s.stream.is_open()) {
+            s.stream.flush();
+            s.linesSinceFlush = 0;
+        }
     }
 
     Scope::Scope(const char* t, std::string n) : tag(t), name(std::move(n)) {

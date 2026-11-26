@@ -12,12 +12,8 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include "Cuda/Film/JuicerCudaDensityStages.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
-
-extern "C" cudaError_t juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
-    const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::CameraFilmLinearExposurePlanes, float*, float*, float*, void*);
-extern "C" cudaError_t juicer_cuda_print_focused_capture_density_from_camera_film_linear(
-    const JuicerCuda::PrintPipelineRunParams*, JuicerCuda::CameraFilmLinearExposurePlanes, float*, float*, float*, void*);
 
 namespace {
 

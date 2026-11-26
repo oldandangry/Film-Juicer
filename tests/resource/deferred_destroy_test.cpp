@@ -1,26 +1,19 @@
-#include <algorithm>
 #include <array>
 #include <cstdio>
-#include <cstdlib>
 #include <memory>
-#include <new>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <utility>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "Cuda/JuicerCudaResourceOperations.h"
 #include "Cuda/JuicerCudaResources.h"
 
 namespace {
-    bool failDrain = false;
-    bool rejectAllocation = false;
-    CUcontext mismatchContext = nullptr;
-    unsigned drainAttempts = 0;
-    bool failAllocation = false;
-    const std::system_error servingLockFailure{std::make_error_code(std::errc::invalid_argument)};
+    bool failFree = false;
+    unsigned freeAttempts = 0;
 
     void require(bool condition, const char* message) {
         if (!condition) {
@@ -42,7 +35,7 @@ namespace {
         return resources.release();
     }
 
-    void check(const std::string& mode) {
+    void check() {
         require(cuInit(0) == CUDA_SUCCESS, "initialize CUDA driver");
         CUdevice device{};
         require(cuDeviceGet(&device, 0) == CUDA_SUCCESS, "select device");
@@ -66,120 +59,62 @@ namespace {
         JuicerCuda::destroy(other);
         require(ledger->snapshot().chargedBytes == 12288 && ledger->snapshot().recordCount == 3, "deferred accounting before drain");
         require(cuCtxSetCurrent(contexts[0]) == CUDA_SUCCESS, "restore exact owner");
-        const bool control = mode == "control";
-        failDrain = !control;
-        failAllocation = mode == "allocation" || mode == "storage";
-        mismatchContext = mode == "ordinary" ? contexts[2] : nullptr;
-        rejectAllocation = mode == "storage";
-        // The hook throws at the actual drain/serving-lock boundary after queue
-        // extraction. Either selected entry may be first; both must survive an
-        // early failure. The hook fails the first attempt, independent of order.
+        // A runtime call fails after the exact-context batch has been detached.
+        failFree = true;
         JuicerCuda::Failure failure;
-        bool drained = false;
-        try {
-            drained = JuicerCuda::drain_deferred_resources(key, failure);
-        } catch (const std::exception& error) {
-            std::printf("drain escaped: %s\n", error.what());
-        }
-        rejectAllocation = false;
-        std::printf("after failure charged=%llu records=%llu attempts=%u\n",
-                    static_cast<unsigned long long>(ledger->snapshot().chargedBytes),
-                    static_cast<unsigned long long>(ledger->snapshot().recordCount),
-                    drainAttempts);
-        if (!control) {
-            require(!drained, "faulted drain succeeded");
-            require(ledger->snapshot().chargedBytes == 12288 && ledger->snapshot().recordCount == 3, "failure discarded queued entries");
-            const auto expected = mismatchContext ? FJ_STATUS_PREPARATION_FAILURE
-                                                  : (failAllocation ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
-            require(failure.status.category == expected && failure.status.api == FJ_API_NONE && failure.status.native_code == 0,
-                    "drain exception lost its typed origin");
-            require(drainAttempts == 1, "failed drain retried or processed later entries");
-        } else {
-            require(drained, "unfaulted control drain failed");
-        }
-        failDrain = false;
-        mismatchContext = nullptr;
+        require(!JuicerCuda::drain_deferred_resources(key, failure), "faulted drain succeeded");
+        require(failure.status.category == FJ_STATUS_CUDA_FAILURE &&
+                    failure.status.api == FJ_API_CUDA_RUNTIME &&
+                    failure.status.native_code == cudaErrorInvalidValue,
+                "drain lost the typed CUDA free failure");
+        require(ledger->snapshot().chargedBytes == 12288 && ledger->snapshot().recordCount == 3,
+                "failure discarded the batch or its ledger charges");
+        require(freeAttempts == 1, "failed drain retried or freed a later entry");
         require(cuCtxSetCurrent(contexts[0]) == CUDA_SUCCESS, "restore owner after fault");
         require(JuicerCuda::drain_deferred_resources(key, failure), "explicit drain after clearing fault");
         std::printf("after retry charged=%llu records=%llu attempts=%u\n",
                     static_cast<unsigned long long>(ledger->snapshot().chargedBytes),
                     static_cast<unsigned long long>(ledger->snapshot().recordCount),
-                    drainAttempts);
+                    freeAttempts);
         require(ledger->snapshot().chargedBytes == 4096 && ledger->snapshot().recordCount == 1, "failed or unprocessed owner lost, duplicated or unrelated owner freed");
         require(ledger->record_count_for_context(unrelated, 1) == 1, "unrelated exact-context entry changed");
         require(JuicerCuda::drain_deferred_resources(key, failure), "empty drain failed");
         require(cuCtxSetCurrent(contexts[1]) == CUDA_SUCCESS, "restore unrelated owner");
         require(JuicerCuda::drain_deferred_resources(unrelated, failure), "unrelated deferred drain");
         require(ledger->snapshot().chargedBytes == 0 && ledger->snapshot().recordCount == 0, "deferred ownership did not drain to zero");
-        require(drainAttempts == (control ? 3u : 4u), "deferred entries duplicated or reprocessed");
+        require(freeAttempts == 4u, "deferred entries duplicated or reprocessed");
         for (auto* context : contexts) {
             require(cuCtxDestroy(context) == CUDA_SUCCESS, "destroy fixture-owned context");
         }
     }
 } // namespace
 
-namespace JuicerCuda::DeferredDestroyTest {
-    void before_drain(Resources&) {
-        ++drainAttempts;
-        if (failDrain) {
-            if (mismatchContext) {
-                require(cuCtxSetCurrent(mismatchContext) == CUDA_SUCCESS, "inject exact-context mismatch");
-                return;
-            }
-            if (failAllocation) {
-                throw std::bad_alloc{};
-            }
-            throw std::system_error{servingLockFailure};
-        }
+namespace JuicerCuda::ResourceOperations {
+    cudaError_t allocate_upload(void** destination, std::size_t bytes) {
+        return cudaMallocHost(destination, bytes);
     }
-} // namespace JuicerCuda::DeferredDestroyTest
+    cudaError_t create_upload_event(cudaEvent_t* event) {
+        return cudaEventCreateWithFlags(event, cudaEventDisableTiming);
+    }
+    cudaError_t copy_upload(void* destination, const void* source, std::size_t bytes, cudaStream_t stream) {
+        return cudaMemcpyAsync(destination, source, bytes, cudaMemcpyHostToDevice, stream);
+    }
+    cudaError_t record_event(cudaEvent_t event, cudaStream_t stream) {
+        return cudaEventRecord(event, stream);
+    }
+    cudaError_t synchronize_stream(cudaStream_t stream) {
+        return cudaStreamSynchronize(stream);
+    }
 
-// Reject allocation while extracting/draining/restoring the deferred batch.
-// CUDA allocations and fixture construction precede this bounded interval.
-#if defined(__GNUC__) && !defined(__clang__)
-__attribute__((noinline))
-#endif
-void* operator new(std::size_t size) {
-    if (rejectAllocation) {
-        throw std::bad_alloc{};
+    cudaError_t free_device(void* pointer) {
+        ++freeAttempts;
+        return std::exchange(failFree, false) ? cudaErrorInvalidValue : cudaFree(pointer);
     }
-    if (void* value = std::malloc(size ? size : 1)) {
-        return value;
-    }
-    throw std::bad_alloc{};
-}
-// Match the existing allocation-counting fixture: keep backing free opaque to
-// GCC's inlined new/delete mismatch analysis without changing allocation calls.
-#if defined(__GNUC__) && !defined(__clang__)
-__attribute__((noinline))
-#endif
-void operator delete(void* block) noexcept {
-    std::free(block);
-}
-void* operator new[](std::size_t size) {
-    return ::operator new(size);
-}
-void operator delete[](void* block) noexcept {
-    ::operator delete(block);
-}
-#if defined(__cpp_sized_deallocation)
-void operator delete(void* block, std::size_t) noexcept {
-    ::operator delete(block);
-}
-void operator delete[](void* block, std::size_t) noexcept {
-    ::operator delete(block);
-}
-#endif
+} // namespace JuicerCuda::ResourceOperations
 
-int main(int argc, char** argv) {
+int main() {
     try {
-        static constexpr std::array<const char*, 5> modes{"lock", "allocation", "storage", "ordinary", "control"};
-        const std::string mode = argc > 1 ? argv[1] : "lock";
-        require(std::any_of(modes.begin(), modes.end(), [&](const char* name) {
-                    return mode == name;
-                }),
-                "unknown deferred-destroy mode");
-        check(mode);
+        check();
         std::puts("PASS deferred resource ownership");
         return 0;
     } catch (const std::exception& error) {

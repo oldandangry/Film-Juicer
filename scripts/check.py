@@ -193,11 +193,10 @@ def check_rust(args):
                 raise ValueError(f"unexpected resolved dependency for {name}: {dependency['name']}")
     if "#![forbid(unsafe_code)]" not in (ROOT / "rust/film-juicer-core/src/lib.rs").read_text(encoding="utf-8"):
         raise ValueError("film-juicer-core must forbid unsafe code")
-    command = [cargo, "clippy", "--workspace", "--locked", "--all-targets", "--no-default-features"]
+    command = [cargo, "clippy", "--workspace", "--locked", "--all-targets"]
     if args.release:
         command += ["--release"]
     run([*command, "--", "-D", "warnings"])
-    run([*command, "--features", "film-juicer-plugin/test-support", "--", "-D", "warnings"])
 
 
 @dataclass(frozen=True)
@@ -525,7 +524,7 @@ def main():
     hygiene.add_argument("--base")
     hygiene.set_defaults(check=check_hygiene)
 
-    rust = commands.add_parser("rust", help="check the locked workspace and both Clippy feature sets")
+    rust = commands.add_parser("rust", help="check the locked workspace and all Rust targets")
     rust.add_argument("--cargo", default="cargo")
     rust.add_argument("--release", action="store_true")
     rust.set_defaults(check=check_rust)

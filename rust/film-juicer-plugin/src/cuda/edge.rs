@@ -6,14 +6,10 @@ use std::mem::{align_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
-use crate::dir_frame_bridge::FjDirFrameMath;
-use crate::effects_frame_bridge::FjEffectsFrameMath;
-use crate::frame_bridge::FjFrameGeometry;
-use crate::grain_frame_bridge::FjGrainFrameMath;
-#[cfg(any(test, feature = "test-support"))]
-use crate::asset_bridge::FjAssets;
-#[cfg(any(test, feature = "test-support"))]
-use crate::preparation::FjPreparedState;
+use crate::cuda::dir_frame::FjDirFrameMath;
+use crate::cuda::effects_frame::FjEffectsFrameMath;
+use crate::cuda::geometry::FjFrameGeometry;
+use crate::cuda::grain_frame::FjGrainFrameMath;
 
 use super::sys;
 mod ofx;
@@ -93,9 +89,9 @@ pub(super) struct FjHostPreparation {
     pub(super) gaussian: Option<
         unsafe extern "C" fn(
             *mut c_void,
-            *const crate::optics_bridge::FjGaussianKernelInput,
-            *mut crate::optics_bridge::FjGaussianKernelView,
-            *mut crate::optics_bridge::FjGaussianKernelFailure,
+            *const crate::cuda::optics::FjGaussianKernelInput,
+            *mut crate::cuda::optics::FjGaussianKernelView,
+            *mut crate::cuda::optics::FjGaussianKernelFailure,
             *mut sys::FjErrorBuffer,
         ) -> sys::FjStatus,
     >,
@@ -176,14 +172,10 @@ pub(crate) struct Abort<'call> {
 
 pub(crate) struct RenderOutcome {
     pub(super) completion: FjCallCompletionResult,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) diagnostic: String,
 }
 
 pub(crate) struct RenderError {
     pub(super) completion: FjCallCompletionResult,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) diagnostic: String,
 }
 
 pub(super) struct Failure {
@@ -475,10 +467,6 @@ impl Frame<'_> {
 }
 
 impl FramePolicy {
-    #[cfg(feature = "test-support")]
-    pub(crate) fn observe_callback(&self, route: u32) {
-        crate::frame_observer::record_policy(self.raw, route);
-    }
     pub(crate) fn prepare(
         state: &film_juicer_core::recipe::RenderState,
         full: film_juicer_core::frame::Domain,
@@ -525,60 +513,6 @@ fn raw_failure(diagnostic: impl Into<String>) -> Failure {
 }
 
 /// # Safety
-/// Optional initialized diagnostics and nonempty writable backing are exclusive,
-/// live and disjoint through this synchronous call. Nothing is retained.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) unsafe fn camera_lens_blur_preflight(
-    sigma_um: f32,
-    error: *mut sys::FjErrorBuffer,
-) -> sys::FjStatus {
-    // SAFETY: The caller authorizes the optional record and its bounded backing.
-    let Ok(mut diagnostic) = (unsafe { Diagnostic::admit(error) }) else {
-        return status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-    };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        super::render::preflight_camera_lens_blur(sigma_um)
-    }))
-    .unwrap_or_else(|_| {
-        Err(Failure::new(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "camera lens blur preflight panicked",
-        ))
-    });
-    match result {
-        Ok(()) => status(sys::FJ_STATUS_SUCCESS),
-        Err(failure) => {
-            diagnostic.write(&failure.diagnostic);
-            failure.status
-        }
-    }
-}
-
-/// # Safety
-/// The matching opaque state allocation is initialized and live through the
-/// borrow; the caller excludes release and mutable access until return.
-#[cfg(any(test, feature = "test-support"))]
-unsafe fn state<'a>(
-    pointer: *const FjPreparedState,
-) -> Result<&'a film_juicer_core::recipe::RenderState, Failure> {
-    if !valid(pointer) {
-        return Err(raw_failure("invalid held prepared state"));
-    }
-    // SAFETY: Numeric admission precedes the caller-authorized opaque owner borrow.
-    Ok(unsafe { &*pointer }.render_state())
-}
-
-/// # Safety
-/// The matching Assets owner is initialized and live through return.
-#[cfg(any(test, feature = "test-support"))]
-unsafe fn assets<'a>(
-    pointer: *const FjAssets,
-) -> Result<&'a film_juicer_core::assets::Assets, Failure> {
-    // SAFETY: The foreign entry's owner contract authorizes the matching borrow.
-    unsafe { crate::preparation::assets(pointer) }.map_err(|error| raw_failure(error.to_string()))
-}
-
-/// # Safety
 /// The complete initialized input is live and immutable for the call. Image
 /// addresses are opaque device integers and are never dereferenced by Rust.
 unsafe fn frame<'a>(pointer: *const sys::FjFrame, frame_token: u64) -> Result<Frame<'a>, Failure> {
@@ -621,305 +555,5 @@ fn abort<'a>(raw: sys::FjAbortCallback) -> Abort<'a> {
     }
 }
 
-/// # Safety
-/// The initialized policy is the early checked output for this same held state
-/// and frame extent; its live record is immutable and disjoint through return.
-#[cfg(any(test, feature = "test-support"))]
-unsafe fn policy(
-    pointer: *const FjPreparedFramePolicy,
-    state: &film_juicer_core::recipe::RenderState,
-    frame: &Frame<'_>,
-) -> Result<FramePolicy, Failure> {
-    if !valid(pointer) {
-        return Err(raw_failure("invalid held frame policy"));
-    }
-    // SAFETY: The record is fixed and pointer-free, and copied after numeric admission.
-    let raw = unsafe { *pointer };
-    let bounds = frame.raw.full_frame_extent;
-    let extent = raw.geometry.full_frame;
-    if raw.recipe_hash != state.hash()
-        || extent.x != bounds.x1
-        || extent.y != bounds.y1
-        || bounds.x2.checked_sub(bounds.x1) != Some(extent.width)
-        || bounds.y2.checked_sub(bounds.y1) != Some(extent.height)
-        || raw.geometry.pixel_size_um.to_bits() != frame.raw.pixel_size_um.to_bits()
-        || raw.optics.flags
-            & !(sys::FJ_OPTICS_CAMERA_DIFFUSION
-                | sys::FJ_OPTICS_ENLARGER_DIFFUSION
-                | sys::FJ_OPTICS_SCATTER_HALATION)
-            != 0
-    {
-        return Err(raw_failure("held frame policy differs from state or frame"));
-    }
-    Ok(FramePolicy { raw })
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn rejected(failure: Failure, diagnostic: &mut Diagnostic) -> FjCallCompletionResult {
-    diagnostic.write(&failure.diagnostic);
-    FjCallCompletionResult {
-        outcome: sys::FjRenderOutcome {
-            status: failure.status,
-            flags: 0,
-        },
-        fatal: 1,
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn returned(
-    result: Result<RenderOutcome, RenderError>,
-    diagnostic: &mut Diagnostic,
-) -> FjCallCompletionResult {
-    match result {
-        Ok(result) => {
-            diagnostic.write(&result.diagnostic);
-            result.completion
-        }
-        Err(result) => {
-            diagnostic.write(&result.diagnostic);
-            result.completion
-        }
-    }
-}
-
-/// # Safety
-/// The matching prepared-state owner and full-frame record are live immutable
-/// borrows. `out`, error record and nonempty error backing are exclusive, live,
-/// initialized and disjoint. Output expires normally as a pointer-free value.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) unsafe fn prepared_state_frame_policy(
-    owner: *const FjPreparedState,
-    full_frame: *const sys::FjExtent,
-    out: *mut FjPreparedFramePolicy,
-    error: *mut sys::FjErrorBuffer,
-) -> sys::FjStatus {
-    // SAFETY: The caller authorizes the optional error writer and live inputs.
-    let Ok(mut diagnostic) = (unsafe { Diagnostic::admit(error) }) else {
-        return status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-    };
-    if !valid(out) {
-        diagnostic.write("invalid frame policy output");
-        return status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-    }
-    // SAFETY: Fixed record is zero-valid and admitted writable before all work.
-    unsafe { out.write(std::mem::zeroed()) };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: Matching owner validity is the foreign caller's obligation.
-        let state = unsafe { state(owner) }?;
-        if !valid(full_frame) {
-            return Err(raw_failure("invalid full frame extent"));
-        }
-        // SAFETY: Numerically admitted initialized fixed input, copied synchronously.
-        let full_frame = unsafe { *full_frame };
-        super::frame_policy::prepare(state, full_frame)
-            .map_err(|error| Failure::new(error.category, error.diagnostic))
-    }))
-    .unwrap_or_else(|_| {
-        Err(Failure::new(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "frame policy panicked",
-        ))
-    });
-    match result {
-        Ok(value) => {
-            // SAFETY: Complete value commits once to the admitted exclusive output.
-            unsafe { out.write(value) };
-            status(sys::FJ_STATUS_SUCCESS)
-        }
-        Err(failure) => {
-            diagnostic.write(&failure.diagnostic);
-            failure.status
-        }
-    }
-}
-
-/// # Safety
-/// Opaque Assets/state are matching live owners; all fixed inputs are initialized
-/// immutable disjoint borrows. Tables and their users remain live for this
-/// synchronous call, contain foreign exceptions and retain nothing. Native
-/// staging owns asynchronous reads before callback return. The error record and
-/// nonempty backing are exclusive and disjoint. No owner is consumed here.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) unsafe fn prepared_state_render(
-    asset_owner: *const FjAssets,
-    state_owner: *const FjPreparedState,
-    access: FjCudaCallAccess,
-    frame_input: PreparedFrameInput,
-    instance_owner: *const crate::instance_bridge::FjInstance,
-    raw_abort: sys::FjAbortCallback,
-    error: *mut sys::FjErrorBuffer,
-) -> FjCallCompletionResult {
-    let instance = || {
-        // SAFETY: The raw Instance remains live and excluded from destroy through
-        // this synchronous call. Admission invokes this only after earlier peers.
-        unsafe { crate::instance_bridge::borrow_instance(instance_owner) }
-            .ok_or_else(|| raw_failure("invalid submission instance"))
-    };
-    // SAFETY: Caller retains every owner/table/record through completion; the
-    // private operation preserves their checked admission and failure ordering.
-    unsafe {
-        render_prepared_with_instance(
-            asset_owner,
-            state_owner,
-            access,
-            frame_input,
-            instance,
-            raw_abort,
-            error,
-        )
-    }
-}
-
-/// # Safety
-/// Safe Instance and raw Assets/state/table/frames remain live through completion;
-/// their backing and diagnostics are disjoint and no callback retains a borrow.
-#[cfg(feature = "test-support")]
-pub(crate) unsafe fn prepared_render_for_instance(
-    asset_owner: *const FjAssets,
-    state_owner: *const FjPreparedState,
-    access: FjCudaCallAccess,
-    frame_input: PreparedFrameInput,
-    instance: &crate::instance::Instance,
-    raw_abort: sys::FjAbortCallback,
-    error: *mut sys::FjErrorBuffer,
-) -> FjCallCompletionResult {
-    // SAFETY: The OFX action guard retains the actual owner and its Runtime;
-    // caller extents/callbacks obey the same held-render edge contract.
-    unsafe {
-        render_prepared_with_instance(
-            asset_owner,
-            state_owner,
-            access,
-            frame_input,
-            || Ok(instance),
-            raw_abort,
-            error,
-        )
-    }
-}
-
 // Unadmitted caller inputs only; constructing this record grants no capability.
 // The checked operation admits the frame and matching policy in their fixed order.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) struct PreparedFrameInput {
-    pub(crate) frame: *const sys::FjFrame,
-    pub(crate) policy: *const FjPreparedFramePolicy,
-    pub(crate) token: u64,
-}
-
-/// # Safety
-/// Every raw peer and callback obeys held render's live, disjoint, calling-thread
-/// and non-retention contract. The selected Instance borrow expires on return.
-#[cfg(any(test, feature = "test-support"))]
-unsafe fn render_prepared_with_instance<'a>(
-    asset_owner: *const FjAssets,
-    state_owner: *const FjPreparedState,
-    access: FjCudaCallAccess,
-    frame_input: PreparedFrameInput,
-    get_instance: impl FnOnce() -> Result<&'a crate::instance::Instance, Failure>,
-    raw_abort: sys::FjAbortCallback,
-    error: *mut sys::FjErrorBuffer,
-) -> FjCallCompletionResult {
-    // SAFETY: The error buffer contract is part of this entry's caller obligations.
-    let Ok(mut diagnostic) = (unsafe { Diagnostic::admit(error) }) else {
-        return FjCallCompletionResult {
-            outcome: sys::FjRenderOutcome {
-                status: status(sys::FJ_STATUS_UNSUPPORTED_INPUT),
-                flags: 0,
-            },
-            fatal: 1,
-        };
-    };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: Each admission checks numeric records before forming the caller-authorized borrow.
-        let assets = unsafe { assets(asset_owner) }?;
-        // SAFETY: The owner is live and excluded from release for this call.
-        let state = unsafe { state(state_owner) }?;
-        // SAFETY: The initialized record is live immutable input.
-        let frame = unsafe { frame(frame_input.frame, frame_input.token) }?;
-        // SAFETY: The pointer-free policy belongs to this same held state and frame.
-        let policy = unsafe { policy(frame_input.policy, state, &frame) }?;
-        let mut owner = OwnerBorrow::admit_access(access)?;
-        let instance = get_instance()?;
-        let abort = abort(raw_abort);
-        Ok(super::render(
-            &mut owner, assets, state, &frame, &policy, instance, &abort,
-        ))
-    }))
-    .unwrap_or_else(|_| {
-        Err(Failure::new(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "held render edge panicked",
-        ))
-    });
-    match result {
-        Ok(result) => returned(result, &mut diagnostic),
-        Err(failure) => rejected(failure, &mut diagnostic),
-    }
-}
-
-/// # Safety
-/// Same live table/frame/error obligations as held render. Exactly one of
-/// `(null state, MissingState)` or `(real held state, MissingInstance)` is valid.
-/// No callback or completion occurs when raw admission rejects the combination.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) unsafe fn prepared_unavailable(
-    asset_owner: *const FjAssets,
-    state_owner: *const FjPreparedState,
-    kind: u32,
-    access: FjCudaCallAccess,
-    raw_frame: *const sys::FjFrame,
-    raw_abort: sys::FjAbortCallback,
-    error: *mut sys::FjErrorBuffer,
-) -> FjCallCompletionResult {
-    // SAFETY: The optional writer is exclusive for this synchronous call.
-    let Ok(mut diagnostic) = (unsafe { Diagnostic::admit(error) }) else {
-        return FjCallCompletionResult {
-            outcome: sys::FjRenderOutcome {
-                status: status(sys::FJ_STATUS_UNSUPPORTED_INPUT),
-                flags: 0,
-            },
-            fatal: 1,
-        };
-    };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let kind = match (kind, state_owner.is_null()) {
-            (0, true) => super::render::UnavailableKind::MissingState,
-            (1, false) => super::render::UnavailableKind::MissingInstance,
-            _ => return Err(raw_failure("invalid unavailable request kind or state")),
-        };
-        // SAFETY: Numeric admission precedes the caller-authorized live owner/record borrows.
-        let assets = unsafe { assets(asset_owner) }?;
-        let state = if state_owner.is_null() {
-            None
-        } else {
-            // SAFETY: The nonnull opaque state is an actual held owner through return.
-            Some(unsafe { state(state_owner) }?)
-        };
-        // SAFETY: The initialized frame record remains live and immutable.
-        let frame = unsafe { frame(raw_frame, 0) }?;
-        let mut owner = OwnerBorrow::admit_access(access)?;
-        let abort = abort(raw_abort);
-        Ok(super::render::reject_unavailable(
-            &mut owner, assets, state, &frame, &abort, kind,
-        ))
-    }))
-    .unwrap_or_else(|_| {
-        Err(Failure::new(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "unavailable edge panicked",
-        ))
-    });
-    match result {
-        Ok(result) => returned(result, &mut diagnostic),
-        Err(failure) => rejected(failure, &mut diagnostic),
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    unsafe_code,
-    reason = "test-only prepared-call ABI facts expose a static layout witness"
-)]
-mod abi_tests;

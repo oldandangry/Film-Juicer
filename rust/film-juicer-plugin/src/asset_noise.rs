@@ -33,10 +33,25 @@ impl NoiseOwner {
             wang_colors: self.bundle.wang().colors(),
         }
     }
+}
 
-    #[cfg(feature = "test-support")]
-    pub(crate) fn arc_references(&self) -> usize {
-        Arc::strong_count(&self.bundle)
+pub(crate) fn noise_category(kind: film_juicer_core::data_io::noise::ErrorKind) -> u32 {
+    use crate::cuda::sys::{FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
+    use film_juicer_core::data_io::noise;
+
+    match kind {
+        noise::ErrorKind::Capacity
+        | noise::ErrorKind::Open(std::io::ErrorKind::OutOfMemory)
+        | noise::ErrorKind::Read(std::io::ErrorKind::OutOfMemory) => FJ_STATUS_ALLOCATION_FAILURE,
+        noise::ErrorKind::Missing
+        | noise::ErrorKind::Open(_)
+        | noise::ErrorKind::Read(_)
+        | noise::ErrorKind::ShortRead
+        | noise::ErrorKind::Length { .. }
+        | noise::ErrorKind::Size
+        | noise::ErrorKind::Json
+        | noise::ErrorKind::Metadata
+        | noise::ErrorKind::Dimensions => FJ_STATUS_PREPARATION_FAILURE,
     }
 }
 

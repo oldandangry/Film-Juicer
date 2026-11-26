@@ -32,8 +32,6 @@ pub struct Development {
     normalized_curves_hash: u64,
     layers_hash: u64,
     hash: u64,
-    #[cfg(any(test, feature = "test-support"))]
-    _curve_observation: test_support::CurveObservation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,26 +120,14 @@ impl Development {
         if bytes > isize::MAX as usize {
             return Err(Error::Size);
         }
-        #[cfg(any(test, feature = "test-support"))]
-        let fault = test_support::take();
         let capacity = authored.len();
-        #[cfg(any(test, feature = "test-support"))]
-        let capacity = if fault == 1 { usize::MAX } else { capacity };
         let mut normalized_curves_cmy = Vec::new();
         normalized_curves_cmy
             .try_reserve_exact(capacity)
             .map_err(|_| Error::Allocation)?;
-        #[cfg(any(test, feature = "test-support"))]
-        let curve_observation = test_support::CurveObservation::new();
         normalized_curves_cmy.extend_from_slice(authored);
         let (minimum_cmy, maximum_cmy) = normalize_curves(&mut normalized_curves_cmy);
         let normalized_curves_hash = curve_hash(normalized_curves_cmy.as_flattened());
-        #[cfg(any(test, feature = "test-support"))]
-        let normalized_curves_hash = if fault == 2 {
-            0
-        } else {
-            normalized_curves_hash
-        };
         let layers_hash = if params.layers_required {
             let mut identity = hash::FNV_OFFSET;
             for layer in profile.tables().density_curves_layers() {
@@ -153,8 +139,6 @@ impl Development {
         } else {
             0
         };
-        #[cfg(any(test, feature = "test-support"))]
-        let layers_hash = if fault == 4 { 0 } else { layers_hash };
         let gamma_rgb = [params.gamma_factor; 3];
         let mut identity = hash::FNV_OFFSET;
         hash::update_bytes(
@@ -172,8 +156,6 @@ impl Development {
         for gamma in gamma_rgb {
             hash::update_bytes(&mut identity, &gamma.to_bits().to_le_bytes());
         }
-        #[cfg(any(test, feature = "test-support"))]
-        let identity = if fault == 3 { 0 } else { identity };
         if normalized_curves_hash == 0 || identity == 0 {
             return Err(Error::ZeroIdentity);
         }
@@ -189,8 +171,6 @@ impl Development {
             normalized_curves_hash,
             layers_hash,
             hash: identity,
-            #[cfg(any(test, feature = "test-support"))]
-            _curve_observation: curve_observation,
         })
     }
 
@@ -233,48 +213,6 @@ impl Development {
     }
     pub fn hash(&self) -> u64 {
         self.hash
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    //! Bounded reservation and rare zero-identity rejection witnesses, absent in production.
-    use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static LIVE_CURVES: AtomicUsize = AtomicUsize::new(0);
-    static ALLOCATED_CURVES: AtomicUsize = AtomicUsize::new(0);
-    static DROPPED_CURVES: AtomicUsize = AtomicUsize::new(0);
-
-    // Field order drops this observation after a completed Development's curve
-    // vector; failed local construction drops both before its caller can sample.
-    pub(super) struct CurveObservation;
-    impl CurveObservation {
-        pub(super) fn new() -> Self {
-            LIVE_CURVES.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_CURVES.fetch_add(1, Ordering::Relaxed);
-            Self
-        }
-    }
-    impl Drop for CurveObservation {
-        fn drop(&mut self) {
-            LIVE_CURVES.fetch_sub(1, Ordering::Relaxed);
-            DROPPED_CURVES.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    pub fn curve_counts() -> [usize; 3] {
-        [
-            LIVE_CURVES.load(Ordering::Relaxed),
-            ALLOCATED_CURVES.load(Ordering::Relaxed),
-            DROPPED_CURVES.load(Ordering::Relaxed),
-        ]
-    }
-    thread_local! { static FAULT: Cell<u32> = const { Cell::new(0) }; }
-    pub fn reject_next(fault: u32) {
-        FAULT.set(fault);
-    }
-    pub(super) fn take() -> u32 {
-        FAULT.replace(0)
     }
 }
 

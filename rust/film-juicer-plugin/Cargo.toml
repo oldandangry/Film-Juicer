@@ -8,9 +8,6 @@ publish = false
 [lib]
 crate-type = ["staticlib"]
 
-[features]
-test-support = ["film-juicer-core/test-support"]
-
 [dependencies]
 film-juicer-core = { path = "../film-juicer-core" }
 

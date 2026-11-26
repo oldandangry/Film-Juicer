@@ -603,20 +603,6 @@ namespace JuicerCuda {
         }
 
 
-#if defined(JUICER_ALLOCATION_RETRY_TEST_HOOK)
-        bool test_allocation_retry(
-            bool (*action)(Failure&),
-            bool (*reclaim)(std::size_t&, Failure&),
-            Failure& failure) {
-            SubmissionTransaction transaction;
-            Resources resources({}, 0, {});
-            return execute_allocation_with_reclaim_retry(
-                transaction, resources, "test_allocation_retry", action, failure, [reclaim](Resources&, std::size_t& bytes, Failure& error) {
-                    return reclaim(bytes, error);
-                });
-        }
-#endif
-
         bool command_checkpoint_large_scratch_transition(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,

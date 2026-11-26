@@ -22,7 +22,7 @@ pub struct HalationFrameInput {
     pub legacy_reflection: bool,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Default for HalationFrameInput {
     fn default() -> Self {
         Self {

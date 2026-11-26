@@ -205,10 +205,6 @@ impl Bounds {
                 hash::update_bytes(&mut result.hash, &value.to_bits().to_le_bytes());
             }
         }
-        #[cfg(feature = "test-support")]
-        if test_support::take() {
-            result.hash = 0;
-        }
         if result.hash == 0 {
             return Err(Error::ZeroIdentity);
         }
@@ -261,18 +257,6 @@ fn check_spectral_floor(
         }
     }
     Ok(())
-}
-
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! { static ZERO: Cell<bool> = const { Cell::new(false) }; }
-    pub fn zero_next_identity() {
-        ZERO.set(true);
-    }
-    pub(super) fn take() -> bool {
-        ZERO.replace(false)
-    }
 }
 
 #[cfg(test)]

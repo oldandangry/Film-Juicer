@@ -108,7 +108,7 @@ fn fail(category: u32, diagnostic: impl Into<String>) -> edge::Failure {
 
 fn checked_extent(rect: sys::FjRect, field: &str) -> Result<Domain, edge::Failure> {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        crate::frame_bridge::checked_domain(Bounds {
+        crate::cuda::geometry::checked_domain(Bounds {
             x1: rect.x1,
             y1: rect.y1,
             x2: rect.x2,
@@ -169,12 +169,8 @@ fn dir_math(
     frame: &sys::FjFrame,
     render: Domain,
     full: Domain,
-) -> Result<crate::dir_frame_bridge::FjDirFrameMath, edge::Failure> {
+) -> Result<crate::cuda::dir_frame::FjDirFrameMath, edge::Failure> {
     let source = state.dir();
-    #[cfg(feature = "test-support")]
-    let fault = crate::dir_frame_bridge::dir_frame_faults::take();
-    #[cfg(not(feature = "test-support"))]
-    let fault = 0;
     let input = dir::frame::Input {
         active: source.active(),
         diffusion_size_um: source.diffusion_size_um(),
@@ -185,27 +181,24 @@ fn dir_math(
         full_frame_extent: full,
         recipe_hash: source.hash(),
     };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        crate::dir_frame_bridge::checked_plan(input, fault)
-    }))
-    .map_err(|_| {
+    let result = catch_unwind(AssertUnwindSafe(|| dir::frame::Plan::new(input))).map_err(|_| {
         fail(
             sys::FJ_STATUS_INTERNAL_FAILURE,
             "spatial DIR frame preparation panicked",
         )
     })?;
     match result {
-        Ok(Some(plan)) => Ok(crate::dir_frame_bridge::projection(
+        Ok(Some(plan)) => Ok(crate::cuda::dir_frame::projection(
             plan.recipe_hash(),
             plan.render_extent(),
             plan.full_frame_extent(),
             plan.component_count(),
             plan.components(),
         )),
-        Ok(None) => Ok(crate::dir_frame_bridge::empty_math()),
+        Ok(None) => Ok(crate::cuda::dir_frame::empty_math()),
         Err(error) => Err(fail(
             sys::FJ_STATUS_PREPARATION_FAILURE,
-            crate::dir_frame_bridge::failure_diagnostic(error.field()),
+            crate::cuda::dir_frame::failure_diagnostic(error.field()),
         )),
     }
 }
@@ -215,16 +208,12 @@ fn grain_math(
     frame: &sys::FjFrame,
     render: Domain,
     full: Domain,
-) -> Result<crate::grain_frame_bridge::FjGrainFrameMath, edge::Failure> {
+) -> Result<crate::cuda::grain_frame::FjGrainFrameMath, edge::Failure> {
     let source = state.grain();
     if !source.active() {
         // Match the caller's inactive optional-descriptor omission.
-        return Ok(crate::grain_frame_bridge::empty_math());
+        return Ok(crate::cuda::grain_frame::empty_math());
     }
-    #[cfg(feature = "test-support")]
-    let fault = crate::grain_frame_bridge::faults::take();
-    #[cfg(not(feature = "test-support"))]
-    let fault = 0;
     let development = state.development();
     let curves = development.density_curves_layers();
     let input = grain::frame::Input {
@@ -258,15 +247,11 @@ fn grain_math(
         film_layers_hash: development.layers_hash(),
     };
     let result = catch_unwind(AssertUnwindSafe(|| {
-        crate::grain_frame_bridge::checked_plan(
-            input,
-            |layer, channel| {
-                Ok::<&[f32], grain::frame::LayerAccessError>(
-                    curves.map_or(&[], |all| all[layer][channel].as_slice()),
-                )
-            },
-            fault,
-        )
+        grain::frame::Plan::new(input, |layer, channel| {
+            Ok::<&[f32], grain::frame::LayerAccessError>(
+                curves.map_or(&[], |all| all[layer][channel].as_slice()),
+            )
+        })
     }))
     .map_err(|_| {
         fail(
@@ -275,14 +260,14 @@ fn grain_math(
         )
     })?;
     match result {
-        Ok(Some(plan)) => Ok(crate::grain_frame_bridge::projection(&plan)),
-        Ok(None) => Ok(crate::grain_frame_bridge::empty_math()),
+        Ok(Some(plan)) => Ok(crate::cuda::grain_frame::projection(&plan)),
+        Ok(None) => Ok(crate::cuda::grain_frame::empty_math()),
         Err(error) => {
             let raw = error.layer_access();
             let message = if raw {
                 "visual grain frame arguments are invalid"
             } else {
-                crate::grain_frame_bridge::failure_diagnostic(error.field())
+                crate::cuda::grain_frame::failure_diagnostic(error.field())
             };
             Err(fail(
                 if raw {
@@ -300,16 +285,12 @@ fn effects_math(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
     render: Domain,
-) -> Result<crate::effects_frame_bridge::FjEffectsFrameMath, edge::Failure> {
+) -> Result<crate::cuda::effects_frame::FjEffectsFrameMath, edge::Failure> {
     let recipe = state.effects();
     if !recipe.active() {
         // Preserve the native caller's inactive omission: no frame math runs.
-        return Ok(crate::effects_frame_bridge::empty_math());
+        return Ok(crate::cuda::effects_frame::empty_math());
     }
-    #[cfg(feature = "test-support")]
-    let fault = crate::effects_frame_bridge::faults::take();
-    #[cfg(not(feature = "test-support"))]
-    let fault = 0;
     let geometry = frame.effects_geometry;
     let input = effects::frame::Input {
         active: recipe.active(),
@@ -340,18 +321,16 @@ fn effects_math(
         gate_dust: effects::frame::DustInput::from(recipe.gate_dust()),
         gate_scratch: effects::frame::ScratchInput::from(recipe.gate_scratch()),
     };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        crate::effects_frame_bridge::checked_frame(input, fault)
-    }))
-    .map_err(|_| {
-        fail(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "physical effects frame preparation panicked",
-        )
-    })?;
+    let result =
+        catch_unwind(AssertUnwindSafe(|| effects::frame::Frame::new(input))).map_err(|_| {
+            fail(
+                sys::FJ_STATUS_INTERNAL_FAILURE,
+                "physical effects frame preparation panicked",
+            )
+        })?;
     match result {
-        Ok(Some(value)) => Ok(crate::effects_frame_bridge::project(&value)),
-        Ok(None) => Ok(crate::effects_frame_bridge::empty_math()),
+        Ok(Some(value)) => Ok(crate::cuda::effects_frame::project(&value)),
+        Ok(None) => Ok(crate::cuda::effects_frame::empty_math()),
         Err(effects::frame::Error::InactiveIdentity) => {
             Err(fail(sys::FJ_STATUS_PREPARATION_FAILURE, ""))
         }
@@ -381,10 +360,14 @@ pub(super) fn prepare(
         grain,
         effects,
         grain_coefficients: grain_coefficients(grain_recipe),
-        film_dust: crate::film_recipe_bridge::project_dust(effects_recipe.film_dust()),
-        gate_dust: crate::film_recipe_bridge::project_dust(effects_recipe.gate_dust()),
-        film_scratch: crate::film_recipe_bridge::project_scratch(effects_recipe.film_scratch()),
-        gate_scratch: crate::film_recipe_bridge::project_scratch(effects_recipe.gate_scratch()),
+        film_dust: crate::cuda::effects_projection::project_dust(effects_recipe.film_dust()),
+        gate_dust: crate::cuda::effects_projection::project_dust(effects_recipe.gate_dust()),
+        film_scratch: crate::cuda::effects_projection::project_scratch(
+            effects_recipe.film_scratch(),
+        ),
+        gate_scratch: crate::cuda::effects_projection::project_scratch(
+            effects_recipe.gate_scratch(),
+        ),
     })
 }
 

@@ -1,8 +1,5 @@
 //! Final film sensitivity, its identity and the distinct recipe Mallett scale.
 
-#[cfg(feature = "test-support")]
-pub mod fixtures;
-
 use std::fmt;
 
 use crate::{color, hash};
@@ -257,11 +254,6 @@ pub fn prepare_sensitivity(input: Input<'_>) -> Result<Sensitivity, Error> {
     })
 }
 
-#[cfg(feature = "test-support")]
-pub fn window_sample_for_test(wavelength: f32, params: &[f32; 4]) -> f32 {
-    hanatos_window_sample(wavelength, params)
-}
-
 pub struct MallettInput<'a> {
     pub color: color::InputConversion,
     pub xyz_to_linear_srgb: [f32; 9],
@@ -309,40 +301,12 @@ fn safe_green(green: f32) -> f32 {
     if finite > 1e-9 { finite } else { 1.0 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BoundaryError {
-    #[cfg(feature = "test-support")]
-    Unsupported,
-    #[cfg(feature = "test-support")]
-    Preparation,
-}
-
-fn visit_fixed_boundary(operation: u32) -> Result<(), BoundaryError> {
-    #[cfg(feature = "test-support")]
-    if let Some(fault) = crate::film::input::testing::exposure_fault(operation) {
-        return match fault {
-            1 => Err(BoundaryError::Unsupported),
-            2 => panic!("exposure production boundary fault"),
-            4 => Err(BoundaryError::Preparation),
-            _ => unreachable!("closed fixed-exposure fault"),
-        };
-    }
-    #[cfg(not(feature = "test-support"))]
-    let _ = operation;
-    Ok(())
-}
-
 pub fn tc_midgray(green: f32) -> MidgrayNormalization {
     let raw_green = safe_green(green);
     MidgrayNormalization {
         raw_green,
         scale: 1.0 / raw_green,
     }
-}
-
-pub fn checked_tc_midgray(green: f32) -> Result<MidgrayNormalization, BoundaryError> {
-    visit_fixed_boundary(4)?;
-    Ok(tc_midgray(green))
 }
 
 fn focused_normalization(green: f32) -> MidgrayNormalization {
@@ -403,11 +367,6 @@ pub fn mallett_midgray(input: MallettInput<'_>) -> MallettMidgray {
         raw_midgray_bgr,
         normalization: focused_normalization(raw_midgray_bgr[1]),
     }
-}
-
-pub fn checked_mallett_midgray(input: MallettInput<'_>) -> Result<MallettMidgray, BoundaryError> {
-    visit_fixed_boundary(3)?;
-    Ok(mallett_midgray(input))
 }
 
 #[derive(Debug)]

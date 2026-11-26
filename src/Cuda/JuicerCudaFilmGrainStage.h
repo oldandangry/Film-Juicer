@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Cuda/JuicerCudaFilmGrain.h"
+#include "juicer_cuda_api.h"
 
 namespace JuicerCuda {
     struct GrainFailureSite {
@@ -15,8 +16,10 @@ namespace JuicerCuda {
             const GrainFailureSite* failure = nullptr;
         };
 
-        // The link selects the stage owner. The prepared frame retains all device
-        // resources; a bare CUDA failure is attributed to the route's Film launch.
+        void bind_film_grain(
+            const FjFilmGrain& input, FjExtent extent, ProxyWorkspace* workspace, FilmTables& tables, FilmFrame& frame);
+
+        // The prepared frame retains the bank, workspace and developed planes.
         LaunchResult launch_developed(const FilmQuad* bank, const FilmTables& tables, const FilmFrame& frame, FilmPlanes planes, cudaStream_t stream);
     } // namespace FilmGrain
 } // namespace JuicerCuda

@@ -42,23 +42,23 @@ implemented Metal backend.
 | Process and instance | [Runtime](rust/film-juicer-plugin/src/runtime.rs) composes Assets and the native CUDA owner; Assets remains alive through native close. [Instance](rust/film-juicer-plugin/src/instance.rs), [submission](rust/film-juicer-plugin/src/submission.rs), [OFX instance handling](rust/film-juicer-plugin/src/ofx/instance.rs) and core [Publication](rust/film-juicer-core/src/state.rs) own capture, publication/admission and session policy. |
 | Photographic model and assets | Core [Assets](rust/film-juicer-core/src/assets.rs), [profiles](rust/film-juicer-core/src/profile.rs) and [recipes](rust/film-juicer-core/src/recipe.rs), with the film, print, optics and scanner modules, own source/derived data and resolved policy. Complete immutable `RenderState` retains the backing its consumers need. The core [forbids unsafe](rust/film-juicer-core/src/lib.rs) and has no OFX/CUDA dependency. |
 | Foreign submission and GPU execution | Plug-in [CUDA](rust/film-juicer-plugin/src/cuda/mod.rs) borrows admitted state through the [native C API](native/juicer_cuda_api.h). [RenderValues](src/RenderValues.h) binds resolved policy; [Root](src/ProcessRoot.h), [CUDA resources](src/Cuda/JuicerCudaResources.h) and kernels own execution and exact-context-plus-epoch residency. `PreparedCudaFrame` retains resources through finish/abort and asynchronous retirement. Native render code does not discover asset files. |
-| Build and test boundaries | [CMake/Cargo integration](cmake/JuicerRust.cmake) builds the two-crate workspace. Shipping and production witnesses link `cargo/production`; facade/fault consumers select `cargo/test-support`. [ABI and binding maintenance](docs/ffi.md) documents committed bindings, regeneration and the [test-preparation C facade](tests/ffi/juicer_test_api.h). Independent native oracles and nonshipping measurement helpers retain their test consumers. |
+| Build and test boundaries | [CMake/Cargo integration](cmake/JuicerRust.cmake) builds the two-crate workspace. Shipping and linked native tests use `cargo/production`. [ABI maintenance](docs/ffi.md) covers the committed bindings, C11 inventories and regeneration. |
 
 For a maintenance change, follow the authoritative value to its actual consumer:
 
 | Change | Trace |
 | --- | --- |
-| Grain mapping/defaults | [OFX controls](rust/film-juicer-plugin/src/ofx/controls.rs) → [grain policy/conversion](rust/film-juicer-core/src/film/grain.rs) → [recipe identity](rust/film-juicer-core/src/recipe.rs) → [frame binding](rust/film-juicer-plugin/src/cuda/frame.rs) → [native film payloads](src/Cuda/JuicerCudaFilmPayloads.cpp). |
-| Scanner encoding | [Scanner policy](rust/film-juicer-core/src/scanner.rs) and recipe `scanner_params` → completed scanner/color identity → [native scanner binding](src/Scanner.h). Encoding changes must preserve unrelated spectral-medium reuse. |
-| Profile-derived preparation | Assets/profile → recipe foundation and gamma-derived preparation → retained `RenderState` backing. Releasing cache holds must not invalidate admitted frames; original f64 exposure and interpolation f32 axes have different consumers. |
+| Grain mapping/defaults | [OFX controls](rust/film-juicer-plugin/src/ofx/controls.rs) â†’ [grain policy/conversion](rust/film-juicer-core/src/film/grain.rs) â†’ [recipe identity](rust/film-juicer-core/src/recipe.rs) â†’ [frame binding](rust/film-juicer-plugin/src/cuda/frame.rs) â†’ [native film payloads](src/Cuda/JuicerCudaFilmPayloads.cpp). |
+| Scanner encoding | [Scanner policy](rust/film-juicer-core/src/scanner.rs) and recipe `scanner_params` â†’ completed scanner/color identity â†’ [native scanner binding](src/Scanner.h). Encoding changes must preserve unrelated spectral-medium reuse. |
+| Profile-derived preparation | Assets/profile â†’ recipe foundation and gamma-derived preparation â†’ retained `RenderState` backing. Releasing cache holds must not invalidate admitted frames; original f64 exposure and interpolation f32 axes have different consumers. |
 | Admission | Core `Publication::admit` takes pending inputs, prepares outside the publication lock, then rechecks before publishing the complete state. Follow the [plug-in consumer](rust/film-juicer-plugin/src/instance.rs) for capture failure and reentry. |
-| Native workspace attachment | [`WorkspaceLayout::create`](src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp) → Root frame preparation → exact-context leases and execution consumers → completion-aware release/alias reuse in [`ProcessRoot.cpp`](src/ProcessRoot.cpp). |
+| Native workspace attachment | [`WorkspaceLayout::create`](src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp) â†’ Root frame preparation â†’ exact-context leases and execution consumers â†’ completion-aware release/alias reuse in [`ProcessRoot.cpp`](src/ProcessRoot.cpp). |
 
 Preserve arithmetic order, encodings, identities/seeds and fixture-specific bounds.
 The approved [density policy](tests/profile/fixtures/README.md) uses pinned
 `libm::erfcf`; [filtered print](tests/print/illuminant-fixtures/README.md) uses
 `libm::erff` with exact selected Rust expectations and resulting identities.
-The [input-color contract](tests/ffi/README.md#input-color-preparation) retains
+The [tagged input-color contract](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/ffi/README.md#input-color-preparation) retains
 separate-f32 inverse authority. These are bounded numerical policies, not a
 general tolerance or permission to replace portable math for speed.
 

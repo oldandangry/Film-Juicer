@@ -1,5 +1,6 @@
 // Cuda/Film/JuicerCudaFilmPipeline.cu
 // Pipeline-aligned CUDA TU for film exposure, development, and spatial DIR kernels.
+#include "Cuda/Film/JuicerCudaDensityStages.h"
 #include <cuda_runtime.h>
 
 #include <cmath>

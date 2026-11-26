@@ -6,7 +6,7 @@ Toolkit 13.2. CMake invokes Cargo for the two-crate Rust workspace and links the
 resulting `film-juicer-plugin` static library into the OFX module.
 See the [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map)
 for model, host, ABI and native execution entry points.
-The OpenFX 1.4 headers and the native tests’ nlohmann JSON headers are vendored.
+The OpenFX 1.4 headers and the native testsâ€™ nlohmann JSON headers are vendored.
 
 Use CMake 4.3 or newer and Ninja. Install the Visual Studio C++/CMake and Clang
 tools, MSVC v145, the Windows SDK, and CUDA 13.2. Set `CUDA_PATH_V13_2` to that toolkit.
@@ -53,7 +53,7 @@ and assertions instead of requesting those incompatible compiler options.
 
 Native file diagnostics use the compile gate in [Logging.h](../src/Logging.h)
 and the sink in [Logging.cpp](../src/Logging.cpp). Debug uses
-`JUICER_DIAGNOSTICS` for the runtime level (0–3, default 0) and optionally
+`JUICER_DIAGNOSTICS` for the runtime level (0â€“3, default 0) and optionally
 `JUICER_DIAGNOSTICS_PATH` for the output file. The standard Release presets
 compile out the sink and trace calls.
 
@@ -151,7 +151,7 @@ python3.13 -m pip install -r tests/requirements.txt
 cmake --preset linux-debug -DBUILD_TESTING=ON
 cmake --build --preset linux-debug
 ctest --preset linux-debug -L '^host$' --no-tests=error --output-on-failure
-cargo nextest run --workspace --locked --features film-juicer-plugin/test-support --test-threads 1
+cargo nextest run --workspace --locked --test-threads 1
 cargo test --workspace --doc --locked
 ctest --preset linux-debug -L '^gpu$' -LE '^multi-gpu$' --no-tests=error --output-on-failure
 ```
@@ -160,7 +160,7 @@ Repeat the CMake and CTest steps with the Release preset. Run these Cargo
 commands for Release.
 
 ```sh
-cargo nextest run --workspace --locked --release --features film-juicer-plugin/test-support --test-threads 1
+cargo nextest run --workspace --locked --release --test-threads 1
 cargo test --workspace --doc --locked --release
 ```
 

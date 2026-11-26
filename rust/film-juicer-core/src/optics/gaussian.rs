@@ -16,8 +16,6 @@ pub struct GaussianKernel {
 
 impl GaussianKernel {
     pub fn new(radius: u32, sigma_px: f32) -> Result<Self, GaussianKernelError> {
-        #[cfg(any(test, feature = "test-support"))]
-        let reject = super::test_support::take_gaussian_reservation();
         if !(1..=2048).contains(&radius) {
             return Err(GaussianKernelError::Radius);
         }
@@ -30,10 +28,6 @@ impl GaussianKernel {
             .filter(|n| n.checked_mul(size_of::<f32>()).is_some())
             .ok_or(GaussianKernelError::Allocation)?;
         let mut weights = Vec::new();
-        #[cfg(any(test, feature = "test-support"))]
-        if reject {
-            return Err(GaussianKernelError::Allocation);
-        }
         weights
             .try_reserve_exact(count)
             .map_err(|_| GaussianKernelError::Allocation)?;

@@ -240,12 +240,6 @@ impl Recipe {
                 }
             }
         }
-        #[cfg(feature = "test-support")]
-        match test_support::take_allocation() {
-            1 => return Err(Error::Size),
-            2 => return Err(Error::Allocation),
-            _ => {}
-        }
         let bytes = axis
             .len()
             .checked_mul(size_of::<f32>())
@@ -357,10 +351,6 @@ impl Recipe {
             }
         }
         result.hash = identity;
-        #[cfg(feature = "test-support")]
-        if test_support::take_identity() {
-            result.hash = 0;
-        }
         if result.hash == 0 || result.compensated_axes_hash == 0 {
             return Err(Error::ZeroIdentity);
         }
@@ -411,32 +401,6 @@ impl Recipe {
     }
     pub fn hash(&self) -> u64 {
         self.hash
-    }
-}
-
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! { static NEXT: Cell<u32> = const { Cell::new(0) }; }
-    pub fn reject_next(fault: u32) {
-        NEXT.set(fault);
-    }
-    pub(super) fn take_allocation() -> u32 {
-        let fault = NEXT.get();
-        if matches!(fault, 1 | 2) {
-            NEXT.set(0);
-            fault
-        } else {
-            0
-        }
-    }
-    pub(super) fn take_identity() -> bool {
-        if NEXT.get() == 3 {
-            NEXT.set(0);
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -560,3 +524,6 @@ impl DirField {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+mod tests;

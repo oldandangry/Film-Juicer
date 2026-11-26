@@ -341,15 +341,7 @@ impl<'a> Callback<'a> {
     pub(crate) fn catalog(
         &self,
     ) -> Result<Option<Arc<film_juicer_core::profile::Catalog>>, Status> {
-        #[cfg(feature = "test-support")]
-        if test_support::context_fault(2) {
-            return Err(Status::MEMORY);
-        }
         let catalog = self.loaded.runtime.assets().catalog();
-        #[cfg(feature = "test-support")]
-        if test_support::context_fault(1) {
-            return Ok(None);
-        }
         match catalog {
             Ok(catalog) => {
                 if i32::try_from(catalog.films().len()).is_err()
@@ -378,10 +370,6 @@ impl<'a> Parameters<'a> {
     pub(crate) fn define(&self, kind: &CStr, name: &CStr) -> Result<Properties<'_>, Status> {
         if self.handle.is_null() {
             return Err(Status::BAD_HANDLE);
-        }
-        #[cfg(feature = "test-support")]
-        if test_support::context_fault(4) {
-            panic!("OFX context declaration panic");
         }
         let mut handle = std::ptr::null_mut();
         // SAFETY: The admitted nonnull parameter set and immediate C strings
@@ -416,10 +404,6 @@ impl Properties<'_> {
         index: i32,
         text: &str,
     ) -> Result<(), Status> {
-        #[cfg(feature = "test-support")]
-        if test_support::context_fault(3) {
-            return Err(Status::MEMORY);
-        }
         // Preserve std::string::c_str() prefix semantics without changing the
         // catalog's full keys or retaining owned foreign-string storage.
         let bytes = text.as_bytes();
@@ -476,8 +460,6 @@ impl Properties<'_> {
 
 fn contained(operation: impl FnOnce() -> Result<(), Status>) -> i32 {
     let result = catch_unwind(AssertUnwindSafe(operation));
-    #[cfg(feature = "test-support")]
-    test_support::pause(1);
     match result {
         Ok(result) => result.map_or_else(Status::code, |()| sys::kOfxStatOK),
         Err(_) => sys::kOfxStatFailed,
@@ -490,8 +472,6 @@ fn contained(operation: impl FnOnce() -> Result<(), Status>) -> i32 {
 unsafe extern "C" fn set_host(host: *mut sys::OfxHost) {
     let _ = contained(|| {
         super::bind(|| {
-            #[cfg(feature = "test-support")]
-            test_support::checkpoint(2);
             if host.is_null() {
                 None
             } else {
@@ -538,8 +518,6 @@ unsafe extern "C" fn main_entry(
                 let admission = super::admit()?;
                 let callback = Callback::new(&admission, handle.cast_mut().cast(), input);
                 match catch_unwind(AssertUnwindSafe(|| {
-                    #[cfg(feature = "test-support")]
-                    test_support::checkpoint(1);
                     if in_context {
                         super::actions::describe_in_context(&callback)
                     } else {
@@ -548,15 +526,9 @@ unsafe extern "C" fn main_entry(
                 })) {
                     Ok(result) => result,
                     Err(_) => {
-                        #[cfg(feature = "test-support")]
-                        test_support::pause(2);
                         // Keep Admission live until matching-owner invalidation
                         // completes; terminal close cannot pass through this gap.
                         super::fail_admission(&admission);
-                        #[cfg(feature = "test-support")]
-                        if in_context {
-                            test_support::pause(16);
-                        }
                         Err(Status::FAILED)
                     }
                 }
@@ -667,6 +639,3 @@ extern "C" fn fj_ofx_plugin(index: i32) -> *mut sys::OfxPlugin {
 
 const _: extern "C" fn() -> i32 = fj_ofx_plugin_count;
 const _: extern "C" fn(i32) -> *mut sys::OfxPlugin = fj_ofx_plugin;
-
-#[cfg(feature = "test-support")]
-pub(super) mod test_support;

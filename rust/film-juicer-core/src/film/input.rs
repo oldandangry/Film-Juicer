@@ -67,8 +67,6 @@ pub enum Error {
     Sensitivity(exposure::Error),
     ZeroIdentity,
     Panic(Operation),
-    #[cfg(feature = "test-support")]
-    Boundary(Operation, u32),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -85,8 +83,6 @@ impl fmt::Display for Error {
             Self::ZeroIdentity => "MalformedRequiredProfileData phase=3B field=data.log_sensitivity",
             Self::Panic(Operation::Sensitivity) => "asset boundary panic",
             Self::Panic(_) => "film input boundary panic",
-            #[cfg(feature = "test-support")]
-            Self::Boundary(_, _) => "exposure production boundary fault",
         })
     }
 }
@@ -117,26 +113,7 @@ pub struct Recipe {
 }
 
 fn leaf<T>(operation: Operation, call: impl FnOnce() -> T) -> Result<T, Error> {
-    catch_unwind(AssertUnwindSafe(|| {
-        #[cfg(feature = "test-support")]
-        testing::check(operation)?;
-        Ok(call())
-    }))
-    .map_err(|_| Error::Panic(operation))?
-}
-
-fn color_leaf<T>(
-    operation: Operation,
-    call: impl FnOnce() -> Result<T, color::CheckedError>,
-) -> Result<T, Error> {
-    match catch_unwind(AssertUnwindSafe(call)) {
-        Ok(Ok(value)) => Ok(value),
-        #[cfg(feature = "test-support")]
-        Ok(Err(color::CheckedError::UnsupportedInput)) => Err(Error::Boundary(operation, 2)),
-        #[cfg(not(feature = "test-support"))]
-        Ok(Err(error)) => match error {},
-        Err(_) => Err(Error::Panic(operation)),
-    }
+    catch_unwind(AssertUnwindSafe(call)).map_err(|_| Error::Panic(operation))
 }
 
 fn narrow_filter(values: [f64; 3], active: bool) -> [f32; 3] {
@@ -234,9 +211,9 @@ impl Recipe {
             destination_xyz: projection_white,
         };
         let adaptation = if tc {
-            color_leaf(Operation::Cat16, || color::checked_cat16_matrix(whites))?
+            leaf(Operation::Cat16, || color::cat16_matrix(whites))?
         } else {
-            color_leaf(Operation::Cat02, || color::checked_cat02_matrix(whites))?
+            leaf(Operation::Cat02, || color::cat02_matrix(whites))?
         };
         let compression = tc && params.input_compression;
         if compression && resources.input_hull_hash == 0 {
@@ -438,83 +415,6 @@ impl Recipe {
     }
 }
 
-#[cfg(feature = "test-support")]
-pub mod testing {
-    use super::{Error, Operation};
-    use std::cell::Cell;
-    thread_local! {
-        static COLOR: Cell<Option<(u32, u32, u32)>> = const { Cell::new(None) };
-        static EXPOSURE: Cell<Option<(u32, u32, u32)>> = const { Cell::new(None) };
-        static CONSUMED: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
-    }
-    pub fn arm_color(operation: u32, count: u32, fault: u32) {
-        COLOR.set(Some((operation, count, fault)));
-    }
-    pub fn clear_color() {
-        COLOR.set(None);
-    }
-    pub fn color_fault(operation: u32) -> Result<(), u32> {
-        if let Some((selected, remaining, fault)) = COLOR.get()
-            && selected == operation
-        {
-            COLOR.set(if remaining > 1 {
-                Some((selected, remaining - 1, fault))
-            } else {
-                None
-            });
-            if remaining == 1 {
-                if fault == 2 {
-                    panic!("color production boundary fault");
-                }
-                return Err(2);
-            }
-        }
-        Ok(())
-    }
-    pub fn arm_exposure(operation: u32, count: u32, fault: u32) {
-        EXPOSURE.set(Some((operation, count, fault)));
-        CONSUMED.set(None);
-    }
-    pub fn clear_exposure() {
-        EXPOSURE.set(None);
-        CONSUMED.set(None);
-    }
-    pub fn exposure_consumed(operation: u32, fault: u32) -> bool {
-        CONSUMED.take() == Some((operation, fault))
-    }
-    pub fn exposure_fault(operation: u32) -> Option<u32> {
-        if let Some((selected, remaining, fault)) = EXPOSURE.get()
-            && selected == operation
-        {
-            EXPOSURE.set(if remaining > 1 {
-                Some((selected, remaining - 1, fault))
-            } else {
-                None
-            });
-            if remaining == 1 {
-                CONSUMED.set(Some((operation, fault)));
-                return Some(fault);
-            }
-        }
-        None
-    }
-    pub(super) fn check(operation: Operation) -> Result<(), Error> {
-        let category = match operation {
-            Operation::InputMatrices => color_fault(5),
-            Operation::Cat16 => color_fault(1),
-            Operation::Cat02 => color_fault(3),
-            Operation::Sensitivity => match exposure_fault(2) {
-                Some(2) => panic!("exposure production boundary fault"),
-                Some(1) => Err(2),
-                Some(3) => Err(4),
-                Some(4) => Err(3),
-                _ => Ok(()),
-            },
-        };
-        category.map_err(|category| Error::Boundary(operation, category))
-    }
-}
-
 pub fn film_format_mm(raw: f64) -> Result<f32, &'static str> {
     if !raw.is_finite() {
         Err("InvalidAuthoredControl component=camera field=film_format_mm reason=non_finite")
@@ -663,14 +563,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let missing = profile::FilmProfile::new(source).unwrap();
         let reference = [1.0; 81];
-        #[cfg(feature = "test-support")]
-        {
-            testing::arm_color(5, 1, 1);
-            assert!(matches!(
-                Recipe::new(&missing, params(Method::Hanatos2025), resources(&reference)),
-                Err(Error::Boundary(Operation::InputMatrices, 2))
-            ));
-        }
         assert!(matches!(
             Recipe::new(&missing, params(Method::Hanatos2025), resources(&reference)),
             Err(Error::MissingHanatosWindow)
