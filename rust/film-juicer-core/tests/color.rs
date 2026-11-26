@@ -1,7 +1,4 @@
 use film_juicer_core::color::{self, Whites};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::Value;
 
 fn fixture(logical_name: &str, manifest_name: &str) -> Value {
@@ -34,9 +31,26 @@ fn native_parent_scalar_and_matrix_bits() {
     let fixture = fixture("linux-debug.json", "manifest.json");
     let fixture_rows = fixture["leaf"].as_array().unwrap();
     let ids = case_ids(fixture_rows, "id");
-    let mut cases = RowCases::new("native-parent-color-leaves", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "native-parent-color-leaves"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "native-parent-color-leaves"
+    );
     for (row, id) in fixture_rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let whites = Whites {
             source_xyz: triplet(&row["source"]),
             destination_xyz: triplet(&row["destination"]),
@@ -56,9 +70,15 @@ fn native_parent_scalar_and_matrix_bits() {
                 }
             }
         }
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -72,9 +92,26 @@ fn cat02_native_parent_scalar_and_matrix_bits() {
     let fixture = fixture(&format!("cat02-{preset}.json"), "cat02-manifest.json");
     let fixture_rows = fixture["leaf"].as_array().unwrap();
     let ids = case_ids(fixture_rows, "id");
-    let mut cases = RowCases::new("cat02-native-parent-color-leaves", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "cat02-native-parent-color-leaves"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "cat02-native-parent-color-leaves"
+    );
     for (row, id) in fixture_rows.iter().zip(&ids) {
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let whites = Whites {
             source_xyz: triplet(&row["source"]),
             destination_xyz: triplet(&row["destination"]),
@@ -94,9 +131,15 @@ fn cat02_native_parent_scalar_and_matrix_bits() {
                 }
             }
         }
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 fn input_space(tag: u64) -> color::InputSpace {
@@ -143,22 +186,62 @@ fn input_color_native_parent_bits() {
     let inverse = &fixture["recipes"][0]["expected"]["xyz_to_linear_srgb"];
     let recipe_rows = fixture["recipes"].as_array().unwrap();
     let recipe_ids = case_ids(recipe_rows, "id");
-    let mut recipes = RowCases::new("input-color-recipes", &recipe_ids);
+    let recipes_ids: Vec<_> = IntoIterator::into_iter(&recipe_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !recipes_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-recipes"
+    );
+    let recipes_count = recipes_ids.len();
+    let mut recipes_remaining = recipes_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        recipes_remaining.len(),
+        recipes_count,
+        "duplicate case IDs: {}",
+        "input-color-recipes"
+    );
     for (row, id) in recipe_rows.iter().zip(&recipe_ids) {
-        let case = recipes.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(&row["expected"]["xyz_to_linear_srgb"], inverse);
         assert_eq!(&row["expected"]["config_xyz_to_linear_srgb"], inverse);
-        case.passed();
+        assert!(
+            recipes_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    recipes.finish();
+    assert!(
+        recipes_remaining.is_empty(),
+        "missing comparisons: {recipes_remaining:?}"
+    );
     let matrix_rows = fixture["matrices"].as_array().unwrap();
     let matrix_ids: Vec<String> = matrix_rows
         .iter()
         .map(|row| format!("space/{}", row["space"].as_u64().unwrap()))
         .collect();
-    let mut matrices_rows = RowCases::new("input-color-matrices", &matrix_ids);
+    let matrices_rows_ids: Vec<_> = IntoIterator::into_iter(&matrix_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !matrices_rows_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-matrices"
+    );
+    let matrices_rows_count = matrices_rows_ids.len();
+    let mut matrices_rows_remaining = matrices_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        matrices_rows_remaining.len(),
+        matrices_rows_count,
+        "duplicate case IDs: {}",
+        "input-color-matrices"
+    );
     for (row, id) in matrix_rows.iter().zip(&matrix_ids) {
-        let case = matrices_rows.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let matrices = color::input_matrices(input_space(row["space"].as_u64().unwrap()));
         expect_bits(
             &matrices.rgb_to_xyz,
@@ -184,28 +267,74 @@ fn input_color_native_parent_bits() {
             &row["space"],
             "completed inverse",
         );
-        case.passed();
+        assert!(
+            matrices_rows_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    matrices_rows.finish();
+    assert!(
+        matrices_rows_remaining.is_empty(),
+        "missing comparisons: {matrices_rows_remaining:?}"
+    );
     let decode_rows = fixture["decode"].as_array().unwrap();
     let decode_ids = case_ids(decode_rows, "id");
-    let mut decodes = RowCases::new("input-color-decode", &decode_ids);
+    let decodes_ids: Vec<_> = IntoIterator::into_iter(&decode_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !decodes_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-decode"
+    );
+    let decodes_count = decodes_ids.len();
+    let mut decodes_remaining = decodes_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        decodes_remaining.len(),
+        decodes_count,
+        "duplicate case IDs: {}",
+        "input-color-decode"
+    );
     for (row, id) in decode_rows.iter().zip(&decode_ids) {
-        let case = decodes.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let actual = color::decode_input(
             input_space(row["space"].as_u64().unwrap()),
             row["decode"].as_u64().unwrap() != 0,
             triplet(&row["rgb"]),
         );
         expect_bits(&actual, &row["expected"]["linear"], &row["id"], "decode");
-        case.passed();
+        assert!(
+            decodes_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    decodes.finish();
+    assert!(
+        decodes_remaining.is_empty(),
+        "missing comparisons: {decodes_remaining:?}"
+    );
     let conversion_rows = fixture["conversion"].as_array().unwrap();
     let conversion_ids = case_ids(conversion_rows, "id");
-    let mut conversions = RowCases::new("input-color-conversion", &conversion_ids);
+    let conversions_ids: Vec<_> = IntoIterator::into_iter(&conversion_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !conversions_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-conversion"
+    );
+    let conversions_count = conversions_ids.len();
+    let mut conversions_remaining = conversions_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        conversions_remaining.len(),
+        conversions_count,
+        "duplicate case IDs: {}",
+        "input-color-conversion"
+    );
     for (row, id) in conversion_rows.iter().zip(&conversion_ids) {
-        let case = conversions.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let input = color::InputConversion {
             space: input_space(row["space"].as_u64().unwrap()),
             decode_cctf: row["decode"].as_u64().unwrap() != 0,
@@ -244,14 +373,37 @@ fn input_color_native_parent_bits() {
             &row["id"],
             "observed XYZ",
         );
-        case.passed();
+        assert!(
+            conversions_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    conversions.finish();
+    assert!(
+        conversions_remaining.is_empty(),
+        "missing comparisons: {conversions_remaining:?}"
+    );
     let linear_rows = fixture["linear"].as_array().unwrap();
     let linear_ids = case_ids(linear_rows, "id");
-    let mut linear_cases = RowCases::new("input-color-linear-leaves", &linear_ids);
+    let linear_cases_ids: Vec<_> = IntoIterator::into_iter(&linear_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !linear_cases_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-linear-leaves"
+    );
+    let linear_cases_count = linear_cases_ids.len();
+    let mut linear_cases_remaining = linear_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        linear_cases_remaining.len(),
+        linear_cases_count,
+        "duplicate case IDs: {}",
+        "input-color-linear-leaves"
+    );
     for (row, id) in linear_rows.iter().zip(&linear_ids) {
-        let case = linear_cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let rgb = triplet(&row["rgb"]);
         expect_bits(
             &color::linear_srgb_to_xyz(rgb),
@@ -265,14 +417,37 @@ fn input_color_native_parent_bits() {
             &row["id"],
             "DWG leaf",
         );
-        case.passed();
+        assert!(
+            linear_cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    linear_cases.finish();
+    assert!(
+        linear_cases_remaining.is_empty(),
+        "missing comparisons: {linear_cases_remaining:?}"
+    );
     let projection_rows = fixture["projection"].as_array().unwrap();
     let projection_ids = case_ids(projection_rows, "id");
-    let mut projections = RowCases::new("input-color-projection", &projection_ids);
+    let projections_ids: Vec<_> = IntoIterator::into_iter(&projection_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !projections_ids.is_empty(),
+        "empty case set: {}",
+        "input-color-projection"
+    );
+    let projections_count = projections_ids.len();
+    let mut projections_remaining = projections_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        projections_remaining.len(),
+        projections_count,
+        "duplicate case IDs: {}",
+        "input-color-projection"
+    );
     for (row, id) in projection_rows.iter().zip(&projection_ids) {
-        let case = projections.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let actual = color::project_linear_rgb_to_xyz(
             triplet(&row["rgb"]),
             matrix(&row["rgb_to_xyz"]),
@@ -284,7 +459,13 @@ fn input_color_native_parent_bits() {
             &row["id"],
             "linear projection",
         );
-        case.passed();
+        assert!(
+            projections_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    projections.finish();
+    assert!(
+        projections_remaining.is_empty(),
+        "missing comparisons: {projections_remaining:?}"
+    );
 }

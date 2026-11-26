@@ -11,14 +11,13 @@ import argparse
 import hashlib
 import json
 import math
-from pathlib import Path
 import subprocess
 import sys
-
-import numpy as np
-from PIL import Image, ImageDraw
+from pathlib import Path
 
 import grain_analysis as analysis
+import numpy as np
+from PIL import Image, ImageDraw
 
 
 def read_capture(path):

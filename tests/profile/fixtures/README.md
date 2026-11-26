@@ -1,7 +1,7 @@
 # Density and hash fixtures
 
 These are immutable product-contract fixtures for the safe core. Ordinary Cargo
-tests (also scheduled by `Rust.Core` in CTest) read these files and the shipped
+tests run through workspace nextest and read these files and the shipped
 profiles only. No private tooling, native probe, external checkout or reference
 environment is needed. Tests never regenerate the fixtures.
 

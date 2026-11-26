@@ -6,10 +6,9 @@ import faulthandler
 import hashlib
 import json
 import os
-from pathlib import Path
 import sys
 import unittest
-
+from pathlib import Path
 
 faulthandler.enable()
 
@@ -228,12 +227,6 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
         args = OPTIONS
         module_path = args.module.resolve()
         preload_paths = [path.resolve() for path in args.preload]
-        self.subtest_cases = (
-            "action:OfxActionLoad",
-            "action:OfxActionDescribe",
-            "descriptor",
-            "action:OfxActionUnload",
-        )
 
         host = Host(1, callback(pointer_type, [pointer_type, string_type, int_type], fetch))
         preload_mode = os.RTLD_NOW | os.RTLD_GLOBAL if os.name != "nt" else c.DEFAULT_MODE
@@ -315,8 +308,6 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
             )
         )
         print("OFX_HOST_COMPAT=PASS", flush=True)
-
-    test_plugin_actions_and_descriptor.required_subtests = True
 
 
 def main() -> int:

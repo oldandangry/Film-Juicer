@@ -21,7 +21,6 @@
 #include "grain_capture_reference.h"
 #include "Hash.h"
 #include "juicer_ofx_api.h"
-#include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/preparation_fixture.h"
 #include "../ffi/capture_identity.h"
@@ -136,9 +135,8 @@ namespace {
                 host.set_value(effect, stage + "Diffusion" + suffix, {value});
         }
     }
-    void grain_capture(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, std::ostream& output, std::vector<std::unique_ptr<JuicerTests::CaseEvent>>& events) {
+    void grain_capture(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, std::ostream& output, std::size_t& compared) {
         const auto ids = grain_capture_ids();
-        JuicerTests::Cohort rows("grain_capture", ids);
         const std::array<double, 3> preset_ev{-1.396, -1.20, -0.57};
         const std::array<double, 3> preset_chroma{0.0, 0.3, 0.5};
         const double threshold = static_cast<double>(0.999f);
@@ -152,7 +150,8 @@ namespace {
                 change(plugin, host, effect, "GrainPreset", kOfxChangeUserEdited);
                 for (int policy = 0; policy < 3; ++policy)
                     for (std::size_t sample = 0; sample < amounts.size(); ++sample) {
-                        events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_capture", ids.at(row++)));
+                        ++compared;
+                        ++row;
                         host.set_value(effect, "GrainActive", {int(policy != 0)});
                         host.set_value(effect, "GrainSublayersActive", {int(policy != 1)});
                         host.set_value(effect, "GrainAmplitude", {amounts[sample]});
@@ -206,9 +205,8 @@ namespace {
         }
         return ids;
     }
-    void grain_edit(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, std::ostream& output, std::vector<std::unique_ptr<JuicerTests::CaseEvent>>& events) {
+    void grain_edit(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, std::ostream& output, std::size_t& compared) {
         const auto ids = grain_edit_ids();
-        JuicerTests::Cohort rows("grain_edit", ids);
         std::size_t row = 0;
         for (int print : {0, 1}) {
             host.set_value(effect, "ScanRoute", {std::string(print ? "NegativePrintScan" : "NegativeDirectScan")});
@@ -231,13 +229,15 @@ namespace {
             };
             for (int choice : {-8, 0, 1, 2, 8}) {
                 {
-                    events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                    ++compared;
+                    ++row;
                     host.set_value(effect, "GrainPreset", {choice});
                     change(plugin, host, effect, "GrainPreset", kOfxChangeUserEdited);
                     record("preset-" + std::to_string(choice));
                 }
                 {
-                    events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                    ++compared;
+                    ++row;
                     change(plugin, host, effect, "GrainPreset", kOfxChangeTime);
                     change(plugin, host, effect, "GrainPreset", kOfxChangePluginEdited);
                     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -255,7 +255,8 @@ namespace {
                 }
             }
             {
-                events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                ++compared;
+                ++row;
                 host.set_value(effect, "GrainPreset", {1});
                 change(plugin, host, effect, "GrainPreset", kOfxChangeUserEdited);
                 host.set_value(effect, "GrainParticleScale", {0.5, 1.0, 1.5});
@@ -264,13 +265,15 @@ namespace {
                 record("master-ratios");
             }
             {
-                events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                ++compared;
+                ++row;
                 host.set_value(effect, "GrainParticleScale", {2.0, 3.0, 4.0});
                 change(plugin, host, effect, "GrainParticleScale", kOfxChangeUserEdited);
                 record("manual-custom");
             }
             {
-                events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                ++compared;
+                ++row;
                 host.set_value(effect, "GrainSharpness", {0.25});
                 change(plugin, host, effect, "GrainSharpness", kOfxChangeUserEdited);
                 host.set_value(effect, "GrainTexture", {0.75});
@@ -289,7 +292,8 @@ namespace {
                 record("linked-sharpness-texture");
             }
             {
-                events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                ++compared;
+                ++row;
                 change(plugin, host, effect, "GrainResetAdvanced", kOfxChangeUserEdited);
                 record("reset-advanced");
             }
@@ -297,7 +301,8 @@ namespace {
             // NativeParam::value_at uses the unkeyed 0 EV before its first key at t=10.
             host.set_value(effect, "Exposure", {0.0});
             for (double time : {2.0, 0.0, 2.0, 2.0}) {
-                events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", ids.at(row++)));
+                ++compared;
+                ++row;
                 change(plugin, host, effect, "GrainActive", kOfxChangeTime, time);
                 record(time == 0.0 ? "disabled-backward" : "disabled-repeat");
             }
@@ -424,16 +429,13 @@ namespace {
             change(plugin, host, effect, "Exposure", kOfxChangeTime);
         };
         {
-            JuicerTests::CaseEvent test("ofx.capture", "camera");
             set_double("CameraFilmFormatMm", 36.0);
             set_double("Exposure", std::numeric_limits<double>::infinity());
             capture();
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.camera_film_format_long_edge_mm == 36.0f && observed.view.captured.camera_exposure_compensation_ev == 0.0, "camera capture");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "profiles");
             host.set_value(effect, "FilmProfileKey", {std::string()});
             host.set_value(effect, "PrintProfileKey", {std::string()});
             for (int positive : {0, 1}) {
@@ -447,10 +449,8 @@ namespace {
                 }
             }
             host.set_value(effect, "FilmProfileKey", {std::string("kodak_portra_400")});
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "gamma");
             host.set_value(effect, "ScanRoute", {std::string("NegativeDirectScan")});
             set_double("FilmGammaFactor", 1.25);
             set_double("PrintGammaFactor", std::numeric_limits<double>::quiet_NaN());
@@ -467,10 +467,8 @@ namespace {
             }
             set_double("PrintGammaFactor", 1.0);
             capture();
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "optics");
             set_int("HalationActive", 0);
             set_double("HalationScatterAmount", std::numeric_limits<double>::quiet_NaN());
             host.clear_calls();
@@ -485,19 +483,15 @@ namespace {
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.scatter_halation.active, "halation capture");
             set_int("HalationActive", 0);
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "print");
             set_double("PrintExposure", std::numeric_limits<double>::quiet_NaN());
             set_double("EnlargerY", std::numeric_limits<double>::infinity());
             capture();
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.print_exposure == 1.0 && observed.view.captured.print_ui_ymc_cc[0] == 0.0, "print fallback");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "dir");
             set_int("CouplersActive", 0);
             set_double("CouplersAmount", std::numeric_limits<double>::quiet_NaN());
             host.clear_calls();
@@ -511,28 +505,22 @@ namespace {
             capture();
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.dir_couplers.amount == 0.0f, "zero DIR amount");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "scanner");
             set_double("ScannerBlackLevel", -1.0);
             set_double("ScannerWhiteLevel", std::numeric_limits<double>::quiet_NaN());
             capture();
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.scanner_black_level == 0.0 && observed.view.captured.scanner_white_level == 0.98, "scanner fallback");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "effects");
             set_double("FilmDustAmount", 20.0);
             set_double("GateWeaveAmount", -1.0);
             capture();
             Observation observed(effect);
             require(observed.view.pending_kind == 4 && observed.view.captured.film_dust_amount == 10.0f && observed.view.captured.gate_weave_amount == 0.0, "effects capture");
-            test.passed();
         }
         {
-            JuicerTests::CaseEvent test("ofx.capture", "identity");
             for (double exposure : {-0.0, 0.0, -1.25, 1.234567890123}) {
                 set_double("Exposure", exposure);
                 capture();
@@ -565,16 +553,9 @@ namespace {
                 const auto native = counter / frequency * 1000000000 + (counter % frequency) * 1000000000 / frequency;
                 require(fj_test_ofx_clock_conversion(counter, frequency) == static_cast<std::uint64_t>(native), "general clock conversion");
             }
-            test.passed();
         }
     }
 
-    template <typename F>
-    void row(const JuicerTests::Cohort& cohort, const char* id, F&& body) {
-        auto event = cohort.case_event(id);
-        body();
-        event.passed();
-    }
     void branch_matrix(OfxPlugin* plugin, ofx_test::InstanceHost& host, OfxImageEffectHandle effect, IdentityReference& reference) {
         const auto real = [&](const char* n, double v) {
             host.set_value(effect, n, {v});
@@ -605,36 +586,35 @@ namespace {
         const double nan = std::numeric_limits<double>::quiet_NaN();
         const double inf = std::numeric_limits<double>::infinity();
         {
-            JuicerTests::Cohort rows("capture.camera", {"format-min", "format-max", "format-nonfinite", "format-below", "format-above", "exposure-nonfinite"});
-            row(rows, "format-min", [&] {
+            ([&] {
                 real("CameraFilmFormatMm", 8);
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.camera_film_format_long_edge_mm == 8.0f, "format minimum");
-            });
-            row(rows, "format-max", [&] {
+            })();
+            ([&] {
                 real("CameraFilmFormatMm", 120);
                 capture();
                 require(status() == 4, "format maximum");
-            });
-            row(rows, "format-nonfinite", [&] {
+            })();
+            ([&] {
                 for (double v : {nan, inf, -inf}) {
                     real("CameraFilmFormatMm", v);
                     capture();
                     require(status() == 5, "nonfinite format");
                 }
-            });
-            row(rows, "format-below", [&] {
+            })();
+            ([&] {
                 real("CameraFilmFormatMm", std::nextafter(8.0, 0.0));
                 capture();
                 require(status() == 5, "format below");
-            });
-            row(rows, "format-above", [&] {
+            })();
+            ([&] {
                 real("CameraFilmFormatMm", std::nextafter(120.0, inf));
                 capture();
                 require(status() == 5, "format above");
-            });
-            row(rows, "exposure-nonfinite", [&] {
+            })();
+            ([&] {
                 real("CameraFilmFormatMm", 35);
                 for (double v : {nan, inf, -inf}) {
                     real("Exposure", v);
@@ -642,23 +622,21 @@ namespace {
                     Observation o(effect);
                     require(o.view.pending_kind == 4 && o.view.captured.camera_exposure_compensation_ev == 0.0, "exposure fallback");
                 }
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.profiles", {"negative-direct", "negative-print", "positive-direct", "positive-print", "empty", "unknown", "copied-string"});
             for (int positive : {0, 1})
                 for (int print : {0, 1}) {
-                    const char* id = positive ? (print ? "positive-print" : "positive-direct") : (print ? "negative-print" : "negative-direct");
-                    row(rows, id, [&] {
+                    ([&] {
                         text("FilmProfileKey", positive ? "fujifilm_provia_100f" : "kodak_portra_400");
                         text("ScanRoute", print ? "NegativePrintScan" : "NegativeDirectScan");
                         capture();
                         Observation o(effect);
                         require(o.view.pending_kind == 4 && o.view.captured.scan_route == unsigned(2 * positive + print), "route resolution");
                         identity_comparison(effect, reference, "profiles/route");
-                    });
+                    })();
                 }
-            row(rows, "empty", [&] {
+            ([&] {
                 text("FilmProfileKey", "");
                 text("PrintProfileKey", "");
                 text("ScanRoute", "");
@@ -666,15 +644,15 @@ namespace {
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.scan_route == 1, "empty profile defaults");
                 identity_comparison(effect, reference, "profiles/empty");
-            });
-            row(rows, "unknown", [&] {
+            })();
+            ([&] {
                 text("FilmProfileKey", "unknown");
                 text("ScanRoute", "unknown");
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.scan_route == 1, "unknown profile fallback");
-            });
-            row(rows, "copied-string", [&] {
+            })();
+            ([&] {
                 host.reuse_string_getter_storage(true);
                 text("FilmProfileKey", "fujifilm_provia_100f");
                 text("PrintProfileKey", "kodak_portra_endura");
@@ -690,35 +668,34 @@ namespace {
                 Admission admitted(effect);
                 require(admitted.view.route == 3, "copied profile keys reach preparation");
                 host.reuse_string_getter_storage(false);
-            });
+            })();
             text("FilmProfileKey", "kodak_portra_400");
             text("ScanRoute", "NegativePrintScan");
         }
         {
-            JuicerTests::Cohort rows("capture.gamma", {"film-bounds", "film-nonfinite", "print-direct-ignored", "print-route-invalid"});
-            row(rows, "film-bounds", [&] {
+            ([&] {
                 for (double v : {0.05, 4.0}) {
                     real("FilmGammaFactor", v);
                     capture();
                     require(status() == 4, "film gamma boundary");
                 }
-            });
-            row(rows, "film-nonfinite", [&] {
+            })();
+            ([&] {
                 for (double v : {nan, inf, -inf}) {
                     real("FilmGammaFactor", v);
                     capture();
                     require(status() == 5, "film gamma nonfinite");
                 }
                 real("FilmGammaFactor", 1);
-            });
-            row(rows, "print-direct-ignored", [&] {
+            })();
+            ([&] {
                 text("ScanRoute", "NegativeDirectScan");
                 real("PrintGammaFactor", nan);
                 capture();
                 require(status() == 4, "unused print gamma");
                 identity_comparison(effect, reference, "gamma/print-direct-ignored");
-            });
-            row(rows, "print-route-invalid", [&] {
+            })();
+            ([&] {
                 text("ScanRoute", "NegativePrintScan");
                 real("PrintGammaFactor", 1);
                 capture();
@@ -732,19 +709,18 @@ namespace {
                         "invalid current controls block old publication");
                 require(held.view.recipe_hash == held_hash, "already admitted publication stays alive");
                 real("PrintGammaFactor", 1);
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.optics", {"disabled-skips", "active-bounds", "profile-custom", "advanced-invalid", "highlight-boost", "diffusion-nan", "signed-zero"});
-            row(rows, "disabled-skips", [&] {
+            ([&] {
                 integer("HalationActive", 0);
                 host.clear_calls();
                 capture();
                 require(status() == 4 && !read("HalationScatterAmount") && !read("HalationReflectionSource") &&
                             !read("HalationScatterCoreSigmaUm") && !read("HalationBounceCount") && !read("HalationStrengthRgb"),
                         "disabled spatial getters");
-            });
-            row(rows, "active-bounds", [&] {
+            })();
+            ([&] {
                 integer("HalationActive", 1);
                 for (double v : {0.0, 2.0}) {
                     real("HalationScatterAmount", v);
@@ -755,8 +731,8 @@ namespace {
                 capture();
                 require(status() == 5, "scatter invalid");
                 integer("HalationActive", 0);
-            });
-            row(rows, "profile-custom", [&] {
+            })();
+            ([&] {
                 const auto enabled = [&](std::string_view name, bool value) {
                     const auto target = std::string(name) + ".presentation";
                     return std::any_of(host.calls().begin(), host.calls().end(), [&](const auto& call) {
@@ -847,8 +823,8 @@ namespace {
 
                 integer("HalationReflectionSource", 0);
                 integer("HalationActive", 0);
-            });
-            row(rows, "advanced-invalid", [&] {
+            })();
+            ([&] {
                 integer("HalationActive", 1);
                 integer("HalationReflectionSource", 2);
                 capture();
@@ -867,8 +843,8 @@ namespace {
                 require(status() == 5 && !read("HalationStrengthRgb"), "invalid active bounce count");
                 integer("HalationBounceCount", 3);
                 integer("HalationActive", 0);
-            });
-            row(rows, "highlight-boost", [&] {
+            })();
+            ([&] {
                 real("HalationHighlightProtectionEv", nan);
                 real("HalationHighlightBoostRange", inf);
                 real("HalationHighlightBoostEv", -0.0);
@@ -899,14 +875,14 @@ namespace {
                 real("HalationHighlightBoostEv", 0.0);
                 change(plugin, host, effect, "HalationHighlightBoostEv", kOfxChangeUserEdited);
                 require(status() == 4 && !read("HalationHighlightProtectionEv"), "zero boost restores getter isolation");
-            });
-            row(rows, "diffusion-nan", [&] {
+            })();
+            ([&] {
                 real("CameraDiffusionStrength", nan);
                 capture();
                 require(status() == 4, "authored diffusion retains nan");
                 identity_comparison(effect, reference, "optics/diffusion-nan");
-            });
-            row(rows, "signed-zero", [&] {
+            })();
+            ([&] {
                 real("CameraDiffusionStrength", -0.0);
                 capture();
                 Observation a(effect);
@@ -916,34 +892,33 @@ namespace {
                 Observation b(effect);
                 require(first == b.view.input_identity, "diffusion canonical zero");
                 identity_comparison(effect, reference, "optics/signed-zero");
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.print", {"finite", "nonfinite", "clamp", "glare-inactive"});
-            row(rows, "finite", [&] {
+            ([&] {
                 real("PrintExposure", 1.25);
                 real("EnlargerY", -0.0);
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.print_exposure == 1.25, "print finite");
                 identity_comparison(effect, reference, "print/finite");
-            });
-            row(rows, "nonfinite", [&] {
+            })();
+            ([&] {
                 real("PrintExposure", nan);
                 real("PrintPreflash", inf);
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.print_exposure == 1.0 && o.view.captured.print_preflash_exposure == 0.0, "print defaults");
-            });
-            row(rows, "clamp", [&] {
+            })();
+            ([&] {
                 real("PrintShadowCompensationFactor", 4);
                 real("PrintShadowCompensationDensity", -1);
                 real("PrintShadowCompensationTransition", 3);
                 capture();
                 Observation o(effect);
                 require(o.view.captured.print_shadow_compensation_factor == 1 && o.view.captured.print_shadow_compensation_density == 0 && o.view.captured.print_shadow_compensation_transition == 2, "print shadow clamp");
-            });
-            row(rows, "glare-inactive", [&] {
+            })();
+            ([&] {
                 integer("GlareActive", 0);
                 real("GlarePercent", 0.25);
                 capture();
@@ -954,40 +929,39 @@ namespace {
                 Observation b(effect);
                 require(first != b.view.input_identity, "inactive glare retained in identity");
                 identity_comparison(effect, reference, "print/glare-inactive");
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.dir", {"inactive", "zero", "custom-gamma", "negative-donor", "positive-receiver", "tail-skips", "range-failure"});
-            row(rows, "inactive", [&] {
+            ([&] {
                 integer("CouplersActive", 0);
                 host.clear_calls();
                 capture();
                 require(status() == 4 && !read("CouplersAmount"), "inactive DIR");
-            });
-            row(rows, "zero", [&] {
+            })();
+            ([&] {
                 integer("CouplersActive", 1);
                 real("CouplersAmount", 0);
                 host.clear_calls();
                 capture();
                 require(status() == 4 && !read("CouplersInhibitionSameLayer"), "zero DIR");
-            });
-            row(rows, "custom-gamma", [&] {
+            })();
+            ([&] {
                 real("CouplersAmount", 1);
                 integer("CouplersGammaUseStock", 0);
                 host.set_value(effect, "CouplersGammaSameLayerRgb", {0.5, 0.75, 1.0});
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.dir_couplers.gamma_same_layer_rgb[0] == 0.5f, "custom gamma");
-            });
-            row(rows, "negative-donor", [&] {
+            })();
+            ([&] {
                 text("FilmProfileKey", "kodak_portra_400");
                 host.set_value(effect, "CouplersLangmuirReceiverKRgb", {nan, nan, nan});
                 host.clear_calls();
                 capture();
                 require(status() == 4 && read("CouplersLangmuirDonorKRgb") && !read("CouplersLangmuirReceiverKRgb"), "negative donor");
                 host.set_value(effect, "CouplersLangmuirReceiverKRgb", {1.0, 1.0, 1.0});
-            });
-            row(rows, "positive-receiver", [&] {
+            })();
+            ([&] {
                 text("FilmProfileKey", "fujifilm_provia_100f");
                 host.set_value(effect, "CouplersLangmuirDonorKRgb", {nan, nan, nan});
                 host.clear_calls();
@@ -995,8 +969,8 @@ namespace {
                 require(status() == 4 && read("CouplersLangmuirReceiverKRgb") && !read("CouplersLangmuirDonorKRgb"), "positive receiver");
                 host.set_value(effect, "CouplersLangmuirDonorKRgb", {1.0, 1.0, 1.0});
                 text("FilmProfileKey", "kodak_portra_400");
-            });
-            row(rows, "tail-skips", [&] {
+            })();
+            ([&] {
                 real("CouplersDiffusionSizeUm", 0);
                 host.clear_calls();
                 capture();
@@ -1006,54 +980,52 @@ namespace {
                 host.clear_calls();
                 capture();
                 require(status() == 4 && read("CouplersDiffusionTailWeight") && !read("CouplersDiffusionTailUm"), "zero weight skips tail");
-            });
-            row(rows, "range-failure", [&] {
+            })();
+            ([&] {
                 real("CouplersAmount", 3);
                 capture();
                 require(status() == 5, "DIR amount rejection");
                 real("CouplersAmount", 0);
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.scanner", {"clamp", "nonfinite", "recovery"});
-            row(rows, "clamp", [&] {
+            ([&] {
                 real("ScannerBlackLevel", -1);
                 real("ScannerWhiteLevel", 2);
                 capture();
                 Observation o(effect);
                 require(o.view.captured.scanner_black_level == 0 && o.view.captured.scanner_white_level == 1, "scanner clamps");
-            });
-            row(rows, "nonfinite", [&] {
+            })();
+            ([&] {
                 real("ScannerBlackLevel", nan);
                 real("ScannerWhiteLevel", inf);
                 capture();
                 Observation o(effect);
                 require(o.view.captured.scanner_black_level == 0.01 && o.view.captured.scanner_white_level == 0.98, "scanner defaults");
-            });
-            row(rows, "recovery", [&] {
+            })();
+            ([&] {
                 real("ScannerBlackLevel", 0.25);
                 real("ScannerWhiteLevel", 0.75);
                 capture();
                 Observation o(effect);
                 require(o.view.pending_kind == 4 && o.view.captured.scanner_black_level == 0.25 && o.view.captured.scanner_white_level == 0.75, "scanner recovery");
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.effects", {"all-off", "clamp", "signed-zero", "weave-double"});
-            row(rows, "all-off", [&] {
+            ([&] {
                 for (const char* n : {"FilmDustAmount", "GateDustAmount", "FilmScratchAmount", "GateScratchAmount", "GateWeaveAmount"})
                     real(n, 0);
                 capture();
                 identity_comparison(effect, reference, "effects/all-off");
-            });
-            row(rows, "clamp", [&] {
+            })();
+            ([&] {
                 real("FilmDustAmount", 11);
                 real("GateScratchAmount", -1);
                 capture();
                 Observation o(effect);
                 require(o.view.captured.film_dust_amount == 10 && o.view.captured.gate_scratch_amount == 0, "effects clamps");
-            });
-            row(rows, "signed-zero", [&] {
+            })();
+            ([&] {
                 real("FilmDustAmount", -0.0);
                 capture();
                 Observation a(effect);
@@ -1062,8 +1034,8 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first == b.view.input_identity, "effects zero canonicalization");
-            });
-            row(rows, "weave-double", [&] {
+            })();
+            ([&] {
                 real("GateWeaveAmount", 0.5);
                 capture();
                 Observation a(effect);
@@ -1073,18 +1045,17 @@ namespace {
                 Observation b(effect);
                 require(first != b.view.input_identity, "weave exact double identity");
                 identity_comparison(effect, reference, "effects/weave-double");
-            });
+            })();
         }
         {
-            JuicerTests::Cohort rows("capture.identity", {"native-default", "print-only", "mode-0", "mode-1", "mode-2", "grain-inactive", "effects-off", "signed-zero", "changed-exposure"});
-            row(rows, "native-default", [&] {
+            ([&] {
                 auto* fresh = host.create_effect();
                 require(action(plugin, kOfxActionCreateInstance, fresh) == kOfxStatOK, "default instance create");
                 change(plugin, host, fresh, "Exposure", kOfxChangeTime);
                 identity_comparison(fresh, reference, "identity/native-default");
                 require(action(plugin, kOfxActionDestroyInstance, fresh) == kOfxStatOK, "default instance destroy");
-            });
-            row(rows, "print-only", [&] {
+            })();
+            ([&] {
                 text("ScanRoute", "NegativeDirectScan");
                 capture();
                 Observation a(effect);
@@ -1102,11 +1073,9 @@ namespace {
                 Observation print_default(effect);
                 require(print_identity != print_default.view.input_identity, "print key contributes on print route");
                 text("ScanRoute", "NegativeDirectScan");
-            });
+            })();
             for (int mode : {0, 1, 2}) {
-                const char* id = mode == 0 ? "mode-0" : mode == 1 ? "mode-1"
-                                                                  : "mode-2";
-                row(rows, id, [&] {
+                ([&] {
                     integer("SpectralUpsampling", mode);
                     integer("InputCompression", 0);
                     capture();
@@ -1125,9 +1094,9 @@ namespace {
                     Observation d(effect);
                     require((before_window != d.view.input_identity) == (mode == 0), "adaptation mode identity");
                     identity_comparison(effect, reference, "identity/mode");
-                });
+                })();
             }
-            row(rows, "grain-inactive", [&] {
+            ([&] {
                 integer("GrainActive", 0);
                 real("GrainAmplitude", -1);
                 capture();
@@ -1137,14 +1106,14 @@ namespace {
                 capture();
                 Observation b(effect);
                 require(first == b.view.input_identity, "inactive grain identity");
-            });
-            row(rows, "effects-off", [&] {
+            })();
+            ([&] {
                 for (const char* n : {"FilmDustAmount", "GateDustAmount", "FilmScratchAmount", "GateScratchAmount", "GateWeaveAmount"})
                     real(n, 0);
                 capture();
                 identity_comparison(effect, reference, "identity/effects-off");
-            });
-            row(rows, "signed-zero", [&] {
+            })();
+            ([&] {
                 real("Exposure", -0.0);
                 capture();
                 Observation a(effect);
@@ -1169,8 +1138,8 @@ namespace {
                         "negative zero grain primitive words");
                 identity_comparison(effect, reference, "identity/signed-zero");
                 integer("GrainActive", 0);
-            });
-            row(rows, "changed-exposure", [&] {
+            })();
+            ([&] {
                 real("Exposure", 0);
                 capture();
                 Observation a(effect);
@@ -1180,7 +1149,7 @@ namespace {
                 Observation b(effect);
                 require(first != b.view.input_identity, "exposure identity");
                 identity_comparison(effect, reference, "identity/changed-exposure");
-            });
+            })();
         }
     }
 
@@ -1199,11 +1168,10 @@ namespace {
         return result;
     }
     void identity_lifetime(OfxPlugin* plugin, ofx_test::InstanceHost& host) {
-        JuicerTests::Cohort rows("capture.identity.lifetime", {"fixed-seed", "two-owners", "callback-stability", "reload"});
-        row(rows, "fixed-seed", [&] {
+        ([&] {
             for (const auto& pair : std::array<std::array<std::uint64_t, 2>, 4>{{{0, 0}, {1, 2}, {0x0123456789abcdefULL, 0xfedcba9876543210ULL}, {~0ULL, 1}}})
                 require(fj_test_ofx_seed(pair[0], pair[1]) == native_seed(pair[0], pair[1]), "native fixed seed");
-        });
+        })();
         constexpr std::uint64_t clock_a = 0x0123456789abcdefULL;
         constexpr std::uint64_t clock_b = 0xfedcba9876543210ULL;
         auto* first = host.create_effect();
@@ -1214,22 +1182,22 @@ namespace {
         require(action(plugin, kOfxActionCreateInstance, second) == kOfxStatOK, "second identity owner create");
         const auto a = instance_identity(first);
         const auto b = instance_identity(second);
-        row(rows, "two-owners", [&] {
+        ([&] {
             require(a.address != 0 && b.address != 0 && a.address != b.address, "simultaneous owner addresses");
             require(a.seed == native_seed(clock_a, a.address) && a.token == a.seed, "first owner identity");
             require(b.seed == native_seed(clock_b, b.address) && b.token == b.seed, "second owner identity");
-        });
-        row(rows, "callback-stability", [&] {
+        })();
+        ([&] {
             change(plugin, host, first, "Exposure", kOfxChangeTime);
             change(plugin, host, second, "Exposure", kOfxChangeTime);
             const auto after_a = instance_identity(first);
             const auto after_b = instance_identity(second);
             require(after_a.seed == a.seed && after_a.token == a.token && after_a.address == a.address, "first identity stable");
             require(after_b.seed == b.seed && after_b.token == b.token && after_b.address == b.address, "second identity stable");
-        });
+        })();
         require(action(plugin, kOfxActionDestroyInstance, first) == kOfxStatOK, "first identity owner destroy");
         require(action(plugin, kOfxActionDestroyInstance, second) == kOfxStatOK, "second identity owner destroy");
-        row(rows, "reload", [&] {
+        ([&] {
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "identity unload");
             require(action(plugin, kOfxActionLoad) == kOfxStatOK, "identity reload");
             auto* fresh = host.create_effect();
@@ -1239,21 +1207,14 @@ namespace {
             const auto identity = instance_identity(fresh);
             require(identity.address != 0 && identity.seed == native_seed(reload_clock, identity.address) && identity.token == identity.seed, "reload owner identity");
             require(action(plugin, kOfxActionDestroyInstance, fresh) == kOfxStatOK, "reload owner destroy");
-        });
+        })();
     }
 
 } // namespace
 
 int main(int argc, char** argv) try {
-    constexpr std::array cases{"camera", "profiles", "gamma", "optics", "print", "grain_capture", "grain_edit", "dir", "scanner", "effects", "identity"};
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const char* name : cases)
-            JuicerTests::list_case("ofx.capture", name);
-        return 0;
-    }
     require(argc == 5 && std::string_view(argv[3]) == "--identity-reference", "usage: capture_test <grain manifest> <preset> --identity-reference path");
     IdentityReference reference(argv[2], argv[4]);
-    JuicerTests::CaseLog log;
     ofx_test::InstanceHost host;
     auto* plugin = OfxGetPlugin(0);
     require(plugin != nullptr, "candidate plugin");
@@ -1264,11 +1225,10 @@ int main(int argc, char** argv) try {
     auto* effect = host.create_effect();
     require(action(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "create instance");
     {
-        JuicerTests::Cohort rows("capture.initial", {"uninitialized"});
-        row(rows, "uninitialized", [&] {
+        ([&] {
             Observation initial(effect);
             require(initial.view.pending_kind == 0, "create leaves pending controls uninitialized");
-        });
+        })();
     }
     ordinary_cases(plugin, host, effect, reference);
     branch_matrix(plugin, host, effect, reference);
@@ -1277,23 +1237,15 @@ int main(int argc, char** argv) try {
     require(action(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "create grain instance");
     grain_fixture_inputs(host, effect);
     std::ostringstream grain_words;
-    std::vector<std::unique_ptr<JuicerTests::CaseEvent>> events;
-    events.reserve(234);
-    JuicerTests::CaseEvent capture_case("ofx.capture", "grain_capture");
-    grain_capture(plugin, host, effect, grain_words, events);
-    JuicerTests::CaseEvent edit_case("ofx.capture", "grain_edit");
-    grain_edit(plugin, host, effect, grain_words, events);
-    require(events.size() == 234, "grain row membership");
+    std::size_t compared = 0;
+    grain_capture(plugin, host, effect, grain_words, compared);
+    grain_edit(plugin, host, effect, grain_words, compared);
+    require(compared == 234, "grain row membership");
     compare_grain_fixture(argv[1], argv[2], grain_words.str());
-    for (auto& event : events)
-        event->passed();
-    capture_case.passed();
-    edit_case.passed();
     require(action(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "destroy grain instance");
     identity_lifetime(plugin, host);
     require(action(plugin, kOfxActionUnload) == kOfxStatOK, "plugin unload");
     reference.finish();
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "capture fixture: %s\n", error.what());

@@ -12,14 +12,11 @@
 #include "host_reference.h"
 
 #include "juicer_ofx_api.h"
-#include "../ffi/case_results.h"
 
 namespace {
     using ofx_test::InstanceCall;
     using ofx_test::InstanceHost;
     using ofx_test::InstanceValue;
-    constexpr std::string_view kCaller = "ofx.render";
-    constexpr std::array kCases{"non_cuda", "images", "formats", "time"};
     constexpr auto kFallbackFilm = "kodak_portra_400";
     constexpr auto kFallbackPrint = "kodak_portra_endura";
     struct Result {
@@ -259,7 +256,6 @@ namespace {
             ids.push_back("film_status/status_" + std::to_string(status));
             ids.push_back("print_status/status_" + std::to_string(status));
         }
-        const JuicerTests::Cohort rows("ofx.render.non_cuda", ids);
         struct Case {
             std::string id;
             std::string film;
@@ -286,7 +282,6 @@ namespace {
             all_cases.push_back({"print_status/status_" + std::to_string(status), "film-key", "print-key", "param_get/PrintProfileKey", status, expected_status(status), 2});
         }
         for (const auto& test : all_cases) {
-            auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
             const auto expected = run(reference_plugin, reference_host, RenderInput{.film = test.film, .print = test.print, .time = 2.25, .fault = {.operation = test.fault, .status = test.injected}}, test.id);
             const auto actual = run(candidate_plugin, candidate_host, RenderInput{.film = test.film, .print = test.print, .time = 2.25, .fault = {.operation = test.fault, .status = test.injected}});
@@ -298,10 +293,8 @@ namespace {
             require(reads == static_cast<std::ptrdiff_t>(test.expected_reads), test.id + ": first-failure getter prefix");
             for (const auto& call : actual.calls)
                 require(call.operation != "clip_get_image" && call.operation != "clip_release_image", std::string(test.id) + ": cutoff preceded image I/O");
-            row.passed();
         }
         for (const auto& test : arg_cases) {
-            auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
             const auto expected = run(reference_plugin, reference_host, RenderInput{.film = "film-key", .print = "print-key", .time = 2.25, .missing_action_property = test.missing, .fault = {.operation = test.fault, .status = test.status}}, test.id);
             const auto actual = run(candidate_plugin, candidate_host, RenderInput{.film = "film-key", .print = "print-key", .time = 2.25, .missing_action_property = test.missing, .fault = {.operation = test.fault, .status = test.status}});
@@ -326,7 +319,6 @@ namespace {
                             return call.operation == "param_get";
                         }),
                         std::string(test.id) + ": required argument failure precedes profile getters");
-            row.passed();
         }
     }
     void images(OfxPlugin* reference_plugin, OfxPlugin* candidate_plugin) {
@@ -353,7 +345,6 @@ namespace {
             (void)fault;
             ids.push_back(std::string("metadata/") + id);
         }
-        const JuicerTests::Cohort rows("ofx.render.images", ids);
         struct Case {
             std::string id;
             bool source;
@@ -390,7 +381,6 @@ namespace {
             cases.push_back({std::string("null/output_") + id, true, true, empty_output ? OfxRectI{0, 0, 0, 3} : OfxRectI{0, 0, 4, 3}, "", kOfxStatOK, kOfxStatOK, kOfxStatOK, property, 2});
         }
         for (const auto& test : cases) {
-            auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
             const auto source_bounds = std::string_view(test.id) == "remaining_empty" || test.release_status != kOfxStatOK
                                            ? OfxRectI{0, 0, 0, 0}
@@ -467,11 +457,9 @@ namespace {
                 require(actual.status == kOfxStatErrUnsupported && actual.source_releases == 1, "Output acquisition error releases acquired Source");
             if (std::string_view(test.id) == "release_status")
                 require(actual.status == kOfxStatOK && actual.source_releases == 1 && actual.output_releases == 1, "release status does not replace empty-render success");
-            row.passed();
         }
     }
     void formats(OfxPlugin* reference_plugin, OfxPlugin* candidate_plugin) {
-        const JuicerTests::Cohort rows("ofx.render.formats", {"unknown_components", "unknown_depth"});
         const struct Case {
             const char* id;
             const char* components;
@@ -480,7 +468,6 @@ namespace {
             {"unknown_components", "OfxImageComponentUnsupported", kOfxBitDepthFloat},
             {"unknown_depth", kOfxImageComponentRGBA, "OfxBitDepthUnsupported"}};
         for (const auto& test : cases) {
-            auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
             const RenderInput input{
                 .film = "film-key",
@@ -493,11 +480,9 @@ namespace {
             const auto actual = run(candidate_plugin, candidate_host, input);
             same(expected, actual, test.id);
             require(actual.source_releases == 1 && actual.output_releases == 1, std::string(test.id) + ": rejected image formats released both leases");
-            row.passed();
         }
     }
     void time(OfxPlugin* reference_plugin, OfxPlugin* candidate_plugin) {
-        const JuicerTests::Cohort rows("ofx.render.time", {"non_cuda", "missing_source", "missing_output", "empty_window", "source_format", "capture_failure", "frame_rate_failure", "lower_outside", "upper_boundary", "upper_outside", "finite_max", "finite_min"});
         const double lower_outside = std::bit_cast<double>(UINT64_C(0xc3e0000000000001));
         const double upper_boundary = std::bit_cast<double>(UINT64_C(0x43e0000000000000));
         const double upper_outside = std::bit_cast<double>(UINT64_C(0x43e0000000000001));
@@ -521,7 +506,6 @@ namespace {
             {.id = "finite_max", .safe_reference = false, .input = {.film = kFallbackFilm, .print = kFallbackPrint, .time = finite_max, .cuda = true}},
             {.id = "finite_min", .safe_reference = false, .input = {.film = kFallbackFilm, .print = kFallbackPrint, .time = finite_min, .cuda = true}}};
         for (const auto& test : cases) {
-            auto row = rows.case_event(test.id);
             InstanceHost candidate_host;
             if (test.safe_reference) {
                 InstanceHost reference_host;
@@ -544,19 +528,12 @@ namespace {
                         }),
                         std::string(test.id) + ": time guard follows effect frame-rate read");
             }
-            row.passed();
         }
     }
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
-        return 0;
-    }
     require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: render fixture --reference file");
-    JuicerTests::CaseLog log;
     auto* candidate_plugin = OfxGetPlugin(0);
     OfxPlugin* reference_plugin = nullptr;
     require(candidate_plugin && candidate_plugin->pluginIdentifier &&
@@ -585,31 +562,22 @@ int main(int argc, char** argv) try {
     }
     expect_film_grain_capture();
     {
-        JuicerTests::CaseEvent event(kCaller, "non_cuda");
         reference_group = "non_cuda";
         non_cuda(reference_plugin, candidate_plugin);
-        event.passed();
     }
     {
-        JuicerTests::CaseEvent event(kCaller, "images");
         reference_group = "images";
         images(reference_plugin, candidate_plugin);
-        event.passed();
     }
     {
-        JuicerTests::CaseEvent event(kCaller, "formats");
         reference_group = "formats";
         formats(reference_plugin, candidate_plugin);
-        event.passed();
     }
     {
-        JuicerTests::CaseEvent event(kCaller, "time");
         reference_group = "time";
         time(reference_plugin, candidate_plugin);
-        event.passed();
     }
     require(reference_rows.size() == 85 && reference_cursor == reference_rows.size(), "render reference complete consumption");
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "render fixture: %s\n", error.what());

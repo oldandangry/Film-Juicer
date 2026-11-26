@@ -1,7 +1,6 @@
 #include "../route/route_fixture.h"
 #include "integration_test.h"
 
-#include "../ffi/case_results.h"
 #include "../ffi/prepared_product_fixture.h"
 
 #include <algorithm>
@@ -18,6 +17,7 @@
 #include <iomanip>
 #include <limits>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -964,12 +964,7 @@ namespace {
             ids.push_back(std::to_string(extent[0]) + "x" +
                           std::to_string(extent[1]));
         }
-        constexpr std::string_view caller = "scatter_halation.carrier_strides";
-        JuicerTests::Cohort rows(std::string(caller), ids);
         for (const auto extent : extents) {
-            const std::string caseId = std::to_string(extent[0]) + "x" +
-                                       std::to_string(extent[1]);
-            JuicerTests::CaseEvent event(caller, caseId);
             const std::string name = "operator/carrier-stride/" +
                                      std::to_string(extent[0]) + "x" + std::to_string(extent[1]);
             try {
@@ -1000,10 +995,8 @@ namespace {
                     }
                 }
                 results.record(name, passed, "bit-exact compact/padded carrier; padding intact; zero channel isolated");
-                event.complete(passed);
             } catch (const std::exception& error) {
                 results.record(name, false, error.what());
-                event.complete(false);
             }
         }
     }
@@ -1023,66 +1016,49 @@ namespace {
                     ScatterHalationGaussianKind::YvvReplicate,
             "pixel_size_um=1 green_core_um=2 retained_scale=nextafter(1.5,0)/1.5");
 
-        const auto& nativeRows = manifest.at("nativeDoubleAcquisitionRows");
-        std::vector<std::string> nativeIds;
-        nativeIds.reserve(nativeRows.size());
-        for (const auto& row : nativeRows)
-            nativeIds.push_back(row.at("id").get<std::string>());
-        constexpr std::string_view nativeCaller =
-            "scatter_halation.native_double_acquisition";
-        JuicerTests::Cohort nativeCohort(std::string(nativeCaller), nativeIds);
+        const auto& nativeRows = manifest.at("nativeDoubleAcquisitionRows").get_ref<const nlohmann::json::array_t&>();
+        std::set<std::string_view> narrowingRemaining{
+            "native-double-narrows-onto-dispatch-seam",
+            "native-double-below-seam-narrows-below",
+        };
         bool nativePassed = true;
         std::ostringstream nativeDetail;
         for (const auto& row : nativeRows) {
-            const std::string id = row.at("id").get<std::string>();
-            JuicerTests::CaseEvent event(nativeCaller, id);
+            const auto& identifier = row.at("id").get_ref<const std::string&>();
+            if (!narrowingRemaining.contains(identifier))
+                throw std::runtime_error("unexpected or duplicate Double narrowing fixture: " + identifier);
             const std::string rawText = row.at("rawDoubleHex").get<std::string>();
             char* end = nullptr;
             const double raw = std::strtod(rawText.c_str(), &end);
             const float retained = static_cast<float>(raw);
-            nativePassed = nativePassed && end && *end == '\0' &&
-                           std::bit_cast<std::uint32_t>(retained) ==
-                               parse_bits(row.at("retainedFloat32Bits"));
+            const bool retainedMatches = end && *end == '\0' &&
+                                         std::bit_cast<std::uint32_t>(retained) ==
+                                             parse_bits(row.at("retainedFloat32Bits"));
             const auto descriptor = build_descriptor({raw, 1.0f});
-            const bool onto =
-                row.at("id").get<std::string>().find("onto") != std::string::npos;
-            nativePassed = nativePassed &&
-                           descriptor.channels[1].core.kind ==
-                               (onto ? ScatterHalationGaussianKind::YvvReplicate
-                                     : ScatterHalationGaussianKind::FirReflect);
-            nativeDetail << row.at("id").get<std::string>() << '='
-                         << row.at("retainedFloat32Bits").get<std::string>() << ' ';
-            event.complete(end && *end == '\0' &&
-                           std::bit_cast<std::uint32_t>(retained) ==
-                               parse_bits(row.at("retainedFloat32Bits")) &&
-                           descriptor.channels[1].core.kind ==
-                               (onto ? ScatterHalationGaussianKind::YvvReplicate
-                                     : ScatterHalationGaussianKind::FirReflect));
+            const bool onto = identifier == "native-double-narrows-onto-dispatch-seam";
+            const bool dispatchMatches = descriptor.channels[1].core.kind ==
+                                         (onto ? ScatterHalationGaussianKind::YvvReplicate
+                                               : ScatterHalationGaussianKind::FirReflect);
+            nativePassed = nativePassed && retainedMatches && dispatchMatches;
+            nativeDetail << identifier << '=' << row.at("retainedFloat32Bits").get<std::string>() << ' ';
+            narrowingRemaining.erase(identifier);
         }
+        if (!narrowingRemaining.empty())
+            throw std::runtime_error("missing Double narrowing fixture comparisons");
         results.record(
             "reference/descriptor/native-double-one-time-narrowing",
             nativePassed,
             nativeDetail.str());
 
         constexpr std::array<int, 3> longEdgeRows{1920, 3840, 7680};
-        std::vector<std::string> formatIds;
-        formatIds.reserve(longEdgeRows.size());
-        for (int longEdgePixels : longEdgeRows)
-            formatIds.push_back(std::to_string(longEdgePixels));
-        constexpr std::string_view formatCaller =
-            "scatter_halation.pixel_format_descriptor";
-        JuicerTests::Cohort formatCohort(std::string(formatCaller), formatIds);
         bool formatRowsPassed = true;
         std::ostringstream formatDetail;
         for (int longEdgePixels : longEdgeRows) {
-            const std::string id = std::to_string(longEdgePixels);
-            JuicerTests::CaseEvent event(formatCaller, id);
             const float pixelSize =
                 static_cast<float>(35000.0 / static_cast<double>(longEdgePixels));
             const auto descriptor = build_descriptor({1.0, pixelSize});
             formatRowsPassed = formatRowsPassed && descriptor.recipeHash != 0;
             formatDetail << longEdgePixels << ':' << pixelSize << ' ';
-            event.complete(descriptor.recipeHash != 0);
         }
         results.record(
             "reference/descriptor/35mm-pixel-size-rows",
@@ -1108,10 +1084,6 @@ namespace {
 
 namespace ScatterHalationValidation {
     void run_scanner_post_effect_cuda_rows(Results& results) {
-        if (results.expect(
-                "scatter_halation.scanner_post_named_operations",
-                {"scanner-post/half-sample-reflect-border"}))
-            return;
         constexpr int kWidth = 5;
         constexpr int kHeight = 4;
         constexpr int kRadius = 2;
@@ -1215,17 +1187,6 @@ namespace ScatterHalationValidation {
     void run_focused_cuda_reference_rows(
         const Arguments& arguments,
         Results& results) {
-        if (results.expect(
-                "scatter_halation.reference_named_operations",
-                {"reference/fixture/provenance-and-container",
-                 "reference/descriptor/green-core-dispatch-seam",
-                 "reference/descriptor/native-double-one-time-narrowing",
-                 "reference/descriptor/35mm-pixel-size-rows",
-                 "reference/descriptor/min-positive-pixel-finite-schedule",
-                 "reference/fixture/exactly-one-descriptor-input",
-                 "reference/comparison/non-finite-rejected",
-                 "reference/launcher/mechanical-binding-rejected"}))
-            return;
         try {
             const std::filesystem::path manifestPath =
                 arguments.fixtureRoot / "manifest.json";
@@ -1249,68 +1210,56 @@ namespace ScatterHalationValidation {
                     manifest.at("binary").at("sha256").get<std::string>()) {
                 throw std::runtime_error("fixture binary checksum mismatch");
             }
-            std::vector<std::string> operatorIds;
-            std::vector<std::string> downstreamIds;
-            std::vector<std::string> descriptorIds;
-            operatorIds.reserve(manifest.at("rows").size());
-            downstreamIds.reserve(manifest.at("rows").size());
-            descriptorIds.reserve(manifest.at("rows").size());
-            bool hasBackReflectionOnly = false;
-            for (const auto& fixture : manifest.at("rows")) {
-                const std::string identifier = fixture.at("id").get<std::string>();
-                operatorIds.push_back("operator/" + identifier);
-                if (fixture.contains("downstreamExpected"))
-                    downstreamIds.push_back("downstream/" + identifier);
-                if (fixture.contains("descriptorInput"))
-                    descriptorIds.push_back("descriptor-input/" + identifier);
-                hasBackReflectionOnly = hasBackReflectionOnly ||
-                                        identifier == "back_reflection_only";
-            }
-            constexpr std::string_view operatorCaller =
-                "scatter_halation.reference_operator";
-            constexpr std::string_view downstreamCaller =
-                "scatter_halation.reference_downstream";
-            constexpr std::string_view descriptorCaller =
-                "scatter_halation.reference_descriptor_input";
-            JuicerTests::Cohort operatorCohort(
-                std::string(operatorCaller), operatorIds);
-            std::optional<JuicerTests::Cohort> downstreamCohort;
-            std::optional<JuicerTests::Cohort> descriptorCohort;
-            if (!downstreamIds.empty())
-                downstreamCohort.emplace(std::string(downstreamCaller), downstreamIds);
-            if (!descriptorIds.empty())
-                descriptorCohort.emplace(std::string(descriptorCaller), descriptorIds);
-            std::optional<JuicerTests::Cohort> scheduleCohort;
-            if (hasBackReflectionOnly)
-                scheduleCohort.emplace(
-                    "scatter_halation.reference_launch_schedule",
-                    std::vector<std::string>{"back-reflection-only"});
+            const auto& fixtures = manifest.at("rows").get_ref<const nlohmann::json::array_t&>();
             results.record(
                 "reference/fixture/provenance-and-container",
                 true,
                 "commit=" + std::string(kReferenceCommit) +
-                    " rows=" + std::to_string(manifest.at("rows").size()) +
-                    " sha256=" +
-                    manifest.at("binary").at("sha256").get<std::string>());
+                    " rows=" + std::to_string(fixtures.size()) +
+                    " sha256=" + manifest.at("binary").at("sha256").get<std::string>());
 
             run_reference_descriptor_rows(manifest, results);
             run_carrier_stride_rows(results);
 
-            std::size_t descriptorInputCount = 0;
-            for (const auto& fixture : manifest.at("rows")) {
-                const std::string identifier = fixture.at("id").get<std::string>();
-                JuicerTests::CaseEvent operatorEvent(
-                    operatorCaller, "operator/" + identifier);
-                std::optional<JuicerTests::CaseEvent> downstreamEvent;
-                std::optional<JuicerTests::CaseEvent> descriptorEvent;
-                if (fixture.contains("downstreamExpected")) {
-                    downstreamEvent.emplace(
-                        downstreamCaller, "downstream/" + identifier);
-                }
-                if (fixture.contains("descriptorInput")) {
-                    descriptorEvent.emplace(
-                        descriptorCaller, "descriptor-input/" + identifier);
-                }
+            std::set<std::string_view> operatorRemaining{
+                "fir_center_impulse",
+                "fir_corner_tiny",
+                "fir_constant",
+                "yvv_asymmetric_ramp",
+                "dispatch_below_three",
+                "dispatch_exact_three",
+                "back_reflection_only",
+                "back_reflection_identity_bounces_tiny",
+                "combined_still_strong_1920",
+                "combined_still_no_3840",
+                "combined_cine_weak_7680_hdr",
+                "combined_zero_channel",
+                "extrapolative_amounts_downstream",
+                "maximum_scatter_amount_downstream",
+                "maximum_scatter_scale_downstream",
+                "maximum_halation_amount_downstream",
+                "maximum_halation_scale_downstream",
+            };
+            std::set<std::string_view> downstreamRemaining{
+                "extrapolative_amounts_downstream",
+                "maximum_scatter_amount_downstream",
+                "maximum_scatter_scale_downstream",
+                "maximum_halation_amount_downstream",
+                "maximum_halation_scale_downstream",
+            };
+            constexpr std::string_view descriptorInputId = "combined_still_strong_1920";
+            bool descriptorInputCompared = false;
+            bool backReflectionCompared = false;
+            for (const auto& fixture : fixtures) {
+                const auto& identifier = fixture.at("id").get_ref<const std::string&>();
+                if (!operatorRemaining.contains(identifier))
+                    throw std::runtime_error("unexpected or duplicate operator fixture: " + identifier);
+                const bool downstream = fixture.contains("downstreamExpected");
+                const bool descriptorInput = fixture.contains("descriptorInput");
+                if (downstream != downstreamRemaining.contains(identifier))
+                    throw std::runtime_error("wrong downstream fixture membership: " + identifier);
+                if (descriptorInput != (identifier == descriptorInputId))
+                    throw std::runtime_error("wrong descriptor-input fixture membership: " + identifier);
                 try {
                     const ResolvedRow row = resolve_row(fixture.at("recipeInput"));
                     const SemanticPlanes<float> source = read_planes<float>(
@@ -1325,7 +1274,6 @@ namespace ScatterHalationValidation {
                         "<f8",
                         row.width,
                         row.height);
-                    const bool downstream = fixture.contains("downstreamExpected");
                     const CandidateOutput candidate =
                         run_candidate(row, source, downstream);
                     std::string detail;
@@ -1335,12 +1283,9 @@ namespace ScatterHalationValidation {
                         "reference/operator/" + identifier,
                         operatorPassed,
                         fixture.at("category").get<std::string>() + " " + detail);
-                    operatorEvent.complete(operatorPassed);
+                    operatorRemaining.erase(identifier);
 
                     if (identifier == "back_reflection_only") {
-                        JuicerTests::CaseEvent scheduleEvent(
-                            "scatter_halation.reference_launch_schedule",
-                            "back-reflection-only");
                         bool schedulePassed = row.descriptor.scatterAmount == 0.0f;
                         for (const auto& channel : row.descriptor.channels) {
                             schedulePassed = schedulePassed &&
@@ -1352,7 +1297,7 @@ namespace ScatterHalationValidation {
                             "scatter-clear=0 tail=0 core=0 scatter-finalize=0 "
                             "bounce=three-independent-per-active-channel "
                             "back-reflection-finalize=one-per-active-channel");
-                        scheduleEvent.complete(schedulePassed);
+                        backReflectionCompared = true;
                     }
 
                     if (downstream) {
@@ -1376,11 +1321,10 @@ namespace ScatterHalationValidation {
                             "reference/downstream/" + identifier,
                             downstreamPassed,
                             downstreamDetail);
-                        downstreamEvent->complete(downstreamPassed);
+                        downstreamRemaining.erase(identifier);
                     }
 
-                    if (fixture.contains("descriptorInput")) {
-                        ++descriptorInputCount;
+                    if (descriptorInput) {
                         const auto& input = fixture.at("descriptorInput");
                         const ResolvedRow identity = resolve_row(input);
                         const std::uint64_t expectedHash =
@@ -1406,7 +1350,7 @@ namespace ScatterHalationValidation {
                             "reference/descriptor-input/" + identifier,
                             identityPassed,
                             identityDetail.str());
-                        descriptorEvent->complete(identityPassed);
+                        descriptorInputCompared = true;
                     }
                 } catch (const std::exception& error) {
                     results.record(
@@ -1416,9 +1360,15 @@ namespace ScatterHalationValidation {
                 }
             }
             results.record(
-                "reference/fixture/exactly-one-descriptor-input",
-                descriptorInputCount == 1,
-                "count=" + std::to_string(descriptorInputCount));
+                "reference/fixture/operator-completion",
+                operatorRemaining.empty(),
+                "missing comparisons=" + std::to_string(operatorRemaining.size()));
+            results.record(
+                "reference/fixture/downstream-completion",
+                downstreamRemaining.empty(),
+                "missing comparisons=" + std::to_string(downstreamRemaining.size()));
+            results.record("reference/fixture/descriptor-input-completion", descriptorInputCompared, std::string(descriptorInputId));
+            results.record("reference/fixture/back-reflection-schedule-completion", backReflectionCompared, "back_reflection_only");
 
             std::vector<float> nonfiniteActual{std::numeric_limits<float>::quiet_NaN()};
             std::vector<double> finiteExpected{0.0};
@@ -1446,118 +1396,6 @@ namespace ScatterHalationValidation {
                 "closed result attributes only the binding observation boundary");
         } catch (const std::exception& error) {
             results.record("reference/fixture/fatal", false, error.what());
-        }
-    }
-} // namespace ScatterHalationValidation
-
-namespace ScatterHalationValidation {
-    void list_case_memberships(
-        const Arguments& arguments,
-        std::string_view group) {
-        const auto list_ids = [](std::string_view caller,
-                                 const std::vector<std::string>& ids) {
-            for (const auto& id : ids)
-                JuicerTests::list_case(caller, id);
-        };
-        if (group == "host-contracts") {
-            constexpr std::array<std::string_view, 6> recipeIds{
-                "recipe/still-strong", "recipe/still-weak", "recipe/still-no", "recipe/cine-strong", "recipe/cine-weak", "recipe/cine-no"};
-            for (const auto id : recipeIds)
-                JuicerTests::list_case("scatter_halation.recipe_mappings", id);
-            constexpr std::array<std::string_view, 6> profileRows{
-                "profile/still-strong", "profile/still-weak", "profile/still-no", "profile/cine-strong", "profile/cine-weak", "profile/cine-no"};
-            for (const auto id : profileRows)
-                JuicerTests::list_case("scatter_halation.profile_mappings", id);
-            constexpr std::array<std::string_view, 5> coefficientRows{
-                "profile/zero-sigma-completed", "profile/negative-sigma-completed", "profile/unrepresentable-center-completed", "profile/unrepresentable-amplitude-computed-failure", "profile/unrepresentable-sigma-completed"};
-            for (const auto id : coefficientRows)
-                JuicerTests::list_case("scatter_halation.profile_coefficients", id);
-            return;
-        }
-        if (group == "focused-cuda-reference") {
-            Results listing(true);
-            run_focused_cuda_reference_rows(arguments, listing);
-            const nlohmann::json manifest = read_manifest(
-                arguments.fixtureRoot / "manifest.json");
-            std::vector<std::string> operatorIds;
-            std::vector<std::string> downstreamIds;
-            std::vector<std::string> descriptorIds;
-            operatorIds.reserve(manifest.at("rows").size());
-            downstreamIds.reserve(manifest.at("rows").size());
-            descriptorIds.reserve(manifest.at("rows").size());
-            bool hasBackReflectionOnly = false;
-            for (const auto& fixture : manifest.at("rows")) {
-                const std::string identifier = fixture.at("id").get<std::string>();
-                operatorIds.push_back("operator/" + identifier);
-                if (fixture.contains("downstreamExpected"))
-                    downstreamIds.push_back("downstream/" + identifier);
-                if (fixture.contains("descriptorInput"))
-                    descriptorIds.push_back("descriptor-input/" + identifier);
-                hasBackReflectionOnly = hasBackReflectionOnly ||
-                                        identifier == "back_reflection_only";
-            }
-            list_ids("scatter_halation.reference_operator", operatorIds);
-            list_ids("scatter_halation.reference_downstream", downstreamIds);
-            list_ids("scatter_halation.reference_descriptor_input", descriptorIds);
-            const auto parity = advanced_manifest(arguments);
-            list_ids("scatter_halation.advanced_operator", parity_ids(parity, true));
-            list_ids("scatter_halation.highlight_boost_operator", parity_ids(parity, false));
-            if (hasBackReflectionOnly) {
-                JuicerTests::list_case(
-                    "scatter_halation.reference_launch_schedule",
-                    "back-reflection-only");
-            }
-            const auto& nativeRows = manifest.at("nativeDoubleAcquisitionRows");
-            for (const auto& row : nativeRows)
-                JuicerTests::list_case(
-                    "scatter_halation.native_double_acquisition",
-                    row.at("id").get<std::string>());
-            constexpr std::array<std::string_view, 14> carrierExtents{
-                "1x33", "33x1", "19x7", "19x8", "19x9", "19x15", "19x16", "19x17", "31x31", "32x32", "33x33", "63x65", "65x63", "129x67"};
-            for (const auto id : carrierExtents)
-                JuicerTests::list_case("scatter_halation.carrier_strides", id);
-            constexpr std::array<std::string_view, 3> formatRows{
-                "1920", "3840", "7680"};
-            for (const auto id : formatRows)
-                JuicerTests::list_case(
-                    "scatter_halation.pixel_format_descriptor", id);
-            return;
-        }
-        if (group == "route-boundaries") {
-            Results listing(true);
-            run_scanner_post_effect_cuda_rows(listing);
-            for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
-                const auto route = static_cast<Spektrafilm::ScanRoute>(index);
-                JuicerTests::list_case(
-                    "scatter_halation.route_boundaries",
-                    Spektrafilm::scan_route_key(route));
-            }
-            return;
-        }
-        if (group == "zero-work") {
-            constexpr std::array<std::string_view, 2> variants{
-                "active-dir", "all-other-work-off"};
-            constexpr std::array routes{
-                Spektrafilm::ScanRoute::NegativeDirectScan,
-                Spektrafilm::ScanRoute::NegativePrintScan};
-            for (const auto variant : variants) {
-                for (const auto route : routes) {
-                    JuicerTests::list_case(
-                        "scatter_halation.zero_work",
-                        std::string(variant) + "/" +
-                            Spektrafilm::scan_route_key(route));
-                }
-            }
-            return;
-        }
-        if (group == "captured-carrier") {
-            for (const auto route : {
-                     Spektrafilm::ScanRoute::NegativeDirectScan,
-                     Spektrafilm::ScanRoute::NegativePrintScan}) {
-                JuicerTests::list_case(
-                    "scatter_halation.captured_carrier_route",
-                    Spektrafilm::scan_route_key(route));
-            }
         }
     }
 } // namespace ScatterHalationValidation
@@ -1697,10 +1535,6 @@ namespace {
         const SemanticPlanes<double>& expected,
         Results& results,
         std::uint64_t identity) {
-        const std::string routeCaseId =
-            Spektrafilm::scan_route_key(route);
-        JuicerTests::CaseEvent route_event(
-            "scatter_halation.captured_carrier_route", routeCaseId);
         Spektrafilm::DiffusionFilterAuthoredControls cameraDiffusion;
         cameraDiffusion.active = true;
         cameraDiffusion.strength = 1.0e-12;
@@ -1788,7 +1622,6 @@ namespace {
                 "post_diffusion_rgb_sha256=" + carrier_sha256(capturedSource) + " " +
                 "post_spatial_rgb_sha256=" + carrier_sha256(candidate.finalExposure) + " " +
                 comparisonDetail + " " + finishDiagnostic.diagnostic);
-        route_event.complete(passed);
         (void)binary;
     }
 
@@ -1858,7 +1691,6 @@ namespace ScatterHalationValidation {
     void run_advanced_spatial_rows(const Arguments& arguments, Results& results) {
         const auto manifest = advanced_manifest(arguments);
         const auto ids = parity_ids(manifest, true);
-        JuicerTests::Cohort cohort("scatter_halation.advanced_operator", ids);
         const auto binary = load_parity_binary(arguments, manifest);
         if (!arguments.runtimeOwner) {
             throw std::runtime_error("advanced halation runtime unavailable");
@@ -1873,7 +1705,6 @@ namespace ScatterHalationValidation {
                 continue;
             }
             const auto id = row.at("id").get<std::string>();
-            auto event = cohort.case_event(id);
             try {
                 const auto shape = row.at("shape").get<std::array<int, 3>>();
                 if (shape[0] <= 0 || shape[1] <= 0 || shape[2] != 3) {
@@ -1901,7 +1732,6 @@ namespace ScatterHalationValidation {
                                         failure.field == FJ_HALATION_FRAME_FIELD_SCATTER_CORE &&
                                         failure.channel == 0 && failure.sigma_px > 1024.0 &&
                                         unused.recipe_hash == 0;
-                    event.complete(passed);
                     results.record(id, passed, "typed preparation rejection above the proposed radius");
                     continue;
                 }
@@ -1973,10 +1803,8 @@ namespace ScatterHalationValidation {
                         details += " " + failure.diagnostic;
                     }
                 }
-                event.complete(passed);
                 results.record(id, passed, details);
             } catch (const std::exception& error) {
-                event.complete(false);
                 results.record(id, false, error.what());
             }
         }
@@ -1986,7 +1814,6 @@ namespace ScatterHalationValidation {
         using JuicerCuda::HighlightBoostDisposition;
         const auto manifest = advanced_manifest(arguments);
         const auto binary = load_parity_binary(arguments, manifest);
-        JuicerTests::Cohort cohort("scatter_halation.highlight_boost_operator", parity_ids(manifest, false));
         CudaStream stream;
         CudaAllocation workspaceStorage(sizeof(JuicerCuda::HighlightBoostWorkspace));
         auto* workspace = reinterpret_cast<JuicerCuda::HighlightBoostWorkspace*>(workspaceStorage.floats());
@@ -1996,7 +1823,6 @@ namespace ScatterHalationValidation {
                 continue;
             }
             const auto id = row.at("id").get<std::string>();
-            auto event = cohort.case_event(id);
             try {
                 const auto shape = row.at("shape").get<std::array<int, 3>>();
                 if (shape[0] <= 0 || shape[1] <= 0 || shape[2] != 3) {
@@ -2108,10 +1934,8 @@ namespace ScatterHalationValidation {
                 detail << "expected_max=" << maximum << " max_error=" << maximumError
                        << " disposition=" << static_cast<std::uint32_t>(expectedStatus)
                        << " padded_stride=" << stride;
-                event.complete(passed);
                 results.record(id, passed, detail.str());
             } catch (const std::exception& error) {
-                event.complete(false);
                 results.record(id, false, error.what());
             }
         }
@@ -2125,8 +1949,6 @@ namespace ScatterHalationValidation {
                 Spektrafilm::ScanRoute::NegativeDirectScan),
             Spektrafilm::scan_route_key(
                 Spektrafilm::ScanRoute::NegativePrintScan)};
-        JuicerTests::Cohort routeCohort(
-            "scatter_halation.captured_carrier_route", routeIds);
         try {
             if (!arguments.runtimeOwner) {
                 throw std::runtime_error("captured carrier rows require a live process Runtime");

@@ -11,12 +11,10 @@
 #include "host_reference.h"
 
 #include "juicer_ofx_api.h"
-#include "../ffi/case_results.h"
 
 namespace {
     using ofx_test::InstanceCall;
     using ofx_test::InstanceHost;
-    constexpr std::string_view kCaller = "ofx.actions";
     struct Getter {
         const char* operation;
         const char* property;
@@ -202,48 +200,31 @@ namespace {
     }
     Observations exercise(Fixture& fixture, const Observations* expected) {
         Observations all;
-        std::unique_ptr<JuicerTests::Cohort> cohort;
         if (expected) {
             const auto ids = row_ids();
             require(ids.size() == 1059, "action internal row count");
-            cohort = std::make_unique<JuicerTests::Cohort>("ofx.actions.rows", ids);
         }
         for (const auto& action : kActions) {
-            std::unique_ptr<JuicerTests::CaseEvent> row;
-            if (expected)
-                row = std::make_unique<JuicerTests::CaseEvent>(kCaller, action.id);
             const std::string prefix = std::string(action.id) + "/";
             std::string current_id;
-            auto begin_internal = [&](const std::string& id) {
-                current_id = id;
-                return cohort ? std::make_unique<JuicerTests::CaseEvent>("ofx.actions.rows", id) : nullptr;
-            };
-            auto pass_internal = [](const std::unique_ptr<JuicerTests::CaseEvent>& event) {
-                if (event)
-                    event->passed();
-            };
             if (expected) {
                 if (prefix == "unknown/") {
-                    auto event = begin_internal(prefix + "null_action");
+                    current_id = prefix + "null_action";
                     fixture.host.clear_calls();
                     require(fixture.plugin->mainEntry(nullptr, fixture.effect, nullptr, nullptr) == kOfxStatErrBadHandle && fixture.host.calls().empty(), "null action boundary");
-                    pass_internal(event);
                 } else {
-                    auto event = begin_internal(prefix + "missing_effect");
+                    current_id = prefix + "missing_effect";
                     fixture.host.clear_calls();
                     require(fixture.plugin->mainEntry(action.name, nullptr, action.input ? fixture.input : nullptr, action.output ? fixture.output : nullptr) == kOfxStatErrBadHandle && fixture.host.calls().empty(), "missing effect boundary");
-                    pass_internal(event);
                     if (action.input) {
-                        auto input_event = begin_internal(prefix + "missing_input");
+                        current_id = prefix + "missing_input";
                         fixture.host.clear_calls();
                         require(fixture.plugin->mainEntry(action.name, fixture.effect, nullptr, action.output ? fixture.output : nullptr) == kOfxStatErrBadHandle && fixture.host.calls().empty(), "missing input boundary");
-                        pass_internal(input_event);
                     }
                     if (action.output) {
-                        auto output_event = begin_internal(prefix + "missing_output");
+                        current_id = prefix + "missing_output";
                         fixture.host.clear_calls();
                         require(fixture.plugin->mainEntry(action.name, fixture.effect, action.input ? fixture.input : nullptr, nullptr) == kOfxStatErrBadHandle && fixture.host.calls().empty(), "missing output boundary");
-                        pass_internal(output_event);
                     }
                 }
             }
@@ -264,7 +245,7 @@ namespace {
                 }
                 observations.push_back({current_id, std::move(actual)});
             };
-            auto valid_event = begin_internal(prefix + "valid");
+            current_id = prefix + "valid";
             auto valid = fixture.call(action);
             require(valid.status == kOfxStatReplyDefault && valid.output == std::vector<ofx_test::InstanceValue>{42} && trace_matches(valid.calls, action, action.getters.size()), "literal valid action trace");
             auto bad = valid;
@@ -287,20 +268,18 @@ namespace {
                 require(!(bad == valid) && !trace_matches(bad.calls, action, action.getters.size()), "reordered getter negative control");
             }
             check(std::move(valid));
-            pass_internal(valid_event);
             if (std::string_view(action.id) == "identity") {
-                auto event = begin_internal(prefix + "null_field");
+                current_id = prefix + "null_field";
                 fixture.host.null_next("get_string/OfxImageEffectPropFieldToRender");
                 auto null_field = fixture.call(action);
                 require(null_field.status == kOfxStatReplyDefault && trace_matches(null_field.calls, action, action.getters.size()), "null field continuation");
                 check(std::move(null_field));
-                pass_internal(event);
             }
             if (std::string_view(action.id) != "unknown") {
                 for (const char* op : {"effect_properties", "get_pointer/OfxPropInstanceData"}) {
                     for (int status : kStatuses) {
                         const auto* acquisition = std::string_view(op) == "effect_properties" ? "effect" : "instance";
-                        auto event = begin_internal(prefix + acquisition + "/" + std::to_string(status));
+                        current_id = prefix + acquisition + "/" + std::to_string(status);
                         fixture.host.fail_next(op, status);
                         auto result = fixture.call(action);
                         const auto expected_status = std::string_view(op) == "effect_properties"
@@ -308,7 +287,6 @@ namespace {
                                                          : property_status(status);
                         require(result.status == expected_status, "instance acquisition status");
                         check(std::move(result));
-                        pass_internal(event);
                     }
                 }
                 for (std::size_t i = 0; i < action.getters.size(); ++i) {
@@ -318,33 +296,24 @@ namespace {
                         if (std::string_view(action.getters[j].operation) == getter.operation && std::string_view(action.getters[j].property) == getter.property)
                             ++occurrence;
                     for (int status : kStatuses) {
-                        auto event = begin_internal(getter_id(action, getter, status));
+                        current_id = getter_id(action, getter, status);
                         fixture.host.fail_on_nth(occurrence, std::string(getter.operation) + "/" + getter.property, status);
                         auto result = fixture.call(action);
                         const auto count = getter.optional || accepted(status) ? action.getters.size() : i + 1;
                         require(result.status == (getter.optional ? kOfxStatReplyDefault : property_status(status)), "getter status");
                         require(trace_matches(result.calls, action, count), "getter failure prefix or continuation");
                         check(std::move(result));
-                        pass_internal(event);
                     }
                 }
             }
             all.push_back(std::move(observations));
-            if (row)
-                row->passed();
         }
         return all;
     }
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto& action : kActions)
-            JuicerTests::list_case(kCaller, action.id);
-        return 0;
-    }
     require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: action fixture --reference file");
-    JuicerTests::CaseLog log;
     auto* candidate = OfxGetPlugin(0);
     require(candidate, "candidate descriptor");
     const auto expected = decode(ofx_test::reference::read(argv[2], "actions"));
@@ -352,7 +321,6 @@ int main(int argc, char** argv) try {
     Fixture rust(candidate, candidate_host);
     exercise(rust, &expected);
     rust.close();
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "action fixture: %s\n", error.what());

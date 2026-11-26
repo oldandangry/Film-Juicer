@@ -525,7 +525,6 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
     fn scalar(value: &Value) -> f64 {
@@ -582,13 +581,29 @@ mod tests {
         let (captured, _) = captured();
         let rows = captured["primitives"].as_array().unwrap();
         assert_eq!(rows.len(), 56);
-        let mut cases = RowCases::new(
-            "dir-boundary-primitives",
+        let cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .map(|row| row["input"]["name"].as_str().unwrap()),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "dir-boundary-primitives"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "dir-boundary-primitives"
         );
         for row in rows {
-            let case = cases.case(row["input"]["name"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["input"]["name"].as_str().unwrap())).to_owned();
             let args = &row["input"]["words"];
             let lhs = Dd {
                 hi: scalar(&args[0]),
@@ -615,24 +630,45 @@ mod tests {
                 "{}",
                 row["input"]["name"]
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn unchanged_complete_products_and_ordered_failures() {
         let (captured, checked) = captured();
         assert_eq!(captured["cases"].as_array().unwrap().len(), 114);
         let rows = captured["cases"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "dir-boundary-products",
-            rows.iter().enumerate().map(|(index, row)| {
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().enumerate().map(|(index, row)| {
                 format!("{}/row-{index}", row["input"]["name"].as_str().unwrap())
-            }),
+            }))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "dir-boundary-products"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "dir-boundary-products"
         );
         for (index, row) in rows.iter().enumerate() {
             let name = row["input"]["name"].as_str().unwrap();
-            let case = cases.case(format!("{name}/row-{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("{name}/row-{index}"))).to_owned();
             let input = input(&row["input"]);
             if let Ok(input) = &input {
                 assert_eq!(input.key().value(), row["key"].as_u64().unwrap(), "{name}");
@@ -675,9 +711,15 @@ mod tests {
                     "{name}"
                 ),
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn signed_consumer_and_axis_order_safety() {

@@ -29,8 +29,6 @@
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
-#include "../ffi/case_results.h"
-#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -553,9 +551,7 @@ namespace {
         ids.reserve(routes.size());
         for (const auto route : routes)
             ids.push_back(route_case_key(route));
-        JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
-            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(runtime, route, Spektrafilm::RgbToRawMethod::Hanatos2025, 12.0f, {0, 0, 64, 48});
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
             snapshot.instanceToken.value = 0x4741555353ull;
@@ -585,7 +581,6 @@ namespace {
             EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
             EXPECT_EQ(warm.spatial_dir_resources(warm.workspace_lease(), inputs.dir.hash).gaussian.weights, prepared.gaussian.weights);
             require(warm.finish(stream, error), error.diagnostic);
-            row.passed();
         }
     }
 
@@ -612,10 +607,8 @@ namespace {
                           std::to_string(std::bit_cast<std::uint32_t>(spec.pixel)) + "/tail-" +
                           std::to_string(std::bit_cast<std::uint32_t>(spec.tail)) + "/" +
                           std::to_string(spec.width) + "x" + std::to_string(spec.height));
-        JuicerTests::GtestCohort case_rows("fixture-row", ids);
         for (std::size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
             const auto& spec = cases[caseIndex];
-            auto row = case_rows.case_event(ids[caseIndex]);
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(spec.route) << " pixel=" << spec.pixel << " tail=" << spec.tail << " width=" << spec.width);
             Inputs inputs(runtime, spec.route, Spektrafilm::RgbToRawMethod::Hanatos2025, spec.pixel, {0, 0, spec.width, spec.height}, spec.tail);
             auto frame = prepare_boundary(inputs);
@@ -640,7 +633,6 @@ namespace {
                 require(actual.boundaries[slot].horizontalWeights == reused.boundaries[slot].horizontalWeights, "warm Root reuses each device binding");
             warm.abort();
             require(fj_test_dir_boundary_count(3) == 0, "abort retains no Rust host owner");
-            row.passed();
         }
     }
 
@@ -651,7 +643,6 @@ namespace {
         for (const auto& [operation, fault] : faults)
             faultIds.push_back("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
         faultIds.insert(faultIds.end(), {"upload-rejection", "successful-staging", "independent-epoch"});
-        JuicerTests::GtestCohort faultRows("publication-failure-and-staging", faultIds);
         auto& resources = boundary_owner();
         const auto fixture = boundary_fixture();
         auto& binding = resources.spatialDirBoundaries[0];
@@ -671,7 +662,6 @@ namespace {
         const auto identity = candidate.at("key").get<std::uint64_t>();
         for (std::size_t faultIndex = 0; faultIndex < faults.size(); ++faultIndex) {
             const auto [operation, fault] = faults[faultIndex];
-            auto row = faultRows.case_event(faultIds[faultIndex]);
             const auto releases = fj_test_dir_boundary_count(2);
             require(fj_test_dir_boundary_fault(operation, fault).category == 0, "arm bounded real boundary failure");
             if (operation == 2)
@@ -682,10 +672,8 @@ namespace {
             require(failure.status.category == expectedCategory && failure.status.api == 0 && failure.status.native_code == 0, "primary boundary status survives release panic");
             same_binding(binding, old);
             require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(2) == releases + (operation == 2 ? 1u : 0u), "real miss consumes its only host owner once");
-            row.passed();
         }
         {
-            auto row = faultRows.case_event("upload-rejection");
             const auto before = resources.deviceLedger->snapshot();
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             controls.participants[0].failUpload = true;
@@ -699,10 +687,8 @@ namespace {
             const auto after = resources.deviceLedger->snapshot();
             require(after.chargedBytes == before.chargedBytes && after.reservedBytes == before.reservedBytes && after.recordCount == before.recordCount, "failed upload preserves physical accounting");
             require(fj_test_dir_boundary_count(3) == 0, "failed upload releases host boundary");
-            row.passed();
         }
         {
-            auto row = faultRows.case_event("successful-staging");
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             {
                 JuicerCuda::DirBoundaryTest::Binding observe(controls, 0);
@@ -713,9 +699,7 @@ namespace {
             require(fj_test_dir_boundary_count(3) == 0, "successful ensure releases host owner before later native staging read");
             require(boundary_words(p.stagedWeights.data(), p.stagedWeights.size()) == expected_weights(candidate) && boundary_words(p.staging, p.stagedWeights.size()) == expected_weights(candidate), "actual staged bytes remain intact after host owner release");
             compare_boundary(boundary_view(binding), candidate);
-            row.passed();
         }
-        auto epochRow = faultRows.case_event("independent-epoch");
         acquires = fj_test_dir_boundary_count(0);
         std::unique_ptr<JuicerCuda::Resources, decltype(&JuicerCuda::destroy)> epoch(
             JuicerCuda::create(key, resources.contextEpoch + 1, resources.deviceLedger, failure), &JuicerCuda::destroy);
@@ -725,12 +709,10 @@ namespace {
         compare_boundary(boundary_view(epoch->spatialDirBoundaries[0]), candidate);
         require(JuicerCuda::drain_for_context_retire(*epoch, failure), failure.diagnostic);
         require(epoch->deviceAllocationRecords.empty(), "independent epoch drains all physical records");
-        epochRow.passed();
     }
 
     TEST_F(ExposureCache, ReflectedBoundarySameKeyRaceAndPrepublicationCancellation) {
         const std::vector<std::string> ids{"same-key-race", "prepublication-cancellation"};
-        JuicerTests::GtestCohort cases("publication-transition", ids);
         auto& resources = boundary_owner();
         auto& target = resources.spatialDirBoundaries[0];
         const auto fixture = boundary_fixture();
@@ -740,7 +722,6 @@ namespace {
         const auto old = target;
         const auto acquires = fj_test_dir_boundary_count(0);
         {
-            auto row = cases.case_event("same-key-race");
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             controls.rendezvous = true;
             BoundaryWorkers workers(controls, target, component, {9, 6}, stream);
@@ -758,9 +739,7 @@ namespace {
             require(target.weights == winner.candidate && target.identity == identity && winner.frees == 0 && loser.frees == 1 && loser.freed == loser.candidate && loser.freeSucceeded, "publication keeps winner and physically frees the actual losing allocation");
             require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(0) == acquires + 2, "same-key race releases both host owners");
             compare_boundary(boundary_view(target), candidate);
-            row.passed();
         }
-        auto cancellation = cases.case_event("prepublication-cancellation");
         const auto& next = fixture.at("cases").at(6);
         const auto nextComponent = JuicerCuda::DirBoundaryTest::component(next.at("input").at("component"));
         const auto current = target;
@@ -775,7 +754,6 @@ namespace {
         require(!rejected.success && rejected.frees == 1 && rejected.freed == rejected.candidate && rejected.freeSucceeded, "prepublication cancellation frees candidate");
         same_binding(target, current);
         require(target.weights != old.weights && fj_test_dir_boundary_count(3) == 0, "race replacement and cancellation preserve native ownership");
-        cancellation.passed();
     }
 
     TEST_F(ExposureCache, ReflectedBoundarySecondOwnerValidationRejectsQuarantinedPublication) {
@@ -825,7 +803,6 @@ namespace {
                                           std::to_string(std::bit_cast<std::uint32_t>(pixelSize)) +
                                           "/carrier-" + (carrier ? "on" : "off") +
                                           "/cache-planes-" + std::to_string(cachePlanes));
-        JuicerTests::GtestCohort sourceRows("route-method-pixel-carrier-cache", ids);
         std::size_t sourceIndex = 0;
         for (auto route : routes) {
             for (auto method : methods) {
@@ -839,14 +816,12 @@ namespace {
                                             "/carrier-" + (carrier ? "on" : "off") +
                                             "/cache-planes-" + std::to_string(cachePlanes);
                             ASSERT_EQ(ids.at(sourceIndex++), id);
-                            auto row = sourceRows.case_event(id);
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " method=" << static_cast<int>(method) << " pixelSize=" << pixelSize << " carrier=" << carrier << " cachePlanes=" << cachePlanes);
                             if (Spektrafilm::scan_route_is_print(route)) {
                                 compare<JuicerCuda::PrintPipelineRunParams>(inputs, carrier, cachePlanes);
                             } else {
                                 compare<JuicerCuda::DirectPipelineRunParams>(inputs, carrier, cachePlanes);
                             }
-                            row.passed();
                         }
                     }
                 }
@@ -866,9 +841,7 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
-    case_log.finish();
     return result;
 } catch (...) {
     return 1;

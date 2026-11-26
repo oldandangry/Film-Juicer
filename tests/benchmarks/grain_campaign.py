@@ -3,10 +3,8 @@
 import json
 import math
 
-import numpy as np
-
 import grain_analysis as analysis
-
+import numpy as np
 
 PORTRA = "kodak_portra_400"
 GOLD = "kodak_gold_200"
@@ -184,7 +182,7 @@ def calibrate(experiment, render, output, selection):
         name = row["id"]
         report = {"row": row, "disposition": "unmatched", "sizes": [], "attempts": []}
 
-        def capture(arm, phase, times, **controls):
+        def capture(arm, phase, times, *, name=name, row=row, **controls):
             path = render(f"{name}-{phase}-{arm}", request_for(experiment, row, arm, times, **controls))
             summary = statistics(path)
             write_json(path / "statistics.json", summary)

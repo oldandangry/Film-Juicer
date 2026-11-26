@@ -1,7 +1,4 @@
 use film_juicer_core::illuminant::{self, ErrorKind};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use serde_json::Value;
 
 fn words(value: &Value) -> Vec<f32> {
@@ -69,32 +66,94 @@ fn accepted_native_complete_operations() {
     let leaf = &capture["leaf"];
     let blackbody_rows = leaf["blackbody"].as_array().unwrap();
     let blackbody_ids = ids(blackbody_rows, "blackbody");
-    let mut blackbody = RowCases::new("illuminant-blackbody", &blackbody_ids);
+    let blackbody_expected_ids: Vec<_> = IntoIterator::into_iter(&blackbody_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !blackbody_expected_ids.is_empty(),
+        "empty case set: {}",
+        "illuminant-blackbody"
+    );
+    let blackbody_count = blackbody_expected_ids.len();
+    let mut blackbody_remaining = blackbody_expected_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        blackbody_remaining.len(),
+        blackbody_count,
+        "duplicate case IDs: {}",
+        "illuminant-blackbody"
+    );
     for (row, id) in blackbody_rows.iter().zip(&blackbody_ids) {
-        let case = blackbody.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         expect(
             &illuminant::blackbody(f32::from_bits(row["temperature"].as_u64().unwrap() as u32)),
             &row["normalized"],
             "blackbody",
         );
-        case.passed();
+        assert!(
+            blackbody_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    blackbody.finish();
-    let equal_case = RowCases::new("illuminant-equal-energy", ["equal-energy"]);
-    let mut equal_cases = equal_case;
-    let equal = equal_cases.case("equal-energy");
+    assert!(
+        blackbody_remaining.is_empty(),
+        "missing comparisons: {blackbody_remaining:?}"
+    );
+    let equal_cases_ids: Vec<_> = IntoIterator::into_iter(["equal-energy"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !equal_cases_ids.is_empty(),
+        "empty case set: {}",
+        "illuminant-equal-energy"
+    );
+    let equal_cases_count = equal_cases_ids.len();
+    let mut equal_cases_remaining = equal_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        equal_cases_remaining.len(),
+        equal_cases_count,
+        "duplicate case IDs: {}",
+        "illuminant-equal-energy"
+    );
+    let equal = AsRef::<str>::as_ref(&("equal-energy")).to_owned();
     expect(
         &illuminant::equal_energy(),
         &leaf["equal"]["samples"],
         "equal",
     );
-    equal.passed();
-    equal_cases.finish();
+    assert!(
+        equal_cases_remaining.remove(&equal),
+        "unexpected or repeated comparison: {equal}"
+    );
+    assert!(
+        equal_cases_remaining.is_empty(),
+        "missing comparisons: {equal_cases_remaining:?}"
+    );
     let direct_rows = leaf["direct"].as_array().unwrap();
     let direct_ids = ids(direct_rows, "direct");
-    let mut direct = RowCases::new("illuminant-direct", &direct_ids);
+    let direct_expected_ids: Vec<_> = IntoIterator::into_iter(&direct_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !direct_expected_ids.is_empty(),
+        "empty case set: {}",
+        "illuminant-direct"
+    );
+    let direct_count = direct_expected_ids.len();
+    let mut direct_remaining = direct_expected_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        direct_remaining.len(),
+        direct_count,
+        "duplicate case IDs: {}",
+        "illuminant-direct"
+    );
     for (row, id) in direct_rows.iter().zip(&direct_ids) {
-        let case = direct.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let actual = illuminant::from_samples(&rows(&row["rows"]));
         if row["curve"]["samples"].as_array().unwrap().is_empty() {
             assert_eq!(actual.unwrap_err().kind, ErrorKind::Preparation);
@@ -105,14 +164,37 @@ fn accepted_native_complete_operations() {
                 row["id"].as_str().unwrap(),
             );
         }
-        case.passed();
+        assert!(
+            direct_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    direct.finish();
+    assert!(
+        direct_remaining.is_empty(),
+        "missing comparisons: {direct_remaining:?}"
+    );
     let resample_rows = leaf["resample"].as_array().unwrap();
     let resample_ids = ids(resample_rows, "resample");
-    let mut resample_cases = RowCases::new("illuminant-resample", &resample_ids);
+    let resample_cases_ids: Vec<_> = IntoIterator::into_iter(&resample_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !resample_cases_ids.is_empty(),
+        "empty case set: {}",
+        "illuminant-resample"
+    );
+    let resample_cases_count = resample_cases_ids.len();
+    let mut resample_cases_remaining = resample_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        resample_cases_remaining.len(),
+        resample_cases_count,
+        "duplicate case IDs: {}",
+        "illuminant-resample"
+    );
     for (row, id) in resample_rows.iter().zip(&resample_ids) {
-        let case = resample_cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let source = rows(&row["rows"]);
         let kg3 = illuminant::tungsten_kg3(&source);
         if row["kg3"]["samples"].as_array().unwrap().is_empty() {
@@ -129,9 +211,15 @@ fn accepted_native_complete_operations() {
                 "lens",
             );
         }
-        case.passed();
+        assert!(
+            resample_cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    resample_cases.finish();
+    assert!(
+        resample_cases_remaining.is_empty(),
+        "missing comparisons: {resample_cases_remaining:?}"
+    );
 }
 #[cfg(feature = "test-support")]
 #[test]
@@ -140,22 +228,62 @@ fn accepted_native_private_leaves() {
     let leaf = &capture["leaf"];
     let blackbody_rows = leaf["blackbody"].as_array().unwrap();
     let blackbody_ids = ids(blackbody_rows, "blackbody");
-    let mut blackbody = RowCases::new("private-illuminant-blackbody", &blackbody_ids);
+    let blackbody_expected_ids: Vec<_> = IntoIterator::into_iter(&blackbody_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !blackbody_expected_ids.is_empty(),
+        "empty case set: {}",
+        "private-illuminant-blackbody"
+    );
+    let blackbody_count = blackbody_expected_ids.len();
+    let mut blackbody_remaining = blackbody_expected_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        blackbody_remaining.len(),
+        blackbody_count,
+        "duplicate case IDs: {}",
+        "private-illuminant-blackbody"
+    );
     for (row, id) in blackbody_rows.iter().zip(&blackbody_ids) {
-        let case = blackbody.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let temperature = f32::from_bits(row["temperature"].as_u64().unwrap() as u32);
         let raw: [f32; 81] = std::array::from_fn(|i| {
             illuminant::test_support::planck_sample(380.0 + 5.0 * i as f32, temperature)
         });
         expect(&raw, &row["raw"], "Planck");
-        case.passed();
+        assert!(
+            blackbody_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    blackbody.finish();
+    assert!(
+        blackbody_remaining.is_empty(),
+        "missing comparisons: {blackbody_remaining:?}"
+    );
     let resample_rows = leaf["resample"].as_array().unwrap();
     let resample_ids = ids(resample_rows, "resample");
-    let mut resample_cases = RowCases::new("private-illuminant-resample", &resample_ids);
+    let resample_cases_ids: Vec<_> = IntoIterator::into_iter(&resample_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !resample_cases_ids.is_empty(),
+        "empty case set: {}",
+        "private-illuminant-resample"
+    );
+    let resample_cases_count = resample_cases_ids.len();
+    let mut resample_cases_remaining = resample_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        resample_cases_remaining.len(),
+        resample_cases_count,
+        "duplicate case IDs: {}",
+        "private-illuminant-resample"
+    );
     for (row, id) in resample_rows.iter().zip(&resample_ids) {
-        let case = resample_cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let result = illuminant::test_support::resample(&rows(&row["rows"]));
         if row["resampled"].as_array().unwrap().is_empty() {
             assert_eq!(result.unwrap_err().kind, ErrorKind::Preparation);
@@ -166,28 +294,80 @@ fn accepted_native_private_leaves() {
                 .collect();
             expect(&result.unwrap(), &expected, "Akima");
         }
-        case.passed();
+        assert!(
+            resample_cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    resample_cases.finish();
+    assert!(
+        resample_cases_remaining.is_empty(),
+        "missing comparisons: {resample_cases_remaining:?}"
+    );
     let normalization_rows = leaf["normalization"].as_array().unwrap();
     let normalization_ids = ids(normalization_rows, "normalization");
-    let mut normalization = RowCases::new("private-illuminant-normalization", &normalization_ids);
+    let normalization_expected_ids: Vec<_> = IntoIterator::into_iter(&normalization_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !normalization_expected_ids.is_empty(),
+        "empty case set: {}",
+        "private-illuminant-normalization"
+    );
+    let normalization_count = normalization_expected_ids.len();
+    let mut normalization_remaining = normalization_expected_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        normalization_remaining.len(),
+        normalization_count,
+        "duplicate case IDs: {}",
+        "private-illuminant-normalization"
+    );
     for (row, id) in normalization_rows.iter().zip(&normalization_ids) {
-        let case = normalization.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let mut samples = words(&row["input"]);
         illuminant::test_support::normalize(&mut samples);
         expect(&samples, &row["expected"], "normalization");
-        case.passed();
+        assert!(
+            normalization_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    normalization.finish();
-    let mut capacity = RowCases::new("private-illuminant-capacity", ["capacity-fault"]);
-    let row = capacity.case("capacity-fault");
+    assert!(
+        normalization_remaining.is_empty(),
+        "missing comparisons: {normalization_remaining:?}"
+    );
+    let capacity_ids: Vec<_> = IntoIterator::into_iter(["capacity-fault"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !capacity_ids.is_empty(),
+        "empty case set: {}",
+        "private-illuminant-capacity"
+    );
+    let capacity_count = capacity_ids.len();
+    let mut capacity_remaining = capacity_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        capacity_remaining.len(),
+        capacity_count,
+        "duplicate case IDs: {}",
+        "private-illuminant-capacity"
+    );
+    let row = AsRef::<str>::as_ref(&("capacity-fault")).to_owned();
     assert_eq!(
         illuminant::test_support::capacity_failure()
             .unwrap_err()
             .kind,
         ErrorKind::Capacity
     );
-    row.passed();
-    capacity.finish();
+    assert!(
+        capacity_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        capacity_remaining.is_empty(),
+        "missing comparisons: {capacity_remaining:?}"
+    );
 }

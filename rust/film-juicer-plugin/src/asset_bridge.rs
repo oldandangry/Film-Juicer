@@ -1107,7 +1107,6 @@ extern "C" fn fj_test_catalog_live_owners() -> usize {
 mod tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
-    use crate::test_cases::RowCases;
 
     #[test]
     fn layouts_and_explicit_tags() {
@@ -1190,12 +1189,21 @@ mod tests {
             ("panic", 1, FJ_STATUS_INTERNAL_FAILURE),
             ("capacity", 2, FJ_STATUS_ALLOCATION_FAILURE),
         ];
-        let mut cases = RowCases::new(
-            "catalog-acquisition-faults",
-            faults.iter().map(|(id, _, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(faults.iter().map(|(id, _, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "catalog-acquisition-faults");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "catalog-acquisition-faults"
         );
         for (id, fault, expected) in faults {
-            let row = cases.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             FAULT.set(fault);
             let mut owner = std::ptr::null_mut();
             let mut counts = FjCatalogCounts {
@@ -1214,14 +1222,20 @@ mod tests {
             assert_eq!(result.category, expected);
             assert!(owner.is_null());
             assert_eq!((counts.film_count, counts.print_count), (0, 0));
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
         let snapshot = assets.catalog().unwrap();
         assert!(std::sync::Arc::ptr_eq(
             &snapshot,
             &assets.catalog().unwrap()
         ));
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }
 
@@ -2255,7 +2269,6 @@ pub(crate) unsafe fn cmf_release(owner: *mut FjCmf, error: *mut FjErrorBuffer) -
 mod spectral_tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
-    use crate::test_cases::RowCases;
     #[test]
     fn production_spectral_signatures() {
         let _: unsafe fn(*const FjAssets, *mut *mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus =
@@ -2328,13 +2341,28 @@ mod spectral_tests {
                 ["reconstruction", "cmf"].map(move |source| format!("read-error/{index}/{source}"))
             })
             .collect();
-        let mut rows = RowCases::new("spectral-read-error-statuses", &ids);
+        let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "spectral-read-error-statuses");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            rows_remaining.len(),
+            rows_count,
+            "spectral-read-error-statuses"
+        );
         for (index, kind) in read_errors.into_iter().enumerate() {
             for cmf in [false, true] {
-                let row = rows.case(format!(
-                    "read-error/{index}/{}",
-                    if cmf { "cmf" } else { "reconstruction" }
-                ));
+                let row = AsRef::<str>::as_ref(
+                    &(format!(
+                        "read-error/{index}/{}",
+                        if cmf { "cmf" } else { "reconstruction" }
+                    )),
+                )
+                .to_owned();
                 let error = std::sync::Arc::new(film_juicer_core::data_io::ReadError {
                     path: "spectral-source".into(),
                     kind,
@@ -2352,10 +2380,16 @@ mod spectral_tests {
                         FJ_STATUS_PREPARATION_FAILURE
                     }
                 );
-                row.passed();
+                assert!(
+                    rows_remaining.remove(&row),
+                    "unexpected or repeated comparison: {row}"
+                );
             }
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
     }
 }
 
@@ -2659,7 +2693,6 @@ extern "C" fn fj_test_calibration_probes() -> usize {
 #[cfg(test)]
 mod illuminant_calibration_tests {
     use super::*;
-    use crate::test_cases::RowCases;
     #[test]
     fn source_categories_and_signatures() {
         let _: unsafe fn(
@@ -2692,12 +2725,21 @@ mod illuminant_calibration_tests {
                 FJ_STATUS_PREPARATION_FAILURE,
             ),
         ];
-        let mut rows = RowCases::new(
-            "calibration-source-statuses",
-            cases.iter().map(|(id, _, _)| *id),
+        let rows_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(|(id, _, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!rows_ids.is_empty(), "calibration-source-statuses");
+        let rows_count = rows_ids.len();
+        let mut rows_remaining = rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            rows_remaining.len(),
+            rows_count,
+            "calibration-source-statuses"
         );
         for (id, kind, category) in cases {
-            let row = rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 Failure::Asset(AssetError::CsvSource {
                     source: CsvSource::D65,
@@ -2709,9 +2751,15 @@ mod illuminant_calibration_tests {
                 .category(),
                 category
             );
-            row.passed();
+            assert!(
+                rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        rows.finish();
+        assert!(
+            rows_remaining.is_empty(),
+            "missing comparisons: {rows_remaining:?}"
+        );
         assert_eq!(
             Failure::Asset(AssetError::CsvCachePoisoned {
                 source: CsvSource::D65
@@ -2917,7 +2965,6 @@ extern "C" fn fj_test_noise_acquisition_count() -> usize {
 #[cfg(test)]
 mod noise_tests {
     use super::*;
-    use crate::test_cases::RowCases;
     #[test]
     fn explicit_noise_statuses_do_not_define_cache_retry() {
         let allocation = [
@@ -2926,13 +2973,31 @@ mod noise_tests {
             noise::ErrorKind::Read(std::io::ErrorKind::OutOfMemory),
         ];
         let allocation_ids = ["capacity", "open-out-of-memory", "read-out-of-memory"];
-        let mut allocation_rows = RowCases::new("noise-allocation-statuses", allocation_ids);
+        let allocation_rows_ids: Vec<_> = IntoIterator::into_iter(allocation_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!allocation_rows_ids.is_empty(), "noise-allocation-statuses");
+        let allocation_rows_count = allocation_rows_ids.len();
+        let mut allocation_rows_remaining = allocation_rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            allocation_rows_remaining.len(),
+            allocation_rows_count,
+            "noise-allocation-statuses"
+        );
         for (kind, id) in allocation.into_iter().zip(allocation_ids) {
-            let row = allocation_rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(noise_category(kind), FJ_STATUS_ALLOCATION_FAILURE);
-            row.passed();
+            assert!(
+                allocation_rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        allocation_rows.finish();
+        assert!(
+            allocation_rows_remaining.is_empty(),
+            "missing comparisons: {allocation_rows_remaining:?}"
+        );
         let preparation = [
             noise::ErrorKind::Missing,
             noise::ErrorKind::ShortRead,
@@ -2958,13 +3023,34 @@ mod noise_tests {
             "open-permission-denied",
             "read-unexpected-eof",
         ];
-        let mut preparation_rows = RowCases::new("noise-preparation-statuses", preparation_ids);
+        let preparation_rows_ids: Vec<_> = IntoIterator::into_iter(preparation_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !preparation_rows_ids.is_empty(),
+            "noise-preparation-statuses"
+        );
+        let preparation_rows_count = preparation_rows_ids.len();
+        let mut preparation_rows_remaining = preparation_rows_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            preparation_rows_remaining.len(),
+            preparation_rows_count,
+            "noise-preparation-statuses"
+        );
         for (kind, id) in preparation.into_iter().zip(preparation_ids) {
-            let row = preparation_rows.case(id);
+            let row = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(noise_category(kind), FJ_STATUS_PREPARATION_FAILURE);
-            row.passed();
+            assert!(
+                preparation_rows_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
-        preparation_rows.finish();
+        assert!(
+            preparation_rows_remaining.is_empty(),
+            "missing comparisons: {preparation_rows_remaining:?}"
+        );
         assert_eq!(
             Failure::Asset(AssetError::NoiseCachePoisoned).category(),
             FJ_STATUS_INTERNAL_FAILURE

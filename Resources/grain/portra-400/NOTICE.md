@@ -21,6 +21,6 @@ The version 1 manifest identifies the stock and lists SHA-256 digests for
 | --- | --- | --- |
 | Manifest and bank payloads | `Resources/grain/portra-400/` | `Contents/Resources/grain/portra-400/` |
 | This bank notice | `Resources/grain/portra-400/NOTICE.md` | `Contents/Legal/fotufilm/NOTICE.md` |
-| Fotufilm engine license | `tests/grain/LICENSE.Fotufilm` | `Contents/Legal/fotufilm/LICENSE.Fotufilm` |
+| Fotufilm engine license | `third_party/fotufilm/LICENSE.Fotufilm` | `Contents/Legal/fotufilm/LICENSE.Fotufilm` |
 | spektrafilm asset license | `third_party/spektrafilm/SPEKTRAFILM_LICENSE.txt` | `Contents/Legal/spektrafilm/SPEKTRAFILM_LICENSE.txt` |
 | spektrafilm attribution | `third_party/spektrafilm/README.md` | `Contents/Legal/spektrafilm/README.md` |

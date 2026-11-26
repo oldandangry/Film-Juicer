@@ -10,7 +10,6 @@
 
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 #include "prepared_product_fixture.h"
 
 namespace {
@@ -170,30 +169,16 @@ namespace {
 } // namespace
 int main(int argc, char** argv) {
     try {
-        JuicerTests::CaseLog case_log;
-        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
-            for (const char* route : {"negative_direct", "negative_print", "positive_direct", "positive_print"})
-                for (int action = 0; action < 3; ++action)
-                    JuicerTests::list_case("tc_lut_lifetime", std::string(route) + ".publication." + std::to_string(action));
-            JuicerTests::list_case("tc_lut_lifetime", "retained_reader");
-            return 0;
-        }
         require(argc == 2, "resource root required");
         JuicerTestSupport::RuntimeFixture runtime;
         runtime.create(argv[1]);
         for (bool positive : {false, true})
             for (bool print : {false, true})
                 for (int action = 0; action < 3; ++action) {
-                    const std::string route = std::string(positive ? "positive_" : "negative_") + (print ? "print" : "direct");
-                    JuicerTests::CaseEvent event("tc_lut_lifetime", route + ".publication." + std::to_string(action));
                     publication(runtime, positive, print, action);
-                    event.passed();
                 }
-        JuicerTests::CaseEvent retained_event("tc_lut_lifetime", "retained_reader");
         retained_reader(runtime);
-        retained_event.passed();
         require(runtime.close().category == FJ_STATUS_SUCCESS, "close Runtime");
-        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

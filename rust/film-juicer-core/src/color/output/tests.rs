@@ -1,5 +1,4 @@
 use super::*;
-use crate::test_cases::RowCases;
 use serde_json::Value;
 
 fn fixture() -> Value {
@@ -48,11 +47,34 @@ fn compare_completed(color: &OutputColor, row: &Value) {
 #[test]
 fn native_literals_matrices_and_identities_are_exact() {
     let fixture = fixture();
-    let mut source_cases = RowCases::new("output-color-source", ["source"]);
-    let source_case = source_cases.case("source");
+    let source_cases_ids: Vec<_> = IntoIterator::into_iter(["source"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !source_cases_ids.is_empty(),
+        "empty case set: {}",
+        "output-color-source"
+    );
+    let source_cases_count = source_cases_ids.len();
+    let mut source_cases_remaining = source_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        source_cases_remaining.len(),
+        source_cases_count,
+        "duplicate case IDs: {}",
+        "output-color-source"
+    );
+    let source_case = AsRef::<str>::as_ref(&("source")).to_owned();
     compare(&SOURCE, &fixture["source"]);
-    source_case.passed();
-    source_cases.finish();
+    assert!(
+        source_cases_remaining.remove(&source_case),
+        "unexpected or repeated comparison: {source_case}"
+    );
+    assert!(
+        source_cases_remaining.is_empty(),
+        "missing comparisons: {source_cases_remaining:?}"
+    );
     let entries = fixture["entries"].as_array().unwrap();
     let invalid_tags = [9, 255, u32::MAX];
     let ids = entries
@@ -60,46 +82,64 @@ fn native_literals_matrices_and_identities_are_exact() {
         .map(|row| row["name"].as_str().unwrap().to_owned())
         .chain(invalid_tags.map(|tag| format!("invalid-tag/{tag}")))
         .collect::<Vec<_>>();
-    let mut cases = RowCases::new("output-color-entries-and-invalid-tags", ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "output-color-entries-and-invalid-tags"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "output-color-entries-and-invalid-tags"
+    );
     for (tag, literal) in LITERALS.iter().enumerate() {
         let row = &fixture["entries"][tag];
-        let case = cases.case(row["name"].as_str().unwrap());
+        let case = AsRef::<str>::as_ref(&(row["name"].as_str().unwrap())).to_owned();
         compare(literal, row);
         let color = output_color(OutputSpace::try_from(tag as u32).unwrap());
         compare_completed(color, row);
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
     assert_ne!(
         entry_hash(&SOURCE),
         output_color(OutputSpace::DaVinciWideGamut).hash()
     );
     for tag in invalid_tags {
-        let case = cases.case(format!("invalid-tag/{tag}"));
+        let case = AsRef::<str>::as_ref(&(format!("invalid-tag/{tag}"))).to_owned();
         assert!(OutputSpace::try_from(tag).is_err());
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
-}
-#[test]
-fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
-    let fixture = fixture();
-    let rows = fixture["hash_variants"].as_array().unwrap();
-    let mut cases = RowCases::new(
-        "output-color-hash-variants",
-        rows.iter().map(|row| {
-            format!(
-                "component/{}/word/{:08x}",
-                row["component"].as_u64().unwrap(),
-                row["word"].as_u64().unwrap()
-            )
-        }),
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
     );
+}
+fn compare_hash_variants(rows: &[Value]) {
+    // Negative zero, positive infinity and the frozen quiet NaN in every lane.
+    let mut remaining = (0..4)
+        .flat_map(|component| [0x8000_0000, 0x7f80_0000, 0x7fc0_0000].map(|word| (component, word)))
+        .collect::<std::collections::BTreeSet<_>>();
     for row in rows {
-        let case = cases.case(format!(
-            "component/{}/word/{:08x}",
-            row["component"].as_u64().unwrap(),
-            row["word"].as_u64().unwrap()
-        ));
+        let component = row["component"].as_u64().unwrap();
+        let word = u32::try_from(row["word"].as_u64().unwrap()).unwrap();
+        assert!(
+            remaining.contains(&(component, word)),
+            "unexpected or duplicate hash variant for component {component}, word {word:08x}"
+        );
         let original = &LITERALS[0];
         let mut literal = Literal {
             base: original.base,
@@ -108,17 +148,48 @@ fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
             kind: original.kind,
             coefficients: original.coefficients,
         };
-        let lane = match row["component"].as_u64().unwrap() {
+        let lane = match component {
             0 => &mut literal.base[0],
             1 => &mut literal.rgb_to_xyz[0],
             2 => &mut literal.xyz_to_rgb[0],
             _ => &mut literal.coefficients[0],
         };
-        *lane = f32::from_bits(row["word"].as_u64().unwrap() as u32);
+        *lane = f32::from_bits(word);
         compare(&literal, &row["entry"]);
-        case.passed();
+        remaining.remove(&(component, word));
     }
-    cases.finish();
+    assert!(
+        remaining.is_empty(),
+        "missing hash variant comparisons: {remaining:?}"
+    );
+}
+
+#[test]
+fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
+    compare_hash_variants(fixture()["hash_variants"].as_array().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "missing hash variant comparisons")]
+fn empty_hash_variant_fixture_fails() {
+    compare_hash_variants(&[]);
+}
+
+#[test]
+#[should_panic(expected = "missing hash variant comparisons")]
+fn incomplete_hash_variant_fixture_fails() {
+    let fixture = fixture();
+    let rows = fixture["hash_variants"].as_array().unwrap();
+    compare_hash_variants(&rows[..rows.len() - 1]);
+}
+
+#[test]
+#[should_panic(expected = "unexpected or duplicate hash variant")]
+fn duplicate_hash_variant_fixture_fails() {
+    let mut fixture = fixture();
+    let rows = fixture["hash_variants"].as_array_mut().unwrap();
+    rows[1] = rows[0].clone();
+    compare_hash_variants(rows);
 }
 #[test]
 fn concurrent_catalogue_initialization_publishes_complete_immutable_entries() {

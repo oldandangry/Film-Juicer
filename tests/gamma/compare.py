@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 LEGACY_DIRECT_FUSED_CASE_IDS = {
     "negative-direct",
     "positive-direct",

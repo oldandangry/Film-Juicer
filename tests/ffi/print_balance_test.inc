@@ -124,11 +124,9 @@ namespace PrintBalanceTest {
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned variant = 0; variant < 10; ++variant)
                     product_ids.emplace_back("print-balance/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
-        JuicerTests::Cohort product_rows("print_balance.recipe_tuple", product_ids);
         for (unsigned route = 0; route < 4; ++route)
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned variant = 0; variant < 10; ++variant) {
-                    auto case_event = product_rows.case_event("print-balance/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
                     auto p = PrintPreflashTest::controls();
                     p.values.scan_route = static_cast<std::uint32_t>(route);
                     p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -179,7 +177,6 @@ namespace PrintBalanceTest {
                     }
                     products.push_back(result);
                     require_equal(products.back(), expectedProducts.at(products.size() - 1), "per-case complete print balance product");
-                    case_event.passed();
                 }
         return products;
     }
@@ -233,13 +230,11 @@ namespace PrintBalanceTest {
         const auto manifest = read(manifestPath);
         require(captured.at("cases").size() == 42, "exact adopted balance literal membership");
         for (const auto& row : captured.at("cases")) {
-            const auto id = row.at("id").get<std::string>();
             Inputs source(row);
             const auto input = source.wire();
             const auto expected = manifest.at("outcomes").at(row.at("id").get<std::string>());
             const std::array<std::pair<std::string_view, Prepare>, 2> callers{{{"cpp", fj_test_print_balance_prepare}, {"c11", fj_test_print_balance_prepare}}};
             for (const auto& [caller, prepare] : callers) {
-                JuicerTests::CaseEvent case_event(caller, id);
                 FjPrintBalance out{};
                 seed(out);
                 FjPrintBalanceFailure failure{99, 98};
@@ -250,12 +245,10 @@ namespace PrintBalanceTest {
                         throw std::runtime_error("exact native balance disagreement " + row.at("id").get<std::string>() + ": " + Json::diff(row.at("balance"), project(out)).dump());
                 } else
                     zero(out);
-                case_event.passed();
             }
         }
     }
     void transport(const Json& captured) {
-        JuicerTests::CaseEvent transport_event("cpp", "print-balance/transport");
         Inputs source(captured.at("cases")[0]);
         std::vector<std::string> span_ids, mode_ids, capacity_ids, fault_ids, malformed_error_ids;
         for (unsigned caller = 0; caller < 2; ++caller) {
@@ -270,12 +263,6 @@ namespace PrintBalanceTest {
             for (unsigned malformed = 0; malformed < 3; ++malformed)
                 malformed_error_ids.emplace_back("caller-" + std::to_string(caller) + "/error-" + std::to_string(malformed));
         }
-        JuicerTests::Cohort malformed_spans("print_balance.span_defect", span_ids);
-        JuicerTests::Cohort invalid_modes("print_balance.invalid_mode", mode_ids);
-        JuicerTests::Cohort diagnostic_capacities("print_balance.diagnostic_capacity", capacity_ids);
-        JuicerTests::Cohort preparation_faults("print_balance.panic", fault_ids);
-        JuicerTests::Cohort malformed_errors("print_balance.malformed_error", malformed_error_ids);
-        unsigned caller_index = 0;
         for (Prepare prepare : {fj_test_print_balance_prepare, fj_test_print_balance_prepare}) {
             auto input = source.wire();
             FjPrintBalance out{};
@@ -290,7 +277,6 @@ namespace PrintBalanceTest {
             zero(out);
             for (unsigned selected = 0; selected < 4; ++selected)
                 for (unsigned fault = 0; fault < 4; ++fault) {
-                    auto row_event = malformed_spans.case_event("caller-" + std::to_string(caller_index) + "/span-" + std::to_string(selected) + "/defect-" + std::to_string(fault));
                     input = source.wire();
                     FjFloatSpan* spans[]{&input.film_base_density, &input.film_channel_density_cmy, &input.print_sensitivity_rgb, &input.filtered_main_illuminant};
                     auto& span = *spans[selected];
@@ -305,7 +291,6 @@ namespace PrintBalanceTest {
                     status(call(&input, &out, &failure), FJ_STATUS_UNSUPPORTED_INPUT);
                     metadata(failure, FJ_PRINT_BALANCE_REASON_RAW);
                     zero(out);
-                    row_event.passed();
                 }
             input = source.wire();
             input.normalization_mode = 256;
@@ -314,12 +299,10 @@ namespace PrintBalanceTest {
             zero(out);
             input = source.wire();
             for (unsigned mode = 4; mode <= 255; ++mode) {
-                auto row_event = invalid_modes.case_event("caller-" + std::to_string(caller_index) + "/mode-" + std::to_string(mode));
                 input.normalization_mode = mode;
                 status(call(&input, &out, &failure), FJ_STATUS_PREPARATION_FAILURE);
                 metadata(failure, FJ_PRINT_BALANCE_REASON_BALANCE);
                 zero(out);
-                row_event.passed();
             }
             input = source.wire();
             alignas(FjPrintBalance) std::array<std::byte, sizeof(FjPrintBalance) + 8> resultStorage{};
@@ -338,7 +321,6 @@ namespace PrintBalanceTest {
             status(call(&input, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             zero(out);
             for (unsigned bad = 0; bad < 3; ++bad) {
-                auto row_event = malformed_errors.case_event("caller-" + std::to_string(caller_index) + "/error-" + std::to_string(bad));
                 std::array<char, 8> backing{};
                 backing.fill('z');
                 FjErrorBuffer error{backing.data(), backing.size(), 99};
@@ -355,14 +337,12 @@ namespace PrintBalanceTest {
                             return c == 'z';
                         }),
                         "malformed diagnostics never touch invalid backing");
-                row_event.passed();
             }
             alignas(FjErrorBuffer) std::array<std::byte, sizeof(FjErrorBuffer) + 8> errorStorage{};
             status(call(&input, &out, &failure, reinterpret_cast<FjErrorBuffer*>(errorStorage.data() + 1)), FJ_STATUS_UNSUPPORTED_INPUT);
             zero(out);
             require(errorStorage == decltype(errorStorage){}, "unaligned diagnostic record untouched");
             for (std::size_t capacity : {0u, 1u, 5u, 128u}) {
-                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 128> text{};
                 text.fill('z');
                 FjErrorBuffer error{text.data(), capacity, 99};
@@ -372,9 +352,7 @@ namespace PrintBalanceTest {
                 const auto length = capacity ? std::min(capacity - 1, message.size()) : 0;
                 require(error.length == length && (capacity == 0 ? text[0] == 'z' : text[length] == '\0' && std::string(text.data()) == message.substr(0, length)), "bounded diagnostics do not affect typed failure");
                 zero(out);
-                row_event.passed();
             }
-            auto fault_event = preparation_faults.case_event("caller-" + std::to_string(caller_index) + "/panic");
             status(fj_test_film_recipe_fault(12, 1));
             status(call(nullptr, &out, &failure), FJ_STATUS_UNSUPPORTED_INPUT);
             status(call(&input, &out, &failure));
@@ -417,19 +395,14 @@ namespace PrintBalanceTest {
                 ephemeral.filteredMainIlluminant.fill(0);
             }
             require(project(retained) == captured.at("cases")[0].at("balance"), "fixed raw result owns words after all inputs expire");
-            fault_event.passed();
-            ++caller_index;
         }
-        transport_event.passed();
     }
     void caller(const std::filesystem::path& resources) {
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         auto p = PrintPreflashTest::controls();
-        JuicerTests::Cohort normalization_rows("print_balance.normalize_compensate", {"normalize-0/compensate-0", "normalize-0/compensate-1", "normalize-1/compensate-0", "normalize-1/compensate-1"});
         for (int normalize : {0, 1})
             for (int compensate : {0, 1}) {
-                auto row_event = normalization_rows.case_event("normalize-" + std::to_string(normalize) + "/compensate-" + std::to_string(compensate));
                 p.values.normalize_print_exposure = normalize;
                 p.values.print_exposure_compensation = compensate;
                 const auto product = PrintPreflashTest::build(owner.borrow().assets, p);
@@ -438,7 +411,6 @@ namespace PrintBalanceTest {
                 FjPreparedStateView view{};
                 status(product.view(view, error));
                 require(view.print_normalization_mode == static_cast<unsigned>(2 * normalize + compensate), "all four literal snapshot modes retain native boolean policy");
-                row_event.passed();
             }
         p = PrintPreflashTest::controls();
         JuicerTestSupport::InstanceFixture state;
@@ -527,16 +499,13 @@ namespace PrintBalanceTest {
             row.erase("snapshot_hash");
         }
         require_equal(product_observations(resources, expected), expected, "complete Print balance and surviving identities");
-        JuicerTests::CaseEvent caller_event("cpp", "print-balance/actual-caller");
         caller(resources);
-        caller_event.passed();
     }
 } // namespace PrintBalanceTest
 
 
 namespace PrintBalanceTest {
     void cache(const std::filesystem::path& resources) {
-        JuicerTests::CaseEvent cache_event("cpp", "print-balance/cache");
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         PrintPreflashTest::cuda_ok(cudaSetDevice(0));
@@ -564,9 +533,7 @@ namespace PrintBalanceTest {
             auto* const main = cached.printIllumFiltered;
             const auto charged = ledger->snapshot().chargedBytes;
             require(prepare(original, controls) == originalContentHash && cached.printIllumFiltered == main && ledger->snapshot().chargedBytes == charged, "identical state preserves balance product, light residency and allocation accounting");
-            const JuicerTests::Cohort variants("print_balance.cache_variants", 7);
             for (unsigned variant = 0; variant < 7; ++variant) {
-                auto variant_event = variants.case_event(std::to_string(variant));
                 auto p = controls;
                 if (variant == 0)
                     p.values.print_preflash_exposure = .25;
@@ -594,13 +561,9 @@ namespace PrintBalanceTest {
                 if (variant < 4)
                     require(cached.printIllumFiltered == main, "balance-only changes preserve main light residency");
                 require(prepare(original, controls) == originalContentHash, "restoring a recipe restores its exact balance product");
-                variant_event.passed();
             }
             std::array<std::uint64_t, 4> contentHashes{};
-            const JuicerTests::Cohort modes("print_balance.cache_modes", 4);
-            std::vector<std::unique_ptr<JuicerTests::CaseEvent>> mode_events;
             for (unsigned mode = 0; mode < 4; ++mode) {
-                mode_events.push_back(std::make_unique<JuicerTests::CaseEvent>("print_balance.cache_modes", std::to_string(mode)));
                 auto p = controls;
                 p.values.normalize_print_exposure = (mode & 2u) != 0;
                 p.values.print_exposure_compensation = (mode & 1u) != 0;
@@ -610,12 +573,8 @@ namespace PrintBalanceTest {
                         "balance modes share the same main light");
             }
             require(contentHashes[0] == contentHashes[1] && contentHashes[2] == contentHashes[3], "equal reference factors preserve coincident balance content identities without a mode lane");
-            for (auto& event : mode_events)
-                event->passed();
             prepare(original, controls);
-            const JuicerTests::Cohort sources("print_balance.cache_sources", 2);
             for (bool film : {false, true}) {
-                auto source_event = sources.case_event(film ? "1" : "0");
                 auto changedControls = controls;
                 changedControls.film_key = film ? "kodak_ektar_100" : controls.film_key;
                 changedControls.print_key = film ? controls.print_key : "fujifilm_crystal_archive_typeii";
@@ -627,13 +586,11 @@ namespace PrintBalanceTest {
                             (cached.printProfileTablesDescriptorHash != paperKey) == !film,
                         "stock selection changes the corresponding table slot");
                 prepare(original, controls);
-                source_event.passed();
             }
             require(originalContentHash != 0, "complete held state supplies balance content identity");
             require(JuicerCuda::drain_for_context_retire(cached, failure), failure.diagnostic.c_str());
         }
         require(ledger->snapshot().chargedBytes == 0, "balance cache fixture releases device ownership/accounting");
         JuicerCuda::purge_pinned_upload_staging_for_context(0, context, JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
-        cache_event.passed();
     }
 } // namespace PrintBalanceTest

@@ -4,12 +4,10 @@ import hashlib
 import math
 from pathlib import Path
 
-import numpy as np
-from scipy.optimize import least_squares
-
 import grain_analysis as analysis
+import numpy as np
 from grain_campaign import frames_in, read_json, request_for, statistics, write_json
-
+from scipy.optimize import least_squares
 
 WEIGHTS = np.array([0.2126, 0.7152, 0.0722])
 
@@ -129,7 +127,7 @@ def recheck(experiment, render, output, rows):
         original = read_json(Path(references.captures[f"{name}-calibration-current"]["path"]).parent / f"{name}.json")
         report = {"row": row, "chroma_fraction": fraction, "disposition": "unmatched", "search": [], "attempts": []}
 
-        def capture(phase, arm, times, **controls):
+        def capture(phase, arm, times, *, row=row, name=name, **controls):
             request = request_for(experiment, row, arm, times, **controls)
             key = f"{name}-{phase}-{arm}"
             if arm == "current" and key in references.captures:
@@ -153,7 +151,7 @@ def recheck(experiment, render, output, rows):
             )
             grid = sorted(enumerate(experiment["sizes"]), key=lambda item: abs(math.log2(item[1] / start_size)))
 
-            def check_fit(phase, estimate):
+            def check_fit(phase, estimate, *, times=times, current=current, report=report, name=name):
                 controls = {key: estimate[key] for key in ("size", "amounts")}
                 captured, observed = capture(phase, "film", times, **controls)
                 residual = analysis.match_residuals(observed, current)

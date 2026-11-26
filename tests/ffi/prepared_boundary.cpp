@@ -368,12 +368,9 @@ namespace JuicerCudaTest {
             check_spectral_packet_overlap(runtime.cuda, context, frame, packets);
             return true;
         }
-        const auto invocationContext = std::string("held-route-") + std::to_string(state.route) + "-instance-" + std::to_string(instanceToken) +
-                                       "-frame-" + std::to_string(submission.frame_token) + "-contract-" + (contract ? "yes" : "no") +
-                                       "-lifetime-" + (lifetime ? "yes" : "no") + "-case-" + std::to_string(static_cast<unsigned>(lifetimeCase));
-        check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, nullptr, invocationContext);
+        check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, nullptr);
         const bool success = (contract || (lifetime && lifetimeCase == StateLifetimeCase::SuppliedStream))
-                                 ? check_render_contract(runtime.cuda, context, frame, submission, prepared, &error, invocationContext).category == FJ_STATUS_SUCCESS
+                                 ? check_render_contract(runtime.cuda, context, frame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
                                  : render_raw_prepared(runtime.cuda, frame, submission, prepared, {}, &error).status.category == FJ_STATUS_SUCCESS;
         if (!success) {
             diagnostic.assign(message.data(), error.length);
@@ -566,11 +563,8 @@ namespace JuicerCudaTest {
                 std::array<char, 2048> message{};
                 FjErrorBuffer error{message.data(), message.size(), 0};
                 const auto acquisitions = fj_test_noise_acquisition_count();
-                const auto invocationContext = std::string("boundary-route-") + std::to_string(state.route) + "-instance-" + std::to_string(snapshot.instanceToken.value) +
-                                               "-frame-" + std::to_string(snapshot.frameToken.value) + "-snapshot-" + std::to_string(snapshot.snapshotId) +
-                                               "-time-" + std::to_string(frame.time_frames) + "-phase-" + invocation.phase;
                 if (!invocation.printObservation)
-                    check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, inputs.hostPreparation, invocationContext);
+                    check_frame_bindings(runtime.cuda, context, frame, submission, prepared, &state, inputs.hostPreparation);
                 if (invocation.phase == "negative-print/cold" &&
                     !check_optional_scanner_base(runtime.cuda, frame, submission, prepared, inputs.hostPreparation, diagnostic))
                     return false;

@@ -17,13 +17,10 @@
 #include "host_reference.h"
 
 #include "juicer_ofx_api.h"
-#include "../ffi/case_results.h"
 
 namespace {
     using ofx_test::ContextHost;
     using ofx_test::Definition;
-    constexpr std::string_view kCaller = "ofx.context";
-    constexpr std::array kCases{"reference", "filter", "contexts", "acquisitions", "definitions", "properties", "catalog", "reentry"};
     constexpr std::array<std::pair<std::string_view, std::string_view>, 127> kExpected{{
         {"InputGroup", kOfxParamTypeGroup},
         {"Exposure", kOfxParamTypeDouble},
@@ -394,27 +391,19 @@ namespace {
         require(calls == expected, "OFXS startup sequence");
     }
     void reference_case(const ContextHost& host, const std::vector<ofx_test::ContextCall>& startup) {
-        JuicerTests::CaseEvent test(kCaller, "reference");
-        const JuicerTests::Cohort rows("ofx.context.reference", {"census", "startup", "missing", "extra", "type", "default", "option_order", "target", "premature_success", "late_stop"});
         {
-            auto row = rows.case_event("census");
             check_census(host);
             require(!host.callback_error, "reference host callback");
-            row.passed();
         }
         {
-            auto row = rows.case_event("startup");
             check_startup(startup);
-            row.passed();
         }
         auto mutation = [&](const char* id, auto change) {
-            auto row = rows.case_event(id);
             ContextHost copy;
             copy.calls = host.calls;
             copy.definitions = host.definitions;
             change(copy);
             require(!same(host, copy), std::string("comparator missed ") + id);
-            row.passed();
         };
         mutation("missing", [](auto& h) {
             h.definitions.pop_back();
@@ -438,7 +427,6 @@ namespace {
             h.calls.back().target += 1;
         });
         {
-            auto row = rows.case_event("premature_success");
             require(matches_trace(host, host.calls, host.calls.size()), "complete trace positive control");
             ContextHost premature;
             premature.calls = host.calls;
@@ -446,10 +434,8 @@ namespace {
             require(first < host.calls.size(), "premature trace control boundary");
             premature.calls.resize(first);
             require(!matches_trace(premature, host.calls, host.calls.size()), "premature success was accepted");
-            row.passed();
         }
         {
-            auto row = rows.case_event("late_stop");
             const auto first = call_end(host.calls, "string/OfxPropLabel");
             const auto second = call_end(host.calls, "string/OfxPropLabel", first);
             require(second > first && host.calls[first - 1].target != host.calls[second - 1].target, "distinct failure control boundaries");
@@ -460,9 +446,7 @@ namespace {
             stopped.calls = host.calls;
             stopped.calls.resize(second);
             require(!matches_trace(stopped, host.calls, first), "late matching failure was accepted");
-            row.passed();
         }
-        test.passed();
     }
     void retire_scanner_grid_from_reference(ContextHost& archive) {
         constexpr auto control = "ScannerLutResolution";
@@ -487,11 +471,8 @@ namespace {
                 --call.target;
     }
     void filter_case(OfxPlugin* plugin, const ContextHost& reference) {
-        JuicerTests::CaseEvent test(kCaller, "filter");
-        const JuicerTests::Cohort rows("ofx.context.filter", {"equal", "repeat", "string_choice_sequence"});
         ContextHost first, second;
         {
-            auto row = rows.case_event("equal");
             require(describe(plugin, first) == kOfxStatOK && !first.callback_error, "candidate filter");
             ContextHost legacy;
             historical_descriptor_projection(first, legacy);
@@ -507,68 +488,46 @@ namespace {
             ContextHost reordered;
             ofx_test::reference::context(altered, reordered);
             require(!same(reordered, legacy), "candidate accepted reordered reference definitions");
-            row.passed();
         }
         {
-            auto row = rows.case_event("repeat");
             require(describe(plugin, second) == kOfxStatOK && !second.callback_error && first.definitions == second.definitions && first.calls == second.calls, "fresh filter repeat");
-            row.passed();
         }
         {
-            auto row = rows.case_event("string_choice_sequence");
             check_choice_pairs(first);
-            row.passed();
         }
-        test.passed();
     }
     void contexts_case(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "contexts");
-        const JuicerTests::Cohort rows("ofx.context.contexts", {"generator", "transition", "paint", "general", "retimer", "unknown", "null_effect", "null_input", "advertised"});
         const std::array pairs{std::pair{"generator", kOfxImageEffectContextGenerator}, std::pair{"transition", kOfxImageEffectContextTransition}, std::pair{"paint", kOfxImageEffectContextPaint}, std::pair{"general", kOfxImageEffectContextGeneral}, std::pair{"retimer", kOfxImageEffectContextRetimer}};
         for (const auto& [id, name] : pairs) {
-            auto row = rows.case_event(id);
             ContextHost host;
             host.context = name;
             require(describe(plugin, host) == kOfxStatOK && host.definitions.empty() && host.calls.size() == 5 && !host.callback_error, "nonfilter context");
-            row.passed();
         }
         {
-            auto row = rows.case_event("unknown");
             ContextHost host;
             host.context = "unknown";
             require(describe(plugin, host) == kOfxStatFailed && host.calls.size() == 4 && host.definitions.empty(), "unknown context");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_effect");
             ContextHost host;
             require(call(plugin, kOfxImageEffectActionDescribeInContext, nullptr, host.context_handle()) == kOfxStatErrBadHandle && host.calls.empty(), "null effect");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_input");
             ContextHost host;
             require(call(plugin, kOfxImageEffectActionDescribeInContext, host.effect_handle()) == kOfxStatErrBadHandle && host.calls.empty(), "null input");
-            row.passed();
         }
         {
-            auto row = rows.case_event("advertised");
             ContextHost host;
             require(call(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK && host.effect_values[kOfxImageEffectPropSupportedContexts] == std::vector<ofx_test::Value>{std::string(kOfxImageEffectContextFilter)}, "advertised contexts");
-            row.passed();
         }
-        test.passed();
     }
     void acquisitions_case(OfxPlugin* plugin, const ContextHost& baseline) {
-        JuicerTests::CaseEvent test(kCaller, "acquisitions");
         const std::vector<std::string> names{"effect_first", "param_set", "param_props", "get_string/OfxImageEffectPropContext", "effect_second"};
         auto ids = matrix_rows("status", names);
         for (const auto* id : {"null_first", "null_params_filter", "null_params_nonfilter", "null_param_props", "null_second", "distinct_second", "null_context", "failed_null_context", "failed_null_first"})
             ids.emplace_back(id);
-        const JuicerTests::Cohort rows("ofx.context.acquisitions", ids);
         for (const auto& name : names)
             for (int status = 0; status < 15; ++status) {
-                auto row = rows.case_event("status/" + name + "/" + std::to_string(status));
                 ContextHost host;
                 host.statuses[name] = status;
                 const auto result = describe(plugin, host);
@@ -577,18 +536,14 @@ namespace {
                         "acquisition status " + name);
                 const auto count = accepted(status) ? baseline.calls.size() : call_end(baseline.calls, name);
                 require(matches_trace(host, baseline.calls, count), "exact acquisition trace " + name);
-                row.passed();
             }
         {
-            auto row = rows.case_event("null_first");
             ContextHost h;
             h.null_outputs["effect_first"] = true;
             require(describe(plugin, h) == kOfxStatErrBadHandle, "null first");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "effect_first")), "null first trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_params_filter");
             ContextHost h;
             h.null_outputs["param_set"] = true;
             auto expected = baseline.calls;
@@ -596,10 +551,8 @@ namespace {
             const auto count = call_end(expected, "param_define/InputGroup") - 1;
             require(describe(plugin, h) == kOfxStatErrBadHandle && h.definitions.size() == 2 && h.definitions[0].name == "Source" && h.definitions[1].name == "Output", "null params filter");
             require(matches_trace(h, expected, count), "null params filter trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_params_nonfilter");
             ContextHost h;
             h.null_outputs["param_set"] = true;
             h.context = kOfxImageEffectContextGeneral;
@@ -609,61 +562,46 @@ namespace {
             const auto count = call_end(expected, "effect_second");
             require(describe(plugin, h) == kOfxStatOK && h.definitions.empty(), "null params nonfilter");
             require(matches_trace(h, expected, count), "null params nonfilter trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_param_props");
             ContextHost h;
             h.null_outputs["param_props"] = true;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions, "unused params properties");
             require(matches_trace(h, baseline.calls, baseline.calls.size()), "unused params properties trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_second");
             ContextHost h;
             h.null_outputs["effect_second"] = true;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions, "unused second properties");
             require(matches_trace(h, baseline.calls, baseline.calls.size()), "unused second properties trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("distinct_second");
             ContextHost h;
             h.distinct_second = true;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions && h.calls == baseline.calls, "second properties target");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_context");
             ContextHost h;
             h.null_outputs["get_string"] = true;
             require(describe(plugin, h) == kOfxStatErrBadHandle, "null context");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "get_string/OfxImageEffectPropContext")), "null context trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("failed_null_context");
             ContextHost h;
             h.null_outputs["get_string"] = true;
             h.statuses["get_string/OfxImageEffectPropContext"] = kOfxStatErrMemory;
             require(describe(plugin, h) == kOfxStatErrMemory, "failed null context precedence");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "get_string/OfxImageEffectPropContext")), "failed null context trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("failed_null_first");
             ContextHost h;
             h.null_outputs["effect_first"] = true;
             h.statuses["effect_first"] = kOfxStatErrMemory;
             require(describe(plugin, h) == kOfxStatErrMemory, "failed null first precedence");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "effect_first")), "failed null first trace");
-            row.passed();
         }
-        test.passed();
     }
     void definitions_case(OfxPlugin* plugin, const ContextHost& baseline) {
-        JuicerTests::CaseEvent test(kCaller, "definitions");
         const std::vector<std::string> kinds{"InputGroup", "Exposure", "CameraMeteringMethod", "CameraAutoExposure", "FilmProfileKey", "CouplersLangmuirDonorKRgb", "CouplersGammaInterlayerRToGb", "HalationBounceCount", "GrainResetAdvanced"};
         auto ids = matrix_rows("param", {"InputGroup"});
         for (const auto& name : kinds)
@@ -672,69 +610,52 @@ namespace {
             ids.push_back("clip/" + std::to_string(status));
         for (const auto* id : {"null_param", "null_clip", "failed_null_param", "failed_null_clip"})
             ids.emplace_back(id);
-        const JuicerTests::Cohort rows("ofx.context.definitions", ids);
         for (int status = 0; status < 15; ++status) {
-            auto row = rows.case_event("param/InputGroup/" + std::to_string(status));
             ContextHost h;
             h.statuses["param_define/InputGroup"] = status;
             require(describe(plugin, h) == (accepted(status) ? kOfxStatOK : status), "paramDefine status");
             const auto count = accepted(status) ? baseline.calls.size() : call_end(baseline.calls, "param_define/InputGroup");
             require(matches_trace(h, baseline.calls, count), "exact paramDefine trace");
-            row.passed();
         }
         for (const auto& name : kinds) {
-            auto row = rows.case_event("kind/" + name);
             ContextHost h;
             h.statuses["param_define/" + name] = kOfxStatErrMemory;
             require(describe(plugin, h) == kOfxStatErrMemory, "param kind failure");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "param_define/" + name)), "exact parameter kind trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_param");
             ContextHost h;
             h.null_outputs["param_define"] = true;
             require(describe(plugin, h) == kOfxStatErrBadHandle, "null parameter");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "param_define/InputGroup")), "null parameter trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("null_clip");
             ContextHost h;
             h.null_outputs["clip_define"] = true;
             require(describe(plugin, h) == kOfxStatErrBadHandle, "null clip");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "clip_define/Source")), "null clip trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("failed_null_param");
             ContextHost h;
             h.statuses["param_define/InputGroup"] = kOfxStatErrMemory;
             h.null_outputs["param_define"] = true;
             require(describe(plugin, h) == kOfxStatErrMemory, "paramDefine status before null");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "param_define/InputGroup")), "failed null parameter trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("failed_null_clip");
             ContextHost h;
             h.statuses["clip_define/Source"] = kOfxStatErrMemory;
             h.null_outputs["clip_define"] = true;
             require(describe(plugin, h) == kOfxStatErrBadHandle, "clipDefine ignores status before null");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "clip_define/Source")), "failed null clip trace");
-            row.passed();
         }
         for (int status = 0; status < 15; ++status) {
-            auto row = rows.case_event("clip/" + std::to_string(status));
             ContextHost h;
             h.statuses["clip_define/Source"] = status;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions && h.calls == baseline.calls, "clip status ignored");
-            row.passed();
         }
-        test.passed();
     }
     void properties_case(OfxPlugin* plugin, const ContextHost& baseline) {
-        JuicerTests::CaseEvent test(kCaller, "properties");
         const std::vector<std::string> operations{"string/OfxPropLabel", "int/OfxImageEffectPropSupportsTiles", "double/OfxParamPropDefault", "dimension/OfxImageEffectPropSupportedComponents"};
         auto ids = matrix_rows("required", operations);
         for (int status = 0; status < 15; ++status) {
@@ -743,27 +664,21 @@ namespace {
         }
         for (const auto* id : {"hint_then_required", "open_then_required", "append_nonzero", "negative_dimension", "negative_choice", "negative_enum", "unpaired_dimensions", "exact_double"})
             ids.emplace_back(id);
-        const JuicerTests::Cohort rows("ofx.context.properties", ids);
         for (const auto& operation : operations)
             for (int status = 0; status < 15; ++status) {
-                auto row = rows.case_event("required/" + operation + "/" + std::to_string(status));
                 ContextHost h;
                 h.statuses[operation] = status;
                 require(describe(plugin, h) == (accepted(status) ? kOfxStatOK : property_result(status)), "property status " + operation);
                 const auto count = accepted(status) ? baseline.calls.size() : call_end(baseline.calls, operation);
                 require(matches_trace(h, baseline.calls, count), "exact required property trace " + operation);
-                row.passed();
             }
         for (int status = 0; status < 15; ++status)
             for (const auto& [id, key] : {std::pair{"hint", "string/OfxParamPropHint"}, std::pair{"open", "int/OfxParamPropGroupOpen"}}) {
-                auto row = rows.case_event(std::string(id) + "/" + std::to_string(status));
                 ContextHost h;
                 h.statuses[key] = status;
                 require(describe(plugin, h) == kOfxStatOK && !h.callback_error && h.calls == baseline.calls, "suppressed property status");
-                row.passed();
             }
         for (const auto& [id, key] : {std::pair{"hint_then_required", "string/OfxParamPropHint"}, std::pair{"open_then_required", "int/OfxParamPropGroupOpen"}}) {
-            auto row = rows.case_event(id);
             ContextHost h;
             h.statuses[key] = kOfxStatErrMemory;
             h.status_after[key] = {"double/OfxParamPropDefault", kOfxStatErrMemory};
@@ -771,10 +686,8 @@ namespace {
             const auto count = call_end(baseline.calls, "double/OfxParamPropDefault", trigger);
             require(describe(plugin, h) == kOfxStatErrMemory, "later required failure precedence");
             require(matches_trace(h, baseline.calls, count), "exact later required failure trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("append_nonzero");
             ContextHost h;
             h.dimensions[kOfxParamPropChoiceOption] = 2;
             h.dimensions[kOfxParamPropChoiceEnum] = 2;
@@ -789,34 +702,26 @@ namespace {
                     }),
                     "append index");
             check_choice_pairs(h);
-            row.passed();
         }
         {
-            auto row = rows.case_event("negative_dimension");
             ContextHost h;
             h.dimensions[kOfxImageEffectPropSupportedComponents] = -1;
             require(describe(plugin, h) == kOfxStatErrBadIndex, "negative dimension");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "dimension/OfxImageEffectPropSupportedComponents")), "negative component dimension trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("negative_choice");
             ContextHost h;
             h.dimensions[kOfxParamPropChoiceOption] = -1;
             require(describe(plugin, h) == kOfxStatErrBadIndex, "negative choice dimension");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "dimension/OfxParamPropChoiceOption")), "negative choice dimension trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("negative_enum");
             ContextHost h;
             h.dimensions[kOfxParamPropChoiceEnum] = -1;
             require(describe(plugin, h) == kOfxStatErrBadIndex, "negative enum dimension");
             require(matches_trace(h, baseline.calls, call_end(baseline.calls, "dimension/OfxParamPropChoiceEnum")), "negative enum dimension trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("unpaired_dimensions");
             ContextHost h;
             h.dimensions[kOfxParamPropChoiceOption] = 1;
             h.dimensions[kOfxParamPropChoiceEnum] = 0;
@@ -827,56 +732,40 @@ namespace {
                     expected[i].index = 1;
             require(describe(plugin, h) == kOfxStatFailed, "mismatched dimensions");
             require(matches_trace(h, expected, count), "mismatched dimensions trace");
-            row.passed();
         }
         {
-            auto row = rows.case_event("exact_double");
             require(std::any_of(baseline.calls.begin(), baseline.calls.end(), [](const auto& c) {
                         return c.operation == "double" && std::holds_alternative<double>(c.value) && std::get<double>(c.value) != 0.0;
                     }),
                     "double positive control");
-            row.passed();
         }
-        test.passed();
     }
     void catalog_case(const ContextHost& host, const ContextHost& reference) {
-        JuicerTests::CaseEvent test(kCaller, "catalog");
-        const JuicerTests::Cohort rows("ofx.context.catalog", {"film", "print", "routes"});
         for (const auto& [id, name, value] : {std::tuple{"film", "FilmProfileKey", "kodak_portra_400"}, std::tuple{"print", "PrintProfileKey", "kodak_portra_endura"}}) {
-            auto row = rows.case_event(id);
             const auto& d = definition(host, name);
             const auto& r = definition(reference, name);
             require(d.properties == r.properties && d.properties.at(kOfxParamPropDefault) == std::vector<ofx_test::Value>{std::string(value)}, "catalog default/equality");
             const auto& keys = d.properties.at(kOfxParamPropChoiceEnum);
             const auto& labels = d.properties.at(kOfxParamPropChoiceOption);
             require(!keys.empty() && keys.size() == labels.size(), "catalog options");
-            row.passed();
         }
         {
-            auto row = rows.case_event("routes");
             const auto& p = definition(host, "ScanRoute").properties;
             require(p.at(kOfxParamPropChoiceEnum) == std::vector<ofx_test::Value>{std::string("NegativeDirectScan"), std::string("NegativePrintScan"), std::string("PositiveDirectScan"), std::string("PositivePrintScan")}, "route keys");
             require(p.at(kOfxParamPropChoiceOption) == std::vector<ofx_test::Value>{std::string("Negative direct scan"), std::string("Negative print scan"), std::string("Positive direct scan"), std::string("Positive print scan")}, "route labels");
-            row.passed();
         }
-        test.passed();
     }
     void reentry_case(OfxPlugin* plugin, const ContextHost& baseline) {
-        JuicerTests::CaseEvent test(kCaller, "reentry");
-        const JuicerTests::Cohort rows("ofx.context.reentry", {"unload", "rebind", "recovery"});
         {
-            auto row = rows.case_event("unload");
             ContextHost h;
             int nested = -1;
             h.reentry = [&] {
                 nested = call(plugin, kOfxActionUnload);
             };
             require(describe(plugin, h) == kOfxStatOK && nested == kOfxStatErrFatal && h.calls == baseline.calls && h.definitions == baseline.definitions, "reentrant unload");
-            row.passed();
         }
         ContextHost replacement;
         {
-            auto row = rows.case_event("rebind");
             ContextHost h;
             h.reentry = [&] {
                 plugin->setHost(replacement.binding());
@@ -885,29 +774,19 @@ namespace {
             ContextHost next;
             require(describe(plugin, next) == kOfxStatFailed && next.calls.empty(), "rebind disposition");
             require(call(plugin, kOfxActionUnload) == kOfxStatOK, "rebind cleanup");
-            row.passed();
         }
         {
-            auto row = rows.case_event("recovery");
             plugin->setHost(replacement.binding());
             require(call(plugin, kOfxActionLoad) == kOfxStatOK, "rebind reload");
             ContextHost h;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions && h.calls == baseline.calls, "rebind recovery");
             require(call(plugin, kOfxActionUnload) == kOfxStatOK, "rebind final unload");
-            row.passed();
         }
-        test.passed();
     }
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
-        return 0;
-    }
     require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: context fixture --reference file");
-    JuicerTests::CaseLog log;
     auto* candidate = OfxGetPlugin(0);
     require(candidate, "candidate descriptor");
     ContextHost oracle;
@@ -926,7 +805,6 @@ int main(int argc, char** argv) try {
     properties_case(candidate, baseline);
     catalog_case(baseline, oracle);
     reentry_case(candidate, baseline);
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "context fixture: %s\n", error.what());

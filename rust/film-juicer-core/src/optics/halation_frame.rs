@@ -469,7 +469,6 @@ impl HalationFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     #[test]
@@ -515,21 +514,41 @@ mod tests {
             ("positive-zero", 0.0),
             ("small-positive", 1.0e-6),
         ];
-        let mut cases = RowCases::new(
-            "halation-gaussian-identity",
-            sigmas.iter().map(|(id, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(sigmas.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "halation-gaussian-identity"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "halation-gaussian-identity"
         );
         for (id, sigma) in sigmas {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let g = HalationGaussian::new(sigma, HalationFrameField::ScatterCore, 0, None, true)
                 .unwrap();
             assert_eq!(g.kind(), HalationGaussianKind::Identity);
             assert_eq!(g.radius(), 0);
             assert_eq!(g.fir_weights().map(f32::to_bits), [0; 19]);
             assert_eq!(g.yvv().map(f32::to_bits), [0; 4]);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -696,17 +715,34 @@ mod tests {
                 format!("{group}/{}", row["input"]["name"].as_str().unwrap())
             })
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("halation-frame", expected_ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(expected_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "halation-frame"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "halation-frame"
+        );
         for (index, row) in rows.iter().enumerate() {
             let group = if index < case_count {
                 "case"
             } else {
                 "product"
             };
-            let row_case = cases.case(format!(
-                "{group}/{}",
-                row["input"]["name"].as_str().unwrap()
-            ));
+            let row_case = AsRef::<str>::as_ref(
+                &(format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+            )
+            .to_owned();
             let mismatch_count = mismatches.len();
             let result = HalationFrame::new(
                 input(&row["input"]),
@@ -752,12 +788,32 @@ mod tests {
                 mismatches.push(json!({"case":row["input"]["name"],"actual":actual,"expected":row["descriptor"]}));
             }
             if mismatches.len() == mismatch_count {
-                row_case.passed();
+                assert!(
+                    cases_remaining.remove(&row_case),
+                    "unexpected or repeated comparison: {row_case}"
+                );
             }
         }
         let primitives = captured["primitives"].as_array().unwrap();
-        let mut primitive_cases = RowCases::new("halation-primitives", ["exp-sweep"]);
-        let primitive_case = primitive_cases.case("exp-sweep");
+        let primitive_cases_ids: Vec<_> = IntoIterator::into_iter(["exp-sweep"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !primitive_cases_ids.is_empty(),
+            "empty case set: {}",
+            "halation-primitives"
+        );
+        let primitive_cases_count = primitive_cases_ids.len();
+        let mut primitive_cases_remaining = primitive_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            primitive_cases_remaining.len(),
+            primitive_cases_count,
+            "duplicate case IDs: {}",
+            "halation-primitives"
+        );
+        let primitive_case = AsRef::<str>::as_ref(&("exp-sweep")).to_owned();
         let mut primitive_count = 0;
         let primitive_differences = primitives
             .iter()
@@ -770,7 +826,10 @@ mod tests {
             })
             .count();
         assert_eq!(primitive_count, primitives.len());
-        primitive_case.passed();
+        assert!(
+            primitive_cases_remaining.remove(&primitive_case),
+            "unexpected or repeated comparison: {primitive_case}"
+        );
         println!(
             "Halation: {} complete records; {primitive_differences} f64 exp differences; {} full-record mismatches",
             rows.len(),
@@ -783,7 +842,13 @@ mod tests {
             mismatches.is_empty(),
             "exact whole halation schedule gate failed"
         );
-        cases.finish();
-        primitive_cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
+        assert!(
+            primitive_cases_remaining.is_empty(),
+            "missing comparisons: {primitive_cases_remaining:?}"
+        );
     }
 }

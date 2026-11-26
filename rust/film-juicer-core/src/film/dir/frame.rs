@@ -328,7 +328,6 @@ impl FailureTrace {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
 
@@ -450,14 +449,27 @@ mod tests {
                     .map(|row| format!("product/{}", row["input"]["name"].as_str().unwrap())),
             )
             .collect::<Vec<_>>();
-        let mut row_cases = RowCases::new("dir-frame", expected_ids);
+        let row_cases_ids: Vec<_> = IntoIterator::into_iter(expected_ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!row_cases_ids.is_empty(), "empty case set: {}", "dir-frame");
+        let row_cases_count = row_cases_ids.len();
+        let mut row_cases_remaining = row_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            row_cases_remaining.len(),
+            row_cases_count,
+            "duplicate case IDs: {}",
+            "dir-frame"
+        );
         for (group, row) in cases
             .iter()
             .map(|row| ("case", row))
             .chain(products.iter().map(|row| ("product", row)))
         {
             let name = row["input"]["name"].as_str().unwrap();
-            let case = row_cases.case(format!("{group}/{name}"));
+            let case = AsRef::<str>::as_ref(&(format!("{group}/{name}"))).to_owned();
             let result = Plan::new(input(&row["input"]));
             assert_eq!(result.is_ok(), row["success"].as_bool().unwrap(), "{name}");
             match result {
@@ -481,8 +493,14 @@ mod tests {
                     }
                 }
             }
-            case.passed();
+            assert!(
+                row_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        row_cases.finish();
+        assert!(
+            row_cases_remaining.is_empty(),
+            "missing comparisons: {row_cases_remaining:?}"
+        );
     }
 }

@@ -13,7 +13,6 @@
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 #include "runtime_c.h"
 
 
@@ -90,15 +89,8 @@ static_assert(std::is_move_constructible_v<JuicerTestSupport::RuntimeFixture>);
 static_assert(!std::is_constructible_v<JuicerProcess::Root>);
 static_assert(!std::is_destructible_v<JuicerProcess::Root>);
 
-int main(int argc, char** argv) {
+int main() {
     try {
-        JuicerTests::CaseLog case_log;
-        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
-            for (const char* id : {"noncreating_access", "invalid_creation", "metadata_only_create", "scoped_destroy", "failed_terminal_close"})
-                JuicerTests::list_case("cuda_owner", id);
-            return 0;
-        }
-        JuicerTests::CaseEvent access_event("cuda_owner", "noncreating_access");
         JuicerTestSupport::RuntimeFixture empty;
         FjRuntimeView emptyView{};
         std::array<char, 64> emptyDiagnostic{'s', 't', 'a', 'l', 'e'};
@@ -110,33 +102,22 @@ int main(int argc, char** argv) {
                 "empty ProcessRuntime left a stale diagnostic");
         require(empty.close().category == FJ_STATUS_SUCCESS, "empty ProcessRuntime close failed");
         require(empty.close().category == FJ_STATUS_SUCCESS, "repeated empty close failed");
-        access_event.passed();
 
-        JuicerTests::CaseEvent invalid_event("cuda_owner", "invalid_creation");
         std::array<char, 8> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 99};
         FjRuntime* rejected = nullptr;
-        JuicerTests::Cohort invalid_creation("cuda_owner.invalid_create_variant", {"null-path-data", "null-output", "embedded-path-nul"});
-        auto invalid_path_event = invalid_creation.case_event("null-path-data");
         FjStatus result = create_runtime(FjPathView{nullptr, 1, FJ_PATH_UNIX_BYTES}, &rejected, &error);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT && !rejected,
                 "invalid Runtime path published an owner");
         require(error.length == diagnostic.size() - 1 && diagnostic.back() == '\0',
                 "Runtime creation diagnostic did not truncate/terminate");
-        invalid_path_event.passed();
-        auto null_output_event = invalid_creation.case_event("null-output");
         result = create_runtime(JuicerAssets::NativePathArgument(std::filesystem::path("path")).view(), nullptr, nullptr);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT, "null Runtime output accepted");
-        null_output_event.passed();
-        auto embedded_nul_event = invalid_creation.case_event("embedded-path-nul");
         const std::array<char, 3> embeddedNul{{'a', '\0', 'b'}};
         result = create_runtime(JuicerAssets::NativePathArgument(std::filesystem::path(std::string(embeddedNul.data(), embeddedNul.size()))).view(), &rejected, nullptr);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT && !rejected,
                 "embedded NUL accepted in Runtime resource path");
-        embedded_nul_event.passed();
-        invalid_event.passed();
 
-        JuicerTests::CaseEvent metadata_event("cuda_owner", "metadata_only_create");
         result = fj_test_runtime_c_consumer(
             JuicerAssets::NativePathArgument(std::filesystem::path("missing-c-runtime-consumer-resources")).view());
         require(result.category == FJ_STATUS_SUCCESS && result.api == FJ_API_NONE && result.native_code == 0,
@@ -154,9 +135,7 @@ int main(int argc, char** argv) {
         require(fj_cuda_destroy(native, &malformedDestroy).category == FJ_STATUS_UNSUPPORTED_INPUT && malformedDestroy.length == 0,
                 "malformed native destroy did not consume ownership with the preserved diagnostic status");
         const std::array<std::string, 2> directories{"missing-first-runtime-resources", "missing-reloaded-runtime-resources"};
-        JuicerTests::Cohort create_variants("cuda_owner.metadata_create_variant", {directories[0], directories[1]});
         for (const auto& directory : directories) {
-            auto variant_event = create_variants.case_event(directory);
             JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(directory);
             {
@@ -186,22 +165,15 @@ int main(int argc, char** argv) {
             }
             require(runtime.close().category == FJ_STATUS_SUCCESS, "metadata-only Runtime failed to close");
             require(runtime.close().category == FJ_STATUS_SUCCESS, "consumed Runtime close was not harmless");
-            variant_event.passed();
         }
-        metadata_event.passed();
-        JuicerTests::CaseEvent scoped_event("cuda_owner", "scoped_destroy");
         {
             JuicerTestSupport::RuntimeFixture runtime;
             runtime.create("missing-scoped-runtime-resources");
             require(runtime.borrow().assets && runtime.borrow().cuda, "scoped Runtime borrow failed");
         }
         require(fj_test_assets_live_owners() == 0, "scoped Runtime destruction retained Rust Assets");
-        scoped_event.passed();
-        JuicerTests::CaseEvent close_event("cuda_owner", "failed_terminal_close");
         check_failed_close();
-        close_event.passed();
         std::puts("PASS CUDA owner: noncreating Runtime access/teardown, invalid/runtime and metadata-only creation, duplicate registration, shared view, reload and failed close");
-        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL CUDA owner: %s\n", error.what());

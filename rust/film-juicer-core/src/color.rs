@@ -476,7 +476,6 @@ pub fn project_linear_rgb_to_xyz(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn inverse_matches_the_initialized_native_capture() {
@@ -510,12 +509,21 @@ mod tests {
                 false,
             ),
         ];
-        let mut cases = RowCases::new(
-            "input-matrix-inverse-fallback",
-            determinants.iter().map(|(id, _, _)| *id),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(determinants.iter().map(|(id, _, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "input-matrix-inverse-fallback");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "input-matrix-inverse-fallback"
         );
         for (id, det, expected_identity) in determinants {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let mut m = identity;
             m[0] = det;
             if expected_identity {
@@ -523,8 +531,14 @@ mod tests {
             } else {
                 assert_ne!(super::inverse(m), identity);
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

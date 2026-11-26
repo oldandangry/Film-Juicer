@@ -635,7 +635,6 @@ fn finish_asset_token(token: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -659,18 +658,32 @@ mod tests {
 
     #[test]
     fn checked_lengths_precede_reservations() {
-        let mut cases = RowCases::new(
-            "profile-table-size-boundaries",
-            [
-                "empty-axis",
-                "one-entry",
-                "maximum-supported-count",
-                "usize-maximum-overflow",
-                "usize-div-13-overflow",
-                "isize-bound-overflow",
-            ],
+        let cases_ids: Vec<_> = IntoIterator::into_iter([
+            "empty-axis",
+            "one-entry",
+            "maximum-supported-count",
+            "usize-maximum-overflow",
+            "usize-div-13-overflow",
+            "isize-bound-overflow",
+        ])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "profile-table-size-boundaries"
         );
-        let empty_case = cases.case("empty-axis");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "profile-table-size-boundaries"
+        );
+        let empty_case = AsRef::<str>::as_ref(&("empty-axis")).to_owned();
         assert_eq!(
             check_table_size(0),
             Err(ProfileCompletionErrorKind::EmptyAxis)
@@ -685,26 +698,41 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind, ProfileCompletionErrorKind::EmptyAxis);
-        empty_case.passed();
-        let case = cases.case("one-entry");
+        assert!(
+            cases_remaining.remove(&empty_case),
+            "unexpected or repeated comparison: {empty_case}"
+        );
+        let case = AsRef::<str>::as_ref(&("one-entry")).to_owned();
         assert!(check_table_size(1).is_ok());
-        case.passed();
-        let max_case = cases.case("maximum-supported-count");
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
+        let max_case = AsRef::<str>::as_ref(&("maximum-supported-count")).to_owned();
         assert!(check_table_size(i32::MAX as usize).is_ok());
-        max_case.passed();
+        assert!(
+            cases_remaining.remove(&max_case),
+            "unexpected or repeated comparison: {max_case}"
+        );
         for (id, count) in [
             ("usize-maximum-overflow", usize::MAX),
             ("usize-div-13-overflow", usize::MAX / 13),
             ("isize-bound-overflow", isize::MAX as usize / 52 + 1),
         ] {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 check_table_size(count),
                 Err(ProfileCompletionErrorKind::Size)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -717,13 +745,31 @@ mod tests {
             }
             ids.push(format!("{role_id}/total-reservation"));
         }
-        let mut cases = RowCases::new("profile-reservation-failures", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "profile-reservation-failures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "profile-reservation-failures"
+        );
         for role in [Role::Film, Role::Print] {
             let role_id = if role == Role::Film { "film" } else { "print" };
             // Axis first, then all nine layer/channel buffers; fail each actual
             // reservation with a bounded capacity error, including the last one.
             for fail_at in 0..10 {
-                let case = cases.case(format!("{role_id}/reservation/{fail_at}"));
+                let case =
+                    AsRef::<str>::as_ref(&(format!("{role_id}/reservation/{fail_at}"))).to_owned();
                 let mut call = 0;
                 let error = complete(
                     source(role),
@@ -742,9 +788,12 @@ mod tests {
                 assert_eq!(error.stock, "capacity-case");
                 assert_eq!(error.role, role);
                 assert_eq!(call, fail_at + 1);
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
-            let case = cases.case(format!("{role_id}/total-reservation"));
+            let case = AsRef::<str>::as_ref(&(format!("{role_id}/total-reservation"))).to_owned();
             let error = complete(
                 source(role),
                 role,
@@ -756,9 +805,15 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.kind, ProfileCompletionErrorKind::Capacity);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -793,13 +848,28 @@ mod tests {
                 .map(|row| row.map(f64::from_bits))
         };
         let rows = gamma["captured"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "print-gamma-independent-captures",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "print-gamma-independent-captures"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "print-gamma-independent-captures"
         );
         for captured in rows {
             let id = captured["id"].as_str().unwrap();
-            let case_row = cases.case(id);
+            let case_row = AsRef::<str>::as_ref(&(id)).to_owned();
             let case = density["cases"]
                 .as_array()
                 .unwrap()
@@ -831,9 +901,15 @@ mod tests {
                     case["id"]
                 );
             }
-            case_row.passed();
+            assert!(
+                cases_remaining.remove(&case_row),
+                "unexpected or repeated comparison: {case_row}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -881,19 +957,36 @@ mod tests {
 
     #[test]
     fn print_gamma_size_and_capacity_failures_return_no_owner() {
-        let mut cases = RowCases::new(
-            "print-gamma-size-capacity",
-            [
-                "minimum-valid-size",
-                "usize-maximum-overflow",
-                "isize-bound-overflow",
-                "allocation-capacity-failure",
-                "invalid-gamma-skips-reservation",
-            ],
+        let cases_ids: Vec<_> = IntoIterator::into_iter([
+            "minimum-valid-size",
+            "usize-maximum-overflow",
+            "isize-bound-overflow",
+            "allocation-capacity-failure",
+            "invalid-gamma-skips-reservation",
+        ])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "print-gamma-size-capacity"
         );
-        let case = cases.case("minimum-valid-size");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "print-gamma-size-capacity"
+        );
+        let case = AsRef::<str>::as_ref(&("minimum-valid-size")).to_owned();
         assert!(check_print_density_size(1).is_ok());
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
         for (id, count) in [
             ("usize-maximum-overflow", usize::MAX),
             (
@@ -901,16 +994,19 @@ mod tests {
                 isize::MAX as usize / size_of::<[f32; 3]>() + 1,
             ),
         ] {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 check_print_density_size(count),
                 Err(PrintDensityError::Size)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
         let profile = PrintProfile::new(source(Role::Print)).unwrap();
         let before = profile.tables().density_curves.as_ptr();
-        let capacity_case = cases.case("allocation-capacity-failure");
+        let capacity_case = AsRef::<str>::as_ref(&("allocation-capacity-failure")).to_owned();
         let error = sample_print_density(&profile, 1.1, |buffer, count| {
             assert!(buffer.is_empty());
             assert_eq!(count, 3);
@@ -920,8 +1016,12 @@ mod tests {
         assert_eq!(error, PrintDensityError::Capacity);
         assert_eq!(profile.tables().density_curves.as_ptr(), before);
         assert!(profile.sample_density_curves(1.1).is_ok());
-        capacity_case.passed();
-        let invalid_gamma_case = cases.case("invalid-gamma-skips-reservation");
+        assert!(
+            cases_remaining.remove(&capacity_case),
+            "unexpected or repeated comparison: {capacity_case}"
+        );
+        let invalid_gamma_case =
+            AsRef::<str>::as_ref(&("invalid-gamma-skips-reservation")).to_owned();
         assert_eq!(
             sample_print_density(&profile, 0.0, |_, _| panic!(
                 "invalid gamma must not reserve"
@@ -929,8 +1029,14 @@ mod tests {
             .unwrap_err(),
             PrintDensityError::InvalidGamma
         );
-        invalid_gamma_case.passed();
-        cases.finish();
+        assert!(
+            cases_remaining.remove(&invalid_gamma_case),
+            "unexpected or repeated comparison: {invalid_gamma_case}"
+        );
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn bundled_payload_memory_reports_logical_and_capacity_bytes() {
@@ -947,7 +1053,24 @@ mod tests {
                     .map(|entry| format!("print/{}", entry.key())),
             )
             .collect::<Vec<_>>();
-        let mut cases = RowCases::new("bundled-profile-memory", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "bundled-profile-memory"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "bundled-profile-memory"
+        );
         for role in [Role::Film, Role::Print] {
             let role_id = if role == Role::Film { "film" } else { "print" };
             let entries = if role == Role::Film {
@@ -956,7 +1079,7 @@ mod tests {
                 catalog.prints()
             };
             for entry in entries {
-                let case = cases.case(format!("{role_id}/{}", entry.key()));
+                let case = AsRef::<str>::as_ref(&(format!("{role_id}/{}", entry.key()))).to_owned();
                 let source = super::super::load_source(entry.source_path(), role).unwrap();
                 let profile =
                     complete(source, role, Vec::try_reserve_exact, Vec::try_reserve_exact).unwrap();
@@ -1010,9 +1133,15 @@ mod tests {
                         curves.totals.capacity() * 12
                     );
                 }
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }

@@ -43,9 +43,8 @@ add_test(NAME Ffi.Host.PreparedSanitizers COMMAND JuicerPreparedSanitizerTests)
 add_test(NAME Ffi.Host.SanitizerCleanControl COMMAND JuicerPreparedSanitizerControl clean)
 foreach(mode IN ITEMS memory undefined)
     add_test(NAME Ffi.Host.SanitizerControl.${mode}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/run_prepared_sanitizer_control.py"
-            "$<TARGET_FILE:JuicerPreparedSanitizerControl>" ${mode}
-            "${JUICER_TEST_ARTIFACT_ROOT}/prepared-sanitizers")
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/check_prepared_sanitizer.py"
+            "$<TARGET_FILE:JuicerPreparedSanitizerControl>" ${mode})
 endforeach()
 set(sanitizer_tests Ffi.Host.PreparedSanitizers Ffi.Host.SanitizerCleanControl
     Ffi.Host.SanitizerControl.memory Ffi.Host.SanitizerControl.undefined)

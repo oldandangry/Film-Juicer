@@ -13,9 +13,6 @@ use film_juicer_core::hash;
 use film_juicer_core::profile::{
     DensitySampleError, PrintDensityError, PrintProfile, load_print_source,
 };
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -127,13 +124,28 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
     let mut floors = 0;
     let mut sampled = 0;
     let captured_rows = gamma_fixture["captured"].as_array().unwrap();
-    let mut cases = RowCases::new(
-        "bundled-and-floor-gamma-captures",
-        captured_rows.iter().map(|row| row["id"].as_str().unwrap()),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(captured_rows.iter().map(|row| row["id"].as_str().unwrap()))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "bundled-and-floor-gamma-captures"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "bundled-and-floor-gamma-captures"
     );
     for captured in captured_rows {
         let id = captured["id"].as_str().unwrap();
-        let row_case = cases.case(id);
+        let row_case = AsRef::<str>::as_ref(&(id)).to_owned();
         let case = density["cases"]
             .as_array()
             .unwrap()
@@ -205,9 +217,15 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
             "{id} downstream"
         );
         sampled += axis.len();
-        row_case.passed();
+        assert!(
+            cases_remaining.remove(&row_case),
+            "unexpected or repeated comparison: {row_case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     assert_eq!((bundled, floors, sampled), (48, 30, 12_438));
 }
 
@@ -216,12 +234,27 @@ fn unusual_coefficients_succeed_through_print_gamma_without_readmission() {
     let fixtures = fixture("print-gamma.json");
     let directory = Directory::new();
     let analytical = fixtures["analytical"].as_array().unwrap();
-    let mut cases = RowCases::new(
-        "analytical-print-gamma-cases",
-        analytical.iter().map(|case| case["id"].as_str().unwrap()),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(analytical.iter().map(|case| case["id"].as_str().unwrap()))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "analytical-print-gamma-cases"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "analytical-print-gamma-cases"
     );
     for case in analytical {
-        let row = cases.case(case["id"].as_str().unwrap());
+        let row = AsRef::<str>::as_ref(&(case["id"].as_str().unwrap())).to_owned();
         let profile = directory.profile(&document(&case["model"], &doubles(&case["axis"])));
         let curves = profile
             .sample_density_curves(f64::from_bits(number(&case["gamma_bits"])))
@@ -234,9 +267,15 @@ fn unusual_coefficients_succeed_through_print_gamma_without_readmission() {
         );
         assert_eq!(curves.hash(), number(&case["print_hash"]), "{}", case["id"]);
         assert!(curves.totals().iter().flatten().all(|v| v.is_finite()));
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -251,16 +290,39 @@ fn gamma_control_boundary_requires_only_finite_positive_values() {
         ("positive-infinity", f64::INFINITY),
         ("negative-infinity", f64::NEG_INFINITY),
     ];
-    let mut invalid_rows = RowCases::new("invalid-gamma-values", invalid.iter().map(|(id, _)| *id));
+    let invalid_rows_ids: Vec<_> = IntoIterator::into_iter(invalid.iter().map(|(id, _)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !invalid_rows_ids.is_empty(),
+        "empty case set: {}",
+        "invalid-gamma-values"
+    );
+    let invalid_rows_count = invalid_rows_ids.len();
+    let mut invalid_rows_remaining = invalid_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        invalid_rows_remaining.len(),
+        invalid_rows_count,
+        "duplicate case IDs: {}",
+        "invalid-gamma-values"
+    );
     for (id, gamma) in invalid {
-        let row = invalid_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             profile.sample_density_curves(gamma).unwrap_err(),
             PrintDensityError::InvalidGamma
         );
-        row.passed();
+        assert!(
+            invalid_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    invalid_rows.finish();
+    assert!(
+        invalid_rows_remaining.is_empty(),
+        "missing comparisons: {invalid_rows_remaining:?}"
+    );
     // Range admission stays with the recipe, and even an infinite adjusted sigma
     // can produce a finite half response through the approved sampler.
     let valid = [
@@ -269,19 +331,39 @@ fn gamma_control_boundary_requires_only_finite_positive_values() {
         ("min-subnormal", f64::from_bits(1)),
         ("max-finite", f64::MAX),
     ];
-    let mut valid_rows = RowCases::new(
-        "finite-positive-gamma-values",
-        valid.iter().map(|(id, _)| *id),
+    let valid_rows_ids: Vec<_> = IntoIterator::into_iter(valid.iter().map(|(id, _)| *id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !valid_rows_ids.is_empty(),
+        "empty case set: {}",
+        "finite-positive-gamma-values"
+    );
+    let valid_rows_count = valid_rows_ids.len();
+    let mut valid_rows_remaining = valid_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        valid_rows_remaining.len(),
+        valid_rows_count,
+        "duplicate case IDs: {}",
+        "finite-positive-gamma-values"
     );
     for (id, gamma) in valid {
-        let row = valid_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             profile.sample_density_curves(gamma).unwrap().totals(),
             &[[1.5; 3]]
         );
-        row.passed();
+        assert!(
+            valid_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    valid_rows.finish();
+    assert!(
+        valid_rows_remaining.is_empty(),
+        "missing comparisons: {valid_rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -330,19 +412,40 @@ fn curve_identity_preserves_raw_axis_bits_count_and_sample_dependencies() {
         ("axis-zero-sign", &changed_axis),
         ("sample-count", &changed_count),
     ];
-    let mut identity_rows = RowCases::new(
-        "gamma-curve-axis-identity-changes",
-        changed_profiles.iter().map(|(id, _)| *id),
+    let identity_rows_ids: Vec<_> =
+        IntoIterator::into_iter(changed_profiles.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !identity_rows_ids.is_empty(),
+        "empty case set: {}",
+        "gamma-curve-axis-identity-changes"
+    );
+    let identity_rows_count = identity_rows_ids.len();
+    let mut identity_rows_remaining = identity_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        identity_rows_remaining.len(),
+        identity_rows_count,
+        "duplicate case IDs: {}",
+        "gamma-curve-axis-identity-changes"
     );
     for (id, profile) in changed_profiles {
-        let row = identity_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_ne!(
             profile.sample_density_curves(1.).unwrap().hash(),
             base_curves.hash()
         );
-        row.passed();
+        assert!(
+            identity_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    identity_rows.finish();
+    assert!(
+        identity_rows_remaining.is_empty(),
+        "missing comparisons: {identity_rows_remaining:?}"
+    );
     let changed_model = directory.profile(&document(&uniform_model(0., 2., 1.), &[-0., 0.]));
     assert_ne!(
         changed_model.sample_density_curves(1.).unwrap().hash(),

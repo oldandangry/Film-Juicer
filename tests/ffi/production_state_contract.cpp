@@ -15,7 +15,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include "case_results.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_cuda_owner.h"
 
@@ -256,7 +255,7 @@ namespace {
 } // namespace
 
 namespace JuicerCudaTest {
-    void check_production_state_contract(FjRuntimeView runtime, const FjPreparationParams& params, std::uint64_t expectedInputIdentity, std::uint32_t route, const std::vector<float>& expectedPixels, const JuicerTests::Cohort& rows) {
+    void check_production_state_contract(FjRuntimeView runtime, const FjPreparationParams& params, std::uint64_t expectedInputIdentity, std::uint32_t route, const std::vector<float>& expectedPixels) {
         require(runtime.assets && runtime.cuda, "production state contract requires a live Runtime");
         require(route == FJ_ROUTE_NEGATIVE_DIRECT || route == FJ_ROUTE_NEGATIVE_PRINT, "production state contract route");
         const bool print = route == FJ_ROUTE_NEGATIVE_PRINT;
@@ -267,7 +266,6 @@ namespace JuicerCudaTest {
         const int components = print ? 4 : 3;
         const auto source = source_pixels(components);
         const std::size_t bytes = source.size() * sizeof(float);
-        const std::string prefix = print ? "negative-print/" : "negative-direct/";
         const std::uint64_t token = kInstanceToken + route;
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
@@ -324,7 +322,6 @@ namespace JuicerCudaTest {
         std::vector<std::uint32_t> coldWords;
         std::uint64_t coldRecipe = 0;
         for (const bool warm : {false, true}) {
-            auto row = rows.case_event(prefix + (warm ? "warm" : "cold"));
             std::vector<float> initial(source.size(), kDestinationCanary);
             std::vector<float> output(source.size(), kDestinationCanary);
             cuda_check(cudaMemcpyAsync(device.destination, initial.data(), bytes, cudaMemcpyHostToDevice, device.stream), "reset destination");
@@ -395,7 +392,6 @@ namespace JuicerCudaTest {
             } else {
                 coldWords = outputWords;
             }
-            row.passed();
         }
     }
 } // namespace JuicerCudaTest

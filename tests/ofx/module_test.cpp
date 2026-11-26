@@ -12,13 +12,12 @@
 #include "juicer_cuda_api.h"
 #include "ofxImageEffectExt.h"
 #include "module_host.h"
-#include "../ffi/case_results.h"
+
+#include <nlohmann/json.hpp>
 
 namespace {
     using ofx_test::Call;
     using ofx_test::Host;
-    constexpr std::string_view kCaller = "ofx.module";
-    constexpr std::array kCases{"discovery", "binding", "load", "describe", "defaults", "reentry", "reload", "unload"};
     constexpr std::array kAcquisition{"effect_first", "param_set", "param_props", "effect_second"};
     constexpr std::array kRequired{"label", "grouping", "context_dimension", "context_write", "depth_dimension", "depth_write", "single_instance", "host_threading", "multiresolution", "tiles", "render_safety", "cuda_render", "cuda_stream"};
     constexpr std::array kOptional{"short_label", "long_label"};
@@ -87,13 +86,11 @@ namespace {
     void describe(OfxPlugin* plugin, Host& host, const DescriptorExpectation& descriptor) {
         const auto ids = describe_ids();
         require(ids.size() == 303, "Describe membership size");
-        const JuicerTests::Cohort rows("ofx.module.describe", ids);
         const auto baseline = expected(descriptor.label);
         const auto run_matrix = [&](std::string_view group, const auto& names, const auto& indices, bool is_optional, bool is_acquisition) {
             for (std::size_t n = 0; n < names.size(); ++n)
                 for (int status = 0; status < 15; ++status) {
                     const std::string id = std::string(group) + "/" + names[n] + "/status_" + std::to_string(status);
-                    auto row = rows.case_event(id);
                     host.reset_trace();
                     host.statuses.clear();
                     host.null_outputs.clear();
@@ -107,7 +104,6 @@ namespace {
                     if (stop)
                         calls.erase(calls.begin() + static_cast<std::ptrdiff_t>(index + 1), calls.end());
                     check_calls(host, calls, id);
-                    row.passed();
                 }
         };
         run_matrix("acquire", kAcquisition, std::array{0, 1, 2, 3}, false, true);
@@ -117,7 +113,6 @@ namespace {
         host.null_outputs.clear();
         host.reset_trace();
         {
-            auto row = rows.case_event("manifest");
             require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK, "manifest Describe");
             check_calls(host, baseline, "manifest");
             nlohmann::json actual = {{"OfxPropType", nlohmann::json::array({"OfxTypeImageEffect"})}};
@@ -132,10 +127,8 @@ namespace {
             nlohmann::json oracle;
             in >> oracle;
             require(actual == oracle.at("properties"), "manifest mismatch");
-            row.passed();
         }
         const auto run = [&](const std::string& id, auto configure, int result, const std::vector<Call>& calls, bool null_effect = false) {
-            auto row = rows.case_event(id);
             host.reset_trace();
             host.statuses.clear();
             host.null_outputs.clear();
@@ -145,7 +138,6 @@ namespace {
             configure();
             require(action(plugin, kOfxActionDescribe, null_effect ? nullptr : host.effect_handle()) == result, id + ": status");
             check_calls(host, calls, id);
-            row.passed();
         };
         run("null_effect", [] {}, kOfxStatErrBadHandle, {}, true);
         run("null_first", [&] {
@@ -222,19 +214,11 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
-        return 0;
-    }
     require(argc == 2, "expected descriptor manifest path");
     const DescriptorExpectation descriptor{"Juicer", argv[1]};
     const char* identifier = "com.juicer.Juicer";
-    JuicerTests::CaseLog log;
-    const JuicerTests::Cohort lifecycle_rows("ofx.module.lifecycle", {"discovery/native_before", "discovery/empty_unload", "discovery/native_after", "load/fetch_reentry", "reload/suite_copy", "rebind/rejected", "rebind/recovery"});
     OfxPlugin* plugin = nullptr;
     {
-        JuicerTests::CaseEvent test(kCaller, "discovery");
         require(OfxGetNumberOfPlugins() == 1 && fj_ofx_plugin_count() == 1, "plugin count");
         plugin = fj_ofx_plugin(0);
         require(plugin && plugin == OfxGetPlugin(0) && plugin == fj_ofx_plugin(0) &&
@@ -243,25 +227,17 @@ int main(int argc, char** argv) try {
                 "discovery bounds or identity");
         require(plugin->pluginApi && std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->apiVersion == 1 && plugin->pluginIdentifier && std::string_view(plugin->pluginIdentifier) == identifier && plugin->pluginVersionMajor == 1 && plugin->pluginVersionMinor == 0 && plugin->setHost && plugin->mainEntry, "plugin descriptor");
         {
-            auto row = lifecycle_rows.case_event("discovery/native_before");
             require_native_available();
-            row.passed();
         }
         {
-            auto row = lifecycle_rows.case_event("discovery/empty_unload");
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "initial unload");
-            row.passed();
         }
         {
-            auto row = lifecycle_rows.case_event("discovery/native_after");
             require_native_available();
-            row.passed();
         }
-        test.passed();
     }
     Host host;
     {
-        JuicerTests::CaseEvent test(kCaller, "binding");
         plugin->setHost(nullptr);
         require(action(plugin, kOfxActionLoad) == kOfxStatErrBadHandle, "null binding status");
         OfxHost invalid = *host.binding();
@@ -270,14 +246,10 @@ int main(int argc, char** argv) try {
         require(action(plugin, kOfxActionLoad) == kOfxStatErrBadHandle, "null fetch status");
         plugin->setHost(host.binding());
         require(host.calls.empty(), "setHost made host call");
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "load");
         const std::vector<std::string> load_ids{"property_suite", "effect_suite", "parameter_suite", "message_suite", "effect_properties", "effect_params", "parameter_properties", "property_dimension", "property_string", "property_int", "property_get_string", "property_double", "clip_define", "param_define", "property_get_pointer", "property_set_pointer", "property_get_double", "clip_handle", "param_handle", "param_property", "param_get", "param_set", "empty_message", "property_get_int", "clip_image", "release_image", "clip_region", "abort", "valid_message"};
-        const JuicerTests::Cohort load_rows("ofx.module.load", load_ids);
         for (int row = 0; row < 28; ++row) {
-            auto event = load_rows.case_event(load_ids[static_cast<std::size_t>(row)]);
             Host missing;
             switch (row) {
                 case 0:
@@ -370,10 +342,7 @@ int main(int argc, char** argv) try {
             require(!missing.callback_error, "unexpected suite call");
             require_native_available();
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "failed load cleanup");
-            event.passed();
         }
-        auto positive = load_rows.case_event("valid_message");
-        auto fetch_reentry = lifecycle_rows.case_event("load/fetch_reentry");
         int nested_load = -1;
         host.reentry = [&] {
             nested_load = action(plugin, kOfxActionLoad);
@@ -381,29 +350,21 @@ int main(int argc, char** argv) try {
         plugin->setHost(host.binding());
         require(action(plugin, kOfxActionLoad) == kOfxStatOK, "load with message suite");
         require(nested_load == kOfxStatFailed, "reentrant load status");
-        fetch_reentry.passed();
         check_calls(host, {{"fetch", kOfxPropertySuite, 1, {}, 0, 0}, {"fetch", kOfxImageEffectSuite, 1, {}, 0, 0}, {"fetch", kOfxParameterSuite, 1, {}, 0, 0}, {"fetch", kOfxMessageSuite, 1, {}, 0, 0}}, "suite fetches");
-        positive.passed();
         require(action(plugin, kOfxActionLoad) == kOfxStatFailed, "duplicate load");
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "describe");
         describe(plugin, host, descriptor);
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "defaults");
         host.reset_trace();
         require(action(plugin, "UnknownAction") == kOfxStatReplyDefault, "unknown action");
         require(action(plugin, kOfxImageEffectActionRender) == kOfxStatErrBadHandle, "render requires effect and input");
         require(action(plugin, kOfxImageEffectActionRender, host.effect_handle()) == kOfxStatErrBadHandle, "render requires input");
         require(action(plugin, nullptr) == kOfxStatErrBadHandle, "null action");
         require(host.calls.empty(), "default action called host");
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "reentry");
         host.reset_trace();
         int nested = -1;
         host.reentry = [&] {
@@ -411,15 +372,12 @@ int main(int argc, char** argv) try {
         };
         require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatOK && nested == kOfxStatErrFatal, "reentrant unload");
         check_calls(host, expected(descriptor.label), "reentry");
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "reload");
         require(action(plugin, kOfxActionUnload) == kOfxStatOK, "unload for reload");
         host.reset_trace();
         require(action(plugin, kOfxActionLoad) == kOfxStatOK && host.calls.size() == 4, "same host reload");
         {
-            auto row = lifecycle_rows.case_event("reload/suite_copy");
             auto original = host.property.propSetString;
             host.property.propSetString = nullptr;
             host.reset_trace();
@@ -427,34 +385,25 @@ int main(int argc, char** argv) try {
             host.property.propSetString = original;
             require(status == kOfxStatOK, "loaded suite table was not copied");
             check_calls(host, expected(descriptor.label), "suite copy");
-            row.passed();
         }
         {
-            auto row = lifecycle_rows.case_event("rebind/rejected");
             Host rejected;
             plugin->setHost(rejected.binding());
             host.reset_trace();
             require(action(plugin, kOfxActionDescribe, host.effect_handle()) == kOfxStatFailed, "live rebind did not block ordinary action");
             require(host.calls.empty() && rejected.calls.empty(), "live rebind made host call");
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "live rebind lost cleanup owner");
-            row.passed();
         }
-        auto recovery = lifecycle_rows.case_event("rebind/recovery");
         Host fresh;
         plugin->setHost(fresh.binding());
         require(fresh.calls.empty(), "rebind called host");
         require(action(plugin, kOfxActionLoad) == kOfxStatOK && fresh.calls.size() == 4, "fresh host reload");
         require(action(plugin, kOfxActionUnload) == kOfxStatOK, "fresh host cleanup");
-        recovery.passed();
-        test.passed();
     }
     {
-        JuicerTests::CaseEvent test(kCaller, "unload");
         require(action(plugin, kOfxActionUnload) == kOfxStatOK && action(plugin, kOfxActionUnload) == kOfxStatOK, "empty unload");
         require_native_available();
-        test.passed();
     }
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "module fixture: %s\n", error.what());

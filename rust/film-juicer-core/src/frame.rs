@@ -68,7 +68,6 @@ impl Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
 
     #[test]
     fn complete_native_capture() {
@@ -93,12 +92,22 @@ mod tests {
         let array =
             |row: &serde_json::Value| -> [i32; 4] { serde_json::from_value(row.clone()).unwrap() };
         let domains = captured["domains"].as_array().unwrap();
-        let mut domain_cases = RowCases::new(
-            "frame-domain",
-            domains.iter().map(|row| row["name"].as_str().unwrap()),
+        let domain_cases_ids: Vec<_> =
+            IntoIterator::into_iter(domains.iter().map(|row| row["name"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(!domain_cases_ids.is_empty(), "frame-domain");
+        let domain_cases_count = domain_cases_ids.len();
+        let mut domain_cases_remaining = domain_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            domain_cases_remaining.len(),
+            domain_cases_count,
+            "frame-domain"
         );
         for row in domains {
-            let case = domain_cases.case(row["name"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["name"].as_str().unwrap())).to_owned();
             let [x1, y1, x2, y2] = array(&row["bounds"]);
             let result = Domain::from_bounds(Bounds { x1, y1, x2, y2 });
             if row["range"].as_bool().unwrap() {
@@ -112,16 +121,32 @@ mod tests {
                     row["name"]
                 );
             }
-            case.passed();
+            assert!(
+                domain_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        domain_cases.finish();
+        assert!(
+            domain_cases_remaining.is_empty(),
+            "missing comparisons: {domain_cases_remaining:?}"
+        );
         let geometries = captured["geometry"].as_array().unwrap();
-        let mut geometry_cases = RowCases::new(
-            "frame-geometry",
-            geometries.iter().map(|row| row["name"].as_str().unwrap()),
+        let geometry_cases_ids: Vec<_> = geometries
+            .iter()
+            .map(|row| row["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(!geometry_cases_ids.is_empty(), "frame-geometry");
+        let geometry_cases_count = geometry_cases_ids.len();
+        let mut geometry_cases_remaining = geometry_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            geometry_cases_remaining.len(),
+            geometry_cases_count,
+            "frame-geometry"
         );
         for row in geometries {
-            let case = geometry_cases.case(row["name"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["name"].as_str().unwrap())).to_owned();
             let [x, y, width, height] = array(&row["domain"]);
             let domain = Domain {
                 x,
@@ -146,8 +171,14 @@ mod tests {
                 "{}",
                 row["name"]
             );
-            case.passed();
+            assert!(
+                geometry_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        geometry_cases.finish();
+        assert!(
+            geometry_cases_remaining.is_empty(),
+            "missing comparisons: {geometry_cases_remaining:?}"
+        );
     }
 }

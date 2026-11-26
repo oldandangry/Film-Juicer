@@ -9,7 +9,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[4]
 TOOL = ROOT / "tests/diffusion/reference"
 BOOTSTRAP = TOOL / "bootstrap_reference_env.sh"

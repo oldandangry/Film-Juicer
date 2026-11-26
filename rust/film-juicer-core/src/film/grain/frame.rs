@@ -4,7 +4,6 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     fn scalar(v: &Value) -> f32 {
         f32::from_bits(v.as_u64().unwrap() as u32)
@@ -134,20 +133,36 @@ mod tests {
         let captured = captured();
         let rows = captured["cases"].as_array().unwrap();
         assert_eq!(rows.len(), 153);
-        let mut cases = RowCases::new(
-            "grain-frame-values",
+        let cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .filter(|row| {
                     row["input"]["missing_recipe"] != true && row["input"]["missing_film"] != true
                 })
                 .map(|row| row["input"]["name"].as_str().unwrap()),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-frame-values"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "grain-frame-values"
         );
         for row in rows {
             let v = &row["input"];
             if v["missing_recipe"] == true || v["missing_film"] == true {
                 continue;
             }
-            let case = cases.case(v["name"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(v["name"].as_str().unwrap())).to_owned();
             let curves: Vec<Vec<Vec<f32>>> = v["layer_curves"]
                 .as_array()
                 .unwrap()
@@ -205,23 +220,45 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn independently_captured_primitives() {
         let captured = captured();
         let rows = captured["primitives"].as_array().unwrap();
         assert_eq!(rows.len(), 50);
-        let mut cases = RowCases::new(
-            "grain-frame-primitives",
+        let cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .enumerate()
                 .map(|(index, _)| format!("primitive/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-frame-primitives"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "grain-frame-primitives"
         );
         for (index, row) in rows.iter().enumerate() {
-            let case = cases.case(format!("primitive/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("primitive/{index}"))).to_owned();
             let v = &row["input"];
             let expected = &row["result"];
             let actual = match v["op"].as_str().unwrap() {
@@ -237,15 +274,24 @@ mod tests {
                             v["input"], expected, bits
                         );
                     }
-                    case.passed();
+                    assert!(
+                        cases_remaining.remove(&case),
+                        "unexpected or repeated comparison: {case}"
+                    );
                     continue;
                 }
                 _ => panic!("closed primitive cohort"),
             };
             assert_eq!(actual, *expected, "{v}");
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn bounded_conversion_and_deferred_borrowing() {
@@ -255,19 +301,39 @@ mod tests {
             ("maximum", f64::MAX),
             ("rounded-overflow", 2.0_f64.powi(63) / 2.5),
         ];
-        let mut rate_cases = RowCases::new(
-            "grain-frame-period-overflow",
-            rates.iter().map(|(id, _)| *id),
+        let rate_cases_ids: Vec<_> = IntoIterator::into_iter(rates.iter().map(|(id, _)| *id))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !rate_cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-frame-period-overflow"
+        );
+        let rate_cases_count = rate_cases_ids.len();
+        let mut rate_cases_remaining = rate_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            rate_cases_remaining.len(),
+            rate_cases_count,
+            "duplicate case IDs: {}",
+            "grain-frame-period-overflow"
         );
         for (id, rate) in rates {
-            let case = rate_cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             v.frame_rate = rate;
             let error = Plan::new(v, |_, _| panic!("period failure must precede layer access"))
                 .unwrap_err();
             assert_eq!(error.field(), Field::PeriodFrames);
-            case.passed();
+            assert!(
+                rate_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        rate_cases.finish();
+        assert!(
+            rate_cases_remaining.is_empty(),
+            "missing comparisons: {rate_cases_remaining:?}"
+        );
         v = input(&captured["cases"][0]["input"]);
         v.sublayers_active = true;
         let error = Plan::new(v, |l, c| {
@@ -288,21 +354,43 @@ mod tests {
             .join("../../tests/grain/frame-fixtures/checked.json");
         let checked: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let rows = checked["gaussian_safety"].as_array().unwrap();
-        let mut gaussian_cases = RowCases::new(
-            "grain-frame-gaussian-safety",
+        let gaussian_cases_ids: Vec<_> = IntoIterator::into_iter(
             rows.iter()
                 .enumerate()
                 .map(|(index, _)| format!("sigma/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !gaussian_cases_ids.is_empty(),
+            "empty case set: {}",
+            "grain-frame-gaussian-safety"
+        );
+        let gaussian_cases_count = gaussian_cases_ids.len();
+        let mut gaussian_cases_remaining = gaussian_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            gaussian_cases_remaining.len(),
+            gaussian_cases_count,
+            "duplicate case IDs: {}",
+            "grain-frame-gaussian-safety"
         );
         for (index, row) in rows.iter().enumerate() {
-            let case = gaussian_cases.case(format!("sigma/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("sigma/{index}"))).to_owned();
             assert_eq!(
                 gaussian(&Gaussian::new(scalar(&row["input"]))),
                 row["expected"]
             );
-            case.passed();
+            assert!(
+                gaussian_cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        gaussian_cases.finish();
+        assert!(
+            gaussian_cases_remaining.is_empty(),
+            "missing comparisons: {gaussian_cases_remaining:?}"
+        );
         assert_eq!(maximum(-0.0, 0.0).to_bits(), (-0.0_f32).to_bits());
         assert_eq!(minimum(-0.0, 0.0).to_bits(), (-0.0_f32).to_bits());
         assert!(maximum(f32::NAN, 1.0).is_nan());

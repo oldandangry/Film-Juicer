@@ -16,7 +16,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
 # spektrafilm imports Matplotlib transitively; keep its cache with the managed environment.
 os.environ.setdefault(
@@ -27,7 +26,6 @@ os.environ.setdefault(
 from spektrafilm.model import diffusion  # noqa: E402 - configure Matplotlib before normal reference imports.
 from spektrafilm.runtime import params_schema  # noqa: E402, F401 - retain the explicit provenance import.
 from spektrafilm.runtime.params_schema import DiffusionFilterParams  # noqa: E402 - same reference import boundary.
-
 
 FAMILIES = ("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom")
 STRENGTHS = (-1.0, 0.0, 0.0625, 0.125, 0.25, 0.375, 0.5, 1.0, 2.0, 4.0)

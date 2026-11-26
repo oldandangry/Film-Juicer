@@ -570,7 +570,6 @@ pub fn capture_gamma(raw: f64, print_route: bool) -> Result<f64, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::{Error, FilterParams, Illuminant};
-    use crate::test_cases::RowCases;
     use serde_json::Value;
 
     #[cfg(all(target_os = "linux", debug_assertions))]
@@ -597,13 +596,19 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let mut differences = Vec::new();
         let rows = document["cases"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "print-illuminant-cases",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
-        );
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(!cases_ids.is_empty(), "print-illuminant-cases");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "print-illuminant-cases");
         for row in rows {
             let id = row["id"].as_str().unwrap();
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             let before = differences.len();
             let params = FilterParams {
                 edges_nm: floats(&row["edges_nm"]),
@@ -642,10 +647,16 @@ mod tests {
                 }
             }
             if differences.len() == before {
-                case.passed();
+                assert!(
+                    cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         assert!(
             differences.is_empty(),
             "exact owner-approved print policy gate failed:\n{}",
@@ -657,7 +668,6 @@ mod tests {
 #[cfg(test)]
 mod preflash_tests {
     use super::{PreflashError, PreflashRaw};
-    use crate::test_cases::RowCases;
     use serde_json::Value;
 
     #[cfg(all(target_os = "linux", debug_assertions))]
@@ -693,12 +703,18 @@ mod preflash_tests {
         assert_eq!(captured["cases"].as_array().unwrap().len(), 19);
         assert_eq!(captured["products"].as_array().unwrap().len(), 72);
         let rows = captured["cases"].as_array().unwrap();
-        let mut cases = RowCases::new(
-            "print-preflash-cases",
-            rows.iter().map(|row| row["id"].as_str().unwrap()),
-        );
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|row| row["id"].as_str().unwrap()))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(!cases_ids.is_empty(), "print-preflash-cases");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "print-preflash-cases");
         for row in rows {
-            let case = cases.case(row["id"].as_str().unwrap());
+            let case = AsRef::<str>::as_ref(&(row["id"].as_str().unwrap())).to_owned();
             let base = floats(&row["film_base_density"]);
             let light = floats(&row["filtered_illuminant"]);
             let flat = floats::<243>(&row["print_sensitivity_cmy"]);
@@ -719,25 +735,41 @@ mod preflash_tests {
                     "{id}"
                 );
             }
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let products = captured["products"].as_array().unwrap();
         let checked_products = products
             .iter()
             .filter(|row| !row["raw"].is_null())
             .collect::<Vec<_>>();
         if !checked_products.is_empty() {
-            let mut product_cases = RowCases::new(
-                "print-preflash-products",
-                checked_products.iter().map(|row| {
+            let product_cases_ids: Vec<_> =
+                IntoIterator::into_iter(checked_products.iter().map(|row| {
                     format!(
                         "route/{}/mode/{}/variant/{}",
                         row["route"].as_u64().unwrap(),
                         row["mode"].as_u64().unwrap(),
                         row["variant"].as_u64().unwrap()
                     )
-                }),
+                }))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+            assert!(!product_cases_ids.is_empty(), "print-preflash-products");
+            let product_cases_count = product_cases_ids.len();
+            let mut product_cases_remaining = product_cases_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                product_cases_remaining.len(),
+                product_cases_count,
+                "print-preflash-products"
             );
             for row in checked_products {
                 let id = format!(
@@ -746,7 +778,7 @@ mod preflash_tests {
                     row["mode"].as_u64().unwrap(),
                     row["variant"].as_u64().unwrap()
                 );
-                let case = product_cases.case(id);
+                let case = AsRef::<str>::as_ref(&(id)).to_owned();
                 let base = floats(&row["film_base_density"]);
                 let light = floats(&row["light"]);
                 let flat = floats::<243>(&row["print_sensitivity_cmy"]);
@@ -758,9 +790,15 @@ mod preflash_tests {
                         .map(f32::to_bits),
                     floats::<3>(&row["raw"]).map(f32::to_bits)
                 );
-                case.passed();
+                assert!(
+                    product_cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
-            product_cases.finish();
+            assert!(
+                product_cases_remaining.is_empty(),
+                "missing comparisons: {product_cases_remaining:?}"
+            );
         }
     }
 

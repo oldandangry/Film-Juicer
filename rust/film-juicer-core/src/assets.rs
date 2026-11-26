@@ -795,7 +795,6 @@ fn load_print(path: &Path) -> Result<Arc<PrintProfile>, AssetError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use std::path::Path;
     use std::sync::{Arc, mpsc};
     use std::thread;
@@ -871,13 +870,24 @@ mod tests {
 
     #[test]
     fn cmf_first_outcome_wins_including_capacity() {
-        let mut cases = RowCases::new("assets-cmf-race-order", ["success-first", "error-first"]);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["success-first", "error-first"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-cmf-race-order");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "assets-cmf-race-order");
         for error_first in [false, true] {
-            let case = cases.case(if error_first {
-                "error-first"
-            } else {
-                "success-first"
-            });
+            let case = AsRef::<str>::as_ref(
+                &(if error_first {
+                    "error-first"
+                } else {
+                    "success-first"
+                }),
+            )
+            .to_owned();
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -920,16 +930,31 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
     fn csv_cold_success_and_failure_return_same_source_winner() {
-        let mut cases = RowCases::new("assets-csv-race-result", ["success", "capacity-error"]);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["success", "capacity-error"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-csv-race-result");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "assets-csv-race-result");
         for fail in [false, true] {
-            let case = cases.case(if fail { "capacity-error" } else { "success" });
+            let case =
+                AsRef::<str>::as_ref(&(if fail { "capacity-error" } else { "success" })).to_owned();
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -961,9 +986,15 @@ mod tests {
                     assert!(loser.upgrade().is_none());
                 }
             });
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -1000,16 +1031,28 @@ mod tests {
 
     #[test]
     fn calibration_success_and_error_races_use_first_snapshot() {
-        let mut cases = RowCases::new(
-            "assets-calibration-race-order",
-            ["success-first", "error-first"],
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["success-first", "error-first"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-calibration-race-order");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "assets-calibration-race-order"
         );
         for error_first in [false, true] {
-            let case = cases.case(if error_first {
-                "error-first"
-            } else {
-                "success-first"
-            });
+            let case = AsRef::<str>::as_ref(
+                &(if error_first {
+                    "error-first"
+                } else {
+                    "success-first"
+                }),
+            )
+            .to_owned();
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -1050,9 +1093,15 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -1111,9 +1160,18 @@ mod tests {
 
     #[test]
     fn reported_noise_io_oom_is_an_ordinary_error_snapshot() {
-        let mut cases = RowCases::new("assets-noise-io-oom", ["read-oom", "open-oom"]);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["read-oom", "open-oom"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-noise-io-oom");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases_remaining.len(), cases_count, "assets-noise-io-oom");
         for open in [false, true] {
-            let case = cases.case(if open { "open-oom" } else { "read-oom" });
+            let case =
+                AsRef::<str>::as_ref(&(if open { "open-oom" } else { "read-oom" })).to_owned();
             let assets = assets();
             let Err(AssetError::Noise(first)) =
                 assets.noise_with(|root| Err(noise::test_support::io_oom_error(root, open)))
@@ -1128,9 +1186,15 @@ mod tests {
             assert!(Arc::ptr_eq(&first, &second));
             assets.release_cached_payloads().unwrap();
             assert!(assets.noise().is_ok());
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -1161,16 +1225,28 @@ mod tests {
 
     #[test]
     fn wang_failures_reclaim_completed_stbn_before_publication() {
-        let mut cases = RowCases::new(
-            "assets-wang-failure-reclamation",
-            ["read-error", "capacity-error"],
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["read-error", "capacity-error"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-wang-failure-reclamation");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "assets-wang-failure-reclamation"
         );
         for capacity in [false, true] {
-            let case = cases.case(if capacity {
-                "capacity-error"
-            } else {
-                "read-error"
-            });
+            let case = AsRef::<str>::as_ref(
+                &(if capacity {
+                    "capacity-error"
+                } else {
+                    "read-error"
+                }),
+            )
+            .to_owned();
             let assets = assets();
             let result = assets.noise_with(|root| {
                 let mut probe = None;
@@ -1196,23 +1272,41 @@ mod tests {
             });
             assert!(matches!(result, Err(AssetError::Noise(_))));
             assert_eq!(assets.noise.lock().unwrap().is_none(), capacity);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
     fn noise_capacity_attempt_returns_concurrent_success_or_error() {
-        let mut cases = RowCases::new(
-            "assets-noise-capacity-race",
-            ["success-wins", "ordinary-error-wins"],
+        let cases_ids: Vec<_> = IntoIterator::into_iter(["success-wins", "ordinary-error-wins"])
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-noise-capacity-race");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "assets-noise-capacity-race"
         );
         for ordinary_error in [false, true] {
-            let case = cases.case(if ordinary_error {
-                "ordinary-error-wins"
-            } else {
-                "success-wins"
-            });
+            let case = AsRef::<str>::as_ref(
+                &(if ordinary_error {
+                    "ordinary-error-wins"
+                } else {
+                    "success-wins"
+                }),
+            )
+            .to_owned();
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -1249,9 +1343,15 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -1350,13 +1450,31 @@ mod tests {
         assert_eq!(nonzero_asset_hash(0), 1);
         let hashes = [1, 0x81ebefd4e4cc9926, 0x9262ffb765e3289e, u64::MAX];
         let ids = ["one", "hanatos", "arctic", "max"];
-        let mut cases = RowCases::new("assets-nonzero-hash-preservation", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-nonzero-hash-preservation");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "assets-nonzero-hash-preservation"
+        );
         for (hash, id) in hashes.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(nonzero_asset_hash(hash), hash);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -1367,9 +1485,21 @@ mod tests {
             ("arctic", assets.arctic().unwrap()),
         ];
         let ids = ["hanatos", "arctic"];
-        let mut cases = RowCases::new("assets-spectral-lut-capacity", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "assets-spectral-lut-capacity");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "assets-spectral-lut-capacity"
+        );
         for ((name, lut), id) in luts.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(lut.samples.len(), 192 * 192 * 81);
             assert_eq!(lut.samples.capacity(), lut.samples.len());
             println!(
@@ -1381,9 +1511,15 @@ mod tests {
                 size_of::<Arc<SpectraLut>>(),
                 Arc::strong_count(&lut)
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         let mallett = assets.mallett().unwrap();
         println!(
             "source mallett: fixed_rows={} fixed_sample_bytes={} Arc_handle_bytes={} live_strong_holds={}",

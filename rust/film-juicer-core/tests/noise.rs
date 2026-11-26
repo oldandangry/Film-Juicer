@@ -13,9 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use film_juicer_core::data_io::noise::{ErrorKind, load_stbn, load_wang};
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -116,9 +113,26 @@ fn stbn_missing_and_wrong_size() {
         .iter()
         .map(|size| format!("payload-length/{size}"))
         .collect();
-    let mut cases = RowCases::new("stbn-payload-length-boundaries", &ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "stbn-payload-length-boundaries"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "stbn-payload-length-boundaries"
+    );
     for (actual, id) in sizes.into_iter().zip(&ids) {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = load_stbn(directory.payload(actual)).unwrap_err();
         assert_eq!(
             error.kind(),
@@ -127,9 +141,15 @@ fn stbn_missing_and_wrong_size() {
                 actual
             }
         );
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -143,23 +163,63 @@ fn wang_incomplete_assets_and_wrong_size() {
         (absent.clone(), absent.clone(), absent.clone()),
     ];
     let ids = ["missing-tiles", "missing-metadata", "both-missing"];
-    let mut cases = RowCases::new("wang-incomplete-assets", ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "wang-incomplete-assets"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "wang-incomplete-assets"
+    );
     for ((tiles, metadata, missing), id) in incomplete.into_iter().zip(ids) {
-        let row = cases.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = load_wang(tiles, metadata).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Missing);
         assert_eq!(error.path(), missing);
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     let sizes = [0, 1_048_575, 1_048_577];
     let ids: Vec<String> = sizes
         .iter()
         .map(|size| format!("payload-length/{size}"))
         .collect();
-    let mut lengths = RowCases::new("wang-payload-length-boundaries", &ids);
+    let lengths_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !lengths_ids.is_empty(),
+        "empty case set: {}",
+        "wang-payload-length-boundaries"
+    );
+    let lengths_count = lengths_ids.len();
+    let mut lengths_remaining = lengths_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        lengths_remaining.len(),
+        lengths_count,
+        "duplicate case IDs: {}",
+        "wang-payload-length-boundaries"
+    );
     for (actual, id) in sizes.into_iter().zip(&ids) {
-        let row = lengths.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let path = directory.payload(actual);
         let error = load_wang(&path, &metadata).unwrap_err();
         assert_eq!(error.path(), path);
@@ -170,9 +230,15 @@ fn wang_incomplete_assets_and_wrong_size() {
                 actual
             }
         );
-        row.passed();
+        assert!(
+            lengths_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    lengths.finish();
+    assert!(
+        lengths_remaining.is_empty(),
+        "missing comparisons: {lengths_remaining:?}"
+    );
 }
 
 #[test]
@@ -225,9 +291,26 @@ fn rejects_invalid_metadata_fields() {
         .enumerate()
         .map(|(i, (field, value, _))| format!("{field}/case-{i}/{}", value))
         .collect();
-    let mut rows = RowCases::new("wang-invalid-metadata-fields", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "wang-invalid-metadata-fields"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "wang-invalid-metadata-fields"
+    );
     for ((field, value, expected), id) in cases.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let mut root = metadata();
         *root.pointer_mut(field).unwrap() = value;
         let path = directory.metadata(&root);
@@ -235,9 +318,15 @@ fn rejects_invalid_metadata_fields() {
         assert_eq!(error.kind(), expected, "{field}");
         assert_eq!(error.path(), path);
         assert!(error.to_string().contains("tiles.json"));
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -249,9 +338,26 @@ fn requires_object_metadata_records() {
         ("/mapping/0/labels", &["L", "R", "T", "B"]),
     ];
     let ids = ["root-object", "mapping-entry-object", "labels-object"];
-    let mut rows = RowCases::new("wang-object-record-requirements", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "wang-object-record-requirements"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "wang-object-record-requirements"
+    );
     for ((field, members), id) in cases.into_iter().zip(ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let mut root = metadata();
         let record = root.pointer_mut(field).unwrap();
         *record = Value::Array(
@@ -266,9 +372,15 @@ fn requires_object_metadata_records() {
         let error = result.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Json, "{field}");
         assert_eq!(error.path(), path);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -295,14 +407,37 @@ fn requires_complete_unique_mapping() {
         "extra-mapping",
         "duplicate-mapping",
     ];
-    let mut rows = RowCases::new("wang-mapping-membership", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "wang-mapping-membership"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "wang-mapping-membership"
+    );
     for ((root, expected), id) in cases.into_iter().zip(ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let error = load_wang(tiles_path(), directory.metadata(&root)).unwrap_err();
         assert_eq!(error.kind(), expected);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -324,14 +459,37 @@ fn metadata_requires_complete_json() {
         format!("{text} {{}}"),
     ];
     let ids = ["truncated-json", "trailing-text", "second-document"];
-    let mut rows = RowCases::new("wang-complete-json-requirements", ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "wang-complete-json-requirements"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "wang-complete-json-requirements"
+    );
     for (invalid, id) in invalid.into_iter().zip(ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let path = directory.write(invalid.as_bytes());
         let error = load_wang(tiles_path(), &path).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Json);
         assert_eq!(error.path(), path);
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }

@@ -3,7 +3,6 @@
 import math
 
 import numpy as np
-
 from grain_campaign import PORTRA, PROVIA, request_for
 
 

@@ -25,7 +25,6 @@
 #include "../ofx/context_host.h"
 #include "juicer_ofx_api.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 
 static_assert(sizeof(FjCatalogEntryView) == 40 && alignof(FjCatalogEntryView) == 8);
 static_assert(offsetof(FjCatalogEntryView, key) == 0 && offsetof(FjCatalogEntryView, label) == 16 &&
@@ -100,16 +99,11 @@ namespace {
         Catalog first(assets.handle);
         auto film = first.entry(FJ_PROFILE_ROLE_FILM, 0);
         auto print = first.entry(FJ_PROFILE_ROLE_PRINT, 0);
-        JuicerTests::Cohort descriptors("catalog_owner.entry_descriptors", {"film/positive-empty-label", "print/embedded-nul-label"});
         {
-            auto event = descriptors.case_event("film/positive-empty-label");
             require(first.counts.film_count == 1 && !film.label.data && film.label.count == 0 && film.polarity == FJ_POLARITY_POSITIVE, "classification/empty film label/polarity changed");
-            event.passed();
         }
         {
-            auto event = descriptors.case_event("print/embedded-nul-label");
             require(first.counts.print_count == 1 && text(print.label) == std::string("A\0B", 3), "embedded NUL print label was truncated");
-            event.passed();
         }
         FjCatalog* cleared = first.handle;
         FjCatalogCounts counts{999, 999};
@@ -118,16 +112,12 @@ namespace {
         require_status(fj_test_catalog_acquire(assets.handle, nullptr, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(counts.film_count == 0 && counts.print_count == 0, "other valid counts not cleared");
         require_status(fj_test_catalog_acquire(nullptr, &cleared, &counts, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        const std::array invalid_entry_ids{"unknown-role/index-zero", "film/count-index"};
-        JuicerTests::Cohort invalid_entries("catalog_owner.invalid_entry", {invalid_entry_ids[0], invalid_entry_ids[1]});
         const std::array invalid_entry_requests{std::pair{99u, std::size_t{0}}, std::pair{FJ_PROFILE_ROLE_FILM, first.counts.film_count}};
         for (std::size_t i = 0; i < invalid_entry_requests.size(); ++i) {
-            auto event = invalid_entries.case_event(invalid_entry_ids[i]);
             const auto [role, index] = invalid_entry_requests[i];
             auto out = film;
             require_status(fj_test_catalog_entry(first.handle, role, index, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out.key.data && !out.label.data && !out.key.count && out.polarity == 0, "entry failure not cleared");
-            event.passed();
         }
         require_status(fj_test_catalog_entry(nullptr, 0, 0, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         film = first.entry(0, 0);
@@ -171,36 +161,25 @@ namespace {
         const auto valid = argument.view();
         FjAssets* out = nullptr;
         const std::vector<std::string> invalid_path_ids{"null-data", "empty-path", "unknown-encoding-zero", "wrong-platform-encoding", "maximum-count"};
-        JuicerTests::Cohort invalid_paths("catalog_owner.root_path", invalid_path_ids);
         const std::array invalid_path_views{FjPathView{nullptr, 1, valid.encoding}, FjPathView{valid.data, 0, valid.encoding}, FjPathView{valid.data, valid.count, 0}, FjPathView{valid.data, valid.count, valid.encoding == 1 ? 2u : 1u}, FjPathView{valid.data, std::numeric_limits<std::size_t>::max(), valid.encoding}};
         for (std::size_t i = 0; i < invalid_path_views.size(); ++i) {
-            auto event = invalid_paths.case_event(invalid_path_ids[i]);
             const auto invalid = invalid_path_views[i];
             require_status(fj_test_assets_create(invalid, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out, "invalid root published Assets");
-            event.passed();
         }
         const fs::path nulPath(fs::path::string_type(3, 0));
         const JuicerAssets::NativePathArgument nul(nulPath);
-        JuicerTests::Cohort path_edges("catalog_owner.root_path_edge", {"embedded-nul", "malformed-diagnostic"});
         {
-            auto event = path_edges.case_event("embedded-nul");
             require_status(fj_test_assets_create(nul.view(), &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-            event.passed();
         }
         {
-            auto event = path_edges.case_event("malformed-diagnostic");
             FjErrorBuffer oversized{nullptr, std::numeric_limits<std::size_t>::max(), 99};
             require_status(fj_test_assets_create(valid, &out, &oversized), FJ_STATUS_UNSUPPORTED_INPUT);
             require(!out && oversized.length == 0, "malformed diagnostics did not precede operation");
-            event.passed();
         }
 #if defined(_WIN32)
         const std::array<std::uint16_t, 2> units{65, 66};
-        JuicerTests::Cohort alignment("catalog_owner.root_path_alignment", {"unaligned-wide"});
-        auto event = alignment.case_event("unaligned-wide");
         require_status(fj_test_assets_create({reinterpret_cast<const char*>(units.data()) + 1, 1, FJ_PATH_WINDOWS_WIDE}, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        event.passed();
 #endif
     }
 
@@ -211,9 +190,7 @@ namespace {
             JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(root);
             const auto* const assets = runtime.borrow().assets;
-            JuicerTests::Cohort source_faults("catalog_owner.source_fault", {"allocation", "panic"});
             for (unsigned fault : {2u, 1u}) {
-                auto event = source_faults.case_event(fault == 2 ? "allocation" : "panic");
                 fj_test_catalog_fault(fault);
                 FjCatalog* out = nullptr;
                 FjCatalogCounts counts{999, 999};
@@ -222,7 +199,6 @@ namespace {
                 require(!out && counts.film_count == 0 && counts.print_count == 0 &&
                             fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
                         "incomplete catalog acquisition published or leaked");
-                event.passed();
             }
             fs::remove_all(root / "profiles");
             {
@@ -272,7 +248,6 @@ namespace {
                     "sticky-error Runtime did not close cleanly");
         }
 
-        JuicerTests::Cohort catalog_rejections("catalog_owner.key_rejection", {"duplicate-film-key", "missing-print-default"});
         const auto duplicate = scratch / "duplicate";
         minimal_catalog(duplicate);
         fs::copy_file(duplicate / "profiles/film.json", duplicate / "profiles/duplicate.json");
@@ -282,14 +257,12 @@ namespace {
         for (const auto& [id, path] : {std::pair{"duplicate-film-key", duplicate}, std::pair{"missing-print-default", absentDefault}}) {
             JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(path);
-            auto event = catalog_rejections.case_event(id);
             FjCatalog* out = nullptr;
             FjCatalogCounts counts{};
             require_status(fj_test_catalog_acquire(runtime.borrow().assets, &out, &counts, nullptr), FJ_STATUS_PREPARATION_FAILURE);
             require(!out && counts.film_count == 0 && counts.print_count == 0 &&
                         fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
                     "invalid catalog accepted or retained a handle");
-            event.passed();
             require(runtime.close().category == FJ_STATUS_SUCCESS, "invalid catalog Runtime did not close cleanly");
         }
     }
@@ -495,46 +468,29 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
-        JuicerTests::CaseLog case_log;
-        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
-            for (const char* id : {"root_shapes", "input_and_lifetime", "sticky_source_and_retry", "exact_paths_and_consumers", "bundled_publication"})
-                JuicerTests::list_case("catalog_owner", id);
-            return 0;
-        }
         require(argc == 3, "catalog fixture needs scratch and bundled Resources paths");
         const fs::path scratch(argv[1]);
         fs::remove_all(scratch);
         minimal_catalog(scratch / "minimal");
         {
-            JuicerTests::CaseEvent event("catalog_owner", "root_shapes");
             root_shapes(scratch / "minimal");
-            event.passed();
         }
         {
-            JuicerTests::CaseEvent event("catalog_owner", "input_and_lifetime");
             input_and_lifetime(scratch / "minimal");
-            event.passed();
         }
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "raw ownership leaked");
         {
-            JuicerTests::CaseEvent event("catalog_owner", "sticky_source_and_retry");
             sticky_source_and_retry(scratch);
-            event.passed();
         }
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "native publication leaked");
         {
-            JuicerTests::CaseEvent event("catalog_owner", "exact_paths_and_consumers");
             exact_paths_and_consumers({.scratch = scratch, .bundled = argv[2]});
-            event.passed();
         }
         {
-            JuicerTests::CaseEvent event("catalog_owner", "bundled_publication");
             bundled_cold_and_warm_publication(argv[2]);
-            event.passed();
         }
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "bundled publication owners accumulated after drop");
         std::puts("PASS catalog ABI/production options, publication/retry, source stickiness, concurrent acquisition, retained borrows and native opens");
-        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL catalog: %s\n", error.what());

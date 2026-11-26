@@ -220,7 +220,6 @@ impl NeutralCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_cases::RowCases;
     #[test]
     fn allocation_precedes_existence_and_ordinary_policy_is_preserved() {
         assert_eq!(
@@ -237,17 +236,40 @@ mod tests {
             ),
         ];
         let ids = ["present", "missing", "probe-denied", "probe-oom"];
-        let mut cases = RowCases::new("calibration-read-classification", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "calibration-read-classification"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "calibration-read-classification"
+        );
         for ((probe, expected), id) in rows.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             assert_eq!(
                 classify_read_error(io::ErrorKind::PermissionDenied, || probe
                     .map_err(io::Error::from)),
                 expected
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
     #[test]
     fn assets_cache_allocation_until_release() {
@@ -256,9 +278,26 @@ mod tests {
         );
         let probes = [Ok(true), Ok(false), Err(io::ErrorKind::PermissionDenied)];
         let ids = ["exists", "missing", "permission-error"];
-        let mut cases = RowCases::new("calibration-cache-read-faults", ids);
+        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(
+            !cases_ids.is_empty(),
+            "empty case set: {}",
+            "calibration-cache-read-faults"
+        );
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "duplicate case IDs: {}",
+            "calibration-cache-read-faults"
+        );
         for (probe, id) in probes.into_iter().zip(ids) {
-            let case = cases.case(id);
+            let case = AsRef::<str>::as_ref(&(id)).to_owned();
             test_support::set_read_fault(io::ErrorKind::OutOfMemory, probe);
             for _ in 0..2 {
                 let Err(crate::assets::AssetError::Calibration(error)) =
@@ -274,9 +313,15 @@ mod tests {
             assets.release_cached_payloads().unwrap();
             assert!(assets.neutral_calibration().is_ok());
             assets.release_cached_payloads().unwrap();
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
         test_support::set_read_fault(
             io::ErrorKind::PermissionDenied,
             Err(io::ErrorKind::OutOfMemory),

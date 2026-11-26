@@ -16,20 +16,6 @@ class MallettFixtureTests(unittest.TestCase):
         payloads = {name: json.loads((FIXTURES / name).read_bytes()) for name in manifest["files"]}
         numerical_names = {selected["numerical"] for selected in manifest["presets"].values()}
         product_names = {selected["products"] for selected in manifest["presets"].values()}
-        self.subtest_cases = tuple(
-            [f"preset/{preset}" for preset in manifest["presets"]]
-            + [f"file/{name}" for name in manifest["files"]]
-            + [
-                f"focused/{name}/{index}-{row['id']}"
-                for name in sorted(numerical_names)
-                for index, row in enumerate(payloads[name]["focused"])
-            ]
-            + [
-                f"product/{name}/{index}"
-                for name in sorted(product_names)
-                for index, _ in enumerate(payloads[name]["products"])
-            ]
-        )
         self.assertEqual(
             set(manifest["presets"]),
             {
@@ -68,8 +54,6 @@ class MallettFixtureTests(unittest.TestCase):
                 for index, row in enumerate(value["products"]):
                     with self.subTest(case=f"product/{name}/{index}"):
                         self.assertIsInstance(row, dict)
-
-    test_independent_records_and_preset_sharing.required_subtests = True
 
     def test_corrected_failure_retains_native_provenance(self) -> None:
         contract = json.loads((FIXTURES / "mallett-failure-contract.json").read_bytes())

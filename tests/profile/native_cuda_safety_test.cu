@@ -12,7 +12,6 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include "../ffi/gtest_cases.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
 
 extern "C" cudaError_t juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
@@ -101,25 +100,16 @@ namespace {
         require_cuda(cudaSetDevice(0));
         constexpr float kInf = std::numeric_limits<float>::infinity();
         constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
-        JuicerTests::GtestCohort cases("curve-domain", std::vector<std::string>{"singleton", "duplicate", "infinite-duplicate", "large-axis"});
         // Defined endpoint/interpolation identities of the retained device operator.
         // Ordered infinite knots keep its nonfinite-denominator return of y0.
-        auto singleton = cases.case_event("singleton");
         check_curve({.axis = std::array{0.0f}, .density = std::array{5.0f}, .queries = std::array{-kInf, 0.0f, kInf, kNan}, .expected = std::array{5.0f, 5.0f, 5.0f, kNan}});
-        singleton.passed();
-        auto duplicate = cases.case_event("duplicate");
         check_curve({.axis = std::array{1.0f, 1.0f}, .density = std::array{5.0f, 7.0f}, .queries = std::array{0.0f, 1.0f, 2.0f}, .expected = std::array{5.0f, 5.0f, 7.0f}});
-        duplicate.passed();
-        auto infiniteDuplicate = cases.case_event("infinite-duplicate");
         check_curve({.axis = std::array{-kInf, -1.0f, 0.0f, 0.0f, 1.0f, kInf}, .density = std::array{0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f}, .queries = std::array{-2.0f, -1.0f, 0.0f, 0.5f, 2.0f, -kInf, kInf, kNan}, .expected = std::array{0.0f, 1.0f, 3.0f, 3.5f, 4.0f, kNan, kNan, kNan}});
-        infiniteDuplicate.passed();
-        auto largeAxis = cases.case_event("large-axis");
         std::vector<float> axis(257);
         for (std::size_t sample = 0; sample < axis.size(); ++sample) {
             axis[sample] = static_cast<float>(sample);
         }
         check_curve({.axis = axis, .density = axis, .queries = std::array{-kInf, 127.5f, kInf}, .expected = std::array{0.0f, 127.5f, 256.0f}});
-        largeAxis.passed();
     }
 
     __global__ void coordinate_kernel(const float* normalized, float* out) {
@@ -144,12 +134,9 @@ namespace {
         const auto actual = output.download();
         constexpr std::array<float, 9> kFilmBase{0, 0, 190, 0, 190, 0, 0, 95, 190};
         constexpr std::array<float, 9> kFilmFraction{0, 0, 1, 0, 1, 0, 0, 0.5f, 1};
-        JuicerTests::GtestCohort cases("coordinate", 9);
         for (std::size_t sample = 0; sample < normalized.size(); ++sample) {
-            auto row = cases.case_event(std::to_string(sample));
             EXPECT_EQ(actual[sample * 2], kFilmBase[sample]);
             EXPECT_EQ(actual[sample * 2 + 1], kFilmFraction[sample]);
-            row.passed();
         }
     }
 
@@ -170,11 +157,8 @@ namespace {
         require_cuda(cudaGetLastError());
         const auto actual = output.download();
         // Film's existing computed-sample sanitation returns zero.
-        JuicerTests::GtestCohort cases("lut-output", std::vector<std::string>{"film-c", "film-m", "film-y"});
         for (std::size_t channel = 0; channel < 3; ++channel) {
-            auto row = cases.case_event(std::string("film-") + "cmy"[channel]);
             EXPECT_EQ(actual[channel], 0.0f);
-            row.passed();
         }
     }
 
@@ -182,7 +166,6 @@ namespace {
         require_cuda(cudaSetDevice(0));
         // Actual production launchers consume the same C/M/Y device curves.
         // Powers of ten fall outside these domains; endpoints give exact values.
-        JuicerTests::GtestCohort cases("development-axis", std::vector<std::string>{"count-1-direct", "count-1-print", "count-17-direct", "count-17-print", "count-257-direct", "count-257-print"});
         for (const int count : {1, 17, 257}) {
             std::vector<float> axis(static_cast<std::size_t>(count), 0.0f);
             std::vector<float> density(static_cast<std::size_t>(count), 2.0f);
@@ -214,7 +197,6 @@ namespace {
             print.height = 1;
             print.filmDevelop = direct.filmDevelop;
             for (const bool printRoute : {false, true}) {
-                auto row = cases.case_event("count-" + std::to_string(count) + (printRoute ? "-print" : "-direct"));
                 const auto status = printRoute ? juicer_cuda_print_focused_capture_density_from_camera_film_linear(&print, planes, c.data(), m.data(), yellow.data(), nullptr)
                                                : juicer_cuda_direct_focused_capture_density_from_camera_film_linear(&direct, planes, c.data(), m.data(), yellow.data(), nullptr);
                 require_cuda(status);
@@ -225,7 +207,6 @@ namespace {
                     EXPECT_EQ(actual[1], (count == 1 ? 2.0f : 4.0f) * channelScale) << count << " print=" << printRoute;
                     channelScale *= 2.0f;
                 }
-                row.passed();
             }
         }
     }

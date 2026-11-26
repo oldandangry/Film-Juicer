@@ -18,7 +18,6 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 
 namespace {
     std::atomic<std::size_t> allocations{0};
@@ -434,9 +433,7 @@ namespace {
                 capacity_ids.reserve(capacities.size());
                 for (const auto capacity : capacities)
                     capacity_ids.push_back(mode + "/" + std::to_string(capacity));
-                JuicerTests::Cohort capacity_cases("cuda_terminal.capacity", capacity_ids);
                 for (const std::size_t capacity : capacities) {
-                    auto capacity_event = capacity_cases.case_event(mode + "/" + std::to_string(capacity));
                     error = {diagnostic.data(), capacity, 99};
                     require(same_status(owner.shutdown(&error), expected), "diagnostic capacity changed terminal status");
                     require(error.length == (capacity ? capacity - 1 : 0), "terminal diagnostic length wrong");
@@ -444,7 +441,6 @@ namespace {
                         require(diagnostic[capacity - 1] == '\0', "terminal diagnostic missing terminator");
                         require(original.compare(0, error.length, diagnostic.data(), error.length) == 0, "terminal diagnostic changed after failure");
                     }
-                    capacity_event.passed();
                 }
                 error = {diagnostic.data(), diagnostic.size(), 0};
                 const auto before = allocations.load();
@@ -528,14 +524,7 @@ namespace JuicerCuda::TerminalTest {
 
 int main(int argc, char** argv) {
     try {
-        JuicerTests::CaseLog case_log;
-        const bool listing = argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases";
-        const std::string mode = argc > 1 && (!listing || argc > 2) ? argv[1] : "success";
-        if (listing) {
-            JuicerTests::list_case("cuda_terminal", mode);
-            return 0;
-        }
-        JuicerTests::CaseEvent event("cuda_terminal", mode);
+        const std::string mode = argc > 1 ? argv[1] : "success";
         if (mode == "partial-library") {
             JuicerTestSupport::RuntimeFixture owner;
             fj_test_runtime_fault(1);
@@ -650,8 +639,6 @@ int main(int argc, char** argv) {
             check_failure(mode, false);
         }
         std::printf("PASS terminal ownership: %s\n", mode.c_str());
-        event.passed();
-        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL terminal ownership: %s\n", error.what());

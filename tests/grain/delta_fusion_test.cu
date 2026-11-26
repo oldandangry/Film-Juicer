@@ -15,7 +15,7 @@
 #include <cuda_runtime.h>
 
 #include "Cuda/JuicerCudaPayloads.h"
-#include "../ffi/case_results.h"
+#include <set>
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -251,16 +251,10 @@ namespace {
     }
 } // namespace
 
-int main(int argc, char** argv) try {
+int main() try {
     const auto ids = numerical_case_ids();
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto& id : ids)
-            JuicerTests::list_case("grain_delta_fusion", id);
-        return 0;
-    }
+    require(ids.size() == 154 && std::set<std::string>(ids.begin(), ids.end()).size() == ids.size(), "grain numerical case membership");
     require_cuda(cudaSetDevice(0));
-    JuicerTests::CaseLog case_log;
-    JuicerTests::Cohort cases("grain_delta_fusion", ids);
     std::size_t case_index = 0;
     for (Shape shape : {Shape::Triplet, Shape::SeparateLayers, Shape::FinalLayerUnblurred, Shape::Unblurred, Shape::Simple}) {
         for (const auto extent : {std::array{1, 1}, std::array{1, 11}, std::array{33, 9}}) {
@@ -268,9 +262,7 @@ int main(int argc, char** argv) try {
                 for (float time : {0.0f, 0.375f}) {
                     const auto id = numerical_case_id(shape, extent[0], extent[1], minimum, time);
                     require(ids.at(case_index++) == id, "grain numerical case dimensions match intended membership");
-                    auto row = cases.case_event(id);
                     check_case(shape, extent[0], extent[1], minimum, {0.25f, 0.5f, 0.25f}, time);
-                    row.passed();
                 }
             }
         }
@@ -281,14 +273,11 @@ int main(int argc, char** argv) try {
                  std::pair{std::numeric_limits<float>::quiet_NaN(), "nan"}}) {
             const auto id = numerical_case_id(shape, 33, 9, 0.08f, 0.0f, weight_name);
             require(ids.at(case_index++) == id, "grain numerical case dimensions match intended membership");
-            auto row = cases.case_event(id);
             check_case(shape, 33, 9, 0.08f, {weight, weight, weight}, 0.0f);
-            row.passed();
         }
     }
     require(case_index == ids.size(), "grain numerical case membership exhausted");
     std::cout << "PASS: " << case_index << " unfused grain numerical cases\n";
-    case_log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "%s\n", error.what());

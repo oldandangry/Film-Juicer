@@ -8,7 +8,6 @@
 #include "../ffi/preparation_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/case_results.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -1139,15 +1138,10 @@ namespace {
             }
             DeviceFrame frame;
             std::uint64_t signature = 0;
-            const std::array<std::string, 6> intended{{"supplied-nonnull/immediate", "supplied-nonnull/delayed", "present-null/immediate", "present-null/delayed", "absent/immediate", "absent/delayed"}};
-            JuicerTests::Cohort rows("stream_render", std::vector<std::string>(intended.begin(), intended.end()));
             for (int streamCase = 0; streamCase < 3; ++streamCase) {
                 const bool present = streamCase != 2;
                 cudaStream_t stream = streamCase == 0 ? frame.stream() : nullptr;
                 for (bool delayed : {false, true}) {
-                    const char* const stream_name = streamCase == 0 ? "supplied-nonnull" : streamCase == 1 ? "present-null"
-                                                                                                           : "absent";
-                    auto case_event = rows.case_event(std::string(stream_name) + (delayed ? "/delayed" : "/immediate"));
                     frame.reset();
                     configure_image_properties(_source.imageProperties, frame.source(), "stream-source");
                     configure_image_properties(_output.imageProperties, frame.destination(), "stream-output");
@@ -1190,7 +1184,6 @@ namespace {
                     }
                     signature = output;
                     _trace.push_back("STREAM_CASE case=" + std::to_string(streamCase) + " delayed=" + std::to_string(delayed) + " pending_releases=" + std::to_string(_pendingStreamReleases) + " passed=1");
-                    case_event.passed();
                 }
             }
         }
@@ -1813,6 +1806,10 @@ namespace {
             add_double("HalationHighlightBoostRange", 0.3);
 
             add_boolean(JuicerParams::kGrainActive, false);
+            add_str_choice("GrainModel", "current");
+            add_double("FilmGrainAmountEv", 0.0);
+            add_double("FilmGrainTexelPitchUm", 1.0);
+            add_double("FilmGrainChromaFraction", 1.0);
             add_boolean(JuicerParams::kGrainSublayersActive, true);
             add_choice(JuicerParams::kGrainPreset, 1);
             add_double(JuicerParams::kGrainParticleAreaUm2, 0.25);
@@ -2710,7 +2707,6 @@ namespace {
     void run_submission_retirement_rows(FjRuntimeView runtime) {
         using namespace JuicerFrame::FrameGeometryTest;
         using Observer = JuicerTestSupport::EffectObservation;
-        JuicerTests::Cohort rows("submission_retirement", {"never-rendered", "live-peer", "retirement-failure", "partial-construction"});
         struct Lifetime {
             FjOfxLifetime* owner = nullptr;
             explicit Lifetime(OfxImageEffectHandle effect) {
@@ -2731,7 +2727,6 @@ namespace {
         NativeHost host;
         DeviceFrame frame;
         {
-            auto row = rows.case_event("never-rendered");
             auto effect = std::make_unique<EffectLease>(*test_plugin, host.effect_handle());
             Lifetime lifetime(effect->handle());
             require(lifetime.live() && !Observer::snapshot(*effect).latchValid, "never-rendered effect owns initialized identity without a submission");
@@ -2743,10 +2738,8 @@ namespace {
             require(retired.count == 1 && retired.identity_live && retired.token != 0 &&
                         retired.status.category == FJ_STATUS_SUCCESS && !lifetime.live(),
                     "native retirement returns before Rust instance lifetime release");
-            row.passed();
         }
         {
-            auto row = rows.case_event("live-peer");
             auto first = std::make_unique<EffectLease>(*test_plugin, host.effect_handle());
             Lifetime lifetime(first->handle());
             host.bind_effect(*first);
@@ -2764,10 +2757,8 @@ namespace {
                     "rendered effect retires membership before Rust release");
             require(peerHost.render(*peer, frame, "submission-peer-after-close").succeeded, "another live effect survives retirement");
             peerHost.unbind_effect();
-            row.passed();
         }
         {
-            auto row = rows.case_event("retirement-failure");
             auto effect = std::make_unique<EffectLease>(*test_plugin, host.effect_handle());
             Lifetime lifetime(effect->handle());
             require(!Observer::snapshot(*effect).latchValid, "retirement failure control has no native membership");
@@ -2790,10 +2781,8 @@ namespace {
             require(host.render(next, frame, "submission-after-retirement-failure").succeeded,
                     "new effect remains usable after retirement failure");
             host.unbind_effect();
-            row.passed();
         }
         {
-            auto row = rows.case_event("partial-construction");
             fj_test_ofx_retirement_reset();
             bool getterFailed = false;
             host.set_getter_hook([&](const std::string&) {
@@ -2810,7 +2799,6 @@ namespace {
             FjOfxRetirementObservation partialRetirement{};
             require(fj_test_ofx_retirement_observe(&partialRetirement) != 0 && failed && getterFailed && partialRetirement.count == 0,
                     "partial constructor before identity binding creates no membership retirement");
-            row.passed();
         }
     }
 
@@ -2818,7 +2806,6 @@ namespace {
         using Observer = JuicerTestSupport::EffectObservation;
         const std::vector<std::string> ids{
             "older-capture-success", "older-capture-getter-failure", "capturing-admission", "capturing-render-thread", "capturing-render-thread-getter-failure", "unread-change-render-thread", "grain-chroma-ui-render-thread", "read-failure-preserves-change-ui", "unread-change-ui-failure", "deferred-action-ui-failure", "initial-capture-superseded-render-read", "frame-input-during-new-change", "render-read-getter-failure", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
-        JuicerTests::Cohort rows("publication_capture", ids);
         struct CallbackPause {
             std::mutex mutex;
             std::condition_variable condition;
@@ -2855,7 +2842,6 @@ namespace {
                     "exact adapter exception and image release order");
         };
         for (const auto& id : ids) {
-            auto row = rows.case_event(id);
             NativeHost host;
             host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
             host.set_int_value(JuicerParams::kDirCouplersActive, 1);
@@ -3674,7 +3660,6 @@ namespace {
             if (held.state) {
                 require(JuicerTestSupport::published_view(held).recipe_hash == heldHash && held.state->build() == before.build, "already-admitted backing survives callback overlap/failure");
             }
-            row.passed();
         }
     }
 
@@ -4138,7 +4123,6 @@ namespace {
         for (unsigned route = 0; route < 4; ++route)
             for (unsigned input = 0; input < 24; ++input)
                 intended.push_back("route-" + std::to_string(route) + "/input-" + std::to_string(input));
-        JuicerTests::Cohort rows("optics_capture", intended);
         unsigned visits = 0;
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
@@ -4151,7 +4135,6 @@ namespace {
             const std::array<const char*, 9> enlarger{JuicerParams::kPrintDiffusionStrength, JuicerParams::kPrintDiffusionSpatialScale, JuicerParams::kPrintDiffusionHaloWarmth, JuicerParams::kPrintDiffusionCoreIntensity, JuicerParams::kPrintDiffusionCoreSize, JuicerParams::kPrintDiffusionHaloIntensity, JuicerParams::kPrintDiffusionHaloSize, JuicerParams::kPrintDiffusionBloomIntensity, JuicerParams::kPrintDiffusionBloomSize};
             const std::array<const char*, 4> halation{JuicerParams::kHalationScatterAmount, JuicerParams::kHalationScatterSpatialScale, JuicerParams::kHalationAmount, JuicerParams::kHalationSpatialScale};
             for (int n = 0; n < 24; ++n) {
-                auto case_event = rows.case_event("route-" + std::to_string(route) + "/input-" + std::to_string(n));
                 bool enabled = n % 3 != 0;
                 host.set_int_value(JuicerParams::kHalationActive, enabled);
                 host.set_int_value(JuicerParams::kCameraDiffusionEnabled, n % 2);
@@ -4211,9 +4194,15 @@ namespace {
                             return getter.template get_ref<const Json::string_t&>().starts_with("GET_CURRENT name=ScannerLutResolution ");
                         }) == (expected.at("pending_valid").get<bool>() ? 1u : 0u),
                         "archived optics scanner grid getter membership");
+                // The frozen order predates the Film v1 selector. Pin the
+                // additional Current getter at its boundary before effects.
+                const auto firstEffect = std::find(expectedGetters.begin(), expectedGetters.end(), "GET_CURRENT name=FilmDustAmount time=0 value=0");
+                if (firstEffect != expectedGetters.end())
+                    expectedGetters.insert(firstEffect, "GET_CURRENT name=GrainModel time=0 value=current");
                 const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"admitted", admitted}, {"input", optics_inputs(observed.input, route % 2 != 0)}, {"recipe", admitted ? optics_project(preparedView.optics) : Json()}, {"getters", getters}};
-                require(actual == expected, "all frozen OFX optics capture/getter/publication fields route=" + std::to_string(route) + " index=" + std::to_string(n));
-                case_event.passed();
+                if (actual != expected)
+                    throw std::runtime_error("OFX optics capture route=" + std::to_string(route) +
+                                             " index=" + std::to_string(n) + ": " + Json::diff(expected, actual).dump());
                 ++visits;
             }
             host.unbind_effect();
@@ -4239,7 +4228,6 @@ namespace {
             if ((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0))
                 intended.push_back("route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
         }
-        JuicerTests::Cohort rows("physical_capture", intended);
         EffectLease effect(*test_plugin, host.effect_handle());
         host.bind_effect(effect);
         host.set_time(0);
@@ -4251,7 +4239,6 @@ namespace {
             if (!((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0)))
                 continue;
             const unsigned route = row.at("route");
-            auto case_event = rows.case_event("route-" + std::to_string(route) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
             const bool print = route % 2;
             host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
             host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
@@ -4291,7 +4278,6 @@ namespace {
             require(admitted.state->input_identity() == observed.pendingFullHash &&
                         preparedView.route == route && preparedView.recipe_hash != 0,
                     "admitted physical effects retains the captured identity and route");
-            case_event.passed();
             ++count;
         }
         require(count == 20, "bounded physical OFX witness membership");
@@ -4354,10 +4340,10 @@ namespace {
         const auto diffusionManifest = nlohmann::json::parse(std::ifstream(fixtures.diffusion));
         const auto diffusionCaptured = load_shared_fixture(fixtures.diffusion.parent_path() / diffusionManifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         require(diffusionCaptured.at("preset") == preset && diffusionCaptured.at("products").size() == 92, "diffusion callback frozen native context/membership");
-        // Cohort membership follows callback scenarios; pixel-size expectations
+        // Callback cases also exercise failure priority. Pixel-size expectations
         // consume only the named landscape, square, portrait, and fractional-film rows.
-        const auto intended = frame_geometry_case_ids();
-        JuicerTests::Cohort rows("frame_geometry", intended);
+        auto remaining = frame_geometry_case_ids();
+        require(remaining.size() == 57, "complete geometry case inventory");
         std::string route_prefix = "shared/";
         std::string check_id_override;
         auto expected_pixel = [&](const char* name) {
@@ -4382,7 +4368,6 @@ namespace {
         auto check = [&](const char* name, DeviceFrame& allocation, const FrameGeometryCase& facts, bool failed, ExpectedPhases expected, const char* pixelCase = "landscape", const std::function<void(const NativeHost::RenderResult&)>& after = {}) {
             const std::string membership_id = route_prefix + (check_id_override.empty() ? name : check_id_override);
             check_id_override.clear();
-            auto case_event = rows.case_event(membership_id);
             const auto phases = expected.completed;
             const auto queries = expected.canonicalQueries;
             const auto traceBegin = host.trace_size();
@@ -4565,7 +4550,9 @@ namespace {
             }
             if (after)
                 after(result);
-            case_event.passed();
+            const auto completed = std::find(remaining.begin(), remaining.end(), membership_id);
+            require(completed != remaining.end(), "unexpected or repeated geometry case: " + membership_id);
+            remaining.erase(completed);
             return result;
         };
         const auto first = check("off", frame, geometry, false, {2, 0});
@@ -4710,6 +4697,7 @@ namespace {
         invalid.source = {std::numeric_limits<int>::min(), 0, std::numeric_limits<int>::max(), 5};
         check("full-range-before-state", frame, invalid, true, {0, 0});
         check("invalid-state-before-scalar", frame, geometry, true, {1, 0});
+        require(remaining.empty(), "every geometry case completed its comparisons");
         host.unbind_effect();
         host.write_trace(tracePath);
         std::cout << "PASS prepared Rust frame policy, three phases, four routes, failure priority and image leases\n";
@@ -4718,82 +4706,6 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
-    if (JuicerTests::list_requested(argc, argv)) {
-        if (argc == 8 && std::string_view(argv[1]) == "--frame-geometry") {
-            JuicerTests::list_case("adapter_operation", "frame_geometry");
-            for (const auto& id : frame_geometry_case_ids())
-                JuicerTests::list_case("frame_geometry", id);
-            return 0;
-        }
-        if (argc == 6 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract")) {
-            JuicerTests::list_case("adapter_operation", std::string(std::string_view(argv[1]) == "--stream-contract" ? "stream_contract" : "loaded_module"));
-            if (std::string_view(argv[1]) == "--stream-contract")
-                for (const char* stream : {"supplied-nonnull", "present-null", "absent"})
-                    for (const char* delay : {"immediate", "delayed"})
-                        JuicerTests::list_case("stream_render", std::string(stream) + "/" + delay);
-            return 0;
-        }
-        if ((argc == 4 || argc == 7) && std::string_view(argv[1]) == "--trace-output") {
-            JuicerTests::list_case("adapter_operation", "adapter_trace");
-            for (const char* id : {"never-rendered", "live-peer", "retirement-failure", "partial-construction"})
-                JuicerTests::list_case("submission_retirement", id);
-            for (int failed_call : {1, 2})
-                JuicerTests::list_case("route_constructor_failure", std::to_string(failed_call));
-            for (unsigned failure = 0; failure < 3; ++failure)
-                JuicerTests::list_case("route_failure_recovery", std::to_string(failure + 1));
-            for (const char* route : {"direct", "print"}) {
-                for (unsigned film = 0; film < 3; ++film)
-                    for (unsigned print = 0; print < 3; ++print)
-                        JuicerTests::list_case("gamma_capture", std::string(route) + "/film/" + std::to_string(film) + "/print/" + std::to_string(print));
-                JuicerTests::list_case("gamma_capture", std::string(route) + "/print-range");
-                for (unsigned invalid = 0; invalid < 3; ++invalid)
-                    JuicerTests::list_case("gamma_capture", std::string(route) + "/invalid-film/" + std::to_string(invalid));
-                for (unsigned policy = 0; policy < 3; ++policy)
-                    JuicerTests::list_case("gamma_capture", std::string(route) + "/grain-policy/" + std::to_string(policy));
-                for (unsigned preset = 0; preset < 3; ++preset)
-                    for (unsigned policy = 0; policy < 3; ++policy)
-                        for (unsigned sample = 0; sample < 11; ++sample)
-                            JuicerTests::list_case("grain_capture", std::string(route) + "/preset/" + std::to_string(preset) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(sample));
-                for (int choice : {-8, 0, 1, 2, 8}) {
-                    JuicerTests::list_case("grain_edit", std::string(route) + "/choice/" + std::to_string(choice));
-                    JuicerTests::list_case("grain_edit", std::string(route) + "/fallback/" + std::to_string(choice));
-                }
-                JuicerTests::list_case("grain_edit", std::string(route) + "/master-ratios");
-                JuicerTests::list_case("grain_edit", std::string(route) + "/manual-custom");
-                JuicerTests::list_case("grain_edit", std::string(route) + "/linked-sharpness-texture");
-                JuicerTests::list_case("grain_edit", std::string(route) + "/reset-advanced");
-                for (unsigned time = 0; time < 4; ++time)
-                    JuicerTests::list_case("grain_edit", std::string(route) + "/time/" + std::to_string(time));
-            }
-            for (const char* route : {"negative-direct", "negative-print", "positive-direct", "positive-print"}) {
-                JuicerTests::list_case("dir_capture", route);
-                for (unsigned flags = 0; flags < 4; ++flags)
-                    JuicerTests::list_case("scanner_capture", std::string(route) + "/flags/" + std::to_string(flags));
-                JuicerTests::list_case("scanner_capture", std::string(route) + "/sanitation-and-recovery");
-            }
-            if (argc == 7 && std::string_view(argv[3]) == "--grain-fixtures") {
-                const std::filesystem::path grain_manifest(argv[4]);
-                const std::string preset(argv[5]);
-                (void)preset;
-                for (unsigned route = 0; route < 4; ++route)
-                    for (unsigned input = 0; input < 24; ++input)
-                        JuicerTests::list_case("optics_capture", "route-" + std::to_string(route) + "/input-" + std::to_string(input));
-                const auto effects_path = grain_manifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
-                const auto effects_manifest = nlohmann::json::parse(std::ifstream(effects_path));
-                const auto effects_path_data = effects_path.parent_path() / effects_manifest.at("presets").at(preset).at("ofx").get<std::string>();
-                const auto effects_capture = PrintIlluminantFixtures::apply(effects_path_data, nlohmann::json::parse(std::ifstream(effects_path_data))).at("ofx");
-                for (const auto& row : effects_capture) {
-                    const unsigned policy = row.at("policy");
-                    const unsigned index = row.at("index");
-                    if ((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0))
-                        JuicerTests::list_case("physical_capture", "route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
-                }
-            }
-            return 0;
-        }
-        return 2;
-    }
-    JuicerTests::CaseLog case_log;
     std::string operation_id = "adapter_trace";
     if (argc > 1) {
         const std::string_view mode(argv[1]);
@@ -4804,14 +4716,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         else if (mode == "--loaded-module")
             operation_id = "loaded_module";
     }
-    JuicerTests::CaseEvent operation("adapter_operation", operation_id);
     try {
         if (argc == 5 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract") &&
             std::string_view(argv[3]) == "--trace-output") {
             NativeHost host;
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
-            operation.passed();
-            case_log.finish();
             return 0;
         }
         NativeHost binding;
@@ -4843,8 +4752,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 throw std::runtime_error("CUDA initialization failed");
             run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
             require(loaded.close() == kOfxStatOK, "standard OFX unload");
-            operation.passed();
-            case_log.finish();
             return 0;
         }
         if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {
@@ -4930,9 +4837,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         routeProduct.reset();
         DeviceFrame frame;
         const std::array<std::string, 2> constructor_failure_ids{{"1", "2"}};
-        JuicerTests::Cohort constructor_failure_rows("route_constructor_failure", std::vector<std::string>(constructor_failure_ids.begin(), constructor_failure_ids.end()));
         for (int failedCall : {1, 2}) {
-            auto row = constructor_failure_rows.case_event(std::to_string(failedCall));
             const std::size_t traceStart = host.trace_size();
             host.fail_scan_route_getter(static_cast<unsigned>(failedCall));
             OfxStatus creationStatus = kOfxStatOK;
@@ -4946,11 +4851,9 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         failure_ui_trace_matches(trace, failedCall) &&
                         host.instance_data() == nullptr,
                     "failed route getter must stop creation before route writes and detach instance data");
-            row.passed();
         }
         constexpr std::array<double, 3> recoveryExposureEv{{0.125, -0.25, 0.375}};
         const std::array<std::string, 3> recovery_ids{{"1", "2", "3"}};
-        JuicerTests::Cohort route_recovery_rows("route_failure_recovery", std::vector<std::string>(recovery_ids.begin(), recovery_ids.end()));
         {
             EffectLease effect(*test_plugin, host.effect_handle());
             host.bind_effect(effect);
@@ -4972,7 +4875,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             for (std::size_t failureIndex = 0;
                  failureIndex < recoveryExposureEv.size();
                  ++failureIndex) {
-                auto row = route_recovery_rows.case_event(std::to_string(failureIndex + 1));
                 const int failedCall = static_cast<int>(failureIndex) + 1;
                 const auto retainedSnapshot = JuicerTestSupport::EffectObservation::captured(effect);
                 const JuicerTestSupport::PublicationAdmission retained =
@@ -5052,7 +4954,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                 recoveredRecipeHash &&
                             retained_state_unchanged(),
                         "route bridge failure did not replace publication while preserving the retained admission");
-                row.passed();
             }
 
             host.set_str_choice_value(
@@ -5386,9 +5287,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 for (unsigned policy = 0; policy < 3; ++policy)
                     gamma_intended.push_back(std::string(route) + "/grain-policy/" + std::to_string(policy));
             }
-            JuicerTests::Cohort gamma_rows("gamma_capture", gamma_intended);
             for (bool print : {false, true}) {
-                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute,
                                           Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan
                                                                             : Spektrafilm::ScanRoute::NegativeDirectScan));
@@ -5396,7 +5295,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 const std::array<double, 3> print_gammas{0.5, 1.234567890123, 2.0};
                 for (std::size_t filmIndex = 0; filmIndex < film_gammas.size(); ++filmIndex) {
                     for (std::size_t printIndex = 0; printIndex < print_gammas.size(); ++printIndex) {
-                        auto row = gamma_rows.case_event(routeName + "/film/" + std::to_string(filmIndex) + "/print/" + std::to_string(printIndex));
                         const double filmGamma = film_gammas[filmIndex];
                         const double printGamma = print_gammas[printIndex];
                         host.set_double_value(JuicerParams::kFilmGammaFactor, filmGamma);
@@ -5409,14 +5307,12 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                     std::bit_cast<std::uint64_t>(observed.pendingPrintGamma) ==
                                         std::bit_cast<std::uint64_t>(printGamma),
                                 "OFX film-f32/print-f64 capture bits changed");
-                        row.passed();
                     }
                 }
                 host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
                 host.set_double_value(JuicerParams::kPrintGammaFactor, 0.25);
                 host.dispatch_event(effect, JuicerParams::kPrintGammaFactor, ChangeReason::UserEdit);
                 const auto printInvalid = JuicerTestSupport::EffectObservation::snapshot(effect);
-                auto print_range_row = gamma_rows.case_event(routeName + "/print-range");
                 require(print ? printInvalid.pendingInvalid : printInvalid.pendingValid,
                         "OFX print gamma validation lost its print-only range");
                 host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
@@ -5424,21 +5320,17 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 const auto retained = JuicerTestSupport::EffectObservation::admit(effect);
                 require(bool(retained.state),
                         "gamma recovery failed to admit a complete state");
-                print_range_row.passed();
                 const std::array<double, 3> invalid_gammas{std::nextafter(0.05, 0.0), std::nextafter(4.0, 5.0), std::numeric_limits<double>::quiet_NaN()};
                 for (std::size_t invalidIndex = 0; invalidIndex < invalid_gammas.size(); ++invalidIndex) {
-                    auto row = gamma_rows.case_event(routeName + "/invalid-film/" + std::to_string(invalidIndex));
                     const double invalid = invalid_gammas[invalidIndex];
                     host.set_double_value(JuicerParams::kFilmGammaFactor, invalid);
                     host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, ChangeReason::UserEdit);
                     require(JuicerTestSupport::EffectObservation::snapshot(effect).pendingInvalid &&
                                 JuicerTestSupport::EffectObservation::admit(effect).kind == FJ_ADMISSION_CAPTURE_FAILED,
                             "invalid authored film gamma admitted an older publication");
-                    row.passed();
                 }
                 host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
                 for (int policy : {0, 1, 2}) {
-                    auto row = gamma_rows.case_event(routeName + "/grain-policy/" + std::to_string(policy));
                     host.set_int_value(JuicerParams::kGrainActive, policy != 0);
                     host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
                     host.set_double_value(JuicerParams::kGrainAmplitude, -1.25);
@@ -5461,13 +5353,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     require((view.film_development.density_layers[0][0].count != 0) == (policy == 2) &&
                                 (policy == 0 || view.grain.amplitude == grain.amplitude),
                             "development repeated or changed resolved grain policy");
-                    row.passed();
                 }
             }
             std::cout << "PASS adapter/film-f32-print-f64-grain-capture-and-recovery\n";
             std::ostringstream grainCapture;
-            std::vector<std::unique_ptr<JuicerTests::CaseEvent>> grain_events;
-            grain_events.reserve(234);
+            std::size_t grain_comparisons = 0;
 
             // Current OFX getters own these resolved controls until S6.B/C.
             std::vector<std::string> grain_capture_intended;
@@ -5477,9 +5367,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     for (unsigned policy = 0; policy < 3; ++policy)
                         for (unsigned sample = 0; sample < 11; ++sample)
                             grain_capture_intended.push_back(std::string(route) + "/preset/" + std::to_string(preset) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(sample));
-            JuicerTests::Cohort grain_capture_rows("grain_capture", grain_capture_intended);
             for (bool print : {false, true}) {
-                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute,
                                           Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                 for (int presetIndex : {0, 1, 2}) {
@@ -5494,7 +5382,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         const double threshold = static_cast<double>(0.999f);
                         const std::array<double, 11> chromas{0.0, 0.375, 1.0, std::nextafter(threshold, 0.0), std::nextafter(threshold, 1.0), static_cast<double>(std::nextafter(0.999f, 0.0f)), static_cast<double>(std::nextafter(0.999f, 1.0f)), std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -1.0, 2.0};
                         for (std::size_t index = 0; index < amounts.size(); ++index) {
-                            grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_capture", routeName + "/preset/" + std::to_string(presetIndex) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(index)));
+                            ++grain_comparisons;
                             host.set_int_value(JuicerParams::kGrainActive, policy != 0);
                             host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
                             host.set_double_value(JuicerParams::kGrainAmplitude, amounts[index]);
@@ -5589,9 +5477,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 for (unsigned time = 0; time < 4; ++time)
                     grain_edit_intended.push_back(std::string(route) + "/time/" + std::to_string(time));
             }
-            JuicerTests::Cohort grain_edit_rows("grain_edit", grain_edit_intended);
             for (bool print : {false, true}) {
-                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                 host.set_int_value(JuicerParams::kGrainActive, 1);
                 host.set_int_value(JuicerParams::kGrainSublayersActive, 1);
@@ -5644,7 +5530,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                             "same-time capture repeats reuse immutable publication");
                 };
                 for (int choice : {-8, 0, 1, 2, 8}) {
-                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/choice/" + std::to_string(choice)));
+                    ++grain_comparisons;
                     host.set_int_value(JuicerParams::kGrainPreset, choice);
                     const auto before = host.nested_event_count();
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, ChangeReason::UserEdit);
@@ -5653,7 +5539,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     const auto unchanged = host.nested_event_count();
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, ChangeReason::Time);
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, ChangeReason::PluginEdit);
-                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/fallback/" + std::to_string(choice)));
+                    ++grain_comparisons;
                     require(host.nested_event_count() == unchanged, "non-user preset events do not repeat setters");
                     const double nan = std::numeric_limits<double>::quiet_NaN();
                     for (const char* name : {JuicerParams::kGrainAmplitude, JuicerParams::kGrainBlur, JuicerParams::kGrainSharpness, JuicerParams::kGrainChroma, JuicerParams::kGrainTexture, JuicerParams::kGrainParticleAreaUm2, JuicerParams::kGrainSizeMixScale, JuicerParams::kGrainSizeMixWeight, JuicerParams::kGrainSizeMixWeightMid, JuicerParams::kGrainBlurDyeCloudsUm, JuicerParams::kGrainClumpTemporalMix, JuicerParams::kGrainClumpMorphPeriodSec})
@@ -5667,7 +5553,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     require(same_float3(fallback.particle_scale_cmy, {1.48f, 1.48f, 1.48f}), "triplet fallback repeats preset master without ratios");
                     record("fallback-" + std::to_string(choice));
                 }
-                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/master-ratios"));
+                ++grain_comparisons;
                 host.set_int_value(JuicerParams::kGrainPreset, 1);
                 host.dispatch_event(effect, JuicerParams::kGrainPreset, ChangeReason::UserEdit);
                 host.set_double3_value(JuicerParams::kGrainParticleScale, {0.5, 1.0, 1.5});
@@ -5675,24 +5561,24 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 host.dispatch_event(effect, JuicerParams::kGrainParticleScaleMaster, ChangeReason::UserEdit);
                 require(same_float3(JuicerTestSupport::EffectObservation::snapshot(effect).input.grain.particle_scale_cmy, {0.625f, 1.25f, 1.875f}), "master edit writes normalized current ratios once");
                 record("master-ratios");
-                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/manual-custom"));
+                ++grain_comparisons;
                 host.set_double3_value(JuicerParams::kGrainParticleScale, {2.0, 3.0, 4.0});
                 host.dispatch_event(effect, JuicerParams::kGrainParticleScale, ChangeReason::UserEdit);
                 require(same_float3(JuicerTestSupport::EffectObservation::snapshot(effect).input.grain.particle_scale_cmy, {2.0f, 3.0f, 4.0f}), "manual triplets are captured without multiplying master");
                 record("manual-custom");
-                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/linked-sharpness-texture"));
+                ++grain_comparisons;
                 host.set_double_value(JuicerParams::kGrainSharpness, 0.25);
                 host.dispatch_event(effect, JuicerParams::kGrainSharpness, ChangeReason::UserEdit);
                 host.set_double_value(JuicerParams::kGrainTexture, 0.75);
                 host.dispatch_event(effect, JuicerParams::kGrainTexture, ChangeReason::UserEdit);
                 record("linked-sharpness-texture");
-                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/reset-advanced"));
+                ++grain_comparisons;
                 host.dispatch_event(effect, JuicerParams::kGrainResetAdvanced, ChangeReason::UserEdit);
                 record("reset-advanced");
                 host.set_int_value(JuicerParams::kGrainActive, 0);
                 const std::array<double, 4> grain_times{2.0, 0.0, 2.0, 2.0};
                 for (std::size_t timeIndex = 0; timeIndex < grain_times.size(); ++timeIndex) {
-                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/time/" + std::to_string(timeIndex)));
+                    ++grain_comparisons;
                     const double time = grain_times[timeIndex];
                     host.set_time(time);
                     host.dispatch_event(effect, JuicerParams::kGrainActive, ChangeReason::Time);
@@ -5713,9 +5599,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 const auto expectedPath = manifestPath.parent_path() / manifest.at("presets").at(argv[5]).at("ofx").get<std::string>();
                 ofx_test::compare_grain_capture(expectedPath, grainWords);
             }
-            require(grain_events.size() == 234, "complete grain case event membership");
-            for (auto& event : grain_events)
-                event->passed();
+            require(grain_comparisons == 234, "complete grain comparisons");
             std::cout << grainWords;
 
             std::vector<std::string> dir_intended;
@@ -5728,12 +5612,8 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     scanner_intended.push_back(std::string(route) + "/flags/" + std::to_string(flags));
                 scanner_intended.push_back(std::string(route) + "/sanitation-and-recovery");
             }
-            JuicerTests::Cohort dir_rows("dir_capture", dir_intended);
-            JuicerTests::Cohort scanner_rows("scanner_capture", scanner_intended);
             for (bool positive : {false, true})
                 for (bool print : {false, true}) {
-                    const std::string routeName = std::string(positive ? "positive-" : "negative-") + (print ? "print" : "direct");
-                    auto dir_row = dir_rows.case_event(routeName);
                     host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
                     host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                     host.set_int_value(JuicerParams::kGrainActive, 0);
@@ -5808,13 +5688,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     host.set_double3_value(JuicerParams::kDirCouplersLangmuirReceiverKRgb, {1, 1, 1});
                     host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0.03);
                     host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, 200);
-                    dir_row.passed();
                 }
             std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
 
             for (bool positive : {false, true})
                 for (bool print : {false, true}) {
-                    const std::string routeName = std::string(positive ? "positive-" : "negative-") + (print ? "print" : "direct");
                     host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
                     host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                     host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
@@ -5853,7 +5731,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     constexpr double black = 0.01234567890123;
                     constexpr double white = 0.98765432109876;
                     for (unsigned flags = 0; flags < 4; ++flags) {
-                        auto flags_row = scanner_rows.case_event(routeName + "/flags/" + std::to_string(flags));
                         host.set_int_value(JuicerParams::kScannerBlackCorrection, int(flags & 1u));
                         host.set_int_value(JuicerParams::kScannerWhiteCorrection, int((flags >> 1u) & 1u));
                         host.set_double_value(JuicerParams::kScannerBlackLevel, black);
@@ -5863,9 +5740,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         require(scanner.black_correction == std::uint32_t(flags & 1u) && scanner.white_correction == std::uint32_t((flags >> 1u) & 1u) &&
                                     scanner.black_level == static_cast<float>(black) && scanner.white_level == static_cast<float>(white),
                                 "scanner bools and f64-to-f32 narrowing survive actual OFX capture");
-                        flags_row.passed();
                     }
-                    auto recovery_row = scanner_rows.case_event(routeName + "/sanitation-and-recovery");
                     const auto held = capture();
                     const auto heldHash = prepared_recipe_hash(*held.state);
                     const auto active = host.render(effect, frame, "scanner-active");
@@ -5957,7 +5832,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                     recoveredState.buildCounter == beforeFailure.buildCounter + 1,
                                 "scanner constructor failure recovers through one new complete publication");
                     }
-                    recovery_row.passed();
                 }
             std::cout << "PASS adapter/scanner-current-capture-flags-sanitation-narrowing-active-routes-and-frame-recovery\n";
 
@@ -5967,8 +5841,6 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         }
         require(loaded.close() == kOfxStatOK, "adapter terminal unload failed");
         host.write_trace(tracePath);
-        operation.passed();
-        case_log.finish();
         std::cout << "PASS adapter/first-render-current-value\n"
                   << "PASS adapter/two-authored-times\n"
                   << "PASS adapter/backward-seek-repeat\n"
@@ -5982,8 +5854,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                   << host.at_time_get_count() << " nested_events="
                   << host.nested_event_count() << '\n';
         return 0;
+    } catch (const StatusFailure& error) {
+        std::cerr << "FAIL " << operation_id << ": " << error.what() << " status=" << error.status() << '\n';
+        return 1;
     } catch (const std::exception& error) {
-        std::cerr << "FAIL adapter trace: " << error.what() << '\n';
+        std::cerr << "FAIL " << operation_id << ": " << error.what() << '\n';
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";

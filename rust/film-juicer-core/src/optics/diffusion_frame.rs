@@ -592,7 +592,6 @@ impl FrameSet {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::{Value, json};
 
@@ -710,17 +709,33 @@ mod tests {
                     }),
             )
             .collect();
-        let mut sample_cases = RowCases::new(
-            "diffusion-samples",
+        let sample_cases_ids: Vec<_> = IntoIterator::into_iter(
             samples
                 .iter()
                 .map(|(group, row)| format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !sample_cases_ids.is_empty(),
+            "empty case set: {}",
+            "diffusion-samples"
+        );
+        let sample_cases_count = sample_cases_ids.len();
+        let mut sample_cases_remaining = sample_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            sample_cases_remaining.len(),
+            sample_cases_count,
+            "duplicate case IDs: {}",
+            "diffusion-samples"
         );
         for (group, row) in samples {
-            let case = sample_cases.case(format!(
-                "{group}/{}",
-                row["input"]["name"].as_str().unwrap()
-            ));
+            let case = AsRef::<str>::as_ref(
+                &(format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+            )
+            .to_owned();
             let mismatch_count = mismatches.len();
             let input = &row["input"];
             let label = input["name"].as_str().unwrap();
@@ -797,7 +812,10 @@ mod tests {
                 }
             }
             if mismatches.len() == mismatch_count {
-                case.passed();
+                assert!(
+                    sample_cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
         let frames: Vec<(&str, &Value)> = captured["frames"]
@@ -813,17 +831,33 @@ mod tests {
                     .map(|row| ("product-frame", row)),
             )
             .collect();
-        let mut frame_cases = RowCases::new(
-            "diffusion-frames",
+        let frame_cases_ids: Vec<_> = IntoIterator::into_iter(
             frames
                 .iter()
                 .map(|(group, row)| format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !frame_cases_ids.is_empty(),
+            "empty case set: {}",
+            "diffusion-frames"
+        );
+        let frame_cases_count = frame_cases_ids.len();
+        let mut frame_cases_remaining = frame_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            frame_cases_remaining.len(),
+            frame_cases_count,
+            "duplicate case IDs: {}",
+            "diffusion-frames"
         );
         for (group, row) in frames {
-            let case = frame_cases.case(format!(
-                "{group}/{}",
-                row["input"]["name"].as_str().unwrap()
-            ));
+            let case = AsRef::<str>::as_ref(
+                &(format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+            )
+            .to_owned();
             let mismatch_count = mismatches.len();
             let input = &row["input"];
             let label = input["name"].as_str().unwrap();
@@ -857,19 +891,38 @@ mod tests {
                 &row["diagnostic"],
             );
             if mismatches.len() == mismatch_count {
-                case.passed();
+                assert!(
+                    frame_cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
         let primitives = captured["primitives"].as_array().unwrap();
-        let mut primitive_cases = RowCases::new(
-            "diffusion-primitives",
+        let primitive_cases_ids: Vec<_> = IntoIterator::into_iter(
             primitives
                 .iter()
                 .enumerate()
                 .map(|(index, _)| format!("primitive/{index}")),
+        )
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+        assert!(
+            !primitive_cases_ids.is_empty(),
+            "empty case set: {}",
+            "diffusion-primitives"
+        );
+        let primitive_cases_count = primitive_cases_ids.len();
+        let mut primitive_cases_remaining = primitive_cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            primitive_cases_remaining.len(),
+            primitive_cases_count,
+            "duplicate case IDs: {}",
+            "diffusion-primitives"
         );
         for (index, row) in primitives.iter().enumerate() {
-            let case = primitive_cases.case(format!("primitive/{index}"));
+            let case = AsRef::<str>::as_ref(&(format!("primitive/{index}"))).to_owned();
             let mismatch_count = mismatches.len();
             let value = scalar(&row["input"]["value"]);
             let exponent = scalar(&row["input"]["exponent"]);
@@ -886,7 +939,10 @@ mod tests {
                 );
             }
             if mismatches.len() == mismatch_count {
-                case.passed();
+                assert!(
+                    primitive_cases_remaining.remove(&case),
+                    "unexpected or repeated comparison: {case}"
+                );
             }
         }
         assert_eq!(captured["samples"].as_array().unwrap().len(), 96);
@@ -899,8 +955,17 @@ mod tests {
             mismatches.len(),
             mismatches.join("\n")
         );
-        sample_cases.finish();
-        frame_cases.finish();
-        primitive_cases.finish();
+        assert!(
+            sample_cases_remaining.is_empty(),
+            "missing comparisons: {sample_cases_remaining:?}"
+        );
+        assert!(
+            frame_cases_remaining.is_empty(),
+            "missing comparisons: {frame_cases_remaining:?}"
+        );
+        assert!(
+            primitive_cases_remaining.is_empty(),
+            "missing comparisons: {primitive_cases_remaining:?}"
+        );
     }
 }

@@ -26,7 +26,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "ProcessRoot.h"
@@ -279,11 +278,6 @@ namespace {
         source_ids.reserve(expected.size());
         for (const auto& source : expected)
             source_ids.push_back("csv-tag/" + std::to_string(source.tag));
-        JuicerTests::GtestCohort source_cases("csv-source-resources", source_ids);
-        std::vector<std::unique_ptr<JuicerTests::GtestCase>> source_rows;
-        source_rows.reserve(source_ids.size());
-        for (const auto& id : source_ids)
-            source_rows.push_back(source_cases.deferred_case(id));
         std::array<FjCsvPairs*, 7> held{};
         std::array<FjFloatSpan, 7> views{};
         {
@@ -306,7 +300,6 @@ namespace {
         for (std::size_t i = 0; i < expected.size(); ++i) {
             EXPECT_EQ(hash_floats(views[i].data, views[i].count), expected[i].hash);
             expect_status(fj_test_csv_release(held[i], nullptr), FJ_STATUS_SUCCESS);
-            source_rows[i]->passed();
         }
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
     }
@@ -314,15 +307,10 @@ namespace {
     TEST(IlluminantAbi, ClearedOutputsOptionalDiagnosticsAndConsumeOnceRelease) {
         Assets assets(resources);
         FjCsvPairs* owner = nullptr;
-        JuicerTests::GtestCohort invalid_source_tag_cases("invalid-source-tags", 3u);
-        std::size_t invalid_source_tag_index = 0;
         for (auto tag : {0u, 8u, 0xffffffffu}) {
-            auto invalid_source_tag_case = invalid_source_tag_cases.case_event(std::to_string(invalid_source_tag_index++));
             owner = reinterpret_cast<FjCsvPairs*>(1);
             expect_status(fj_test_csv_acquire(assets.owner, tag, &owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
-
-            invalid_source_tag_case.passed();
         }
         FjFloatSpan view{reinterpret_cast<const float*>(1), 99};
         FjErrorBuffer invalid{nullptr, 1, 99};
@@ -378,10 +366,7 @@ namespace {
 
     TEST(IlluminantAbi, CapacityPoisonAndPanicTransportClearsOutput) {
         Assets assets(resources);
-        JuicerTests::GtestCohort transport_fault_cases("transport-faults", 3u);
-        std::size_t transport_fault_index = 0;
         for (const auto& test : std::array<std::pair<std::uint32_t, std::uint32_t>, 3>{{{1, FJ_STATUS_INTERNAL_FAILURE}, {2, FJ_STATUS_ALLOCATION_FAILURE}, {3, FJ_STATUS_INTERNAL_FAILURE}}}) {
-            auto transport_fault_case = transport_fault_cases.case_event(std::to_string(transport_fault_index++));
             fj_test_csv_fault(test.first);
             FjCsvPairs* owner = reinterpret_cast<FjCsvPairs*>(1);
             std::array<char, 8> bytes{};
@@ -391,8 +376,6 @@ namespace {
             EXPECT_GT(error.length, 0u);
             EXPECT_EQ(bytes[error.length], '\0');
             EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-
-            transport_fault_case.passed();
         }
     }
 
@@ -402,10 +385,7 @@ namespace {
         Assets assets(root);
         EXPECT_EQ(lookup(assets).outcome, FJ_CALIBRATION_MISSING_FILE);
         const std::array<std::pair<const char*, std::uint32_t>, 5> malformed{{{"[]", FJ_CALIBRATION_FIELD_ROOT}, {"{\"paper\":[]}", FJ_CALIBRATION_FIELD_PRINT_PROFILE}, {"{\"paper\":{\"light\":[]}}", FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT}, {"{\"paper\":{\"light\":{\"film\":[1,2]}}}", FJ_CALIBRATION_FIELD_CMY_CC}, {"{\"paper\":{\"light\":{\"film\":[1,null,3]}}}", FJ_CALIBRATION_FIELD_CMY_CC}}};
-        JuicerTests::GtestCohort malformed_key_cases("malformed-keys", std::size(malformed));
-        std::size_t malformed_key_index = 0;
         for (const auto& item : malformed) {
-            auto malformed_key_case = malformed_key_cases.case_event(std::to_string(malformed_key_index++));
             write(path, item.first);
             expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             const auto result = lookup(assets);
@@ -413,8 +393,6 @@ namespace {
             EXPECT_EQ(result.field, item.second);
             for (float cc : result.cmy_cc)
                 EXPECT_EQ(std::bit_cast<std::uint32_t>(cc), 0u);
-
-            malformed_key_case.passed();
         }
         write(path, "\xef\xbb\xbf{\"paper\":{\"light\":{\"film\":[1,2,3],\"unused\":false}},\"bad-unused\":[]}");
         // Cached malformed source/root persists across repair until release.
@@ -448,14 +426,7 @@ namespace {
             for (const auto capacity : capacities)
                 capacity_ids.push_back("mode/" + std::to_string(mode) + "/capacity/" + std::to_string(capacity));
         }
-        JuicerTests::GtestCohort read_fault_capacity_cases("read-fault-capacities", capacity_ids);
-        JuicerTests::GtestCohort read_fault_mode_cases("read-fault-modes", mode_ids);
         for (std::uint32_t mode = 1; mode <= 7; ++mode) {
-            auto mode_case = read_fault_mode_cases.case_event("mode/" + std::to_string(mode));
-            std::vector<std::unique_ptr<JuicerTests::GtestCase>> capacity_cases;
-            capacity_cases.reserve(capacities.size());
-            for (const auto capacity : capacities)
-                capacity_cases.push_back(read_fault_capacity_cases.deferred_case("mode/" + std::to_string(mode) + "/capacity/" + std::to_string(capacity)));
             expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             std::array<bool, capacities.size()> visited{};
             fj_test_calibration_read_fault(mode);
@@ -491,10 +462,9 @@ namespace {
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(lookup(assets).outcome, FJ_CALIBRATION_MISSING_ENTRY);
-            for (std::size_t index = 0; index < capacity_cases.size(); ++index)
-                if (visited[index])
-                    capacity_cases[index]->passed();
-            mode_case.passed();
+            EXPECT_TRUE(std::ranges::all_of(visited, [](bool compared) {
+                return compared;
+            }));
         }
     }
 
@@ -506,14 +476,11 @@ namespace {
             for (const auto& illuminant : print.value().items())
                 for (const auto& film : illuminant.value().items())
                     expected_ids.push_back(print.key() + "/" + illuminant.key() + "/" + film.key());
-        JuicerTests::GtestCohort calibration_rows("calibrations", expected_ids);
-        std::vector<std::unique_ptr<JuicerTests::GtestCase>> calibration_events;
         Assets assets(resources);
         std::vector<float> coefficients;
         for (const auto& print : root.items()) {
             for (const auto& illuminant : print.value().items()) {
                 for (const auto& film : illuminant.value().items()) {
-                    calibration_events.push_back(calibration_rows.deferred_case(print.key() + "/" + illuminant.key() + "/" + film.key()));
                     const auto result = lookup(assets, print.key(), illuminant.key(), film.key());
                     ASSERT_EQ(result.outcome, FJ_CALIBRATION_FOUND);
                     coefficients.insert(coefficients.end(), std::begin(result.cmy_cc), std::end(result.cmy_cc));
@@ -522,8 +489,6 @@ namespace {
         }
         ASSERT_EQ(coefficients.size(), 480u);
         EXPECT_EQ(hash_floats(coefficients.data(), coefficients.size()), 0x3ef43845b118f2f9ull);
-        for (const auto& row : calibration_events)
-            row->passed();
     }
 
     TEST(IlluminantLibrary, SevenDerivedCurvesMatchAcceptedNativeProducerAndRetainSnapshots) {
@@ -540,10 +505,7 @@ namespace {
 #endif
         ASSERT_TRUE(expected.good());
         std::size_t sampleBytes = 0;
-        JuicerTests::GtestCohort derived_curve_cases("derived-curves", 7u);
-        std::size_t derived_curve_index = 0;
         for (const auto* curve : {&curves->d65, &curves->d55, &curves->d50, &curves->tungsten, &curves->kinoton75P, &curves->tungstenKg3, &curves->tungstenKg3Lens}) {
-            auto derived_curve_case = derived_curve_cases.case_event(std::to_string(derived_curve_index++));
             ASSERT_EQ(curve->linear.size(), 81u);
             ASSERT_EQ(curve->lambda_nm.size(), 81u);
             sampleBytes += curve->linear.size() * sizeof(float);
@@ -553,8 +515,6 @@ namespace {
                     ASSERT_TRUE(static_cast<bool>(expected >> bits));
                     EXPECT_EQ(std::bit_cast<std::uint32_t>(sample), bits);
                 }
-
-            derived_curve_case.passed();
         }
         EXPECT_EQ(sampleBytes, 2268u);
         const auto warm = library.metrics();
@@ -677,10 +637,7 @@ namespace {
     }
 
     TEST(IlluminantNative, LensAcquisitionUnwindConsumesPreparedOwnerAndPreservesSourceFailure) {
-        JuicerTests::GtestCohort cleanup_fault_cases("cleanup-faults", 2u);
-        std::size_t cleanup_fault_index = 0;
         for (bool cleanupFault : {false, true}) {
-            auto cleanup_fault_case = cleanup_fault_cases.case_event(std::to_string(cleanup_fault_index++));
             IlluminantCacheProbe probe(resources);
             expect_status(fj_test_cache_drop_reentry(probe.owner(), FJ_TEST_CACHE_ILLUMINANTS, nullptr), FJ_STATUS_SUCCESS);
             expect_status(fj_test_cache_clear_failures(probe.owner(), 0, cleanupFault ? 1u : 0u, nullptr), FJ_STATUS_SUCCESS);
@@ -695,8 +652,6 @@ namespace {
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
             EXPECT_EQ(fj_test_csv_live_owners(), 0u);
             ASSERT_TRUE(probe.acquire());
-
-            cleanup_fault_case.passed();
         }
     }
 
@@ -837,10 +792,7 @@ namespace {
         EXPECT_EQ(selected.status, JuicerAssets::NeutralPrintCalibrationStatus::Found);
         EXPECT_EQ(selected.cmyCc, (std::array<float, 3>{11, 22, 33}));
         std::optional<JuicerTestSupport::PreparedStateHold> candidate;
-        JuicerTests::GtestCohort calibration_shape_cases("calibration-shapes", 6u);
-        std::size_t calibration_shape_index = 0;
         for (const std::string& bytes : {std::string("{}"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1e100,2,3]}}})"), std::string(R"({"print-stock":[]})"), std::string("[]"), std::string(R"({"print-stock":{"TH-KG3":[]}})"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1,2]}}})")}) {
-            auto calibration_shape_case = calibration_shape_cases.case_event(std::to_string(calibration_shape_index++));
             write(path, bytes);
             expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             productError = {productText.data(), productText.size(), 0};
@@ -867,8 +819,6 @@ namespace {
                 EXPECT_EQ(prepared.print_filter_main_cmy_cc[1], 65);
                 EXPECT_EQ(prepared.print_filter_main_cmy_cc[2], 55);
             }
-
-            calibration_shape_case.passed();
         }
         fs::remove(path);
         fs::create_directory(path);
@@ -1059,24 +1009,16 @@ namespace {
 
     TEST(CalibrationNative, ImpossibleTagsAreInternalAndAllocationCannotSelectRecipeFallback) {
         JuicerAssets::AssetBridge bridge(resources);
-        JuicerTests::GtestCohort impossible_tag_cases("impossible-tags", 4u);
-        std::size_t impossible_tag_index = 0;
         for (unsigned fault = 1; fault <= 4; ++fault) {
-            auto impossible_tag_case = impossible_tag_cases.case_event(std::to_string(impossible_tag_index++));
             calibrationFault = fault;
             EXPECT_THROW(bridge.neutral_print_calibration("missing", "light", "film"), JuicerCuda::ExecutionFailure);
-
-            impossible_tag_case.passed();
         }
         const auto root = full_root("native-allocation");
         JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         std::string diagnostic;
-        JuicerTests::GtestCohort allocation_fallback_cases("allocation-fallback", 4u);
-        std::size_t allocation_fallback_index = 0;
         for (unsigned mode = 1; mode <= 4; ++mode) {
-            auto allocation_fallback_case = allocation_fallback_cases.case_event(std::to_string(allocation_fallback_index++));
             expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             fj_test_calibration_read_fault(mode);
             std::optional<JuicerTestSupport::PreparedStateHold> product;
@@ -1097,8 +1039,6 @@ namespace {
             const auto recovered = JuicerTestSupport::prepare_state(assets, controls(true), product, error);
             expect_status(recovered, FJ_STATUS_SUCCESS);
             ASSERT_TRUE(product);
-
-            allocation_fallback_case.passed();
         }
         expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         fj_test_calibration_read_fault(1);
@@ -1144,10 +1084,7 @@ namespace {
         EXPECT_FALSE(failed);
         EXPECT_EQ(probe.metrics().live_bytes, 0u);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        JuicerTests::GtestCohort cold_fault_cases("cold-faults", 2u);
-        std::size_t cold_fault_index = 0;
         for (const unsigned fault : {1u, 3u}) {
-            auto cold_fault_case = cold_fault_cases.case_event(std::to_string(cold_fault_index++));
             expect_status(fj_test_assets_curve_fault(probe.owner(), FJ_CSV_D55, fault, nullptr), FJ_STATUS_SUCCESS);
             std::optional<JuicerTestSupport::PreparedStateHold> rejected;
             std::array<char, 2048> errorText{};
@@ -1157,8 +1094,6 @@ namespace {
             EXPECT_FALSE(rejected);
             EXPECT_EQ(probe.metrics().live_bytes, 0u);
             EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-
-            cold_fault_case.passed();
         }
         auto state = JuicerCudaTest::prepare_state(probe.owner(), params, result, diagnostic);
         expect_status(result, FJ_STATUS_SUCCESS);
@@ -1240,7 +1175,6 @@ int main(int argc, char** argv) try {
     ::testing::InitGoogleTest(&argc, argv);
     if (::testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerTests::CaseLog case_log;
     if (argc != 4)
         return 2;
     resources = argv[1];
@@ -1249,7 +1183,6 @@ int main(int argc, char** argv) try {
     fs::create_directories(scratch);
     IlluminantConstruction::initialize(resources, fixtures, scratch);
     const int result = RUN_ALL_TESTS();
-    case_log.finish();
     const bool ownersDrained = fj_test_illuminant_live_lenses() == 0 && fj_test_csv_live_owners() == 0 && fj_test_assets_live_owners() == 0;
     return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {

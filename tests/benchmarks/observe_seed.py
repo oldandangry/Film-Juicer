@@ -3,13 +3,12 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import struct
 import subprocess
 import time
+from pathlib import Path
 
 import lldb
-
 
 WINDOWS = os.name == "nt"
 POINTS = {

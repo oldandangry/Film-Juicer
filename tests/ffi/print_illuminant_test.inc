@@ -76,7 +76,6 @@ namespace PrintIlluminantTest {
         const std::array<std::pair<std::string_view, Prepare>, 2> callers{{{"c11", fj_test_print_illuminant_c_prepare}, {"cpp", fj_test_print_illuminant_prepare}}};
         for (const auto& [caller, prepare] : callers)
             for (const auto& row : captured.at("cases")) {
-                JuicerTests::CaseEvent case_event(caller, row.at("id").get_ref<const std::string&>());
                 auto input = params(row);
                 float source[81];
                 copy_words(row.at("source"), source);
@@ -98,11 +97,9 @@ namespace PrintIlluminantTest {
                     metadata(failure, first == UINT32_MAX ? FJ_PRINT_ILLUMINANT_REASON_ENERGY : FJ_PRINT_ILLUMINANT_REASON_SAMPLE, first);
                     zero(out);
                 }
-                case_event.passed();
             }
     }
     void transport(const Json& captured) {
-        JuicerTests::CaseEvent transport_event("cpp", "print-illuminant/transport");
         auto input = params(captured.at("cases")[0]);
         float source[81];
         std::fill_n(source, 81, 1.0f);
@@ -117,11 +114,6 @@ namespace PrintIlluminantTest {
             for (const char* sample : {"invalid-sample", "first-invalid-order", "zero-energy"})
                 sample_ids.emplace_back("caller-" + std::to_string(caller) + "/" + sample);
         }
-        JuicerTests::Cohort malformed_counts("print_illuminant.span_count", count_ids);
-        JuicerTests::Cohort diagnostic_capacities("print_illuminant.diagnostic_capacity", capacity_ids);
-        JuicerTests::Cohort preparation_faults("print_illuminant.fault_order", fault_ids);
-        JuicerTests::Cohort sample_failures("print_illuminant.sample_failure", sample_ids);
-        unsigned caller_index = 0;
         for (Prepare prepare : {fj_test_print_illuminant_c_prepare, fj_test_print_illuminant_prepare}) {
             FjIlluminant out{};
             FjPrintIlluminantFailure failure{};
@@ -143,11 +135,8 @@ namespace PrintIlluminantTest {
             raw(&input, {nullptr, 81});
             raw(&input, {reinterpret_cast<const float*>(reinterpret_cast<const char*>(source) + 1), 81});
             raw(&input, {reinterpret_cast<const float*>(end), 81});
-            unsigned count_index = 0;
             for (std::size_t count : {std::size_t{0}, std::size_t{80}, std::size_t{82}, SIZE_MAX}) {
-                auto row_event = malformed_counts.case_event("caller-" + std::to_string(caller_index) + "/count-" + std::to_string(count_index++));
                 raw(&input, {source, count});
-                row_event.passed();
             }
             status(call(&input, {source, 81}, nullptr, &failure), FJ_STATUS_UNSUPPORTED_INPUT);
             metadata(failure, FJ_PRINT_ILLUMINANT_REASON_RAW);
@@ -163,7 +152,6 @@ namespace PrintIlluminantTest {
             zero(out);
 
             source[37] = std::numeric_limits<float>::quiet_NaN();
-            auto sample_event = sample_failures.case_event("caller-" + std::to_string(caller_index) + "/invalid-sample");
             std::array<char, 256> full{};
             FjErrorBuffer error{full.data(), full.size(), 99};
             status(call(&input, {source, 81}, &out, &failure, &error), FJ_STATUS_PREPARATION_FAILURE);
@@ -171,9 +159,7 @@ namespace PrintIlluminantTest {
             zero(out);
             const std::string diagnostic(full.data());
             require(error.length == diagnostic.size() && error.length > 8, "full diagnostic length excludes NUL");
-            sample_event.passed();
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}}) {
-                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 8> small{};
                 small.fill('x');
                 error = {capacity ? small.data() : reinterpret_cast<char*>(UINTPTR_MAX), capacity, 99};
@@ -185,7 +171,6 @@ namespace PrintIlluminantTest {
                     require(small[capacity - 1] == '\0' && std::string(small.data()) == diagnostic.substr(0, capacity - 1), "bounded diagnostic prefix and NUL");
                 else
                     require(small[0] == 'x', "zero capacity ignores backing");
-                row_event.passed();
             }
             error = {nullptr, 1, 99};
             raw(&input, {source, 81}, &error);
@@ -198,20 +183,15 @@ namespace PrintIlluminantTest {
             // Two invalid samples prove first-computed-failure order, followed by recovery.
             source[5] = -1;
             source[37] = std::numeric_limits<float>::infinity();
-            auto first_order_event = sample_failures.case_event("caller-" + std::to_string(caller_index) + "/first-invalid-order");
             status(call(&input, {source, 81}, &out, &failure), FJ_STATUS_PREPARATION_FAILURE);
             metadata(failure, FJ_PRINT_ILLUMINANT_REASON_SAMPLE, 5);
             zero(out);
-            first_order_event.passed();
             std::fill_n(source, 81, 0.0f);
-            auto energy_event = sample_failures.case_event("caller-" + std::to_string(caller_index) + "/zero-energy");
             status(call(&input, {source, 81}, &out, &failure), FJ_STATUS_PREPARATION_FAILURE);
             metadata(failure, FJ_PRINT_ILLUMINANT_REASON_ENERGY);
             zero(out);
-            energy_event.passed();
             std::fill_n(source, 81, 1.0f);
             for (bool rejectFirst : {false, true}) {
-                auto row_event = preparation_faults.case_event("caller-" + std::to_string(caller_index) + "/reject-first-" + std::to_string(rejectFirst));
                 status(fj_test_film_recipe_fault(10, 1));
                 if (rejectFirst)
                     raw(nullptr, {source, 81});
@@ -224,7 +204,6 @@ namespace PrintIlluminantTest {
                 metadata(failure, FJ_PRINT_ILLUMINANT_REASON_NONE);
                 for (float sample : out.samples)
                     require(sample == 1.0f, "ordinary/fault recovery complete result");
-                row_event.passed();
             }
             status(fj_test_film_recipe_fault(10, 1));
             status(fj_test_film_recipe_fault(10, 0));
@@ -235,7 +214,6 @@ namespace PrintIlluminantTest {
             std::fill_n(source, 81, 0.0f);
             require(words(out.samples, 81) == held, "result owns samples independently of source mutation");
             std::fill_n(source, 81, 1.0f);
-            ++caller_index;
         }
         status(fj_test_film_recipe_fault(10, 1));
         std::atomic<bool> isolated{false};
@@ -253,7 +231,6 @@ namespace PrintIlluminantTest {
         metadata(failure, FJ_PRINT_ILLUMINANT_REASON_PANIC);
         zero(out);
         status(fj_test_print_illuminant_prepare(&input, {source, 81}, &out, &failure, nullptr));
-        transport_event.passed();
     }
     void products(const Json& captured, const std::filesystem::path& resources, const Json& literalCases) {
         JuicerTestSupport::RuntimeFixture owner;
@@ -277,7 +254,6 @@ namespace PrintIlluminantTest {
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned variant = 0; variant < 6; ++variant)
                     product_ids.emplace_back("print-illuminant/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
-        JuicerTests::Cohort product_rows("print_illuminant.recipe_tuple", product_ids);
         for (auto expected : captured.at("products")) {
             PrintIlluminantFixtures::select_frozen_light_hashes(expected, "descriptors");
             require(expected.erase("final_hash") == 1, "archived Print illuminant route recipe field");
@@ -286,7 +262,6 @@ namespace PrintIlluminantTest {
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
             const unsigned variant = expected.at("variant");
-            auto case_event = product_rows.case_event("print-illuminant/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
             JuicerTestSupport::PreparationInput p;
             p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
             p.print_key = "kodak_portra_endura";
@@ -361,10 +336,8 @@ namespace PrintIlluminantTest {
                 throw std::runtime_error("print illuminant product route=" + std::to_string(route) +
                                          " mode=" + std::to_string(mode) + " variant=" + std::to_string(variant) +
                                          " first difference " + Json::diff(expected, actual).front().dump());
-            case_event.passed();
         }
 
-        JuicerTests::CaseEvent publication_event("cpp", "print-illuminant/publication");
         JuicerTestSupport::PreparationInput controls;
         controls.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
         controls.film_key = "kodak_portra_400";
@@ -415,7 +388,6 @@ namespace PrintIlluminantTest {
         require(disabledFacts.mainIlluminantHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash leaves only the main light");
         // The complete disabled input must leave the raw-constructor fault armed.
         consume_stage10(literalCases);
-        publication_event.passed();
         controls.values.print_preflash_exposure = 0.125;
         auto active = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
         PreparedPrintFacts activeFacts;

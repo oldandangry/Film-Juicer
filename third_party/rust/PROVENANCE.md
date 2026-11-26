@@ -13,11 +13,9 @@ the listed members. The release manifest supplies the declared license expressio
 This establishes consistency with the locked release, without claiming an
 independent publisher-signature audit.
 
-Copy source: the corresponding crates.io archive in
-`C:/Users/Alexi/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/`.
-The local cache is only a copy source. Build, installation and runtime consume
-the repository-owned files here and require neither that cache nor network access.
-CMake installs this document and the notices under `Contents/Legal/rust/`.
+The verified crates.io release archives supplied the notice files. CMake
+installs this inventory and the repository-owned notices under
+`Contents/Legal/rust/`.
 
 The complete libm combined notice, memchr COPYING and alternative licenses, and
 Unicode notice are retained alongside the MIT/Apache texts. Existing project and

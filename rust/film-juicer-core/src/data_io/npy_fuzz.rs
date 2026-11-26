@@ -267,13 +267,28 @@ fn failure_partial_write_preserves_existing_sample_and_allows_retry() {
 
 #[test]
 fn failure_retention_resumes_original_payload_on_save_error() {
-    use crate::test_cases::RowCases;
-
     let directory = FailureDirectory::new();
-    let mut cases = RowCases::new("npy-failure-retention-save-errors", ["directory", "file"]);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(["directory", "file"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-failure-retention-save-errors"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "npy-failure-retention-save-errors"
+    );
     for writable in [true, false] {
         let id = if writable { "directory" } else { "file" };
-        let case = cases.case(id);
+        let case = AsRef::<str>::as_ref(&(id)).to_owned();
         let root = directory
             .0
             .join(if writable { "directory" } else { "file" });
@@ -303,9 +318,15 @@ fn failure_retention_resumes_original_payload_on_save_error() {
             assert!(diagnostic.contains("sample could not be saved"));
             assert_eq!(std::fs::read(&root).unwrap(), b"occupied regular file");
         }
-        case.passed();
+        assert!(
+            cases_remaining.remove(&case),
+            "unexpected or repeated comparison: {case}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }
 
 #[test]
@@ -333,7 +354,6 @@ fn failure_diagnostic_write_error_preserves_original_payload() {
 
 #[test]
 fn structural_mutations() {
-    use crate::test_cases::RowCases;
     let source = source();
     let payload = 10 + usize::from(u16::from_le_bytes([source[8], source[9]]));
     let expected: Vec<_> = (0..243)
@@ -341,12 +361,27 @@ fn structural_mutations() {
         .collect();
     let mut accepted = 0;
     let mut rejected = 0;
-    let mut cases = RowCases::new(
-        "npy-structural-mutations",
-        SEEDS.iter().map(|seed| format!("seed/{seed:016x}")),
+    let cases_ids: Vec<_> =
+        IntoIterator::into_iter(SEEDS.iter().map(|seed| format!("seed/{seed:016x}")))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-structural-mutations"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "npy-structural-mutations"
     );
     for seed in SEEDS {
-        let row = cases.case(format!("seed/{seed:016x}"));
+        let row = AsRef::<str>::as_ref(&(format!("seed/{seed:016x}"))).to_owned();
         let mut state = seed;
         let mut visited = 0;
         for case in 0..CASES {
@@ -417,9 +452,15 @@ fn structural_mutations() {
             }
         }
         assert_eq!(visited, CASES);
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
     assert!(accepted >= 512 && rejected >= 512);
     println!(
         "NPY corpus seeds={SEEDS:x?} cases={} accepted={accepted} rejected={rejected}",
@@ -429,7 +470,6 @@ fn structural_mutations() {
 
 #[test]
 fn representations_and_shape_overflow() {
-    use crate::test_cases::RowCases;
     // Independent expected conversions, including nonfinite samples.
     let representations = [
         ("<f2", vec![0x23, 0x7e], 0x7fc4_6000),
@@ -444,7 +484,24 @@ fn representations_and_shape_overflow() {
         })
         .chain(["overflow-a", "overflow-b"].map(|shape| format!("shape/{shape}")))
         .collect::<Vec<_>>();
-    let mut cases = RowCases::new("npy-representations", ids);
+    let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !cases_ids.is_empty(),
+        "empty case set: {}",
+        "npy-representations"
+    );
+    let cases_count = cases_ids.len();
+    let mut cases_remaining = cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        cases_remaining.len(),
+        cases_count,
+        "duplicate case IDs: {}",
+        "npy-representations"
+    );
     for (dtype, payload, expected) in representations {
         for (header_index, header) in [
             format!("{{'descr':'{dtype}', 'fortran_order':False, 'shape':(81,3)}}\n"),
@@ -453,10 +510,14 @@ fn representations_and_shape_overflow() {
         .into_iter()
         .enumerate()
         {
-            let row = cases.case(format!("dtype/{dtype}/header/{header_index}"));
+            let row =
+                AsRef::<str>::as_ref(&(format!("dtype/{dtype}/header/{header_index}"))).to_owned();
             let mut bytes = npy(header.as_bytes(), &payload.repeat(243));
             check(&mut bytes, 1, Some(Ok(vec![expected; 243])));
-            row.passed();
+            assert!(
+                cases_remaining.remove(&row),
+                "unexpected or repeated comparison: {row}"
+            );
         }
     }
     for (index, shape) in shapes.into_iter().enumerate() {
@@ -465,11 +526,17 @@ fn representations_and_shape_overflow() {
         } else {
             "overflow-b"
         };
-        let row = cases.case(format!("shape/{name}"));
+        let row = AsRef::<str>::as_ref(&(format!("shape/{name}"))).to_owned();
         let header = format!("{{'descr':'<f8','fortran_order':False,'shape':{shape}}}\n");
         let mut bytes = npy(header.as_bytes(), &[]);
         check(&mut bytes, 1, Some(Err(ReadErrorKind::Size)));
-        row.passed();
+        assert!(
+            cases_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    cases.finish();
+    assert!(
+        cases_remaining.is_empty(),
+        "missing comparisons: {cases_remaining:?}"
+    );
 }

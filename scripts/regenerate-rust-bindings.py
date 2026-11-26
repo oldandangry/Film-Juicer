@@ -7,10 +7,9 @@ import argparse
 import ctypes
 import hashlib
 import os
-from pathlib import Path
 import subprocess
 import sys
-
+from pathlib import Path
 
 BINDGEN_VERSION = "0.72.1"
 CLANG_VERSIONS = {"linux": "22.1.8", "win32": "22.1.3"}

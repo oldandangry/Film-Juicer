@@ -61,6 +61,11 @@ unset(JUICER_GRAIN_PREVIEW CACHE)
 unset(JUICER_GRAIN_PREVIEW_CONFIGURED CACHE)
 set(JUICER_FILM_V1_CONFIGURED ON CACHE INTERNAL "The standard product includes Film v1")
 
+option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
+option(JUICER_BUILD_BENCHMARKS "Build standalone Film-Juicer benchmarks" OFF)
+set(CTEST_TEST_TIMEOUT 300)
+include(CTest)
+
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
 include(cmake/JuicerRust.cmake)
@@ -90,7 +95,9 @@ set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 add_library(juicer MODULE native/ofx_exports.cpp)
 target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
-if(UNIX)
+if(WIN32)
+    target_compile_definitions(juicer PRIVATE _WINDLL)
+elseif(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
     # not need separable compilation. Resolve it once at the final module.
     set_property(TARGET juicer PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
@@ -112,56 +119,12 @@ foreach(probe JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe)
         juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
         CUDA::cudart)
     set_target_properties(${probe} PROPERTIES
-        LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
+        LINKER_LANGUAGE CXX
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
 endforeach()
 
-# Frozen expectations belong to the two test-support C11 value consumers.
-# Production probes below use only discovery and the retained native ABI.
-set(JUICER_PRODUCTION_C_PROBES)
-if(BUILD_TESTING)
-    enable_language(C)
-    find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
-    if(WIN32)
-        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
-        set(probe_preset "windows-clang-${probe_configuration}")
-    else()
-        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
-        set(probe_preset "linux-${probe_configuration}")
-    endif()
-    set(probe_fixture_directories
-        tests/film/fixtures tests/film/input-fixtures tests/film/reference-fixtures
-        tests/film/dir-fixtures tests/film/grain-fixtures tests/film/effects-fixtures
-        tests/print/balance-fixtures tests/scanner/correction-fixtures
-        tests/scanner/color-fixtures tests/dir/boundary-fixtures
-        tests/film/effects-frame-fixtures tests/grain/frame-fixtures
-        tests/dir/frame-fixtures tests/diffusion/frame-fixtures
-        tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
-        tests/scanner/post-effects-fixtures)
-    set(probe_fixture_inputs)
-    foreach(directory IN LISTS probe_fixture_directories)
-        file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS
-            "${PROJECT_SOURCE_DIR}/${directory}/*.json")
-        list(APPEND probe_fixture_inputs ${fixture_inputs})
-    endforeach()
-    set(probe_expected_header "${CMAKE_BINARY_DIR}/production-probes/production-film-expected.h")
-    add_custom_command(OUTPUT "${probe_expected_header}"
-        COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/ffi/production_contract.py"
-            --preset "${probe_preset}" --artifacts "${CMAKE_BINARY_DIR}/production-probes"
-            --generate-expected-header
-        DEPENDS ${probe_fixture_inputs}
-            tests/ffi/production_contract.py tests/ffi/shared_fixture.py
-            tests/ffi/compact_exposure_fixtures.py tests/ffi/grain_probe_contract.py
-            tests/ffi/effects_frame_probe_contract.py
-        COMMENT "Generating C11 production fixture expectations"
-        VERBATIM)
-    add_custom_target(juicer_prepared_value_expectations DEPENDS "${probe_expected_header}")
-
-endif()
-
 enable_language(C)
 add_executable(JuicerProductionOfxProbe EXCLUDE_FROM_ALL tests/ffi/production-ofx.c)
-set_property(TARGET JuicerProductionOfxProbe PROPERTY JUICER_RUST_VARIANT none)
 target_link_libraries(JuicerProductionOfxProbe PRIVATE juicer_ofx_headers ${CMAKE_DL_LIBS})
 add_executable(JuicerProductionCudaAbiProbe EXCLUDE_FROM_ALL tests/ffi/production-cuda-abi.c)
 target_link_libraries(JuicerProductionCudaAbiProbe PRIVATE
@@ -181,13 +144,9 @@ endforeach()
 if(UNIX)
     set_property(TARGET JuicerProductionCudaAbiProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
-list(APPEND JUICER_PRODUCTION_C_PROBES JuicerProductionCudaAbiProbe)
 
 include(cmake/JuicerBundle.cmake)
 add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
-
-option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
-include(CTest)
 
 # The witness links its density tap as the Film stage owner, so the direct
 # implementation is not extracted from juicer_core. The executor, CUDA sampler
@@ -205,7 +164,7 @@ if(BUILD_TESTING)
     endif()
 endif()
 if(juicer_grain_aperture_target)
-    add_executable(${juicer_grain_aperture_target} EXCLUDE_FROM_ALL
+    add_executable(${juicer_grain_aperture_target}
         tests/ffi/production-ofx-render.cpp
         tests/grain/motion-density.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
         tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
@@ -248,8 +207,10 @@ set(JUICER_GRAIN_MOTION_REPLAY_CONFIGURED "${juicer_motion_replay_configured}" C
 set(JUICER_GRAIN_APERTURE_TARGET "${juicer_grain_aperture_target}" CACHE INTERNAL
     "Native executable providing the linked Film aperture witness")
 if(BUILD_TESTING)
-    add_subdirectory(tests EXCLUDE_FROM_ALL)
+    set_property(TARGET JuicerProductionPreparedRenderProbe JuicerProductionOfxProbe
+        JuicerProductionCudaAbiProbe PROPERTY EXCLUDE_FROM_ALL FALSE)
 endif()
 
-juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe JuicerProductionOfxProbe
-    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS} ${juicer_grain_aperture_consumer})
+if(BUILD_TESTING OR JUICER_BUILD_BENCHMARKS)
+    add_subdirectory(tests)
+endif()

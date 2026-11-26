@@ -6,14 +6,13 @@ import hashlib
 import json
 import math
 import struct
-from pathlib import Path
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import opt_einsum
-
 
 SPEKTRAFILM_REVISION = "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc"
 REGISTRATION = "Ofx.Gpu.ScannerReferenceInputs"

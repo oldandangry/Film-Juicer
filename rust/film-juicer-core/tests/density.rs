@@ -10,9 +10,6 @@ use std::path::Path;
 use serde::Deserialize;
 
 use film_juicer_core::hash;
-#[path = "support/case_results.rs"]
-mod test_cases;
-use test_cases::RowCases;
 use film_juicer_core::profile::{
     DensityCurveModel, DensityCurveSample, DensitySampleError, Polarity, load_film_source,
     load_print_source,
@@ -133,9 +130,26 @@ fn valid_samples_and_replay_identities_match_the_frozen_cohort() {
         .iter()
         .filter(|c| c.historically_supported)
         .collect();
-    let mut rows = RowCases::new("supported-density-cases", cases.iter().map(|case| &case.id));
+    let rows_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(|case| &case.id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "supported-density-cases"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "supported-density-cases"
+    );
     for case in cases {
-        let row = rows.case(&case.id);
+        let row = AsRef::<str>::as_ref(&(&case.id)).to_owned();
         let model = case.model();
         let mut actual = Vec::new();
         for (i, &bits) in fixture.axes[case.axis].iter().enumerate() {
@@ -193,9 +207,15 @@ fn valid_samples_and_replay_identities_match_the_frozen_cohort() {
                 case.id
             );
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assert_eq!(
         (valid_count, historical_failure_count, identity_count),
         (19_235, 12, 119)
@@ -206,12 +226,26 @@ fn valid_samples_and_replay_identities_match_the_frozen_cohort() {
 fn construction_retains_all_frozen_coefficient_bits() {
     let fixture = fixture();
     let mut historically_rejected_count = 0;
-    let mut rows = RowCases::new(
-        "all-density-cases",
-        fixture.cases.iter().map(|case| &case.id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(fixture.cases.iter().map(|case| &case.id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "all-density-cases"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "all-density-cases"
     );
     for case in &fixture.cases {
-        let row = rows.case(&case.id);
+        let row = AsRef::<str>::as_ref(&(&case.id)).to_owned();
         let model = case.model();
         assert_eq!(
             model.centers().map(|r| r.map(f64::to_bits)),
@@ -237,9 +271,15 @@ fn construction_retains_all_frozen_coefficient_bits() {
             // These records contain no approved sample expectations.
             historically_rejected_count += 1;
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assert_eq!(historically_rejected_count, 16);
 }
 
@@ -253,12 +293,26 @@ fn historical_sample_failures_reach_their_current_numerical_boundary() {
         .iter()
         .filter(|c| c.historically_supported)
         .collect();
-    let mut rows = RowCases::new(
-        "supported-density-failure-boundaries",
-        cases.iter().map(|case| &case.id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(|case| &case.id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "supported-density-failure-boundaries"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "supported-density-failure-boundaries"
     );
     for case in cases {
-        let row = rows.case(&case.id);
+        let row = AsRef::<str>::as_ref(&(&case.id)).to_owned();
         let model = case.model();
         for (i, &bits) in fixture.axes[case.axis].iter().enumerate() {
             if expected_sample(&fixture.samples, case.sample_start.unwrap() + i).is_some() {
@@ -306,9 +360,15 @@ fn historical_sample_failures_reach_their_current_numerical_boundary() {
                 _ => panic!("unclassified historical failure: {} row {i}", case.id),
             }
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assert_eq!((endpoint_count, computed_failure_count), (5, 7));
     assert_eq!(19_235 + endpoint_count + computed_failure_count, 19_247);
 }
@@ -323,12 +383,26 @@ fn shipped_sources_match_frozen_model_and_axis_bits() {
         .iter()
         .filter(|case| !case.profile.is_empty() && case.id == format!("{}/gamma-1.0", case.profile))
         .collect();
-    let mut rows = RowCases::new(
-        "shipped-profile-density-models",
-        cases.iter().map(|case| &case.id),
+    let rows_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(|case| &case.id))
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "shipped-profile-density-models"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "shipped-profile-density-models"
     );
     for case in cases {
-        let row = rows.case(&case.id);
+        let row = AsRef::<str>::as_ref(&(&case.id)).to_owned();
         if case.profile.is_empty() || case.id != format!("{}/gamma-1.0", case.profile) {
             continue;
         }
@@ -364,9 +438,15 @@ fn shipped_sources_match_frozen_model_and_axis_bits() {
             .collect();
         assert_eq!(axis, fixture.axes[case.axis]);
         count += 1;
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     assert_eq!(count, 28);
 }
 
@@ -379,9 +459,26 @@ fn native_characterization_is_distinct_from_approved_rust_expectations() {
         .iter()
         .map(|w| format!("{}/{}/{}/{}", w.case, w.platform, w.mode, w.sample))
         .collect();
-    let mut rows = RowCases::new("native-density-characterization-witnesses", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "native-density-characterization-witnesses"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "native-density-characterization-witnesses"
+    );
     for (witness, id) in fixture.native_witnesses.iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let case = fixture.cases.iter().find(|c| c.id == witness.case).unwrap();
         let approved = expected_sample(
             &fixture.samples,
@@ -399,9 +496,15 @@ fn native_characterization_is_distinct_from_approved_rust_expectations() {
                 .iter()
                 .all(|&bits| f32::from_bits(bits).is_finite())
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    rows.finish();
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -420,7 +523,24 @@ fn unusual_coefficients_reach_density_arithmetic() {
         .iter()
         .map(|(sigma, _, _, _)| format!("sigma/{:016x}", sigma.to_bits()))
         .collect();
-    let mut rows = RowCases::new("unusual-density-sigmas", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "unusual-density-sigmas"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "unusual-density-sigmas"
+    );
     let evaluation_names = [
         "negative/negative-exposure",
         "negative/positive-exposure",
@@ -448,9 +568,26 @@ fn unusual_coefficients_reach_density_arithmetic() {
                 })
         })
         .collect();
-    let mut evaluation_cases = RowCases::new("unusual-sigma-polarity-evaluations", &evaluation_ids);
+    let evaluation_cases_ids: Vec<_> = IntoIterator::into_iter(&evaluation_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !evaluation_cases_ids.is_empty(),
+        "empty case set: {}",
+        "unusual-sigma-polarity-evaluations"
+    );
+    let evaluation_cases_count = evaluation_cases_ids.len();
+    let mut evaluation_cases_remaining = evaluation_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        evaluation_cases_remaining.len(),
+        evaluation_cases_count,
+        "duplicate case IDs: {}",
+        "unusual-sigma-polarity-evaluations"
+    );
     for ((sigma, exposure, low, high), id) in parameters.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], [[sigma; 3]; 3]);
         for (name, polarity, sample_exposure, expected) in [
             (evaluation_names[0], Polarity::Negative, -exposure, low),
@@ -459,7 +596,8 @@ fn unusual_coefficients_reach_density_arithmetic() {
             (evaluation_names[3], Polarity::Positive, exposure, low),
         ] {
             let evaluation =
-                evaluation_cases.case(format!("sigma/{:016x}/{name}", sigma.to_bits()));
+                AsRef::<str>::as_ref(&(format!("sigma/{:016x}/{name}", sigma.to_bits())))
+                    .to_owned();
             let sample = model.sample(polarity, sample_exposure).unwrap();
             assert_eq!(
                 sample.layers.map(|r| r.map(f32::to_bits)),
@@ -469,25 +607,34 @@ fn unusual_coefficients_reach_density_arithmetic() {
                 sample.total.map(f32::to_bits),
                 [(expected * 3.0).to_bits(); 3]
             );
-            evaluation.passed();
+            assert!(
+                evaluation_cases_remaining.remove(&evaluation),
+                "unexpected or repeated comparison: {evaluation}"
+            );
         }
         if sigma == -1.0 {
-            let evaluation = evaluation_cases.case(format!(
-                "sigma/{:016x}/negative/zero-exposure",
-                sigma.to_bits()
-            ));
+            let evaluation = AsRef::<str>::as_ref(
+                &(format!("sigma/{:016x}/negative/zero-exposure", sigma.to_bits())),
+            )
+            .to_owned();
             let sample = model.sample(Polarity::Negative, 0.0).unwrap();
             assert_eq!(
                 sample.layers.map(|r| r.map(f32::to_bits)),
                 [[0.5_f32.to_bits(); 3]; 3]
             );
             assert_eq!(sample.total.map(f32::to_bits), [1.5_f32.to_bits(); 3]);
-            evaluation.passed();
+            assert!(
+                evaluation_cases_remaining.remove(&evaluation),
+                "unexpected or repeated comparison: {evaluation}"
+            );
         } else if sigma.abs() < 1e-40 {
-            let evaluation = evaluation_cases.case(format!(
-                "sigma/{:016x}/negative/zero-exposure-error",
-                sigma.to_bits()
-            ));
+            let evaluation = AsRef::<str>::as_ref(
+                &(format!(
+                    "sigma/{:016x}/negative/zero-exposure-error",
+                    sigma.to_bits()
+                )),
+            )
+            .to_owned();
             assert_eq!(
                 model.sample(Polarity::Negative, 0.0).unwrap_err(),
                 DensitySampleError::NonfiniteLayer {
@@ -495,28 +642,74 @@ fn unusual_coefficients_reach_density_arithmetic() {
                     layer: 0
                 }
             );
-            evaluation.passed();
+            assert!(
+                evaluation_cases_remaining.remove(&evaluation),
+                "unexpected or repeated comparison: {evaluation}"
+            );
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    evaluation_cases.finish();
-    rows.finish();
+    assert!(
+        evaluation_cases_remaining.is_empty(),
+        "missing comparisons: {evaluation_cases_remaining:?}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
     let centers = [(1e40, 0.0_f32, 1.0_f32), (-1e40, 1.0, 0.0)];
     let center_ids = ["center/positive-overflow", "center/negative-overflow"];
-    let mut center_rows = RowCases::new("unusual-density-centers", center_ids);
+    let center_rows_ids: Vec<_> = IntoIterator::into_iter(center_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !center_rows_ids.is_empty(),
+        "empty case set: {}",
+        "unusual-density-centers"
+    );
+    let center_rows_count = center_rows_ids.len();
+    let mut center_rows_remaining = center_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        center_rows_remaining.len(),
+        center_rows_count,
+        "duplicate case IDs: {}",
+        "unusual-density-centers"
+    );
     let center_evaluation_ids: Vec<String> = center_ids
         .iter()
         .flat_map(|id| ["negative", "positive"].map(|polarity| format!("{id}/{polarity}")))
         .collect();
-    let mut center_evaluations = RowCases::new("unusual-center-polarities", &center_evaluation_ids);
+    let center_evaluations_ids: Vec<_> = IntoIterator::into_iter(&center_evaluation_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !center_evaluations_ids.is_empty(),
+        "empty case set: {}",
+        "unusual-center-polarities"
+    );
+    let center_evaluations_count = center_evaluations_ids.len();
+    let mut center_evaluations_remaining = center_evaluations_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        center_evaluations_remaining.len(),
+        center_evaluations_count,
+        "duplicate case IDs: {}",
+        "unusual-center-polarities"
+    );
     for ((center, negative, positive), id) in centers.into_iter().zip(center_ids) {
-        let row = center_rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let model = DensityCurveModel::new([[center; 3]; 3], [[1.0; 3]; 3], [[1.0; 3]; 3]);
         for (name, polarity, expected) in [
             ("negative", Polarity::Negative, negative),
             ("positive", Polarity::Positive, positive),
         ] {
-            let evaluation = center_evaluations.case(format!("{id}/{name}"));
+            let evaluation = AsRef::<str>::as_ref(&(format!("{id}/{name}"))).to_owned();
             let sample = model.sample(polarity, 0.0).unwrap();
             assert_eq!(
                 sample.layers.map(|r| r.map(f32::to_bits)),
@@ -526,12 +719,24 @@ fn unusual_coefficients_reach_density_arithmetic() {
                 sample.total.map(f32::to_bits),
                 [(expected * 3.0).to_bits(); 3]
             );
-            evaluation.passed();
+            assert!(
+                center_evaluations_remaining.remove(&evaluation),
+                "unexpected or repeated comparison: {evaluation}"
+            );
         }
-        row.passed();
+        assert!(
+            center_rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    center_evaluations.finish();
-    center_rows.finish();
+    assert!(
+        center_evaluations_remaining.is_empty(),
+        "missing comparisons: {center_evaluations_remaining:?}"
+    );
+    assert!(
+        center_rows_remaining.is_empty(),
+        "missing comparisons: {center_rows_remaining:?}"
+    );
 }
 
 #[test]
@@ -547,19 +752,53 @@ fn scalar_exposure_narrowing_produces_exact_endpoints() {
         .iter()
         .map(|(exposure, _, _)| format!("exposure/{:016x}", exposure.to_bits()))
         .collect();
-    let mut rows = RowCases::new("scalar-exposure-endpoints", &ids);
+    let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "scalar-exposure-endpoints"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "scalar-exposure-endpoints"
+    );
     let endpoint_ids: Vec<String> = ids
         .iter()
         .flat_map(|id| ["negative", "positive"].map(|polarity| format!("{id}/{polarity}")))
         .collect();
-    let mut endpoint_cases = RowCases::new("scalar-exposure-polarity-endpoints", &endpoint_ids);
+    let endpoint_cases_ids: Vec<_> = IntoIterator::into_iter(&endpoint_ids)
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !endpoint_cases_ids.is_empty(),
+        "empty case set: {}",
+        "scalar-exposure-polarity-endpoints"
+    );
+    let endpoint_cases_count = endpoint_cases_ids.len();
+    let mut endpoint_cases_remaining = endpoint_cases_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        endpoint_cases_remaining.len(),
+        endpoint_cases_count,
+        "duplicate case IDs: {}",
+        "scalar-exposure-polarity-endpoints"
+    );
     for ((exposure, negative, positive), id) in exposures.into_iter().zip(&ids) {
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         for (name, polarity, expected) in [
             ("negative", Polarity::Negative, negative),
             ("positive", Polarity::Positive, positive),
         ] {
-            let endpoint_case = endpoint_cases.case(format!("{id}/{name}"));
+            let endpoint_case = AsRef::<str>::as_ref(&(format!("{id}/{name}"))).to_owned();
             let sample = model.sample(polarity, exposure).unwrap();
             assert_eq!(
                 sample.layers.map(|r| r.map(f32::to_bits)),
@@ -569,14 +808,43 @@ fn scalar_exposure_narrowing_produces_exact_endpoints() {
                 sample.total.map(f32::to_bits),
                 [(expected * 3.0).to_bits(); 3]
             );
-            endpoint_case.passed();
+            assert!(
+                endpoint_cases_remaining.remove(&endpoint_case),
+                "unexpected or repeated comparison: {endpoint_case}"
+            );
         }
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
-    endpoint_cases.finish();
-    rows.finish();
-    let mut nan_rows = RowCases::new("scalar-exposure-invalid", ["nan"]);
-    let nan_row = nan_rows.case("nan");
+    assert!(
+        endpoint_cases_remaining.is_empty(),
+        "missing comparisons: {endpoint_cases_remaining:?}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
+    let nan_rows_ids: Vec<_> = IntoIterator::into_iter(["nan"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !nan_rows_ids.is_empty(),
+        "empty case set: {}",
+        "scalar-exposure-invalid"
+    );
+    let nan_rows_count = nan_rows_ids.len();
+    let mut nan_rows_remaining = nan_rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        nan_rows_remaining.len(),
+        nan_rows_count,
+        "duplicate case IDs: {}",
+        "scalar-exposure-invalid"
+    );
+    let nan_row = AsRef::<str>::as_ref(&("nan")).to_owned();
     assert_eq!(
         model.sample(Polarity::Negative, f64::NAN).unwrap_err(),
         DensitySampleError::NonfiniteLayer {
@@ -584,22 +852,42 @@ fn scalar_exposure_narrowing_produces_exact_endpoints() {
             layer: 0
         }
     );
-    nan_row.passed();
-    nan_rows.finish();
+    assert!(
+        nan_rows_remaining.remove(&nan_row),
+        "unexpected or repeated comparison: {nan_row}"
+    );
+    assert!(
+        nan_rows_remaining.is_empty(),
+        "missing comparisons: {nan_rows_remaining:?}"
+    );
 }
 
 #[test]
 fn computed_failures_identify_channel_and_layer() {
-    let mut rows = RowCases::new(
-        "computed-density-failures",
-        [
-            "zero-sigma-layer",
-            "overflow-amplitude-negative-zero",
-            "overflow-amplitude-negative-infinity",
-            "nonfinite-total-channel",
-        ],
+    let rows_ids: Vec<_> = IntoIterator::into_iter([
+        "zero-sigma-layer",
+        "overflow-amplitude-negative-zero",
+        "overflow-amplitude-negative-infinity",
+        "nonfinite-total-channel",
+    ])
+    .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+    .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "computed-density-failures"
     );
-    let zero_sigma = rows.case("zero-sigma-layer");
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "computed-density-failures"
+    );
+    let zero_sigma = AsRef::<str>::as_ref(&("zero-sigma-layer")).to_owned();
     let mut sigmas = [[1.0; 3]; 3];
     sigmas[2][1] = 0.0;
     let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], sigmas);
@@ -610,7 +898,10 @@ fn computed_failures_identify_channel_and_layer() {
             layer: 1
         }
     );
-    zero_sigma.passed();
+    assert!(
+        rows_remaining.remove(&zero_sigma),
+        "unexpected or repeated comparison: {zero_sigma}"
+    );
     let mut amplitudes = [[1.0; 3]; 3];
     amplitudes[1][2] = f64::MAX;
     let model = DensityCurveModel::new([[0.0; 3]; 3], amplitudes, [[1.0; 3]; 3]);
@@ -620,7 +911,7 @@ fn computed_failures_identify_channel_and_layer() {
         } else {
             "overflow-amplitude-negative-infinity"
         };
-        let row = rows.case(id);
+        let row = AsRef::<str>::as_ref(&(id)).to_owned();
         assert_eq!(
             model.sample(Polarity::Negative, exposure).unwrap_err(),
             DensitySampleError::NonfiniteLayer {
@@ -628,7 +919,10 @@ fn computed_failures_identify_channel_and_layer() {
                 layer: 2
             }
         );
-        row.passed();
+        assert!(
+            rows_remaining.remove(&row),
+            "unexpected or repeated comparison: {row}"
+        );
     }
     amplitudes = [[1.0; 3]; 3];
     amplitudes[2] = [f64::from(f32::MAX); 3];
@@ -637,14 +931,34 @@ fn computed_failures_identify_channel_and_layer() {
         model.sample(Polarity::Negative, 0.0).unwrap_err(),
         DensitySampleError::NonfiniteTotal { channel: 2 }
     );
-    rows.case("nonfinite-total-channel").passed();
-    rows.finish();
+    assert!(rows_remaining.remove("nonfinite-total-channel"));
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }
 
 #[test]
 fn integer_negative_zero_retains_owned_bits_and_raw_identity() {
-    let mut rows = RowCases::new("integer-negative-zero-identity", ["integer-negative-zero"]);
-    let row = rows.case("integer-negative-zero");
+    let rows_ids: Vec<_> = IntoIterator::into_iter(["integer-negative-zero"])
+        .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+        .collect();
+    assert!(
+        !rows_ids.is_empty(),
+        "empty case set: {}",
+        "integer-negative-zero-identity"
+    );
+    let rows_count = rows_ids.len();
+    let mut rows_remaining = rows_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rows_remaining.len(),
+        rows_count,
+        "duplicate case IDs: {}",
+        "integer-negative-zero-identity"
+    );
+    let row = AsRef::<str>::as_ref(&("integer-negative-zero")).to_owned();
     let negative: f64 = serde_json::from_str("-0").unwrap();
     let decimal: f64 = serde_json::from_str("-0.0").unwrap();
     let positive: f64 = serde_json::from_str("0").unwrap();
@@ -669,6 +983,12 @@ fn integer_negative_zero_retains_owned_bits_and_raw_identity() {
         hash::finite_f32s(&[negative as f32]),
         hash::finite_f32s(&[positive as f32])
     );
-    row.passed();
-    rows.finish();
+    assert!(
+        rows_remaining.remove(&row),
+        "unexpected or repeated comparison: {row}"
+    );
+    assert!(
+        rows_remaining.is_empty(),
+        "missing comparisons: {rows_remaining:?}"
+    );
 }

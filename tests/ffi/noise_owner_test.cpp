@@ -16,7 +16,6 @@
 #include "owner_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "case_results.h"
 #include "test_asset_workspace.h"
 
 namespace {
@@ -244,9 +243,6 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (::testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    if (JuicerTests::list_requested(argc, argv))
-        return 0;
-    JuicerTests::CaseLog case_log;
     if (argc != 3) {
         return 2;
     }
@@ -254,7 +250,6 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
-    case_log.finish();
     const bool ownersDrained = fj_test_live_noise_owners() == 0 && fj_test_assets_live_owners() == 0;
     return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {

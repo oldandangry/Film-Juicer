@@ -10,7 +10,6 @@
 
 #include "instance_host.h"
 #include "juicer_ofx_api.h"
-#include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 
 extern "C" {
@@ -21,8 +20,6 @@ FjStatus fj_test_ofx_instance_admit(OfxImageEffectHandle effect, FjPreparedState
 }
 
 namespace {
-    constexpr std::string_view kCaller = "ofx.instance_controls";
-    constexpr std::array kCases{"allocation", "panic", "rollback", "terminal", "capture_races"};
     void require(bool condition, const char* message) {
         if (!condition)
             throw std::runtime_error(message);
@@ -76,10 +73,7 @@ namespace {
         }
     };
     void allocation(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "allocation");
-        const JuicerTests::Cohort rows("ofx.instance_controls.allocation", {"owner", "key_copy", "ui_text"});
         {
-            auto row = rows.case_event("owner");
             Session s(plugin);
             const auto before = counts();
             fj_test_ofx_instance_control(1);
@@ -88,10 +82,8 @@ namespace {
             const auto after = counts();
             require(after.created == before.created && after.reclaimed == before.reclaimed, "allocation changed owner counts");
             s.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("key_copy");
             Session s(plugin);
             s.create();
             s.host.reenter_next("param_get/HalationActive", [&] {
@@ -101,10 +93,8 @@ namespace {
             require(s.observe().pending_kind == 5, "copy failure did not invalidate capture");
             s.destroy();
             s.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("ui_text");
             Session s(plugin);
             s.create();
             const auto before = counts();
@@ -121,15 +111,10 @@ namespace {
             s.unload();
             const auto after = counts();
             require(after.reclaimed == before.reclaimed + 1 && after.retired == before.retired + 1, "hint allocation cleanup was not once-only");
-            row.passed();
         }
-        test.passed();
     }
     void panic(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "panic");
-        const JuicerTests::Cohort rows("ofx.instance_controls.panic", {"published", "capture", "matching_module"});
         {
-            auto row = rows.case_event("published");
             Session s(plugin);
             const auto before = counts();
             fj_test_ofx_instance_control(3);
@@ -138,10 +123,8 @@ namespace {
             const auto after = counts();
             require(after.created == before.created + 1 && after.reclaimed == before.reclaimed + 1, "published panic ownership");
             s.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("capture");
             Session s(plugin);
             s.create();
             fj_test_ofx_instance_control(4);
@@ -149,10 +132,8 @@ namespace {
             require(s.observe().pending_kind == 6, "capture panic did not block publication");
             s.destroy();
             s.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("matching_module");
             Session s(plugin);
             s.create();
             fj_test_ofx_instance_control(4);
@@ -176,15 +157,10 @@ namespace {
             require(!rebound.host.instance_data(rebound.effect) && after.reclaimed == before.reclaimed + 1, "rebind failed to reclaim original owner");
             require(!rebound.host.calls().empty() && replacement.calls().empty(), "terminal cleanup used replacement host binding");
             rebound.unload();
-            row.passed();
         }
-        test.passed();
     }
     void rollback(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "rollback");
-        const JuicerTests::Cohort rows("ofx.instance_controls.rollback", {"before_publication", "stored_then_failed", "detach_failed", "retained_destroy"});
         {
-            auto row = rows.case_event("before_publication");
             Session s(plugin);
             const auto before = counts();
             s.host.fail_next("param_handle/Exposure", kOfxStatErrBadHandle);
@@ -200,10 +176,8 @@ namespace {
             const auto panic_after = counts();
             require(!panic_session.host.instance_data(panic_session.effect) && panic_after.created == panic_before.created + 1 && panic_after.reclaimed == panic_before.reclaimed + 1, "unpublished panic ownership");
             panic_session.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("stored_then_failed");
             Session s(plugin);
             const auto before = counts();
             s.host.store_then_fail_next("set_pointer/OfxPropInstanceData", kOfxStatFailed);
@@ -212,10 +186,8 @@ namespace {
             const auto after = counts();
             require(after.created == before.created + 1 && after.reclaimed == before.reclaimed + 1, "publication failure reclamation");
             s.unload();
-            row.passed();
         }
-        for (const auto* id : {"detach_failed", "retained_destroy"}) {
-            auto row = rows.case_event(id);
+        for (unsigned pass = 0; pass < 2; ++pass) {
             Session s(plugin);
             const auto before = counts();
             s.host.reenter_next("set_pointer/OfxPropInstanceData", [&] {
@@ -232,15 +204,10 @@ namespace {
             const auto after = counts();
             require(after.reclaimed == before.reclaimed + 1, "retained owner not reclaimed once");
             s.unload();
-            row.passed();
         }
-        test.passed();
     }
     void terminal(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "terminal");
-        const JuicerTests::Cohort rows("ofx.instance_controls.terminal", {"clear_failure", "retire_failure", "first_failure", "once_only"});
         for (const auto* id : {"clear_failure", "retire_failure", "first_failure", "once_only"}) {
-            auto row = rows.case_event(id);
             Session s(plugin);
             s.create();
             require(s.change("Exposure") == kOfxStatReplyDefault, "terminal initial capture");
@@ -277,15 +244,10 @@ namespace {
                 require(!panic_session.host.instance_data(panic_session.effect) && panic_after.retired == panic_before.retired + 1 && panic_after.reclaimed == panic_before.reclaimed + 1, "retirement panic cleanup");
                 panic_session.unload();
             }
-            row.passed();
         }
-        test.passed();
     }
     void capture_races(OfxPlugin* plugin) {
-        JuicerTests::CaseEvent test(kCaller, "capture_races");
-        const JuicerTests::Cohort rows("ofx.instance_controls.capture_races", {"stale_getter", "deferred_write", "refresh_after_write", "partial_write"});
         {
-            auto row = rows.case_event("stale_getter");
             Session s(plugin);
             s.create();
             require(s.change("Exposure") == kOfxStatReplyDefault, "initial capture");
@@ -315,10 +277,8 @@ namespace {
             require(newer_state.pending_kind == 4 && newer_state.captured.camera_exposure_compensation_ev == 3.0, "stale getter failure disturbed newer state");
             failed.destroy();
             failed.unload();
-            row.passed();
         }
         for (const auto* id : {"deferred_write", "refresh_after_write"}) {
-            auto row = rows.case_event(id);
             Session s(plugin);
             s.create();
             require(s.change("Exposure") == kOfxStatReplyDefault, "initial capture");
@@ -348,10 +308,8 @@ namespace {
             }
             s.destroy();
             s.unload();
-            row.passed();
         }
         {
-            auto row = rows.case_event("partial_write");
             Session s(plugin);
             s.create();
             require(s.change("Exposure") == kOfxStatReplyDefault, "initial capture");
@@ -366,19 +324,11 @@ namespace {
             require(s.observe().pending_kind == 5, "partial write did not invalidate pending");
             s.destroy();
             s.unload();
-            row.passed();
         }
-        test.passed();
     }
 } // namespace
 
-int main(int argc, char** argv) try {
-    if (JuicerTests::list_requested(argc, argv)) {
-        for (const auto* id : kCases)
-            JuicerTests::list_case(kCaller, id);
-        return 0;
-    }
-    JuicerTests::CaseLog log;
+int main() try {
     auto* plugin = fj_ofx_plugin(0);
     require(plugin && plugin->mainEntry && plugin->setHost, "private callbacks missing");
     allocation(plugin);
@@ -386,7 +336,6 @@ int main(int argc, char** argv) try {
     rollback(plugin);
     terminal(plugin);
     capture_races(plugin);
-    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "instance control fixture: %s\n", error.what());

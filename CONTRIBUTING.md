@@ -42,7 +42,7 @@ implemented Metal backend.
 | Process and instance | [Runtime](rust/film-juicer-plugin/src/runtime.rs) composes Assets and the native CUDA owner; Assets remains alive through native close. [Instance](rust/film-juicer-plugin/src/instance.rs), [submission](rust/film-juicer-plugin/src/submission.rs), [OFX instance handling](rust/film-juicer-plugin/src/ofx/instance.rs) and core [Publication](rust/film-juicer-core/src/state.rs) own capture, publication/admission and session policy. |
 | Photographic model and assets | Core [Assets](rust/film-juicer-core/src/assets.rs), [profiles](rust/film-juicer-core/src/profile.rs) and [recipes](rust/film-juicer-core/src/recipe.rs), with the film, print, optics and scanner modules, own source/derived data and resolved policy. Complete immutable `RenderState` retains the backing its consumers need. The core [forbids unsafe](rust/film-juicer-core/src/lib.rs) and has no OFX/CUDA dependency. |
 | Foreign submission and GPU execution | Plug-in [CUDA](rust/film-juicer-plugin/src/cuda/mod.rs) borrows admitted state through the [native C API](native/juicer_cuda_api.h). [RenderValues](src/RenderValues.h) binds resolved policy; [Root](src/ProcessRoot.h), [CUDA resources](src/Cuda/JuicerCudaResources.h) and kernels own execution and exact-context-plus-epoch residency. `PreparedCudaFrame` retains resources through finish/abort and asynchronous retirement. Native render code does not discover asset files. |
-| Build and test boundaries | [CMake/Cargo integration](cmake/JuicerRust.cmake) builds the two-crate workspace. Shipping and production witnesses link `cargo/production`; facade/fault consumers select `cargo/test-support`. [ABI and binding maintenance](tests/ffi/README.md) documents committed bindings, regeneration and the [test-preparation C facade](tests/ffi/juicer_test_api.h). Independent native oracles and nonshipping measurement helpers retain their test consumers. |
+| Build and test boundaries | [CMake/Cargo integration](cmake/JuicerRust.cmake) builds the two-crate workspace. Shipping and production witnesses link `cargo/production`; facade/fault consumers select `cargo/test-support`. [ABI and binding maintenance](docs/ffi.md) documents committed bindings, regeneration and the [test-preparation C facade](tests/ffi/juicer_test_api.h). Independent native oracles and nonshipping measurement helpers retain their test consumers. |
 
 For a maintenance change, follow the authoritative value to its actual consumer:
 
@@ -153,14 +153,10 @@ Each cleanup PR is one commit. Run its checks on that commit and land it on
 Use CMake presets for the native build, shipping Rust archive and staged
 bundle. Run native cases with CTest and Rust cases directly with locked
 workspace nextest and Cargo doctests in Debug and Release. Run Rust tests
-serially until their shared resources support parallel runs. The first cleanup
-PR must make its testing-enabled default build produce the registered tests,
-staged modules and resources. It introduces the 300-second per-test CTest limit and
-publishes executable commands in the [build](docs/building.md) and
-[test](tests/README.md) guides in the same change. Until that lands, the
-checkout and hosted jobs still run the tagged product configuration.
-The required CI status names switch once the replacement jobs report on
-that PR, before it merges.
+serially until their shared resources support parallel runs. The default
+testing-enabled build supplies the registered binaries, modules and resources.
+CTest enforces a 300-second per-test timeout. See the executable commands in
+the [build](docs/building.md) and [test](tests/README.md) guides.
 
 Use standard runner results for cleanup. A failed case or an empty requested
 selection fails its job. Migration qualification groups, command/row receipts,
@@ -183,7 +179,7 @@ and their original scope](https://github.com/oldandangry/Film-Juicer/blob/archiv
 - Preserve pinned rustfmt, Clippy, clang-format, clang-tidy, Ruff and compiler
   warnings-as-errors. Analyze native headers through their real translation
   units and configurations. Review changes to binding inputs against generated
-  output on both platforms. See [binding maintenance](tests/ffi/README.md#binding-maintenance).
+  output on both platforms. See [binding maintenance](docs/ffi.md#binding-maintenance).
 - Keep scientific expectations independent and checked-in fixtures immutable
   during tests. Report actual selections, outcomes and material limits.
   Automated results cover their exercised behavior. Resolve installation,

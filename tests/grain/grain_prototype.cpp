@@ -3,7 +3,6 @@
 #include "prototype_benchmark.h"
 #include "Cuda/JuicerCudaFilmGrain.h"
 
-#include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
 
 #include <algorithm>
@@ -32,7 +31,6 @@
 
 namespace GrainPrototype {
     namespace {
-        constexpr std::string_view kCaseCaller = "film-reference";
         constexpr float kUhdPitch = 9.375F;
         using Clock = std::chrono::steady_clock;
 
@@ -945,22 +943,13 @@ namespace GrainPrototype {
             Case{"disabled-no-bank", disabled},
             Case{"unsupported-frame", unsupported_frame}};
 
-        void run_cases(const auto& cases, bool list) {
-            if (list) {
-                for (const auto& test : cases)
-                    JuicerTests::list_case(kCaseCaller, test.id);
-                return;
-            }
-            JuicerTests::CaseLog log;
+        void run_cases(const auto& cases) {
             for (const auto& test : cases) {
-                JuicerTests::CaseEvent eventStart(kCaseCaller, test.id);
                 // Preserve case identity in the console before any fatal CUDA failure.
                 std::cout << "Film reference " << test.id << '\n'
                           << std::flush;
                 test.run();
-                eventStart.passed();
             }
-            log.finish();
         }
 
         struct ReferenceProbe {
@@ -1187,15 +1176,13 @@ namespace GrainPrototype {
         void run_main(int argc, char** argv) {
             require(argc >= 2, "expected host, gpu, response, reference, capture or benchmark mode");
             const std::string_view mode(argv[1]);
-            const bool list = JuicerTests::list_requested(argc, argv);
-            if (mode == "host" && (argc == 2 || (argc == 3 && list))) {
-                run_cases(kHostCases, list);
+            if (mode == "host" && argc == 2) {
+                run_cases(kHostCases);
                 return;
             }
-            if (mode == "gpu" && (argc == 2 || (argc == 3 && list))) {
-                if (!list)
-                    open_cuda();
-                run_cases(kGpuCases, list);
+            if (mode == "gpu" && argc == 2) {
+                open_cuda();
+                run_cases(kGpuCases);
                 return;
             }
             if (mode == "develop-g3" && argc == 4) {

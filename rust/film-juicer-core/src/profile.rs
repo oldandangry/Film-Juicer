@@ -919,7 +919,6 @@ pub fn load_print_source(path: &Path) -> Result<ProfileSource, ProfileError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_cases::RowCases;
     use super::{blackbody_temperature, exposure_count_supported};
 
     #[test]
@@ -938,19 +937,35 @@ mod tests {
             ("BB-1e-999", -0.0),
             ("BB0.1e-323", 0.0),
         ];
-        let mut cases = RowCases::new(
-            "profile-blackbody-tokens",
-            rows.iter().map(|(authored, _)| format!("token/{authored}")),
+        let cases_ids: Vec<_> =
+            IntoIterator::into_iter(rows.iter().map(|(authored, _)| format!("token/{authored}")))
+                .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+                .collect();
+        assert!(!cases_ids.is_empty(), "profile-blackbody-tokens");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "profile-blackbody-tokens"
         );
         for (authored, kelvin) in rows {
-            let case = cases.case(format!("token/{authored}"));
+            let case = AsRef::<str>::as_ref(&(format!("token/{authored}"))).to_owned();
             assert_eq!(
                 blackbody_temperature(authored).unwrap().to_bits(),
                 kelvin.to_bits()
             );
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 
     #[test]
@@ -961,15 +976,30 @@ mod tests {
             ("maximum", i32::MAX as usize, true),
             ("above-maximum", i32::MAX as usize + 1, false),
         ];
-        let mut cases = RowCases::new(
-            "profile-exposure-count-bounds",
-            rows.iter().map(|(name, _, _)| *name),
+        let cases_ids: Vec<_> = IntoIterator::into_iter(rows.iter().map(|(name, _, _)| *name))
+            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
+            .collect();
+        assert!(!cases_ids.is_empty(), "profile-exposure-count-bounds");
+        let cases_count = cases_ids.len();
+        let mut cases_remaining = cases_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            cases_remaining.len(),
+            cases_count,
+            "profile-exposure-count-bounds"
         );
         for (name, count, expected) in rows {
-            let case = cases.case(name);
+            let case = AsRef::<str>::as_ref(&(name)).to_owned();
             assert_eq!(exposure_count_supported(count), expected);
-            case.passed();
+            assert!(
+                cases_remaining.remove(&case),
+                "unexpected or repeated comparison: {case}"
+            );
         }
-        cases.finish();
+        assert!(
+            cases_remaining.is_empty(),
+            "missing comparisons: {cases_remaining:?}"
+        );
     }
 }
