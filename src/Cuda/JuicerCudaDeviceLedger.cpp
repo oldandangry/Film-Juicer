@@ -1,12 +1,7 @@
 // Cuda/JuicerCudaDeviceLedger.cpp
 
 #include "Cuda/JuicerCudaDeviceLedger.h"
-#if defined(JUICER_PERFORMANCE_OBSERVATION)
-#include "Cuda/JuicerCudaPerformanceObservation.h"
-#define FJ_OBSERVE_LEDGER() PerformanceObservation::ledger(_deviceId, PerformanceObservation::LedgerSnapshot{_reservedBytes, _committedBytes, _retiringBytes, static_cast<std::uint64_t>(_records.size())})
-#else
 #define FJ_OBSERVE_LEDGER() ((void)0)
-#endif
 
 #include <exception>
 #include <limits>
@@ -258,9 +253,6 @@ namespace JuicerCuda {
         }
         _nextRecordId += 1;
         _reservedBytes += request.bytes;
-#if defined(JUICER_PERFORMANCE_OBSERVATION)
-        PerformanceObservation::context(_deviceId, request.contextKey.contextOpaque, request.contextEpoch);
-#endif
         FJ_OBSERVE_LEDGER();
         outReservation = DeviceByteReservation(std::move(self), recordId);
         return true;

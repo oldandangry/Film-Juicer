@@ -7,7 +7,6 @@
 )]
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use film_juicer_core::assets::Assets;
 
@@ -16,23 +15,17 @@ use crate::cuda::{self, Failure};
 pub(crate) struct Runtime {
     assets: Option<Assets>,
     native: Option<cuda::Owner>,
-    cache_cleanup: OnceLock<Result<(), Failure>>,
 }
 
 impl Runtime {
     pub(crate) fn new(resource_dir: PathBuf) -> Result<Self, Failure> {
-        let assets = crate::asset_bridge::runtime_assets(resource_dir);
+        let assets = Assets::new(resource_dir);
         // Cover host construction before native registration, including failure.
         let mut runtime = Self {
             assets: Some(assets),
             native: None,
-            cache_cleanup: OnceLock::new(),
         };
-        #[cfg(any(test, feature = "test-support"))]
-        crate::asset_bridge::runtime_checkpoint(1)?;
         runtime.native = Some(cuda::Owner::new()?);
-        #[cfg(any(test, feature = "test-support"))]
-        crate::asset_bridge::runtime_checkpoint(2)?;
         Ok(runtime)
     }
 
@@ -48,14 +41,6 @@ impl Runtime {
         self.native().check_close()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn shutdown(&self) -> Result<(), Failure> {
-        self.native().shutdown()?;
-        *self
-            .cache_cleanup
-            .get_or_init(|| crate::asset_bridge::release_runtime_caches(self.assets()))
-    }
-
     pub(crate) fn close(mut self) -> Result<(), Failure> {
         self.finish()
     }
@@ -66,9 +51,8 @@ impl Runtime {
         let assets = self.assets.take();
         let native = self.native.take();
         let native_result = native.map_or(Ok(()), cuda::Owner::close);
-        let cached_result = self.cache_cleanup.get().copied().unwrap_or(Ok(()));
-        let host_result = assets.map_or(Ok(()), crate::asset_bridge::close_runtime_assets);
-        native_result.and(cached_result).and(host_result)
+        drop(assets);
+        native_result
     }
 }
 

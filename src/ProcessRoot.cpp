@@ -32,10 +32,12 @@
 
 #include <cuda_runtime.h>
 
+#include "Cuda/JuicerCudaResourceOperations.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "Cuda/Scan/JuicerCudaScannerBinding.h"
 
 namespace JuicerProcess::detail {
     namespace {
@@ -113,30 +115,6 @@ namespace JuicerProcess {
 
     namespace {
 
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        struct ContextDrainTestFailure final {
-            std::mutex mutex;
-            std::optional<JuicerCuda::ResourceManager::DeviceContextKey> key;
-        };
-
-        ContextDrainTestFailure& context_drain_test_failure() {
-            static ContextDrainTestFailure failure;
-            return failure;
-        }
-
-        bool consume_context_drain_test_failure(
-            const JuicerCuda::ResourceManager::DeviceContextKey& key,
-            std::string& outError) {
-            ContextDrainTestFailure& failure = context_drain_test_failure();
-            std::lock_guard<std::mutex> lock(failure.mutex);
-            if (!failure.key || *failure.key != key) {
-                return false;
-            }
-            failure.key.reset();
-            outError = "test-injected CUDA context owner drain failure";
-            return true;
-        }
-#endif
 
         bool query_cuda_device_total_bytes(
             int deviceId,
@@ -567,40 +545,6 @@ namespace JuicerProcess {
 
     } // namespace
 
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-    namespace TestSupport {
-
-        bool arm_context_drain_failure_once(
-            const JuicerCuda::ResourceManager::DeviceContextKey& key) noexcept {
-            try {
-                if (key.deviceId < 0 || !key.contextOpaque) {
-                    return false;
-                }
-                ContextDrainTestFailure& failure = context_drain_test_failure();
-                std::lock_guard<std::mutex> lock(failure.mutex);
-                if (failure.key) {
-                    return false;
-                }
-                failure.key = key;
-                return true;
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-                return false;
-            }
-        }
-
-        void clear_context_drain_failure() noexcept {
-            try {
-                ContextDrainTestFailure& failure = context_drain_test_failure();
-                std::lock_guard<std::mutex> lock(failure.mutex);
-                failure.key.reset();
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-        }
-
-    } // namespace TestSupport
-#endif
 
     Root::FramePreparationToken::FramePreparationToken(Root* root) noexcept
         : _root(root) {
@@ -675,6 +619,12 @@ namespace JuicerProcess {
             bool retainedLeaseActive = false;
         };
 
+        explicit State(JuicerCuda::PendingContextLossRecovery& callRecovery)
+            : recovery(callRecovery) {
+        }
+
+        // The flat call outlives its prepared frame, including abort on unwind.
+        JuicerCuda::PendingContextLossRecovery& recovery;
         Root* root = nullptr;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
@@ -1825,9 +1775,6 @@ namespace JuicerProcess {
             cudaError_t recordStatus = cudaSuccess;
             if (boost.eventRecorded || boost.copyPending) {
                 retirementEvent = reinterpret_cast<cudaEvent_t>(boost.eventOpaque);
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-                recordStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(JuicerCuda::TestSupport::HighlightBoostFault::RetirementEvent);
-#endif
                 if (recordStatus == cudaSuccess) {
                     recordStatus = cudaEventRecord(retirementEvent, retireStream);
                 }
@@ -2159,7 +2106,7 @@ namespace JuicerProcess {
                     recordError)) {
                 return true;
             }
-            const cudaError_t syncError = cudaStreamSynchronize(
+            const cudaError_t syncError = JuicerCuda::ResourceOperations::synchronize_stream(
                 cudaStreamOpaque
                     ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
                     : nullptr);
@@ -2177,7 +2124,8 @@ namespace JuicerProcess {
             JuicerCuda::quarantine_unfenced_frame_use(
                 target,
                 cudaStreamOpaque);
-            outError.status = JuicerCuda::context_loss(recordError) ? recordError.status : JuicerCuda::runtime_failure_status(syncError);
+            outError.status = recordError.status;
+            JuicerCuda::record_cleanup_context_loss(outError, JuicerCuda::runtime_failure_status(syncError));
             outError.diagnostic = recordError.diagnostic.empty()
                                       ? std::string("frame use event submission failed")
                                       : recordError.diagnostic;
@@ -2398,9 +2346,6 @@ namespace JuicerProcess {
             }
             return false;
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_post_frame(_state->scratchWorkspace.postFrameLayout);
-#endif
         const auto postFrameScratchRequest = _state->post_frame_scratch_request_descriptor();
         JuicerCuda::Failure releaseError;
         if (!_state->release_scatter_halation_resources(
@@ -2480,37 +2425,28 @@ namespace JuicerProcess {
         _state->grainStaticResources = nullptr;
         _state->resourceOwner.reset();
         _state->grainStaticOwner.reset();
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_finish();
-#endif
         return true;
     }
 
     void Root::PreparedCudaFrame::abort() noexcept {
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        const bool abortedSubmission = _state && _state->transaction.active && !_state->transaction.committed;
-#endif
         if (_state) {
             try {
                 JuicerCuda::Failure releaseError;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-                if (abortedSubmission) {
-                    JuicerCuda::ExecutorTest::observe_workspace_post_frame(_state->scratchWorkspace.postFrameLayout);
-                }
-#endif
                 if (_state->resources && _state->transaction.active &&
                     !_state->transaction.committed &&
                     !_state->submit_frame_use_event(
                         _state->lastCudaStreamOpaque,
-                        releaseError) &&
-                    JTRACE_ENABLED(1)) {
-                    std::string msg =
-                        "frame_use_event_submission_failed abort=1";
-                    if (!releaseError.diagnostic.empty()) {
-                        msg += " error=";
-                        msg += releaseError.diagnostic;
+                        releaseError)) {
+                    _state->recovery.observe("abort_frame_use_event", releaseError);
+                    if (JTRACE_ENABLED(1)) {
+                        std::string msg =
+                            "frame_use_event_submission_failed abort=1";
+                        if (!releaseError.diagnostic.empty()) {
+                            msg += " error=";
+                            msg += releaseError.diagnostic;
+                        }
+                        JTRACE("CUDA", msg);
                     }
-                    JTRACE("CUDA", msg);
                 }
                 const auto postFrameScratchRequest = _state->post_frame_scratch_request_descriptor();
                 if (!_state->release_scatter_halation_resources(
@@ -2600,6 +2536,19 @@ namespace JuicerProcess {
         }
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
             JuicerCuda::ResourceManager::rollback_submission(_state->transaction);
+#if JUICER_DIAGNOSTICS_COMPILED
+            try {
+                if (!_state->transaction.active && JTRACE_ENABLED(3)) {
+                    const auto& snapshot = _state->transaction.snapshot;
+                    JTRACE_VERBOSE("CUDALIFE",
+                                   "event=frame_rollback snapshot_id=" + std::to_string(snapshot.snapshotId) +
+                                       " instance_token=" + std::to_string(snapshot.instanceToken.value) +
+                                       " use_fenced=" + (_state->frameUseEventSubmitted ? "1" : "0"));
+                }
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+#endif
         }
         if (_state) {
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2619,11 +2568,6 @@ namespace JuicerProcess {
             _state->resourceOwner.reset();
             _state->grainStaticOwner.reset();
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        if (abortedSubmission) {
-            JuicerCuda::ExecutorTest::observe_frame_abort();
-        }
-#endif
     }
 
     bool Root::PreparedCudaFrame::stage_optical_workspace(
@@ -2663,9 +2607,6 @@ namespace JuicerProcess {
         }
         _state->scratchWorkspace.admittedLayout = activeRequest;
         _state->scratchWorkspace.postFrameLayout = activeRequest;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_admitted(activeRequest);
-#endif
         return true;
     }
 
@@ -2889,14 +2830,8 @@ namespace JuicerProcess {
                 JTRACE("DIR_DESCRIPTOR", msg);
             }
 #endif
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::begin_workspace_candidate(static_cast<unsigned>(candidateIndex), candidate);
-#endif
             if (!_state->scratchWorkspace.retainedLeaseActive &&
                 !_state->ensure_scratch_workspace(candidate, cudaStreamOpaque, scratchAdmissionError)) {
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-                JuicerCuda::ExecutorTest::end_workspace_candidate(false, scratchAdmissionError);
-#endif
                 if (JuicerCuda::allocation_capacity_exhausted(
                         scratchAdmissionError) &&
                     candidateIndex + 1 < scratchCandidateCount) {
@@ -2914,9 +2849,6 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 scratchAdmissionError);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::end_workspace_candidate(candidateSucceeded, scratchAdmissionError);
-#endif
             if (!candidateSucceeded) {
                 if (JuicerCuda::allocation_capacity_exhausted(
                         scratchAdmissionError) &&
@@ -2929,9 +2861,6 @@ namespace JuicerProcess {
             admittedLayout = candidate;
             _state->scratchWorkspace.admittedLayout = candidate;
             _state->scratchWorkspace.postFrameLayout = candidate;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_workspace_admitted(candidate);
-#endif
             scratchPrepared = true;
             outError = {};
             break;
@@ -3089,9 +3018,6 @@ namespace JuicerProcess {
                 return false;
             }
             _state->scratchWorkspace.admittedLayout = *staged;
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_workspace_final(*staged);
-#endif
         }
 
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -3200,6 +3126,7 @@ namespace JuicerProcess {
                     " recipe_hash=" + std::to_string(producing.dirRecipeHash) +
                     " descriptor_hash=" +
                     std::to_string(producing.dirDescriptorHash) +
+                    " submission_id=" + std::to_string(producing.submissionId) +
                     " context_epoch=" +
                     std::to_string(producing.contextEpoch) +
                     " channel_mask=" + std::to_string(channels) +
@@ -4046,10 +3973,6 @@ namespace JuicerProcess {
         // retirement still needs a completion witness for that stream.
         stage.copyPending = true;
         cudaError_t copyStatus = cudaSuccess;
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        using JuicerCuda::TestSupport::HighlightBoostFault;
-        copyStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(HighlightBoostFault::Readback);
-#endif
         if (copyStatus == cudaSuccess) {
             copyStatus = cudaMemcpyAsync(stage.hostStatus, &stage.workspace->disposition, sizeof(*stage.hostStatus), cudaMemcpyDeviceToHost, stream);
         }
@@ -4058,9 +3981,6 @@ namespace JuicerProcess {
             return false;
         }
         cudaError_t eventStatus = cudaSuccess;
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        eventStatus = JuicerCuda::TestSupport::consume_highlight_boost_fault(HighlightBoostFault::StatusEvent);
-#endif
         if (eventStatus == cudaSuccess) {
             eventStatus = cudaEventRecord(reinterpret_cast<cudaEvent_t>(stage.eventOpaque), stream);
         }
@@ -4716,14 +4636,6 @@ namespace JuicerProcess {
         bool physicalDrainSucceeded = true;
         bool provenContextLoss = false;
         for (const CudaResourceOwner& owner : owners) {
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-            if (consume_context_drain_test_failure(
-                    deviceContextKey,
-                    outError.diagnostic)) {
-                physicalDrainSucceeded = false;
-                break;
-            }
-#endif
             if (!owner ||
                 !JuicerCuda::drain_for_context_retire(*owner, outError)) {
                 physicalDrainSucceeded = false;
@@ -5170,21 +5082,23 @@ namespace JuicerProcess {
         const PreparedFrameInput& request,
         const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
+        JuicerCuda::PendingContextLossRecovery& recovery,
         JuicerCuda::Failure& outError,
         const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        PreparedCudaFrame frame = create_prepared_frame(cudaStreamOpaque, outError);
+        PreparedCudaFrame frame = create_prepared_frame(cudaStreamOpaque, recovery, outError);
         if (!frame._state) {
             return frame;
         }
         return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, request, autoExposureBufferRequest, cudaStreamOpaque, outError, hostPreparation);
     }
 
-    Root::PreparedCudaFrame Root::create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::Failure& outError) {
+    Root::PreparedCudaFrame Root::create_prepared_frame(
+        void* cudaStreamOpaque, JuicerCuda::PendingContextLossRecovery& recovery, JuicerCuda::Failure& outError) {
         outError = {};
         std::unique_ptr<PreparedCudaFrame::State> state;
         try {
-            state = std::make_unique<PreparedCudaFrame::State>();
+            state = std::make_unique<PreparedCudaFrame::State>(recovery);
         } catch (...) {
             outError.diagnostic = "failed to allocate CUDA prepared frame";
             return PreparedCudaFrame{};
@@ -5335,10 +5249,6 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        const auto* requested = std::get_if<WorkspaceLayout>(&frame._state->requestedWorkspace);
-        JuicerCuda::ExecutorTest::observe_workspace_requested(requested ? std::optional<WorkspaceLayout>(*requested) : std::nullopt);
-#endif
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.contextEpoch,
@@ -5353,9 +5263,6 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_workspace_resource_acquired();
-#endif
         if (request.filmGrain && !JuicerCuda::ensure_film_grain_uploaded(
                                      *frame._state->resources, *request.filmGrain, frame._state->filmGrainBank, outError)) {
             recordFailure("prepare_film_grain", "CUDA Film grain bank preparation failed");
@@ -5365,9 +5272,6 @@ namespace JuicerProcess {
         if (request.filmGrain &&
             JuicerCuda::FilmGrain::proxy_sample_bound(request.filmGrain->sample_extent, request.filmGrain->sample_step) >
                 JuicerCuda::FilmGrain::kProxySerialSamples) {
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-            JuicerCuda::RenderTest::observe_film_proxy_reservation();
-#endif
             if (!frame._state->allocate_device_bytes(&frame._state->filmProxyWorkspace,
                                                      sizeof(JuicerCuda::FilmGrain::ProxyWorkspace),
                                                      "Film proxy transmission reduction",
@@ -5444,13 +5348,7 @@ namespace JuicerProcess {
         frame._state->focusedXyzToLinearSrgb = request.focused.xyzToLinearSrgb;
         frame._state->focusedApplyInputChromaticAdapt = request.focused.applyInputChromaticAdapt;
         frame._state->focusedScannerColor = request.scannerColor;
-        const auto& tables = request.focused.scannerTables;
-        auto& spectra = frame._state->focusedScannerSpectra;
-        for (std::size_t k = 0; k < std::size(spectra.wavelengths); ++k) {
-            spectra.wavelengths[k] = {
-                tables.epsC[k], tables.epsM[k], tables.epsY[k], tables.baseDensityMin.empty() ? 0.0F : tables.baseDensityMin[k], tables.Ax[k], tables.Ay[k], tables.Az[k]};
-        }
-        spectra.inverseYNormalization = tables.invYn;
+        frame._state->focusedScannerSpectra = JuicerCuda::bind_scanner_spectra(request.focused.scannerTables);
         frame._state->focusedOutputGamutTransform =
             outputGamut.enabled ? std::optional{outputGamut.transform} : std::nullopt;
         if (request.scannerPostEffects) {

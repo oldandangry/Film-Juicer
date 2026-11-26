@@ -40,11 +40,24 @@ namespace JuicerCuda {
     }
 
     bool allocation_capacity_exhausted(const Failure& failure) noexcept {
-        return failure.status.category == FJ_STATUS_ALLOCATION_FAILURE;
+        return failure.status.category == FJ_STATUS_ALLOCATION_FAILURE && !context_loss(failure);
     }
 
     bool context_loss(const Failure& failure) noexcept {
-        return failure.status.category == FJ_STATUS_CONTEXT_LOSS;
+        return context_loss_status(failure).has_value();
+    }
+
+    std::optional<FjStatus> context_loss_status(const Failure& failure) noexcept {
+        if (failure.status.category == FJ_STATUS_CONTEXT_LOSS) {
+            return failure.status;
+        }
+        return failure.cleanupContextLoss;
+    }
+
+    void record_cleanup_context_loss(Failure& failure, FjStatus cleanupStatus) noexcept {
+        if (cleanupStatus.category == FJ_STATUS_CONTEXT_LOSS && !context_loss(failure)) {
+            failure.cleanupContextLoss = cleanupStatus;
+        }
     }
 
     void set_failure(Failure& failure, FjStatus status, std::string_view diagnostic) noexcept {

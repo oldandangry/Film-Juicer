@@ -208,16 +208,6 @@ fn read_bytes(
         });
     }
     let mut bytes = Vec::new();
-    #[cfg(feature = "test-support")]
-    let reservation = if testing::take_reservation_failure() {
-        // Exercise the same fallible reservation category without attempting a
-        // large allocation. This runs only after the payload structure and
-        // exact byte length have been accepted.
-        bytes.try_reserve_exact(usize::MAX)
-    } else {
-        reserve(&mut bytes, count)
-    };
-    #[cfg(not(feature = "test-support"))]
     let reservation = reserve(&mut bytes, count);
     reservation.map_err(|_| ErrorKind::Capacity)?;
     bytes.resize(count, 0);
@@ -233,39 +223,6 @@ fn read_bytes(
         })?;
     }
     Ok(bytes)
-}
-
-#[cfg(feature = "test-support")]
-pub mod testing {
-    use std::cell::Cell;
-
-    thread_local! {
-        static RESERVATION_FAILURE: Cell<(bool, bool)> = const { Cell::new((false, false)) };
-    }
-
-    /// Arm one failure at the next real STBN or Wang byte-buffer reservation.
-    pub fn arm_reservation_failure() {
-        RESERVATION_FAILURE.set((true, false));
-    }
-
-    pub fn clear_reservation_failure() {
-        RESERVATION_FAILURE.set((false, false));
-    }
-
-    /// Reports whether the armed failure reached the decoder's reservation step.
-    pub fn reservation_failure_consumed() -> bool {
-        RESERVATION_FAILURE.get().1
-    }
-
-    pub(super) fn take_reservation_failure() -> bool {
-        let (armed, _) = RESERVATION_FAILURE.get();
-        if armed {
-            RESERVATION_FAILURE.set((false, true));
-            true
-        } else {
-            false
-        }
-    }
 }
 
 // Derived records also accept sequences; Wang records require named members.

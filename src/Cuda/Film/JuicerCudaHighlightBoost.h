@@ -60,21 +60,6 @@ namespace JuicerCuda {
         HighlightBoostLaunchStage stage = HighlightBoostLaunchStage::None;
     };
 
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-    namespace TestSupport {
-        enum class HighlightBoostFault : std::uint8_t {
-            None,
-            PartialReduction,
-            FinalReduction,
-            Apply,
-            Readback,
-            StatusEvent,
-            RetirementEvent
-        };
-        void fail_next_highlight_boost(HighlightBoostFault fault) noexcept;
-        cudaError_t consume_highlight_boost_fault(HighlightBoostFault fault) noexcept;
-    } // namespace TestSupport
-#endif
 
     HighlightBoostLaunchResult launch_highlight_boost(
         const HighlightBoostDescriptor& descriptor,

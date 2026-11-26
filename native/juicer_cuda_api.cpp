@@ -19,6 +19,7 @@
 
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaFailure.h"
+#include "Cuda/JuicerCudaResourceOperations.h"
 #include "ProcessRoot.h"
 
 struct FjCuda final {
@@ -31,9 +32,6 @@ struct FjCuda final {
     };
 
     ~FjCuda() {
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-        JuicerCuda::TerminalTest::owner_destroyed();
-#endif
     }
 
     FjStatus save_failure(FjStatus result, std::string_view diagnostic) noexcept {
@@ -87,9 +85,6 @@ struct FjCuda final {
             if (!root.stop_frame_preparation()) {
                 return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown could not close frame admission");
             }
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-            JuicerCuda::TerminalTest::before_shutdown();
-#endif
             if (root.shutdown(callMutex, failure)) {
                 lifecycle.store(Lifecycle::Closed, std::memory_order_release);
                 lifecycle.notify_all();
@@ -254,9 +249,6 @@ FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA owner creation input");
         }
         auto candidate = std::make_unique<FjCuda>();
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-        JuicerCuda::TerminalTest::after_construct();
-#endif
         bool published = false;
         {
             std::lock_guard<std::mutex> lock(gOwnerMutex);
@@ -473,46 +465,38 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
             {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
         const auto complete = [&]() {
-            auto completion = (frame->flags & FJ_FRAME_STREAM_PRESENT) != 0
-                                  ? cudaSuccess
-                                  : cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->stream));
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+            Failure completion{{FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}};
             if ((frame->flags & FJ_FRAME_STREAM_PRESENT) == 0) {
-                completion = static_cast<cudaError_t>(JuicerCuda::RenderTest::completion_status(static_cast<int>(completion)));
-            }
-#endif
-            if (completion != cudaSuccess) {
-                const Failure failure{runtime_failure_status(completion), cudaGetErrorString(completion)};
-                if (!recovery.pending && context_loss(failure)) {
-                    recovery.pending = true;
-                    recovery.failure = failure;
-                    recovery.stage = "absent_stream_completion";
+                const auto code = ResourceOperations::synchronize_stream(reinterpret_cast<cudaStream_t>(frame->stream));
+                if (code != cudaSuccess) {
+                    set_failure(completion, runtime_failure_status(code), cudaGetErrorString(code));
+                    recovery.observe("absent_stream_completion", completion);
                 }
             }
             return completion;
         };
+        const auto completionResult = [&](Failure completion) -> FjRenderOutcome {
+            diagnostic = std::move(completion.diagnostic);
+            return {completion.status, 0};
+        };
         try {
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-            JuicerCuda::RenderTest::before_execute();
-#endif
             if (!JuicerCuda::execute_prepared_host_data(_cuda->root, *prepared, execution, snapshot, recovery, abortCallback, diagnostic, hostPreparation)) {
                 return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
             }
-#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
-            JuicerCuda::RenderTest::after_execute();
-#endif
-        } catch (...) {
-            const auto completion = complete();
-            if (completion != cudaSuccess) {
-                return result(runtime_failure_status(completion), cudaGetErrorString(completion));
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            auto completion = complete();
+            // Cancellation stops further work, but work already enqueued on
+            // the implicit stream still needs successful completion.
+            if (failure.failure.status.category == FJ_STATUS_CANCELLED &&
+                completion.status.category != FJ_STATUS_SUCCESS) {
+                return completionResult(std::move(completion));
             }
             throw;
+        } catch (...) {
+            (void)complete();
+            throw;
         }
-        const auto completion = complete();
-        if (completion != cudaSuccess) {
-            return result(runtime_failure_status(completion), cudaGetErrorString(completion));
-        }
-        return result({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "");
+        return completionResult(complete());
     } catch (JuicerCuda::ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);
         return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U};
@@ -531,9 +515,6 @@ FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorB
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA instance retirement arguments");
         }
         JuicerCuda::NativeCall call(cuda);
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-        JuicerCuda::TerminalTest::before_retire_instance();
-#endif
         cuda->retire_instance(instance_token);
         return status(FJ_STATUS_SUCCESS, error, "");
     } catch (const JuicerCuda::ExecutionFailure& detail) {
@@ -568,9 +549,6 @@ FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
         return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid or reentrant CUDA shutdown");
     }
     try {
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-        JuicerCuda::TerminalTest::before_owner_lock();
-#endif
         FjStatus result{};
         {
             std::lock_guard<std::mutex> lock(gOwnerMutex);
@@ -610,9 +588,6 @@ FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
     FjStatus result{};
     bool closed = false;
     try {
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-        JuicerCuda::TerminalTest::before_owner_lock();
-#endif
         {
             std::lock_guard<std::mutex> lock(gOwnerMutex);
             result = cuda->shutdown();
@@ -654,11 +629,6 @@ namespace JuicerCuda {
         }
     }
 
-#if defined(JUICER_NATIVE_CALL_TEST_HOOK)
-    bool calling_thread_native_gate_active() noexcept {
-        return gNativeCallActive;
-    }
-#endif
 
     JuicerProcess::Root& borrow_root(FjCuda* cuda) {
         if (!cuda || cuda != gOwner.load(std::memory_order_acquire)) {

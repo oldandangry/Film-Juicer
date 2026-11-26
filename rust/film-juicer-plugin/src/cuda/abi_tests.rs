@@ -1,4 +1,4 @@
-//! Layout values supplied to the CMake-linked C/C++ fixture.
+//! Generated Rust layout compared with the frozen C11 CUDA inventory.
 
 use core::mem::{align_of, offset_of, size_of};
 
@@ -631,19 +631,6 @@ static FACTS: &[usize] = &[
     FJ_EFFECTS_FULL_FRAME as usize,
 ];
 
-/// Return immutable Rust ABI facts for the CMake-linked fixture.
-///
-/// # Safety
-/// `out_count` points to one writable `usize` for this call. The returned span
-/// has that many elements and remains immutable for the loaded library lifetime.
-#[cfg(feature = "test-support")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fj_test_cuda_abi_facts(out_count: *mut usize) -> *const usize {
-    // SAFETY: The fixture provides one writable element, separate from FACTS.
-    unsafe { out_count.write(FACTS.len()) };
-    FACTS.as_ptr()
-}
-
 // Unused const items check signatures without requiring native symbols
 // in a linked binary. The C and C++ fixture checks the same types independently.
 const _: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> u32> =
@@ -677,7 +664,19 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 624);
+        let declaration = include_str!("../../../../tests/ffi/cuda_abi_facts.inc");
+        let expected: Vec<usize> = declaration
+            .lines()
+            .filter_map(|line| line.strip_prefix("FJ_ABI_"))
+            .flat_map(|line| {
+                let (kind, arguments) = line.split_once('(').unwrap();
+                let skip = if kind == "FIELD" { 2 } else { 1 };
+                arguments.trim_end_matches(')').split(',').skip(skip)
+            })
+            .map(|value| value.trim().parse().unwrap())
+            .collect();
+        assert_eq!(expected.len(), 624);
+        assert_eq!(FACTS, expected);
     }
 
     #[test]

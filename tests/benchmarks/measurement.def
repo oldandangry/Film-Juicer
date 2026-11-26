@@ -1,6 +1,0 @@
-EXPORTS
-    OfxGetNumberOfPlugins
-    OfxGetPlugin
-    fj_test_ofx_measurement_begin
-    fj_test_ofx_measurement_read
-    fj_test_ofx_measurement_end

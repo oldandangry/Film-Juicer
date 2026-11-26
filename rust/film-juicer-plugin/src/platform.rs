@@ -169,7 +169,7 @@ pub(crate) fn clock_nanoseconds() -> Option<u64> {
     }
 }
 
-#[cfg(any(windows, feature = "test-support"))]
+#[cfg(windows)]
 pub(crate) fn qpc_nanoseconds(counter: i64, frequency: i64) -> Option<u64> {
     if frequency <= 0 {
         return None;
@@ -289,41 +289,4 @@ fn module_path_with_capacity(capacity: usize) -> Option<PathBuf> {
         }
         buffer.resize(buffer.len().checked_mul(2)?, 0);
     }
-}
-
-#[cfg(feature = "test-support")]
-pub(crate) fn characterize(mode: u32, path: &Path) -> PathBuf {
-    match mode {
-        0 => resource_directory(),
-        1 => resources(Some(path)),
-        #[cfg(windows)]
-        3 => resources(module_path_with_capacity(1).as_deref()),
-        _ => resources(None),
-    }
-}
-
-#[cfg(all(feature = "test-support", unix))]
-pub(crate) fn abi() -> [usize; 6] {
-    [
-        std::mem::size_of::<DlInfo>(),
-        std::mem::align_of::<DlInfo>(),
-        std::mem::offset_of!(DlInfo, filename),
-        std::mem::offset_of!(DlInfo, base),
-        std::mem::offset_of!(DlInfo, symbol),
-        std::mem::offset_of!(DlInfo, address),
-    ]
-}
-
-#[cfg(all(feature = "test-support", windows))]
-pub(crate) fn abi() -> [usize; 8] {
-    [
-        std::mem::size_of::<u16>(),
-        std::mem::size_of::<u32>(),
-        std::mem::size_of::<i32>(),
-        std::mem::size_of::<*mut std::ffi::c_void>(),
-        std::mem::align_of::<*mut std::ffi::c_void>(),
-        0x4 | 0x2,
-        std::mem::size_of::<i64>(),
-        std::mem::align_of::<i64>(),
-    ]
 }

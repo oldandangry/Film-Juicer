@@ -19,7 +19,7 @@ namespace JuicerLogging {
 #if JUICER_DIAGNOSTICS_COMPILED
     // Runtime levels: 0 = off, 1 = errors, 2 = state changes, 3 = verbose.
     bool enabled(int minLevel);
-    void write(const char* tag, const std::string& msg);
+    void write(const char* tag, const std::string& msg, bool flush = false);
 
     struct Scope {
         const char* tag;

@@ -1,57 +1,21 @@
 # Native ABI and binding maintenance
 
-`Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
-C++20 consumers. It compares 624 size, alignment, offset, tag and flag facts,
-including the opaque owner's pointer and the nullable abort callback. Both
-native languages check the reviewed values in `cuda_abi_facts.inc`. Bindgen's
-constant layout assertions also compile in Rust. All six operation signatures
-and the callback signature are type-checked without referencing or defining the
-new CUDA operations in a linked binary. The fixture contains no CUDA build or
-render implementation.
+CMake links the module and native witnesses to the same `film_juicer_rust`
+archive under `cargo/production`. The Rust-only workflow runs locked workspace
+nextest and doctests without the CUDA toolchain.
 
-Locked workspace nextest also runs the plug-in ABI tests. Test exports are gated by the nondefault `test-support` feature selected by
-CMake for facade/fault consumers with `BUILD_TESTING=ON`. Shipping and production
-witnesses always select the separate `cargo/production` archive; test-support
-consumers select `cargo/test-support`. Enabling tests does not switch shipping
-features. Product builds consume committed bindings without bindgen or libclang.
-See the [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map).
+`Ffi.Host.ProductionCudaAbi` checks 624 size, alignment, offset and value facts
+from [the CUDA inventory](../tests/ffi/cuda_abi_facts.inc). The strict C11
+consumer also checks the retained call signatures, DIR boundary ownership and
+diffusion component admission. Locked nextest compares the generated Rust
+types and values with the same frozen layout facts. The C11 OFX ABI case
+checks vendored suite field types and signatures. The loaded module and OFX
+host cases exercise discovery, variadic suite calls, reentry, and image leases.
 
-## OFX C ABI evidence
-
-`Ffi.Host.OfxAbi` links the real test-support Rust archive and native core with
-independent strict C11 and C++20 consumers of `native/ofx_bindings.h`. Its six
-custom cases are `layout`, `constants`, `signatures`, `callbacks`, `parameters`
-and `messages`. The frozen inventory in `ofx_abi_facts.inc` and exact field types
-in `ofx_abi_test.h` come from the vendored headers, independently of bindgen:
-
-- 111 layout observations: size/alignment of 11 complete records, status/time
-  and six distinct opaque handles, plus all 73 field offsets.
-- Exact declared types of all 73 fields, including signed rectangle/point
-  coordinates, unsigned plugin versions, pointer constness and all 50 suite slots.
-- 17 numeric constants and 143 exact string values including terminating NUL.
-- 53 callback/slot signatures, preserving nullable C function pointers and
-  variadic tails. Both native languages and handwritten Rust type-check them.
-
-The callbacks case exercises generated Host/Plugin fields in both directions
-with exact tokens, arguments, writes and status. The parameters case calls actual
-C variadic stubs through generated slots for int, bool, choice, string-choice,
-double, double2D and double3D: current/at-time get/set, 28 calls. The message
-case calls the generated V1 slot with literal `%s` and text containing `%`.
-Fact counts are checked before indexed comparisons and mismatch reports identify
-the field/constant. Rust exports and native spans are test-support-only and
-immutable/library-lived; fixture tokens are never dereferenced. Rust unit tests
-compile declarations and type evidence without linking the C fixture stubs.
-
-The selected records are Host, Plugin, PropertySuiteV1 (18 slots),
-ParameterSuiteV1 (18), ImageEffectSuiteV1 (13), MessageSuiteV1 (1), RangeD,
-PointI/D and RectI/D. Complete suite layouts retain unused slots. The standard discovery exports are defined by `native/ofx_exports.cpp` and
-delegate count and descriptor lookup to Rust. Rust owns OFX callbacks, lifecycle,
-reentry, image ownership and borrowed host strings; native CUDA Root retains CUDA
-resources and frame admission. Installed Resolve behavior remains outside these
-fixture claims.
-
-Build the testing-enabled preset and run the C11 and C++ ABI registrations with
-CTest. The [test guide](../tests/README.md) includes the separate production probes.
+The standard discovery exports in `native/ofx_exports.cpp` delegate to Rust.
+Rust owns OFX callbacks and their image leases. Native Root owns CUDA
+admission, frame resources and retirement. The current render continuation
+and the DIR and diffusion C entries remain part of this ABI.
 
 ## Binding maintenance
 

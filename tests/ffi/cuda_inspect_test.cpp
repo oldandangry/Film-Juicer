@@ -8,7 +8,6 @@
 #include <gtest/gtest.h>
 
 #include "juicer_cuda_api.h"
-#include "owner_fixture.h"
 
 namespace {
     FjFrame frame_at() {
@@ -23,16 +22,18 @@ namespace {
     class InspectHost : public testing::Test {
     protected:
         void SetUp() override {
-            runtime.create("inspection-does-not-load-assets");
+            ASSERT_EQ(fj_cuda_create(&owner, nullptr).category, FJ_STATUS_SUCCESS);
         }
         void TearDown() override {
-            EXPECT_EQ(runtime.close().category, FJ_STATUS_SUCCESS);
+            if (owner) {
+                EXPECT_EQ(fj_cuda_destroy(owner, nullptr).category, FJ_STATUS_SUCCESS);
+            }
         }
         void reject(const FjFrame& frame) {
             FjCudaContext context{73, 91};
             std::array<char, 9> text{};
             FjErrorBuffer error{text.data(), text.size(), 42};
-            const auto result = fj_cuda_inspect(runtime.borrow().cuda, &frame, &context, &error);
+            const auto result = fj_cuda_inspect(owner, &frame, &context, &error);
             EXPECT_EQ(result.category, FJ_STATUS_UNSUPPORTED_INPUT) << text.data();
             EXPECT_EQ(result.api, FJ_API_NONE);
             EXPECT_EQ(result.native_code, 0);
@@ -41,7 +42,7 @@ namespace {
             EXPECT_EQ(error.length, text.size() - 1);
             EXPECT_EQ(text.back(), '\0');
         }
-        JuicerTestSupport::RuntimeFixture runtime;
+        FjCuda* owner = nullptr;
     };
 
 #if !defined(JUICER_CUDA_INSPECT_GPU_TEST)
@@ -49,10 +50,10 @@ namespace {
         auto frame = frame_at();
         FjCudaContext context{73, 91};
         EXPECT_EQ(fj_cuda_inspect(nullptr, &frame, &context, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, nullptr, &context, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, &frame, nullptr, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_cuda_inspect(owner, nullptr, &context, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_cuda_inspect(owner, &frame, nullptr, nullptr).category, FJ_STATUS_UNSUPPORTED_INPUT);
         FjErrorBuffer error{nullptr, 5, 42};
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, &frame, &context, &error).category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_cuda_inspect(owner, &frame, &context, &error).category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(context.device_id, 73);
         EXPECT_EQ(context.context, 91U);
     }
@@ -67,14 +68,14 @@ namespace {
             return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, {}, error).status.category;
         };
         EXPECT_EQ(category(nullptr, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(category(runtime.borrow().cuda, nullptr, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(category(runtime.borrow().cuda, &context, nullptr, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(category(runtime.borrow().cuda, &context, &frame, nullptr, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        EXPECT_EQ(category(runtime.borrow().cuda, &context, &frame, &submission, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, nullptr, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, &context, nullptr, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, &context, &frame, nullptr, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, &context, &frame, &submission, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(category(reinterpret_cast<FjCuda*>(std::uintptr_t{1}), &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_PREPARATION_FAILURE);
-        EXPECT_EQ(category(runtime.borrow().cuda, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         FjErrorBuffer malformed{nullptr, 1, 99};
-        EXPECT_EQ(category(runtime.borrow().cuda, &context, &frame, &submission, &prepared, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(owner, &context, &frame, &submission, &prepared, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(malformed.length, 0U);
     }
 
@@ -191,7 +192,7 @@ namespace {
     TEST_F(InspectGpu, ExactIdentityAndDistinctOrigins) {
         const auto input = frame();
         FjCudaContext context{};
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_inspect(owner, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
         CUcontext current = nullptr;
         ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
         EXPECT_EQ(context.device_id, 0);
@@ -208,7 +209,7 @@ namespace {
         auto input = frame();
         input.source.address += 4096 - (7 * 144 + 128);
         FjCudaContext context{};
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_inspect(owner, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
         input.source.address += sizeof(float);
         reject(input);
     }
@@ -263,7 +264,7 @@ namespace {
         input.render_window = input.source.bounds;
         input.full_frame_extent = input.source.bounds;
         FjCudaContext context{};
-        EXPECT_EQ(fj_cuda_inspect(runtime.borrow().cuda, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_inspect(owner, &input, &context, nullptr).category, FJ_STATUS_SUCCESS);
         input.destination.address -= sizeof(float);
         reject(input);
     }

@@ -38,12 +38,6 @@ pub enum Operation {
     MallettRaw = 6,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(feature = "test-support")]
-pub enum Category {
-    Unsupported,
-    Allocation,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Reconstruction {
         exposure: Exposure,
@@ -53,12 +47,6 @@ pub enum Error {
     DensityLookup {
         exposure: Exposure,
         channel: usize,
-    },
-    #[cfg(feature = "test-support")]
-    Dependency {
-        exposure: Exposure,
-        operation: Operation,
-        category: Category,
     },
 }
 
@@ -98,43 +86,6 @@ fn sample_density(query: f32, axis: &[f32], curves: &[[f32; 3]], channel: usize)
 }
 
 fn visit(exposure: Exposure, operation: Operation) -> Result<(), Error> {
-    #[cfg(feature = "test-support")]
-    {
-        use super::input::testing;
-        let fault = match operation {
-            Operation::Source => testing::exposure_fault(5),
-            Operation::MallettRaw => testing::exposure_fault(6),
-            Operation::InputMatrices => testing::color_fault(5).err().map(|_| 1),
-            Operation::LinearSrgb => testing::color_fault(8).err().map(|_| 1),
-            Operation::Cat16 => testing::color_fault(2).err().map(|_| 1),
-            Operation::TcSample => reconstruction::testing::take(2),
-        };
-        match fault {
-            Some(2) => panic!("film reference dependency boundary fault"),
-            Some(1) => {
-                return Err(Error::Dependency {
-                    exposure,
-                    operation,
-                    category: Category::Unsupported,
-                });
-            }
-            Some(3) => {
-                return Err(Error::Dependency {
-                    exposure,
-                    operation,
-                    category: Category::Allocation,
-                });
-            }
-            Some(4) => {
-                return Err(Error::Reconstruction {
-                    exposure,
-                    operation: Some(operation),
-                });
-            }
-            _ => (),
-        }
-    }
-    #[cfg(not(feature = "test-support"))]
     let _ = (exposure, operation);
     Ok(())
 }
@@ -178,23 +129,13 @@ fn reconstruct(
             let matrices = color::input_matrices(color::InputSpace::SrgbRec709);
             visit(exposure, Operation::LinearSrgb)?;
             let xyz = color::linear_srgb_to_xyz([source; 3]);
-            let projected = color::checked_adapt_cat16(
+            let projected = color::adapt_cat16(
                 xyz,
                 color::Whites {
                     source_xyz: matrices.d65_white_xyz,
                     destination_xyz: *projection_white_xyz,
                 },
-            )
-            .map_err(|error| -> Error {
-                match error {
-                    #[cfg(feature = "test-support")]
-                    color::CheckedError::UnsupportedInput => Error::Dependency {
-                        exposure,
-                        operation: Operation::Cat16,
-                        category: Category::Unsupported,
-                    },
-                }
-            })?;
+            );
             visit(exposure, Operation::TcSample)?;
             reconstruction::sample_tc_lut(samples, projected)
                 .map_err(|_| failure(Some(Operation::TcSample)))?
@@ -240,9 +181,6 @@ impl Reference {
                 (compensated_raw_rgb[channel] * meter_scale + 1.0e-10_f32).log10();
             let gamma = development.gamma_rgb()[channel];
             let baseline_query = baseline_log * gamma;
-            #[cfg(feature = "test-support")]
-            let baseline_query =
-                testing::density_lookup_query(baseline_query, Exposure::Baseline, channel);
             let baseline_density = sample_density(
                 baseline_query,
                 development.log_exposure(),
@@ -300,62 +238,6 @@ impl Reference {
     }
     pub fn hash(&self) -> u64 {
         self.hash
-    }
-}
-
-#[cfg(feature = "test-support")]
-pub mod testing {
-    use std::cell::Cell;
-
-    thread_local! {
-        static DENSITY_LOOKUP_FAULT: Cell<(bool, bool)> = const { Cell::new((false, false)) };
-    }
-
-    /// Arm or clear the next actual baseline/channel-zero lookup query substitution.
-    pub fn arm_density_lookup_fault(armed: bool) {
-        DENSITY_LOOKUP_FAULT.set((armed, false));
-    }
-
-    /// Replace only the actual baseline/channel-zero query when armed.
-    pub(super) fn density_lookup_query(
-        query: f32,
-        exposure: super::Exposure,
-        channel: usize,
-    ) -> f32 {
-        if exposure != super::Exposure::Baseline || channel != 0 {
-            return query;
-        }
-        DENSITY_LOOKUP_FAULT.with(|fault| {
-            let (armed, _) = fault.get();
-            if armed {
-                fault.set((false, true));
-                f32::NAN
-            } else {
-                query
-            }
-        })
-    }
-
-    /// Take and reset the observation that the real target lookup consumed the fault.
-    pub fn take_density_lookup_fault_consumed() -> bool {
-        DENSITY_LOOKUP_FAULT.with(|fault| {
-            let (armed, consumed) = fault.get();
-            fault.set((armed, false));
-            consumed
-        })
-    }
-
-    /// Uses the production lookup with caller-supplied test-ingress shape.
-    pub fn sample_density(
-        query: f32,
-        axis: &[f32],
-        curves: &[[f32; 3]],
-        channel: usize,
-    ) -> Option<f32> {
-        if axis.is_empty() || axis.len() != curves.len() || channel >= 3 {
-            return None;
-        }
-        super::sample_density(query, axis, curves, channel)
     }
 }
 
@@ -427,99 +309,5 @@ mod tests {
         assert!(sample_density(-1.0, &axis, &curves, 0).unwrap().is_nan());
         assert_eq!(sample_density(1.0, &axis, &curves, 0), Some(2.0));
         assert_eq!(sample_density(f32::NAN, &axis, &curves, 0), None);
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn existing_exposure_hook_preserves_typed_allocation_and_consumption() {
-        use crate::{film, profile, route};
-        let source = profile::load_film_source(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../Resources/profiles/kodak_portra_400.json"),
-        )
-        .unwrap();
-        let development = Development::new(
-            std::sync::Arc::new(profile::FilmProfile::new(source).unwrap()),
-            film::Params {
-                gamma_factor: 1.0,
-                layers_required: false,
-                requested_route: route::ScanRoute::NegativeDirect,
-            },
-        )
-        .unwrap();
-        let basis = [[1.0; 3]; 81];
-        let light = [1.0; 81];
-        let sensitivity = [[1.0; 3]; 81];
-        let prepare = || {
-            Reference::new(
-                &development,
-                Params {
-                    manual_exposure_ev: 0.0,
-                    auto_exposure_enabled: true,
-                },
-                Some(Reconstruction::Mallett {
-                    basis_rgb: &basis,
-                    illuminant: &light,
-                    sensitivity_rgb: &sensitivity,
-                    green_scale: 1.0,
-                }),
-            )
-        };
-        let cases_expected = [
-            "source/baseline",
-            "source/compensated",
-            "mallett-raw/baseline",
-            "mallett-raw/compensated",
-        ];
-        let cases_ids: Vec<_> = IntoIterator::into_iter(cases_expected)
-            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
-            .collect();
-        assert!(
-            !cases_ids.is_empty(),
-            "empty case set: {}",
-            "film-reference-exposure-faults"
-        );
-        let cases_count = cases_ids.len();
-        let mut cases_remaining = cases_ids
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            cases_remaining.len(),
-            cases_count,
-            "duplicate case IDs: {}",
-            "film-reference-exposure-faults"
-        );
-        for (selector, operation, operation_id) in [
-            (5, Operation::Source, "source"),
-            (6, Operation::MallettRaw, "mallett-raw"),
-        ] {
-            for (index, exposure, exposure_id) in [
-                (1, Exposure::Baseline, "baseline"),
-                (2, Exposure::Compensated, "compensated"),
-            ] {
-                let case =
-                    AsRef::<str>::as_ref(&(format!("{operation_id}/{exposure_id}"))).to_owned();
-                film::input::testing::arm_exposure(selector, index, 3);
-                assert_eq!(
-                    prepare().err(),
-                    Some(Error::Dependency {
-                        exposure,
-                        operation,
-                        category: Category::Allocation
-                    })
-                );
-                assert!(film::input::testing::exposure_consumed(selector, 3));
-                assert!(!film::input::testing::exposure_consumed(selector, 3));
-                assert!(prepare().is_ok());
-                assert!(
-                    cases_remaining.remove(&case),
-                    "unexpected or repeated comparison: {case}"
-                );
-            }
-        }
-        assert!(
-            cases_remaining.is_empty(),
-            "missing comparisons: {cases_remaining:?}"
-        );
     }
 }

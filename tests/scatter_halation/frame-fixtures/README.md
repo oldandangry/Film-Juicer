@@ -22,6 +22,5 @@ contracts do not acquire mathematical authority from replacement captures.
 
 Ordinary tests never regenerate these files. Future candidates belong under
 `out/validation/<preset>/` and require a separate provenance/behavior review. The
-neighboring `fixtures/` external-reference payload, revision and numerical bounds
-remain a separate authority. These fixtures establish neither GPU lifetime nor
-installed-host visual acceptance.
+[tagged external-reference payload](https://github.com/oldandangry/Film-Juicer/tree/archive/spectral-cutover-2026-11/tests/scatter_halation/fixtures)
+records the independent revision and numerical bounds.

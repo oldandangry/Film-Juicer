@@ -15,6 +15,7 @@ nonstandard_style = { level = "deny", priority = -1 }
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"
+unexpected_cfgs = "deny"
 improper_ctypes = "deny"
 improper_ctypes_definitions = "deny"
 unfulfilled_lint_expectations = "deny"

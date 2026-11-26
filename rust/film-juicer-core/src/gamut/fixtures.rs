@@ -72,7 +72,3 @@ pub fn output_cubics(exit: &[f32; 9], lightness: f64, direction: [f64; 2]) -> [[
 pub fn output_reserve_failure() -> super::BoundaryError {
     super::boundary_storage(usize::MAX).unwrap_err()
 }
-
-pub fn output_allocation_bytes(boundary: &super::OutputBoundary) -> usize {
-    boundary.cmax.capacity() * std::mem::size_of::<f32>()
-}

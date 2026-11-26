@@ -4,20 +4,11 @@ mod derived;
 mod grain;
 pub use grain::{PortraGrainBank, PortraGrainError, PortraGrainRecord, PortraGrainTable};
 pub use derived::{DerivedError, Illuminants, InputHull, OutputBoundary};
-#[cfg(feature = "test-support")]
-pub mod testing;
-#[cfg(feature = "test-support")]
-pub use derived::CurveFault;
 
 use std::collections::HashMap;
-#[cfg(feature = "test-support")]
-use std::collections::TryReserveError;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-
-#[cfg(all(feature = "test-support", unix))]
-use std::os::unix::ffi::OsStrExt;
 
 use crate::data_io::{
     CsvPairs, CmfRows, ReadError, load_csv_pairs, load_cmf_csv, load_mallett_basis,
@@ -176,113 +167,6 @@ type MallettBasis = [[f32; 3]; 81];
 type CalibrationSnapshot = Result<Arc<NeutralCalibration>, Arc<calibration::Error>>;
 type NoiseSnapshot = Result<Arc<NoiseBundle>, Arc<noise::Error>>;
 
-#[cfg(all(feature = "test-support", unix))]
-thread_local! {
-    static MALLETT_SOURCE_OVERRIDE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
-    static MALLETT_SOURCE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-#[cfg(all(feature = "test-support", windows))]
-thread_local! {
-    static MALLETT_SOURCE_OVERRIDE: std::cell::RefCell<Option<Vec<u16>>> = const { std::cell::RefCell::new(None) };
-    static MALLETT_SOURCE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(feature = "test-support")]
-#[derive(Debug)]
-pub enum MallettSourceOverrideError {
-    InvalidPath,
-    AlreadyArmed,
-    Allocation(TryReserveError),
-}
-
-/// Arm one decoded-source call on this thread without changing the normal cache.
-#[cfg(all(feature = "test-support", unix))]
-pub fn arm_mallett_source_override(path: &[u8]) -> Result<(), MallettSourceOverrideError> {
-    if path.is_empty() || path.contains(&0) {
-        return Err(MallettSourceOverrideError::InvalidPath);
-    }
-    let mut copy = Vec::new();
-    copy.try_reserve_exact(path.len())
-        .map_err(MallettSourceOverrideError::Allocation)?;
-    copy.extend_from_slice(path);
-    MALLETT_SOURCE_OVERRIDE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_some() {
-            return Err(MallettSourceOverrideError::AlreadyArmed);
-        }
-        *slot = Some(copy);
-        MALLETT_SOURCE_CONSUMED.set(false);
-        Ok(())
-    })
-}
-
-/// Arm one decoded-source call on this thread without changing the normal cache.
-#[cfg(all(feature = "test-support", windows))]
-pub fn arm_mallett_source_override(
-    path: impl Iterator<Item = u16>,
-) -> Result<(), MallettSourceOverrideError> {
-    let mut copy = Vec::new();
-    for unit in path {
-        if unit == 0 {
-            return Err(MallettSourceOverrideError::InvalidPath);
-        }
-        copy.try_reserve(1)
-            .map_err(MallettSourceOverrideError::Allocation)?;
-        copy.push(unit);
-    }
-    if copy.is_empty() {
-        return Err(MallettSourceOverrideError::InvalidPath);
-    }
-    MALLETT_SOURCE_OVERRIDE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_some() {
-            return Err(MallettSourceOverrideError::AlreadyArmed);
-        }
-        *slot = Some(copy);
-        MALLETT_SOURCE_CONSUMED.set(false);
-        Ok(())
-    })
-}
-
-#[cfg(feature = "test-support")]
-pub fn clear_mallett_source_override() {
-    MALLETT_SOURCE_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
-}
-
-#[cfg(feature = "test-support")]
-pub fn mallett_source_override_consumed() -> bool {
-    MALLETT_SOURCE_CONSUMED.take()
-}
-
-#[cfg(feature = "test-support")]
-fn take_mallett_source_override() -> Option<MallettSourcePath> {
-    let path = MALLETT_SOURCE_OVERRIDE.with(|slot| slot.borrow_mut().take());
-    if path.is_some() {
-        MALLETT_SOURCE_CONSUMED.set(true);
-    }
-    path.map(MallettSourcePath)
-}
-
-#[cfg(all(feature = "test-support", unix))]
-struct MallettSourcePath(Vec<u8>);
-#[cfg(all(feature = "test-support", windows))]
-struct MallettSourcePath(Vec<u16>);
-
-#[cfg(all(feature = "test-support", unix))]
-impl MallettSourcePath {
-    fn load(self) -> Result<MallettBasis, ReadError> {
-        load_mallett_basis(Path::new(std::ffi::OsStr::from_bytes(&self.0)))
-    }
-}
-#[cfg(all(feature = "test-support", windows))]
-impl MallettSourcePath {
-    fn load(self) -> Result<MallettBasis, ReadError> {
-        use std::os::windows::ffi::OsStringExt;
-        let path = std::ffi::OsString::from_wide(&self.0);
-        load_mallett_basis(Path::new(&path))
-    }
-}
-
 pub struct Assets {
     resource_dir: PathBuf,
     portra_grain: OnceLock<Result<Arc<PortraGrainBank>, Arc<PortraGrainError>>>,
@@ -299,10 +183,6 @@ pub struct Assets {
     illuminants: Mutex<Option<Arc<Illuminants>>>,
     input_hull: Mutex<Option<Arc<InputHull>>>,
     output_boundaries: Mutex<derived::OutputCache>,
-    #[cfg(feature = "test-support")]
-    curve_fault: Mutex<Option<(CsvSource, CurveFault)>>,
-    #[cfg(feature = "test-support")]
-    cache_observations: Arc<testing::Observations>,
 }
 
 impl Assets {
@@ -324,10 +204,6 @@ impl Assets {
             illuminants: Mutex::new(None),
             input_hull: Mutex::new(None),
             output_boundaries: Mutex::new(derived::OutputCache::new()),
-            #[cfg(feature = "test-support")]
-            curve_fault: Mutex::new(None),
-            #[cfg(feature = "test-support")]
-            cache_observations: Arc::new(testing::Observations::default()),
         }
     }
 
@@ -382,13 +258,6 @@ impl Assets {
 
     /// Wavelength-major RGB basis; no standalone resource identity is needed.
     pub fn mallett(&self) -> Result<Arc<MallettBasis>, AssetError> {
-        #[cfg(feature = "test-support")]
-        if let Some(source) = take_mallett_source_override() {
-            return source
-                .load()
-                .map(Arc::new)
-                .map_err(|error| AssetError::Reconstruction(Arc::new(error)));
-        }
         self.mallett_with(|path| load_mallett_basis(path).map(Arc::new))
     }
 
@@ -405,20 +274,6 @@ impl Assets {
     /// Retain the load snapshot until release. Selected branches are checked by lookup.
     pub fn neutral_calibration(&self) -> Result<Arc<NeutralCalibration>, AssetError> {
         self.calibration_with(|path| load_neutral_calibration(path).map(Arc::new))
-    }
-
-    /// Install a real decoded fixture snapshot in a quiescent test owner's
-    /// actual calibration slot. Existing holders retain the detached snapshot.
-    #[cfg(feature = "test-support")]
-    pub fn replace_calibration_source_for_test(&self, source: &Self) -> Result<(), AssetError> {
-        let replacement = source.neutral_calibration()?;
-        let detached = self
-            .calibration
-            .lock()
-            .map_err(|_| AssetError::CalibrationCachePoisoned)?
-            .replace(Ok(replacement));
-        drop(detached);
-        Ok(())
     }
 
     /// Acquire only for an enabled consumer. Capacity failures are not cached.
@@ -479,7 +334,7 @@ impl Assets {
             .unwrap_or_else(|| prepared.map_err(|error| AssetError::CsvSource { source, error }))
     }
 
-    fn calibration_with(
+    pub(crate) fn calibration_with(
         &self,
         load: impl FnOnce(&Path) -> Result<Arc<NeutralCalibration>, calibration::Error>,
     ) -> Result<Arc<NeutralCalibration>, AssetError> {
@@ -751,8 +606,6 @@ impl Assets {
             .map_err(|_| AssetError::NoiseCachePoisoned)
             .map(|mut slot| slot.take());
         record(noise.map(drop));
-        #[cfg(feature = "test-support")]
-        record(self.cache_observations.after_payload_clear());
         first.map_or(Ok(()), Err)
     }
 }

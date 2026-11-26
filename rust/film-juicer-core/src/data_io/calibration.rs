@@ -67,10 +67,22 @@ pub struct NeutralCalibration {
 }
 
 pub fn load_neutral_calibration(path: impl AsRef<Path>) -> Result<NeutralCalibration, Error> {
-    let path = path.as_ref().to_path_buf();
+    load_with(
+        path.as_ref(),
+        |path| fs::read(path),
+        |path| fs::exists(path),
+    )
+}
+
+fn load_with(
+    path: &Path,
+    read: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
+    exists: impl FnOnce(&Path) -> io::Result<bool>,
+) -> Result<NeutralCalibration, Error> {
+    let path = path.to_path_buf();
     let result = (|| {
-        let bytes = read_resource(&path)
-            .map_err(|error| classify_read_error(error.kind(), || probe_resource(&path)))?;
+        let bytes =
+            read(&path).map_err(|error| classify_read_error(error.kind(), || exists(&path)))?;
         decode_root(&bytes)
     })();
     match result {
@@ -97,59 +109,6 @@ fn classify_read_error(
         }
         Ok(true) => ErrorKind::Read(kind),
         _ => ErrorKind::MissingFile,
-    }
-}
-
-fn read_resource(path: &Path) -> io::Result<Vec<u8>> {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some(kind) = test_support::read_error() {
-        return Err(kind.into());
-    }
-    fs::read(path)
-}
-
-fn probe_resource(path: &Path) -> io::Result<bool> {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some(result) = test_support::probe_result() {
-        return result.map_err(io::Error::from);
-    }
-    fs::exists(path)
-}
-
-/// Deterministic target-local faults at the real read/classification boundary.
-/// These functions and their state are absent from production configurations.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    use std::cell::Cell;
-    use std::io;
-    #[derive(Clone, Copy)]
-    struct Fault {
-        read: io::ErrorKind,
-        probe: Result<bool, io::ErrorKind>,
-    }
-    thread_local! {
-        static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
-        static READS: Cell<usize> = const { Cell::new(0) };
-        static PROBES: Cell<usize> = const { Cell::new(0) };
-    }
-    pub fn set_read_fault(read: io::ErrorKind, probe: Result<bool, io::ErrorKind>) {
-        FAULT.set(Some(Fault { read, probe }));
-        READS.set(0);
-        PROBES.set(0);
-    }
-    pub fn clear_read_fault() {
-        FAULT.set(None);
-    }
-    pub fn counts() -> (usize, usize) {
-        (READS.get(), PROBES.get())
-    }
-    pub(super) fn read_error() -> Option<io::ErrorKind> {
-        READS.set(READS.get() + 1);
-        FAULT.get().map(|fault| fault.read)
-    }
-    pub(super) fn probe_result() -> Option<Result<bool, io::ErrorKind>> {
-        PROBES.set(PROBES.get() + 1);
-        FAULT.get().map(|fault| fault.probe)
     }
 }
 
@@ -273,65 +232,48 @@ mod tests {
     }
     #[test]
     fn assets_cache_allocation_until_release() {
-        let assets = crate::assets::Assets::new(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"),
-        );
-        let probes = [Ok(true), Ok(false), Err(io::ErrorKind::PermissionDenied)];
-        let ids = ["exists", "missing", "permission-error"];
-        let cases_ids: Vec<_> = IntoIterator::into_iter(ids)
-            .map(|id| AsRef::<str>::as_ref(&id).to_owned())
-            .collect();
-        assert!(
-            !cases_ids.is_empty(),
-            "empty case set: {}",
-            "calibration-cache-read-faults"
-        );
-        let cases_count = cases_ids.len();
-        let mut cases_remaining = cases_ids
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            cases_remaining.len(),
-            cases_count,
-            "duplicate case IDs: {}",
-            "calibration-cache-read-faults"
-        );
-        for (probe, id) in probes.into_iter().zip(ids) {
-            let case = AsRef::<str>::as_ref(&(id)).to_owned();
-            test_support::set_read_fault(io::ErrorKind::OutOfMemory, probe);
+        use crate::assets::{AssetError, Assets};
+        use std::{cell::Cell, sync::Arc};
+
+        let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let reads = Cell::new(0);
+        for probe in [Ok(true), Ok(false), Err(io::ErrorKind::PermissionDenied)] {
+            reads.set(0);
             for _ in 0..2 {
-                let Err(crate::assets::AssetError::Calibration(error)) =
-                    assets.neutral_calibration()
-                else {
-                    panic!("allocation must remain an asset error")
+                let Err(AssetError::Calibration(error)) = assets.calibration_with(|path| {
+                    load_with(
+                        path,
+                        |_| {
+                            reads.set(reads.get() + 1);
+                            Err(io::ErrorKind::OutOfMemory.into())
+                        },
+                        |_| {
+                            let _expected_if_called: Result<bool, io::ErrorKind> = probe;
+                            panic!("an out-of-memory read bypasses probing");
+                        },
+                    )
+                    .map(Arc::new)
+                }) else {
+                    panic!("allocation must remain an asset error");
                 };
                 assert_eq!(error.kind(), ErrorKind::Read(io::ErrorKind::OutOfMemory));
             }
-            assert_eq!(test_support::counts(), (1, 0));
-            test_support::clear_read_fault();
+            assert_eq!(reads.get(), 1);
             assert!(assets.neutral_calibration().is_err());
             assets.release_cached_payloads().unwrap();
             assert!(assets.neutral_calibration().is_ok());
             assets.release_cached_payloads().unwrap();
-            assert!(
-                cases_remaining.remove(&case),
-                "unexpected or repeated comparison: {case}"
-            );
         }
-        assert!(
-            cases_remaining.is_empty(),
-            "missing comparisons: {cases_remaining:?}"
-        );
-        test_support::set_read_fault(
-            io::ErrorKind::PermissionDenied,
-            Err(io::ErrorKind::OutOfMemory),
-        );
-        let Err(crate::assets::AssetError::Calibration(error)) = assets.neutral_calibration()
-        else {
-            panic!("probe allocation must remain an asset error")
+        let Err(AssetError::Calibration(error)) = assets.calibration_with(|path| {
+            load_with(
+                path,
+                |_| Err(io::ErrorKind::PermissionDenied.into()),
+                |_| Err(io::ErrorKind::OutOfMemory.into()),
+            )
+            .map(Arc::new)
+        }) else {
+            panic!("probe allocation must remain an asset error");
         };
         assert_eq!(error.kind(), ErrorKind::Read(io::ErrorKind::OutOfMemory));
-        assert_eq!(test_support::counts(), (1, 1));
-        test_support::clear_read_fault();
     }
 }

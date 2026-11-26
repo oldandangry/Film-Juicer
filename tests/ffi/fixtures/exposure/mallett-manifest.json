@@ -39,20 +39,16 @@
   },
   "presets": {
     "linux-debug": {
-      "numerical": "mallett-numerical-linux-debug.json",
-      "products": "mallett-products-linux-debug.json"
+      "numerical": "mallett-numerical-linux-debug.json"
     },
     "linux-release": {
-      "numerical": "mallett-numerical-linux-release.json",
-      "products": "mallett-products-linux-debug.json"
+      "numerical": "mallett-numerical-linux-release.json"
     },
     "windows-clang-debug": {
-      "numerical": "mallett-numerical-linux-release.json",
-      "products": "mallett-products-windows-clang-debug.json"
+      "numerical": "mallett-numerical-linux-release.json"
     },
     "windows-clang-release": {
-      "numerical": "mallett-numerical-linux-debug.json",
-      "products": "mallett-products-windows-clang-debug.json"
+      "numerical": "mallett-numerical-linux-debug.json"
     }
   },
   "files": {
@@ -61,28 +57,10 @@
       "bytes": 1319027,
       "kind": "numerical"
     },
-    "mallett-products-linux-debug.json": {
-      "sha256": "52c4af4d0080f083d63481ad9a21ad6f4a144adbd24bb703301fb61a617bd6c5",
-      "bytes": 1540941,
-      "kind": "products"
-    },
     "mallett-numerical-linux-release.json": {
       "sha256": "3bb758d925bbec279caf988ee1e694fd80dd0d477799b8e9dc1a296fb2536b40",
       "bytes": 1319027,
       "kind": "numerical"
-    },
-    "mallett-products-windows-clang-debug.json": {
-      "sha256": "c5210a09ffde6c57a1fb3b5cfe41af0243432797da7fdc951156e424dbebc2f2",
-      "bytes": 1541008,
-      "kind": "products"
     }
-  },
-  "failure_amendment": {
-    "owner_authorization_date": "2026-10-10",
-    "binding": "Focused Mallett only, after existing tables/S-inverse/configuration preparation",
-    "diagnostic": "MissingRequiredResource component=mallett_midgray requirement=81x3_basis",
-    "native_contract": "Empty/malformed basis reached S-inverse fallback then synthetic_reference_raw rejection. Intact basis with availability false could admit through that fallback. Earlier input/recipe/table/S-inverse failures preempt both paths.",
-    "adopted_contract": "Availability plus 81 rows, 3 columns and 243 values required at focused binding; ordinary false, no fallback. Preserve earlier failures, valid pending/hash/counter behavior and already admitted holds; synthetic reference keeps its existing shape/data-only contract.",
-    "numerical_parity": "This timing/diagnostic/admission change is explicitly authorized, distinct from valid-source numerical identity."
   }
 }

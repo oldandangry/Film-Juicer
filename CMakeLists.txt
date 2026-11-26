@@ -57,12 +57,9 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
     message(FATAL_ERROR "Use a Debug or Release Ninja preset")
 endif()
 
-unset(JUICER_GRAIN_PREVIEW CACHE)
-unset(JUICER_GRAIN_PREVIEW_CONFIGURED CACHE)
-set(JUICER_FILM_V1_CONFIGURED ON CACHE INTERNAL "The standard product includes Film v1")
 
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
-option(JUICER_BUILD_BENCHMARKS "Build standalone Film-Juicer benchmarks" OFF)
+option(JUICER_BUILD_BENCHMARKS "Build Juicer benchmarks" OFF)
 set(CTEST_TEST_TIMEOUT 300)
 include(CTest)
 
@@ -77,23 +74,24 @@ target_link_libraries(juicer_native PRIVATE juicer_settings)
 add_library(juicer_host OBJECT ${JUICER_HOST_SOURCES})
 target_link_libraries(juicer_host PRIVATE juicer_settings)
 
-# Compiler analysis consumes the ordinary objects for isolation checks and the
-# Rust archive. Testing adds generated headers consumed by compiler analysis;
-# the configured database retains every test-hook variant.
+# Compiler analysis consumes the same native objects and Rust archive as the product.
 add_custom_target(juicer_analysis_inputs)
 add_dependencies(juicer_analysis_inputs
     juicer_native juicer_host juicer_rust_production_build)
 
-# Preserve one aggregate archive for current product/test links and isolated
-# test-hook object replacement, without compiling a second CUDA implementation.
+# Share the native owners between the OFX module and native tests.
 add_library(juicer_core STATIC
     $<TARGET_OBJECTS:juicer_native>
     $<TARGET_OBJECTS:juicer_host>)
 target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
+
+add_library(juicer_cuda_resource_operations STATIC src/Cuda/JuicerCudaResourceOperations.cpp)
+target_link_libraries(juicer_cuda_resource_operations PRIVATE juicer_settings)
+
 add_library(juicer MODULE native/ofx_exports.cpp)
-target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
+target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_cuda_resource_operations juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(WIN32)
     target_compile_definitions(juicer PRIVATE _WINDLL)
@@ -108,9 +106,7 @@ elseif(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
-# The comparison consumer loads supplied bundles without rebuilding or staging
-# them. The production-contract consumer retains its bundle dependency below.
-foreach(probe JuicerProductionPreparedRenderProbe JuicerHalationComparisonProbe)
+foreach(probe JuicerProductionPreparedRenderProbe)
     add_executable(${probe} EXCLUDE_FROM_ALL
         tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
     target_include_directories(${probe} PRIVATE
@@ -128,7 +124,7 @@ add_executable(JuicerProductionOfxProbe EXCLUDE_FROM_ALL tests/ffi/production-of
 target_link_libraries(JuicerProductionOfxProbe PRIVATE juicer_ofx_headers ${CMAKE_DL_LIBS})
 add_executable(JuicerProductionCudaAbiProbe EXCLUDE_FROM_ALL tests/ffi/production-cuda-abi.c)
 target_link_libraries(JuicerProductionCudaAbiProbe PRIVATE
-    juicer_core film_juicer_rust juicer_dependencies)
+    juicer_core film_juicer_rust juicer_cuda_resource_operations juicer_dependencies)
 foreach(probe_target IN ITEMS JuicerProductionOfxProbe JuicerProductionCudaAbiProbe)
     set_target_properties(${probe_target} PROPERTIES
         C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
@@ -148,64 +144,6 @@ endif()
 include(cmake/JuicerBundle.cmake)
 add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
 
-# The witness links its density tap as the Film stage owner, so the direct
-# implementation is not extracted from juicer_core. The executor, CUDA sampler
-# and Rust recipe are the same production objects used by the OFX module.
-set(juicer_motion_replay_configured OFF)
-set(juicer_grain_aperture_target OFF)
-if(BUILD_TESTING)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set(juicer_grain_aperture_target JuicerGrainMotionReplay)
-        set(aperture_directory "${CMAKE_BINARY_DIR}/grain-motion")
-        set(juicer_motion_replay_configured ON)
-    elseif(WIN32)
-        set(juicer_grain_aperture_target JuicerGrainOfxApertureTests)
-        set(aperture_directory "${CMAKE_BINARY_DIR}/grain-apertures")
-    endif()
-endif()
-if(juicer_grain_aperture_target)
-    add_executable(${juicer_grain_aperture_target}
-        tests/ffi/production-ofx-render.cpp
-        tests/grain/motion-density.cpp tests/grain/film_bank.cpp tests/grain/film_oracle.cpp
-        tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
-    target_include_directories(${juicer_grain_aperture_target} PRIVATE
-        "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi"
-        "${PROJECT_SOURCE_DIR}/tests/grain")
-    target_compile_definitions(${juicer_grain_aperture_target} PRIVATE
-        JUICER_GRAIN_MOTION_REPLAY=1
-        JUICER_GRAIN_TEST_BANK="${PROJECT_SOURCE_DIR}/Resources/grain/portra-400"
-        JUICER_GRAIN_TEST_TABLES="${PROJECT_SOURCE_DIR}/tests/grain/portra-table-fixtures")
-    target_link_libraries(${juicer_grain_aperture_target} PRIVATE
-        juicer_core film_juicer_rust juicer_dependencies CUDA::cuda_driver)
-    set_target_properties(${juicer_grain_aperture_target} PROPERTIES
-        LINKER_LANGUAGE CXX CUDA_RESOLVE_DEVICE_SYMBOLS ON
-        RUNTIME_OUTPUT_DIRECTORY "${aperture_directory}/bin")
-    if(WIN32)
-        set(aperture_resources)
-        foreach(resource IN LISTS JUICER_RUNTIME_RESOURCES)
-            set(input "${PROJECT_SOURCE_DIR}/Resources/${resource}")
-            set(output "${aperture_directory}/Resources/${resource}")
-            get_filename_component(directory "${output}" DIRECTORY)
-            add_custom_command(OUTPUT "${output}"
-                COMMAND "${CMAKE_COMMAND}" -E make_directory "${directory}"
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${input}" "${output}"
-                DEPENDS "${input}" VERBATIM)
-            list(APPEND aperture_resources "${output}")
-        endforeach()
-        add_custom_target(juicer_grain_aperture_resources DEPENDS ${aperture_resources})
-        add_dependencies(${juicer_grain_aperture_target} juicer_grain_aperture_resources)
-    else()
-        add_custom_command(TARGET JuicerGrainMotionReplay POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E create_symlink "${PROJECT_SOURCE_DIR}/Resources"
-                "${aperture_directory}/Resources"
-            VERBATIM)
-    endif()
-    set(juicer_grain_aperture_consumer ${juicer_grain_aperture_target})
-endif()
-set(JUICER_GRAIN_MOTION_REPLAY_CONFIGURED "${juicer_motion_replay_configured}" CACHE INTERNAL
-    "Whether native quality can analyze the configured motion replay consumers")
-set(JUICER_GRAIN_APERTURE_TARGET "${juicer_grain_aperture_target}" CACHE INTERNAL
-    "Native executable providing the linked Film aperture witness")
 if(BUILD_TESTING)
     set_property(TARGET JuicerProductionPreparedRenderProbe JuicerProductionOfxProbe
         JuicerProductionCudaAbiProbe PROPERTY EXCLUDE_FROM_ALL FALSE)

@@ -63,7 +63,6 @@ jobs:
     env:
       CARGO_TARGET_DIR: out/build/ci-rust/cargo
       CARGO_TERM_COLOR: always
-      RUST_FEATURES: film-juicer-plugin/test-support
       NEXTEST_VERSION: 0.9.143
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -97,9 +96,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             out/build/ci-rust/cargo
-          key: rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-production-and-test-support-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-${{ hashFiles('rust/**/*.rs') }}
+          key: rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-${{ hashFiles('rust/**/*.rs') }}
           restore-keys: |
-            rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-production-and-test-support-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-
+            rust-${{ matrix.runner }}-${{ env.RUST_COMPILER_SDK }}-${{ matrix.target }}-${{ matrix.profile }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'rust/**/Cargo.toml') }}-
       - name: Run Rust checks and tests
         shell: bash
         env:
@@ -108,5 +107,5 @@ jobs:
           options=()
           if [[ "$PROFILE" == Release ]]; then options+=(--release); fi
           python scripts/check.py rust "${options[@]}"
-          cargo nextest run --workspace --locked --features "$RUST_FEATURES" --test-threads 1 "${options[@]}"
+          cargo nextest run --workspace --locked --test-threads 1 "${options[@]}"
           cargo test --workspace --doc --locked "${options[@]}"

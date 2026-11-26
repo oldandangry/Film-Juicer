@@ -158,8 +158,6 @@ fn recipe_hash(recipe: &Recipe) -> u64 {
 
 impl Recipe {
     pub fn new(development: &Development, params: Params) -> Result<Self, Error> {
-        #[cfg(any(test, feature = "test-support"))]
-        let zero_identity = test_support::take();
         if !params.active {
             return Ok(Self {
                 active: false,
@@ -269,8 +267,6 @@ impl Recipe {
             hash: 0,
         };
         let identity = recipe_hash(&recipe);
-        #[cfg(any(test, feature = "test-support"))]
-        let identity = if zero_identity { 0 } else { identity };
         if identity == 0 {
             return Err(Error::ZeroIdentity);
         }
@@ -354,19 +350,6 @@ impl Recipe {
     }
     pub fn hash(&self) -> u64 {
         self.hash
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    //! Call-bounded reserved-zero rejection witness, absent from production.
-    use std::cell::Cell;
-    thread_local! { static ZERO: Cell<bool> = const { Cell::new(false) }; }
-    pub fn zero_next_identity() {
-        ZERO.set(true);
-    }
-    pub(super) fn take() -> bool {
-        ZERO.replace(false)
     }
 }
 
@@ -1029,29 +1012,5 @@ mod tests {
         recipe.axis_finite_cmy.fill(false);
         recipe.axis_block_prefix_max_cmy[0][0] = 123.0;
         assert_eq!(recipe_hash(&recipe), identity);
-    }
-
-    #[test]
-    fn zero_active_identity_is_rejected_without_leaking_into_another_call() {
-        let captured = fixture("values");
-        let row = &captured["products"][2];
-        let assets = Assets::new(root().join("Resources"));
-        let development = development(&assets, row, true);
-        let mut controls = params(&row["controls"]);
-        super::test_support::zero_next_identity();
-        assert_eq!(
-            Recipe::new(&development, controls).unwrap_err(),
-            Error::ZeroIdentity
-        );
-        super::test_support::zero_next_identity();
-        controls.active = false;
-        controls.particle_area_um2 = f32::NAN;
-        let inactive = Recipe::new(&development, controls).unwrap();
-        assert_eq!(inactive.size_mix_scale().to_bits(), 1.0f32.to_bits());
-        assert_eq!(inactive.hash(), 0);
-        assert_eq!(
-            project(&Recipe::new(&development, params(&row["controls"])).unwrap()),
-            row["grain"]
-        );
     }
 }

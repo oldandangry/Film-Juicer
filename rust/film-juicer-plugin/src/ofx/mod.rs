@@ -104,16 +104,12 @@ fn load() -> Result<(), Status> {
             suites,
             runtime: Arc::new(runtime),
         };
-        #[cfg(feature = "test-support")]
-        host::test_support::pause(4);
         let mut state = state();
         if matches!(*state, Module::Loading(_)) {
             *state = Module::Loaded(loaded);
             return Ok(());
         }
         drop(state);
-        #[cfg(feature = "test-support")]
-        host::test_support::pause(8);
         drop(loaded);
         Err(Status::FAILED)
     }));
@@ -229,9 +225,5 @@ fn unload() -> Result<(), Status> {
 )]
 pub(super) mod sys;
 
-#[cfg(feature = "test-support")]
-#[allow(
-    unsafe_code,
-    reason = "the native ABI fixture borrows immutable fact tables and exercises synchronous foreign callbacks and variadic fields"
-)]
+#[cfg(test)]
 mod abi_tests;

@@ -80,15 +80,6 @@ impl Owner {
         Ok(status)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn shutdown(&self) -> Result<(), Failure> {
-        let mut failure = Failure::new(sys::FJ_STATUS_SUCCESS, "");
-        let mut error = failure.buffer();
-        // SAFETY: Native shutdown borrows this live owner and serializes retirement.
-        let status = unsafe { sys::fj_cuda_shutdown(self.raw(), &mut error) };
-        failure.result(status, error.length)
-    }
-
     pub(crate) fn close(mut self) -> Result<(), Failure> {
         self.destroy()
     }

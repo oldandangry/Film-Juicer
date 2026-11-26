@@ -7,11 +7,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use crate::cuda::{edge, sys};
-use crate::optics_bridge;
+use crate::cuda::optics;
 
 #[derive(Default)]
 struct Backing {
-    gaussians: Vec<optics_bridge::HostGaussianCandidate>,
+    gaussians: Vec<film_juicer_core::optics::GaussianKernel>,
 }
 
 /// One render's candidate arrays. Native staging copies any asynchronous upload
@@ -53,20 +53,19 @@ fn valid<T>(pointer: *const T) -> bool {
 /// keep the context supplied by `Call::raw` alive through this invocation.
 unsafe extern "C" fn gaussian(
     user: *mut c_void,
-    input: *const optics_bridge::FjGaussianKernelInput,
-    out: *mut optics_bridge::FjGaussianKernelView,
-    failure: *mut optics_bridge::FjGaussianKernelFailure,
+    input: *const optics::FjGaussianKernelInput,
+    out: *mut optics::FjGaussianKernelView,
+    failure: *mut optics::FjGaussianKernelFailure,
     error: *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus {
-    let acquire_fault = optics_bridge::take_host_gaussian_acquire_fault();
     let result = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: The callback's native caller provides valid ABI records; the checked
         // helper validates their extents before dereferencing them or the call context.
-        unsafe { gaussian_call(user, input, out, failure, error, acquire_fault) }
+        unsafe { gaussian_call(user, input, out, failure, error) }
     }));
     result.unwrap_or_else(|_| {
         // SAFETY: The native callback supplies writable output records when valid.
-        unsafe { optics_bridge::fail_host_gaussian_view(out, failure, 5) };
+        unsafe { optics::fail_host_gaussian_view(out, failure, 5) };
         write_diagnostic(error, "Gaussian kernel preparation panicked");
         edge::status(sys::FJ_STATUS_INTERNAL_FAILURE)
     })
@@ -81,15 +80,14 @@ unsafe extern "C" fn gaussian(
 /// exclusively accessed `Backing`.
 unsafe fn gaussian_call(
     user: *mut c_void,
-    input: *const optics_bridge::FjGaussianKernelInput,
-    out: *mut optics_bridge::FjGaussianKernelView,
-    failure: *mut optics_bridge::FjGaussianKernelFailure,
+    input: *const optics::FjGaussianKernelInput,
+    out: *mut optics::FjGaussianKernelView,
+    failure: *mut optics::FjGaussianKernelFailure,
     error: *mut sys::FjErrorBuffer,
-    acquire_fault: u32,
 ) -> sys::FjStatus {
     if !valid(user.cast::<Backing>()) {
         // SAFETY: The native callback contract supplies either null or one writable view.
-        unsafe { optics_bridge::fail_host_gaussian_view(out, failure, 1) };
+        unsafe { optics::fail_host_gaussian_view(out, failure, 1) };
         write_diagnostic(error, "invalid host preparation callback context");
         return edge::status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
     }
@@ -97,16 +95,7 @@ unsafe fn gaussian_call(
     // callback is synchronous and serialized within the one render call.
     let backing = unsafe { &mut *user.cast::<Backing>() };
     // SAFETY: Candidate vectors remain owned by this call through native return.
-    unsafe {
-        optics_bridge::prepare_host_gaussian(
-            input,
-            out,
-            failure,
-            error,
-            &mut backing.gaussians,
-            acquire_fault,
-        )
-    }
+    unsafe { optics::prepare_host_gaussian(input, out, failure, error, &mut backing.gaussians) }
 }
 
 fn write_diagnostic(error: *mut sys::FjErrorBuffer, message: &str) {
@@ -114,62 +103,5 @@ fn write_diagnostic(error: *mut sys::FjErrorBuffer, message: &str) {
     // Diagnostic::admit checks its pointer/length contract before writing.
     if let Ok(mut diagnostic) = unsafe { edge::Diagnostic::admit(error) } {
         diagnostic.write(message);
-    }
-}
-
-#[cfg(feature = "test-support")]
-pub(crate) type Consumer = unsafe extern "C" fn(
-    *mut c_void,
-    *const edge::FjHostPreparation,
-    *mut sys::FjErrorBuffer,
-) -> sys::FjStatus;
-
-/// Invoke one test consumer with the same call-local callback pair used by render.
-///
-/// # Safety
-/// `user` and any storage reached by `consumer` remain live, initialized and
-/// disjoint for the synchronous consumer call. The consumer must not retain the
-/// callback table or any view returned by it.
-#[cfg(feature = "test-support")]
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_test_with_host_preparation(
-    user: *mut c_void,
-    consumer: Option<Consumer>,
-    error: *mut sys::FjErrorBuffer,
-) -> sys::FjStatus {
-    let consumer = {
-        // SAFETY: The caller supplies null or live writable diagnostic storage;
-        // admission validates its pointer, extent and backing before use.
-        let mut diagnostic = match unsafe { edge::Diagnostic::admit(error) } {
-            Ok(diagnostic) => diagnostic,
-            Err(()) => return edge::status(sys::FJ_STATUS_UNSUPPORTED_INPUT),
-        };
-        if user.is_null() {
-            diagnostic.write("invalid host preparation user");
-            return edge::status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-        }
-        let Some(consumer) = consumer else {
-            diagnostic.write("missing host preparation consumer");
-            return edge::status(sys::FJ_STATUS_UNSUPPORTED_INPUT);
-        };
-        consumer
-    };
-
-    let call = Call::new();
-    let preparation = call.raw();
-    // SAFETY: The admitted consumer borrows this stack table and its live Call
-    // only synchronously, serially on this thread, and contains foreign exceptions.
-    match catch_unwind(AssertUnwindSafe(|| unsafe {
-        consumer(user, &preparation, error)
-    })) {
-        Ok(status) => status,
-        Err(_) => {
-            // SAFETY: The same caller-owned diagnostic record remains live after
-            // the contained Rust unwind; admission checks its backing again.
-            if let Ok(mut diagnostic) = unsafe { edge::Diagnostic::admit(error) } {
-                diagnostic.write("host preparation test consumer panicked");
-            }
-            edge::status(sys::FJ_STATUS_INTERNAL_FAILURE)
-        }
     }
 }

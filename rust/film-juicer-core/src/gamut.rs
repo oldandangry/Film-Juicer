@@ -1,8 +1,12 @@
 //! Input hull construction and borrowed TC remapping.
 
 use crate::color::OutputSpace;
-#[cfg(feature = "test-support")]
-pub mod fixtures;
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+mod input_hull_tests;
+#[cfg(test)]
+mod output_gamut_tests;
 
 use crate::hash;
 use crate::reconstruction::{self, TcError};
@@ -110,7 +114,7 @@ fn d65_center(input: HullInput<'_>) -> Result<[f64; 2], HullError> {
 
 fn fourier_lowpass(
     source: &[f64; DIRECTIONS],
-    #[cfg(feature = "test-support")] mut trace: Option<&mut fixtures::Trace>,
+    #[cfg(test)] mut trace: Option<&mut fixtures::Trace>,
 ) -> [f64; DIRECTIONS] {
     let mut coefficients = [[0.0; 2]; DIRECTIONS];
     for (mode, output) in coefficients.iter_mut().enumerate() {
@@ -120,7 +124,7 @@ fn fourier_lowpass(
             coefficient[0] += radius * angle.cos();
             coefficient[1] += radius * angle.sin();
         }
-        #[cfg(feature = "test-support")]
+        #[cfg(test)]
         if let Some(trace) = trace.as_deref_mut() {
             trace.forward[mode] = coefficient;
         }
@@ -133,7 +137,7 @@ fn fourier_lowpass(
         let weight = (-0.5 * normalized_mode * normalized_mode).exp();
         *output = [coefficient[0] * weight, coefficient[1] * weight];
     }
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
         trace.coefficients = coefficients;
     }
@@ -148,7 +152,7 @@ fn fourier_lowpass(
             value[0] += coefficient[0] * cosine - coefficient[1] * sine;
             value[1] += coefficient[0] * sine + coefficient[1] * cosine;
         }
-        #[cfg(feature = "test-support")]
+        #[cfg(test)]
         if let Some(trace) = trace.as_deref_mut() {
             trace.inverse[sample] = value;
         }
@@ -168,11 +172,11 @@ fn hull_hash(center: &[f32; 2], xy: &[[f32; 2]; 1025]) -> u64 {
 
 fn build_hull(
     input: HullInput<'_>,
-    #[cfg(feature = "test-support")] mut trace: Option<&mut fixtures::Trace>,
+    #[cfg(test)] mut trace: Option<&mut fixtures::Trace>,
 ) -> Result<Hull, HullError> {
     let polygon = locus(input)?;
     let center = d65_center(input)?;
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
         trace.locus_center = Some((polygon, center));
     }
@@ -184,16 +188,16 @@ fn build_hull(
             return Err(HullError::RayIntersections);
         }
     }
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
         trace.reach = Some(reach);
     }
     let mut smoothed = fourier_lowpass(
         &reach,
-        #[cfg(feature = "test-support")]
+        #[cfg(test)]
         trace.as_deref_mut(),
     );
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
         trace.smoothed = Some(smoothed);
     }
@@ -208,7 +212,7 @@ fn build_hull(
             scale = candidate;
         }
     }
-    #[cfg(feature = "test-support")]
+    #[cfg(test)]
     if let Some(trace) = trace {
         trace.floored = Some(smoothed);
         trace.scale = Some(scale);
@@ -237,7 +241,7 @@ fn build_hull(
 pub fn build_input_hull(input: HullInput<'_>) -> Result<Hull, HullError> {
     build_hull(
         input,
-        #[cfg(feature = "test-support")]
+        #[cfg(test)]
         None,
     )
 }

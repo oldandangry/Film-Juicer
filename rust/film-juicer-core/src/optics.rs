@@ -425,12 +425,7 @@ impl Diffusion {
             hash: 0,
         }
     }
-    fn new(
-        params: DiffusionParams,
-        domain: Domain,
-        component: Component,
-        #[cfg(any(test, feature = "test-support"))] zero_hash: bool,
-    ) -> Result<Self, Error> {
+    fn new(params: DiffusionParams, domain: Domain, component: Component) -> Result<Self, Error> {
         let family = match params.family {
             0 => Family::Glimmerglass,
             1 => Family::BlackProMist,
@@ -513,8 +508,6 @@ impl Diffusion {
         ] {
             hash_double(&mut resolved_hash, value);
         }
-        #[cfg(any(test, feature = "test-support"))]
-        let resolved_hash = if zero_hash { 0 } else { resolved_hash };
         if resolved_hash == 0 {
             return Err(Error::new(component, Field::ResolvedHash));
         }
@@ -683,14 +676,10 @@ impl Halation {
 }
 impl Recipe {
     pub fn new(params: Params) -> Result<Self, Error> {
-        #[cfg(any(test, feature = "test-support"))]
-        let zero_hash = test_support::take();
         let camera_diffusion = Diffusion::new(
             params.camera_diffusion,
             Domain::FilmLinearExposure,
             Component::CameraDiffusion,
-            #[cfg(any(test, feature = "test-support"))]
-            zero_hash,
         )?;
         let camera_lens_blur = LensBlur::new(params.camera_lens_blur_um)?;
         let scatter_halation = Halation::new(params.scatter_halation)?;
@@ -699,8 +688,6 @@ impl Recipe {
                 params.enlarger_diffusion,
                 Domain::PrintLinearExposure,
                 Component::EnlargerDiffusion,
-                #[cfg(any(test, feature = "test-support"))]
-                zero_hash,
             )?
         } else {
             Diffusion::inactive()
@@ -732,25 +719,6 @@ impl Recipe {
             enlarger_diffusion,
             hash: if contributed { hash } else { 0 },
         })
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! { static ZERO_HASH: Cell<bool> = const { Cell::new(false) }; }
-    thread_local! { static GAUSSIAN_RESERVATION: Cell<bool> = const { Cell::new(false) }; }
-    pub fn reject_gaussian_reservation(reject: bool) {
-        GAUSSIAN_RESERVATION.set(reject);
-    }
-    pub(super) fn take_gaussian_reservation() -> bool {
-        GAUSSIAN_RESERVATION.replace(false)
-    }
-    pub fn zero_next_resolved_hash() {
-        ZERO_HASH.set(true);
-    }
-    pub(super) fn take() -> bool {
-        ZERO_HASH.replace(false)
     }
 }
 
@@ -1290,43 +1258,5 @@ mod tests {
             cases_remaining.is_empty(),
             "missing comparisons: {cases_remaining:?}"
         );
-    }
-    #[test]
-    fn real_resolved_hash_guard_is_call_bounded_and_thread_local() {
-        let captured = fixture("literal");
-        let rows = captured["cases"].as_array().unwrap();
-        let active = params(
-            &rows
-                .iter()
-                .find(|r| r["id"] == "optics-active-print")
-                .unwrap()["input"],
-        );
-        let inactive =
-            params(&rows.iter().find(|r| r["id"] == "optics-inactive").unwrap()["input"]);
-        test_support::zero_next_resolved_hash();
-        let error = Recipe::new(active).unwrap_err();
-        assert_eq!(
-            (error.component(), error.field(), error.channel()),
-            (Component::CameraDiffusion, Field::ResolvedHash, None)
-        );
-        assert!(Recipe::new(active).is_ok());
-        test_support::zero_next_resolved_hash();
-        assert!(Recipe::new(inactive).is_ok());
-        assert!(Recipe::new(active).is_ok());
-        let mut invalid = inactive;
-        invalid.camera_diffusion.family = 255;
-        test_support::zero_next_resolved_hash();
-        assert_eq!(Recipe::new(invalid).unwrap_err().field(), Field::Family);
-        assert!(Recipe::new(active).is_ok());
-        let thread = std::thread::spawn(move || {
-            test_support::zero_next_resolved_hash();
-            assert_eq!(
-                Recipe::new(active).unwrap_err().field(),
-                Field::ResolvedHash
-            );
-            assert!(Recipe::new(active).is_ok());
-        });
-        assert!(Recipe::new(active).is_ok());
-        thread.join().unwrap();
     }
 }

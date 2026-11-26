@@ -193,11 +193,6 @@ impl FrameInput<'_> {
     pub fn film_grain(&self) -> crate::film::grain::film_v1::Selection {
         self.params.film_grain
     }
-
-    #[cfg(feature = "test-support")]
-    pub fn input_identity(&self) -> u64 {
-        self.identity
-    }
 }
 
 pub enum FrameInstall<'a> {
@@ -224,10 +219,6 @@ impl Admission {
     }
     pub fn build(&self) -> u64 {
         self.build
-    }
-    #[cfg(feature = "test-support")]
-    pub fn shared_state(&self) -> &Arc<RenderState> {
-        &self.state
     }
     pub fn into_state(self) -> Arc<RenderState> {
         self.state
@@ -739,55 +730,6 @@ impl Publication {
     }
 }
 
-/// Read-only fixture holds from the actual owner, excluded from production.
-#[cfg(feature = "test-support")]
-pub struct Observation {
-    pub pending: ObservedPending,
-    pub published: Option<Admission>,
-    pub issued: u64,
-    pub write_revision: u64,
-    pub outstanding_writes: u64,
-}
-#[cfg(feature = "test-support")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Fixture observations preserve the same inline nonallocating failure diagnostic as pending state."
-)]
-pub enum ObservedPending {
-    Uninitialized,
-    Capturing,
-    AwaitingWrites,
-    NeedsRefresh,
-    Valid { params: Arc<Params>, identity: u64 },
-    Failed(CaptureFailure),
-    Blocked,
-}
-#[cfg(feature = "test-support")]
-impl Publication {
-    pub fn observe(&self) -> Result<Observation, Error> {
-        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
-        let pending = match &state.pending {
-            Pending::Uninitialized => ObservedPending::Uninitialized,
-            Pending::Capturing { .. } => ObservedPending::Capturing,
-            Pending::AwaitingWrites => ObservedPending::AwaitingWrites,
-            Pending::NeedsRefresh => ObservedPending::NeedsRefresh,
-            Pending::Valid { params, identity } => ObservedPending::Valid {
-                params: Arc::clone(params),
-                identity: *identity,
-            },
-            Pending::Failed { failure, .. } => ObservedPending::Failed(failure.clone()),
-            Pending::Blocked => ObservedPending::Blocked,
-        };
-        Ok(Observation {
-            pending,
-            published: state.published.as_ref().map(Published::admission),
-            issued: state.issued,
-            write_revision: state.write_revision,
-            outstanding_writes: state.outstanding_writes,
-        })
-    }
-}
-
 /// One registered physical host write. Drop records abandonment without calling
 /// the host, allocating text, refreshing controls or recovering a poisoned mutex.
 pub struct HostWrite {
@@ -1165,6 +1107,9 @@ mod tests {
             assert!(clean.film_grain().is_none() && !clean.grain().active());
             assert!(clean.film_v1_bounds().is_none() && off.film_v1_bounds().is_none());
             assert!(held.film_v1_bounds().is_some());
+            let source = Arc::downgrade(&clean);
+            drop(clean);
+            assert!(source.upgrade().is_none());
             assert_timeline_published();
             assert!(Arc::ptr_eq(&held, &admit(timeline).unwrap()));
 
@@ -1593,116 +1538,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn current_contents_reservation_failure_preserves_and_reuses_last_build() {
-        let assets = assets();
-        let publication = Publication::new();
-        publication.stage(valid(1, direct())).unwrap();
-        let held = publication
-            .admit_state(|input| recipe::prepare(&assets, input))
-            .unwrap();
-        let held_weak = Arc::downgrade(&held);
-        let boundary_weak = output_boundary_weak(&held);
-        let old_words = backing_words(&held);
-
-        publication
-            .stage(valid(2, params(ScanRoute::PositivePrint, 1)))
-            .unwrap();
-        let result = publication.admit_state(|input| {
-            recipe::testing::arm_contents_reservation_failure();
-            recipe::prepare(&assets, input)
-        });
-        assert!(matches!(
-            result,
-            Err(Error::Preparation(PrepareError::ContentsAllocation(_)))
-        ));
-        assert!(recipe::testing::contents_reservation_failure_consumed());
-        let state = publication.state.lock().unwrap();
-        assert!(matches!(state.pending, Pending::Valid { identity: 2, .. }));
-        assert_eq!(state.published.as_ref().unwrap().identity, 1);
-        assert_eq!(state.published.as_ref().unwrap().build, 1);
-        assert!(Arc::ptr_eq(&state.published.as_ref().unwrap().state, &held));
-        drop(state);
-        assert_eq!(backing_words(&held), old_words);
-
-        publication.stage(valid(1, direct())).unwrap();
-        let reused = publication
-            .admit_state(|_| panic!("return to A must reuse its committed state"))
-            .unwrap();
-        assert!(Arc::ptr_eq(&held, &reused));
-
-        publication
-            .stage(valid(2, params(ScanRoute::PositivePrint, 1)))
-            .unwrap();
-        let replacement = publication
-            .admit_state(|input| recipe::prepare(&assets, input))
-            .unwrap();
-        assert_eq!(
-            publication
-                .state
-                .lock()
-                .unwrap()
-                .published
-                .as_ref()
-                .unwrap()
-                .build,
-            2
-        );
-        assert_eq!(backing_words(&held), old_words);
-        assets.release_cached_payloads().unwrap();
-        drop(assets);
-        drop(replacement);
-        drop(publication);
-        drop(held);
-        drop(reused);
-        assert!(held_weak.upgrade().is_none());
-        assert!(boundary_weak.upgrade().is_none());
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn obsolete_contents_reservation_failure_rechecks_then_commits_new_input() {
-        let assets = assets();
-        let publication = Publication::new();
-        publication.stage(valid(1, direct())).unwrap();
-        let held = publication
-            .admit_state(|input| recipe::prepare(&assets, input))
-            .unwrap();
-        let old_words = backing_words(&held);
-        publication
-            .stage(valid(2, params(ScanRoute::PositivePrint, 1)))
-            .unwrap();
-
-        let mut attempts = 0;
-        let admitted = publication
-            .admit_state(|input| {
-                attempts += 1;
-                if attempts == 1 {
-                    recipe::testing::arm_contents_reservation_failure();
-                }
-                let result = recipe::prepare(&assets, input);
-                if attempts == 1 {
-                    assert!(matches!(&result, Err(PrepareError::ContentsAllocation(_))));
-                    publication
-                        .stage(valid(3, params(ScanRoute::NegativePrint, 1)))
-                        .unwrap();
-                }
-                result
-            })
-            .unwrap();
-        assert_eq!(attempts, 2);
-        assert!(recipe::testing::contents_reservation_failure_consumed());
-        assert_eq!(admitted.development().route(), ScanRoute::NegativePrint);
-        assert_eq!(backing_words(&held), old_words);
-        let observed = publication.observe().unwrap();
-        assert_eq!(observed.published.as_ref().unwrap().input_identity(), 3);
-        assert_eq!(observed.published.as_ref().unwrap().build(), 2);
-        assert!(Arc::ptr_eq(
-            observed.published.as_ref().unwrap().shared_state(),
-            &admitted
-        ));
-    }
     #[test]
     fn obsolete_success_is_not_published() {
         let assets = assets();

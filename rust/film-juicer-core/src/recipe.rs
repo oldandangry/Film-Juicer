@@ -18,128 +18,6 @@ use crate::{
 
 const OUTPUT_KNEE: [f32; 3] = [0.95, 1.0, 1.6];
 
-#[cfg(feature = "test-support")]
-pub mod testing {
-    use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static LIVE_STATES: AtomicUsize = AtomicUsize::new(0);
-    pub(super) fn state_created() {
-        LIVE_STATES.fetch_add(1, Ordering::Relaxed);
-    }
-    pub(super) fn state_released() {
-        LIVE_STATES.fetch_sub(1, Ordering::Relaxed);
-    }
-    pub fn live_states() -> usize {
-        LIVE_STATES.load(Ordering::Relaxed)
-    }
-
-    use crate::assets::InputHull;
-    use crate::profile::FilmProfile;
-
-    type InputObserver = fn(&FilmProfile, Option<&InputHull>);
-
-    #[derive(Clone, Copy)]
-    #[repr(u32)]
-    pub enum Stage {
-        SelectedFilm = 1,
-        SelectedPrint,
-        Illuminants,
-        Development,
-        Observer,
-        ReconstructionSource,
-        InputHull,
-        Calibration,
-        RoutePrechecks,
-        Foundation,
-        FilmPayload,
-        PrintMainIlluminant,
-        FilmReference,
-        PrintBalance,
-        ScannerPayload,
-        OutputBoundary,
-        PrintPreflash,
-        ScannerCorrection,
-        FinalIdentity,
-    }
-    #[derive(Clone, Copy)]
-    struct Trace {
-        stages: [u32; 24],
-        count: usize,
-    }
-    thread_local! {
-        static TRACE: Cell<Trace> = const { Cell::new(Trace { stages: [0; 24], count: 0 }) };
-        static ZERO_IDENTITY: Cell<Option<ZeroIdentity>> = const { Cell::new(None) };
-        static INPUT_OBSERVER: Cell<Option<InputObserver>> = const { Cell::new(None) };
-        static CONTENTS_RESERVATION_FAILURE: Cell<bool> = const { Cell::new(false) };
-        static CONTENTS_RESERVATION_CONSUMED: Cell<bool> = const { Cell::new(false) };
-    }
-    #[derive(Clone, Copy, Eq, PartialEq)]
-    pub enum ZeroIdentity {
-        Recipe,
-        Scanner,
-    }
-    pub fn arm_zero_identity(target: Option<ZeroIdentity>) {
-        ZERO_IDENTITY.set(target);
-    }
-    pub fn set_input_observer(observer: Option<InputObserver>) {
-        INPUT_OBSERVER.set(observer);
-    }
-    pub fn arm_contents_reservation_failure() {
-        CONTENTS_RESERVATION_CONSUMED.set(false);
-        CONTENTS_RESERVATION_FAILURE.set(true);
-    }
-    pub fn contents_reservation_failure_consumed() -> bool {
-        CONTENTS_RESERVATION_CONSUMED.get()
-    }
-    pub(super) fn take_contents_reservation_failure() -> bool {
-        let armed = CONTENTS_RESERVATION_FAILURE.replace(false);
-        if armed {
-            CONTENTS_RESERVATION_CONSUMED.set(true);
-        }
-        armed
-    }
-    pub(super) fn observe_input(profile: &FilmProfile, hull: Option<&InputHull>) {
-        if let Some(observer) = INPUT_OBSERVER.take() {
-            observer(profile, hull);
-        }
-    }
-    pub(super) fn identity(target: ZeroIdentity, value: u64) -> u64 {
-        if ZERO_IDENTITY.get() == Some(target) {
-            ZERO_IDENTITY.set(None);
-            0
-        } else {
-            value
-        }
-    }
-    pub(super) fn reset() {
-        TRACE.set(Trace {
-            stages: [0; 24],
-            count: 0,
-        });
-    }
-    pub(super) fn visit(stage: Stage) {
-        let mut trace = TRACE.get();
-        assert!(
-            trace.count < trace.stages.len(),
-            "bounded preparation trace overflow"
-        );
-        trace.stages[trace.count] = stage as u32;
-        trace.count += 1;
-        TRACE.set(trace);
-    }
-    pub fn trace() -> ([u32; 24], u32) {
-        let trace = TRACE.get();
-        (trace.stages, trace.count as u32)
-    }
-}
-macro_rules! trace_stage {
-    ($stage:ident) => {
-        #[cfg(feature = "test-support")]
-        testing::visit(testing::Stage::$stage);
-    };
-}
-
 /// Temporary captured snapshot. Integer choices stay unadmitted until their
 /// owning construction stage, preserving competing-failure precedence.
 pub struct Params {
@@ -345,13 +223,8 @@ pub enum PrepareError {
         stock: String,
     },
     Bounds(density::Error),
-    SpectralBoundary(spectral::BoundaryError),
-    EqualEnergy(illuminant::EqualEnergyError),
-    Blackbody(illuminant::BlackbodyError),
-    ReferenceWhite(reconstruction::CheckedReferenceWhiteError),
-    Tc(reconstruction::CheckedTcError),
-    MallettMidgray(exposure::BoundaryError),
-    TcMidgray(exposure::BoundaryError),
+    ReferenceWhite(reconstruction::Error),
+    Tc(reconstruction::TcError),
     Reference(reference::Error),
     PrintDevelopment(crate::profile::PrintDensityError),
     PrintComposition(print::CompositionError),
@@ -433,25 +306,8 @@ impl fmt::Display for PrepareError {
             Self::Bounds(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
-            Self::SpectralBoundary(error) => error.fmt(f),
-            Self::EqualEnergy(error) => error.fmt(f),
-            Self::Blackbody(error) => error.fmt(f),
             Self::ReferenceWhite(error) => error.fmt(f),
             Self::Tc(error) => error.fmt(f),
-            Self::MallettMidgray(error) => {
-                write!(
-                    f,
-                    "Mallett mid-gray preparation: {}",
-                    exposure_boundary_diagnostic(*error)
-                )
-            }
-            Self::TcMidgray(error) => {
-                write!(
-                    f,
-                    "TC mid-gray normalization: {}",
-                    exposure_boundary_diagnostic(*error)
-                )
-            }
             Self::Reference(error) => reference_diagnostic(*error, f),
             Self::PrintDevelopment(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3B field=print_development_table")
@@ -500,15 +356,6 @@ impl StdError for PrepareError {
             Self::ContentsAllocation(error) => Some(error),
             _ => None,
         }
-    }
-}
-
-fn exposure_boundary_diagnostic(error: exposure::BoundaryError) -> &'static str {
-    match error {
-        #[cfg(feature = "test-support")]
-        exposure::BoundaryError::Unsupported => "exposure production boundary fault",
-        #[cfg(feature = "test-support")]
-        exposure::BoundaryError::Preparation => "fixed exposure preparation category fault",
     }
 }
 
@@ -602,36 +449,12 @@ fn reference_diagnostic(error: reference::Error, f: &mut fmt::Formatter<'_>) -> 
         reference::Error::DensityLookup { .. } => {
             "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup"
         }
-        #[cfg(feature = "test-support")]
-        reference::Error::Dependency {
-            category: reference::Category::Allocation,
-            ..
-        } => "film reference dependency allocation failed",
-        #[cfg(feature = "test-support")]
-        reference::Error::Dependency { operation, .. } => match operation {
-            reference::Operation::Source => {
-                "Reference source preparation: exposure production boundary fault"
-            }
-            reference::Operation::InputMatrices => "Input matrix preparation failed",
-            reference::Operation::LinearSrgb => "Linear sRGB to XYZ conversion failed",
-            reference::Operation::Cat16 => "CAT16 scalar adaptation failed",
-            reference::Operation::TcSample => "Film TC sampling: TC production boundary fault",
-            reference::Operation::MallettRaw => {
-                "Mallett reference preparation: exposure production boundary fault"
-            }
-        },
     };
     f.write_str(message)
 }
 
 pub struct RenderState {
     contents: Vec<Contents>,
-}
-#[cfg(feature = "test-support")]
-impl Drop for RenderState {
-    fn drop(&mut self) {
-        testing::state_released();
-    }
 }
 
 struct Contents {
@@ -900,6 +723,15 @@ impl PrintState {
     }
 }
 impl Preflash {
+    pub(crate) fn prepare_raw(
+        film_base_density: &[f32; 81],
+        illuminant: &[f32; 81],
+        print_sensitivity: &[[f32; 3]; 81],
+    ) -> Result<print::PreflashRaw, PrepareError> {
+        print::PreflashRaw::new(film_base_density, illuminant, print_sensitivity)
+            .map_err(PrepareError::PrintPreflash)
+    }
+
     pub fn illuminant(&self) -> &print::Illuminant {
         &self.illuminant
     }
@@ -1058,9 +890,7 @@ fn named_illuminant(curves: &Illuminants, label: &str) -> Result<Option<[f32; 81
         "TH-KG3" | "THKG3" => curves.tungsten_kg3().copied(),
         "T" | "INCANDESCENT" => curves.tungsten().copied(),
         "K75P" | "KINOTON75P" => curves.k75p().copied(),
-        "EQUAL" | "EQUALENERGY" | "EQUAL-ENERGY" => {
-            Some(illuminant::checked_equal_energy().map_err(PrepareError::EqualEnergy)?)
-        }
+        "EQUAL" | "EQUALENERGY" | "EQUAL-ENERGY" => Some(illuminant::equal_energy()),
         _ => None,
     })
 }
@@ -1070,10 +900,9 @@ fn profile_illuminant(
     kind: IlluminantKind,
 ) -> Result<Option<[f32; 81]>, PrepareError> {
     match kind {
-        IlluminantKind::Blackbody { temperature_kelvin } => Ok(Some(
-            illuminant::checked_blackbody(temperature_kelvin as f32)
-                .map_err(PrepareError::Blackbody)?,
-        )),
+        IlluminantKind::Blackbody { temperature_kelvin } => {
+            Ok(Some(illuminant::blackbody(temperature_kelvin as f32)))
+        }
         IlluminantKind::Named => named_illuminant(curves, label),
     }
 }
@@ -1139,9 +968,7 @@ fn acquire_foundation(
     params: &Params,
     profile: Arc<FilmProfile>,
 ) -> Result<FoundationInput, PrepareError> {
-    trace_stage!(Illuminants);
     let illuminants = assets.illuminants()?;
-    trace_stage!(Development);
     let development = film::Development::new(
         profile,
         film::Params {
@@ -1153,7 +980,6 @@ fn acquire_foundation(
     .map_err(PrepareError::Development)?;
     let profile = development.profile();
     let reference_samples = foundation_reference(&illuminants, profile);
-    trace_stage!(Observer);
     let observer = Observer::acquire(assets)?;
     let reference_white_samples = profile_illuminant(
         &illuminants,
@@ -1168,14 +994,13 @@ fn acquire_foundation(
     let mut reconstructed_white = None;
     let mut tc_source = None;
     let mut mallett = None;
-    trace_stage!(ReconstructionSource);
     match params.spectral_upsampling_mode {
         0 => {
             let source = assets.hanatos()?;
             if params.hanatos2025_adaptation_window != 0
                 && let Some(white) = reference_white
             {
-                let prepared = reconstruction::checked_reference_white(
+                let prepared = reconstruction::reference_white(
                     source
                         .samples()
                         .try_into()
@@ -1187,15 +1012,10 @@ fn acquire_foundation(
                 );
                 reconstructed_white = match prepared {
                     Ok(white) => Some(white),
-                    Err(reconstruction::CheckedReferenceWhiteError::Reconstruction(
-                        error @ reconstruction::Error::AllocationFailure,
-                    )) => {
-                        return Err(PrepareError::ReferenceWhite(
-                            reconstruction::CheckedReferenceWhiteError::Reconstruction(error),
-                        ));
+                    Err(error @ reconstruction::Error::AllocationFailure) => {
+                        return Err(PrepareError::ReferenceWhite(error));
                     }
-                    Err(reconstruction::CheckedReferenceWhiteError::Reconstruction(_)) => None,
-                    Err(error) => return Err(PrepareError::ReferenceWhite(error)),
+                    Err(_) => None,
                 };
             }
             tc_source = Some(source);
@@ -1214,7 +1034,6 @@ fn acquire_foundation(
     let hull = if matches!(params.spectral_upsampling_mode, 0 | 2)
         && params.input_compression_enabled != 0
     {
-        trace_stage!(InputHull);
         match assets.input_hull() {
             Ok(hull) => Some(hull),
             Err(AssetError::Derived(
@@ -1380,8 +1199,8 @@ fn build_tables(
     samples: &[f32; 81],
     white: &spectral::White,
     observer: &Observer,
-) -> Result<spectral::Tables, PrepareError> {
-    spectral::checked_build_tables(spectral::Input {
+) -> spectral::Tables {
+    spectral::build_tables(spectral::Input {
         dyes_cmy: profile.channel_density(),
         observer: observer.borrow(),
         illuminant: samples,
@@ -1391,27 +1210,15 @@ fn build_tables(
         }),
         illuminant_hash: white.hash(),
     })
-    .map_err(spectral_prepare_error)
-}
-
-fn spectral_prepare_error(error: spectral::CheckedError) -> PrepareError {
-    match error {
-        spectral::CheckedError::Boundary(error) => PrepareError::SpectralBoundary(error),
-        spectral::CheckedError::White(_) => {
-            unreachable!("spectral table and inverse operations have no white error")
-        }
-    }
 }
 
 fn optional_white(
     observer: spectral::Observer<'_>,
     illuminant: &[f32; 81],
 ) -> Result<Option<[f32; 3]>, PrepareError> {
-    match spectral::checked_integrate_white(observer, illuminant) {
-        Ok(white) => Ok(Some(*white.xyz())),
-        Err(spectral::CheckedError::White(_)) => Ok(None),
-        Err(spectral::CheckedError::Boundary(error)) => Err(PrepareError::SpectralBoundary(error)),
-    }
+    Ok(spectral::integrate_white(observer, illuminant)
+        .ok()
+        .map(|white| *white.xyz()))
 }
 fn complete_reconstruction(
     input: &input::Recipe,
@@ -1422,18 +1229,17 @@ fn complete_reconstruction(
 ) -> Result<FilmReconstruction, PrepareError> {
     let storage = if matches!(input.method(), input::Method::Mallett2019) {
         let basis = mallett.expect("Mallett source acquired before composition");
-        let midgray = exposure::checked_mallett_midgray(exposure::MallettInput {
+        let midgray = exposure::mallett_midgray(exposure::MallettInput {
             color: input.color().to_conversion(),
             xyz_to_linear_srgb: *input.color().xyz_to_linear_srgb(),
             basis_rgb: &basis,
             illuminant: tables.illuminant(),
             sensitivity_rgb: input.sensitivity().values_rgb(),
-        })
-        .map_err(PrepareError::MallettMidgray)?;
+        });
         ReconstructionStorage::Mallett { basis, midgray }
     } else {
         let source = tc_source.expect("TC source acquired before composition");
-        let lut = reconstruction::build_tc_lut_checked(reconstruction::Input {
+        let lut = reconstruction::build_tc_lut(reconstruction::Input {
             spectra: source
                 .samples()
                 .try_into()
@@ -1462,9 +1268,8 @@ fn complete_reconstruction(
             *input.color().xyz_adapt(),
         );
         let raw_midgray_rgb =
-            reconstruction::sample_tc_lut_checked(lut.samples(), xyz).map_err(PrepareError::Tc)?;
-        let normalization =
-            exposure::checked_tc_midgray(raw_midgray_rgb[1]).map_err(PrepareError::TcMidgray)?;
+            reconstruction::sample_tc_lut(lut.samples(), xyz).map_err(PrepareError::Tc)?;
+        let normalization = exposure::tc_midgray(raw_midgray_rgb[1]);
         ReconstructionStorage::Tc {
             source,
             lut,
@@ -1659,9 +1464,6 @@ fn prepare_state(
     params: &Params,
     frame: Option<FilmGrainFrame>,
 ) -> Result<RenderState, PrepareError> {
-    #[cfg(feature = "test-support")]
-    testing::reset();
-    trace_stage!(SelectedFilm);
     let film = assets.film(&params.film_profile_key)?;
     if let Some(controls) = params.film_grain.controls()
         && !controls.valid(
@@ -1721,26 +1523,18 @@ fn prepare_state(
         })
         .transpose()?;
     let selected_print = if print_route(params.scan_route) {
-        trace_stage!(SelectedPrint);
         Some(assets.print(&params.print_profile_key)?)
     } else {
         None
     };
     let acquired = acquire_foundation(assets, params, film)?;
-    #[cfg(feature = "test-support")]
-    testing::observe_input(acquired.development.profile(), acquired.hull.as_deref());
     let film = acquired.development.profile();
     let calibration = selected_print
         .as_ref()
-        .map(|print| {
-            trace_stage!(Calibration);
-            acquire_calibration(assets, film, print, enlarger_illuminant(params.enl_ill))
-        })
+        .map(|print| acquire_calibration(assets, film, print, enlarger_illuminant(params.enl_ill)))
         .transpose()?;
-    trace_stage!(RoutePrechecks);
     route_prechecks(params, selected_print.as_deref(), calibration)?;
 
-    trace_stage!(Foundation);
     let reference_samples = acquired
         .reference_samples
         .as_ref()
@@ -1894,29 +1688,24 @@ fn prepare_state(
         }
         None => None,
     };
-    trace_stage!(FilmPayload);
     let film_illuminant = profile_illuminant(
         &acquired.illuminants,
         film.info().reference_illuminant(),
         film.info().reference_illuminant_kind(),
     )?
     .ok_or(ControlError::FilmReferenceIlluminant)?;
-    let film_white =
-        match spectral::checked_integrate_white(acquired.observer.borrow(), &film_illuminant) {
-            Ok(white) => white,
-            Err(spectral::CheckedError::White(_)) => {
-                return Err(ControlError::FilmReferenceIlluminant.into());
-            }
-            Err(spectral::CheckedError::Boundary(error)) => {
-                return Err(PrepareError::SpectralBoundary(error));
-            }
-        };
+    let film_white = match spectral::integrate_white(acquired.observer.borrow(), &film_illuminant) {
+        Ok(white) => white,
+        Err(_) => {
+            return Err(ControlError::FilmReferenceIlluminant.into());
+        }
+    };
     let exposure_tables = build_tables(
         film.tables(),
         &film_illuminant,
         &film_white,
         &acquired.observer,
-    )?;
+    );
     if exposure_tables.hash() == 0
         || !exposure_tables.white_xyz().iter().all(|v| v.is_finite())
         || exposure_tables.white_xyz()[1] <= 0.0
@@ -1924,8 +1713,7 @@ fn prepare_state(
         return Err(ControlError::ExposureTables.into());
     }
     let weights = exposure_tables.weighted_xyz();
-    let s_inverse = spectral::checked_s_inverse([&weights[0], &weights[1], &weights[2]])
-        .map_err(spectral_prepare_error)?;
+    let s_inverse = spectral::s_inverse([&weights[0], &weights[1], &weights[2]]);
     let reconstruction = complete_reconstruction(
         &input,
         &exposure_tables,
@@ -1938,7 +1726,6 @@ fn prepare_state(
     let print_main = print
         .as_ref()
         .map(|print| {
-            trace_stage!(PrintMainIlluminant);
             let source = named_illuminant(&acquired.illuminants, print.illuminant_key)?
                 .ok_or(ControlError::PrintIlluminant)?;
             let main = print::Illuminant::new(print.filters.illumination_params(false), &source)
@@ -1958,7 +1745,6 @@ fn prepare_state(
             green_scale: input.sensitivity().mallett_green_scale(),
         },
     };
-    trace_stage!(FilmReference);
     let reference = reference::Reference::new(
         &acquired.development,
         reference::Params {
@@ -1969,24 +1755,21 @@ fn prepare_state(
     )
     .map_err(PrepareError::Reference)?;
     let print_balance = match (&print, &print_main) {
-        (Some(print), Some((_, main))) => {
-            trace_stage!(PrintBalance);
-            Some(
-                print::Balance::new(
-                    print::BalanceParams {
-                        baseline_density_cmy: *reference.baseline_density_cmy(),
-                        compensated_density_cmy: *reference.compensated_density_cmy(),
-                        reference_hash: reference.hash(),
-                        normalization_mode: print.exposure.normalization_mode(),
-                    },
-                    film.tables().base_density(),
-                    film.tables().channel_density(),
-                    print.profile.tables().linear_sensitivity(),
-                    main.samples(),
-                )
-                .map_err(PrepareError::PrintBalance)?,
+        (Some(print), Some((_, main))) => Some(
+            print::Balance::new(
+                print::BalanceParams {
+                    baseline_density_cmy: *reference.baseline_density_cmy(),
+                    compensated_density_cmy: *reference.compensated_density_cmy(),
+                    reference_hash: reference.hash(),
+                    normalization_mode: print.exposure.normalization_mode(),
+                },
+                film.tables().base_density(),
+                film.tables().channel_density(),
+                print.profile.tables().linear_sensitivity(),
+                main.samples(),
             )
-        }
+            .map_err(PrepareError::PrintBalance)?,
+        ),
         _ => None,
     };
 
@@ -2006,17 +1789,13 @@ fn prepare_state(
             film.asset_token(),
         ),
     };
-    trace_stage!(ScannerPayload);
     let scanner_illuminant = profile_illuminant(&acquired.illuminants, viewing, viewing_kind)?
         .ok_or(ControlError::ScannerPayload(params.scan_route))?;
     let scanner_white =
-        match spectral::checked_integrate_white(acquired.observer.borrow(), &scanner_illuminant) {
+        match spectral::integrate_white(acquired.observer.borrow(), &scanner_illuminant) {
             Ok(white) => white,
-            Err(spectral::CheckedError::White(_)) => {
+            Err(_) => {
                 return Err(ControlError::ScannerPayload(params.scan_route).into());
-            }
-            Err(spectral::CheckedError::Boundary(error)) => {
-                return Err(PrepareError::SpectralBoundary(error));
             }
         };
     let scanner_tables = build_tables(
@@ -2024,7 +1803,7 @@ fn prepare_state(
         &scanner_illuminant,
         &scanner_white,
         &acquired.observer,
-    )?;
+    );
     let active_gamut_hash = if params.output_gamut_compression_enabled != 0 {
         gamut_hash
     } else {
@@ -2047,7 +1826,6 @@ fn prepare_state(
         params.output_gamut_compression_enabled != 0,
     );
     let boundary = if params.output_gamut_compression_enabled != 0 {
-        trace_stage!(OutputBoundary);
         Some(assets.output_boundary(
             gamut::BoundaryInput {
                 space: transform.space(),
@@ -2090,23 +1868,20 @@ fn prepare_state(
                 })
                 .map_err(PrepareError::PrintComposition)?;
             let preflash = if print.exposure.params().preflash_exposure > 0.0 {
-                trace_stage!(PrintPreflash);
                 let illuminant = print::Illuminant::new(
                     print.filters.illumination_params(true),
                     &source_illuminant,
                 )
                 .map_err(PrepareError::PrintIlluminant)?;
-                let raw = print::PreflashRaw::new(
+                let raw = Preflash::prepare_raw(
                     film.tables().base_density(),
                     illuminant.samples(),
                     print.profile.tables().linear_sensitivity(),
-                )
-                .map_err(PrepareError::PrintPreflash)?;
+                )?;
                 Some(Preflash { illuminant, raw })
             } else {
                 None
             };
-            trace_stage!(ScannerCorrection);
             let correction = scanner::Correction::print(
                 correction_params,
                 print_bounds.as_ref().map(|paper_bounds| {
@@ -2172,7 +1947,6 @@ fn prepare_state(
             })
         }
         (None, None, None) => {
-            trace_stage!(ScannerCorrection);
             let correction = scanner::Correction::direct(
                 correction_params,
                 film_bounds
@@ -2195,7 +1969,6 @@ fn prepare_state(
         }
         _ => unreachable!("print route privately owns all print construction products"),
     };
-    trace_stage!(FinalIdentity);
     let viewing = match &route {
         PreparedRoute::Direct(_) => film.info().viewing_illuminant(),
         PreparedRoute::Print(print) => print.profile.info().viewing_illuminant(),
@@ -2210,8 +1983,6 @@ fn prepare_state(
         gamut_hash,
     );
     let scanner_hash = hash::u64s(&[raw_scanner_digest, active_gamut_hash]);
-    #[cfg(feature = "test-support")]
-    let scanner_hash = testing::identity(testing::ZeroIdentity::Scanner, scanner_hash);
     let scanner = ScannerOutput {
         params: scanner_params,
         tables: scanner_tables,
@@ -2258,8 +2029,6 @@ fn prepare_state(
     if let Some(film_grain) = &film_grain {
         hash = hash::u64s(&[hash, film_grain.hash()]);
     }
-    #[cfg(feature = "test-support")]
-    let hash = testing::identity(testing::ZeroIdentity::Recipe, hash);
     if hash == 0 || scanner_hash == 0 || scanner_recipe_hash == 0 || scanner.color.hash() == 0 {
         return Err(ControlError::Identity(params.scan_route).into());
     }
@@ -2287,16 +2056,10 @@ fn prepare_state(
         scanner_hash,
     };
     let mut backing = Vec::new();
-    #[cfg(feature = "test-support")]
-    let reject_reservation = testing::take_contents_reservation_failure();
-    #[cfg(not(feature = "test-support"))]
-    let reject_reservation = false;
     backing
-        .try_reserve_exact(if reject_reservation { usize::MAX } else { 1 })
+        .try_reserve_exact(1)
         .map_err(PrepareError::ContentsAllocation)?;
     backing.push(contents);
-    #[cfg(feature = "test-support")]
-    testing::state_created();
     Ok(RenderState { contents: backing })
 }
 
@@ -2657,34 +2420,6 @@ mod tests {
             cases_remaining.is_empty(),
             "missing comparisons: {cases_remaining:?}"
         );
-    }
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn complete_contents_reservation_fails_after_preparation() {
-        let assets = assets();
-        let params = params(ScanRoute::NegativeDirect, 1);
-        testing::reset();
-        testing::arm_contents_reservation_failure();
-        let error = match prepare(&assets, &params) {
-            Ok(_) => panic!("armed contents reservation must fail"),
-            Err(error) => error,
-        };
-        assert!(testing::contents_reservation_failure_consumed());
-        let (stages, count) = testing::trace();
-        assert_eq!(
-            stages[count as usize - 1],
-            testing::Stage::FinalIdentity as u32
-        );
-        assert!(matches!(&error, PrepareError::ContentsAllocation(_)));
-        assert_eq!(
-            error.to_string(),
-            "Complete render-state backing allocation failed"
-        );
-        assert!(std::error::Error::source(&error).is_some());
-
-        let state = prepare(&assets, &params).expect("one-shot reservation fault was consumed");
-        assert_eq!(state.contents.len(), 1);
-        assert_ne!(state.hash(), 0);
     }
     #[test]
     fn direct_ignores_print_only_sources_and_controls() {

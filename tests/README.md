@@ -1,7 +1,7 @@
 # Film-Juicer public tests
 
 Native tests use the CMake product toolchains. Install Python 3.13 and the
-pinned requirements for the diffusion reference header and host fixture checks.
+pinned requirements for the host fixture and tooling checks.
 Install Rust 1.98.1 and prebuilt cargo-nextest 0.9.143 for the workspace tests.
 See the [build prerequisites](../docs/building.md).
 
@@ -22,7 +22,7 @@ python3.13 -m pip install -r tests/requirements.txt
 cmake --preset linux-debug -DBUILD_TESTING=ON
 cmake --build --preset linux-debug
 ctest --preset linux-debug -L '^host$' --no-tests=error --output-on-failure
-cargo nextest run --workspace --locked --features film-juicer-plugin/test-support --test-threads 1
+cargo nextest run --workspace --locked --test-threads 1
 cargo test --workspace --doc --locked
 ctest --preset linux-debug -L '^gpu$' -LE '^multi-gpu$' --no-tests=error --output-on-failure
 ```
@@ -31,12 +31,12 @@ Repeat the CMake and CTest steps with the Release preset. Run these Cargo
 commands for Release.
 
 ```sh
-cargo nextest run --workspace --locked --release --features film-juicer-plugin/test-support --test-threads 1
+cargo nextest run --workspace --locked --release --test-threads 1
 cargo test --workspace --doc --locked --release
 ```
 
-The plug-in feature forwards to core's feature-gated tests. Ship the separate
-production archive built by CMake. Cargo runs the core borrow-expiry doctest
+CMake builds the production archive for the module and linked native tests.
+Cargo runs the core borrow-expiry doctest
 and its compiling counterpart in both profiles. The plug-in is a static library,
 so Cargo reports that it has no doctests.
 
@@ -74,10 +74,11 @@ shell with `dumpbin` available.
 | --- | --- |
 | Rust model, publication and assets | [Core tests](../rust/film-juicer-core/tests) and unit tests beside their source owners. |
 | ABI, value preparation and owner lifetime | [ABI and bindings](../docs/ffi.md) and [native FFI cases](ffi/README.md). |
-| OFX host callbacks, production renders and recovery | [OFX host fixtures](ofx/README.md), [production staged probe](ffi/production-ofx-render.cpp), and [prepared-boundary consumer](ofx/processor_reference_test.cpp). |
-| Film v1 Full and proxy sampling | [Optical aperture cases](grain/film-ofx-apertures.inc), [frozen bank](../Resources/grain/portra-400/NOTICE.md), and [independent table fixtures](grain/portra-table-fixtures). |
+| OFX host callbacks, production renders and recovery | [OFX host fixtures](ofx/README.md), [production staged probe](ffi/production-ofx-render.cpp), and the staged frame and Print edit cases. |
+| Film v1 Full and proxy sampling | [Optical aperture cases](grain/film_apertures_test.cpp), [frozen bank](../Resources/grain/portra-400/NOTICE.md), and [independent table fixtures](grain/portra-table-fixtures). |
+| Scanner spectra, binding and schedules | [Scanner cases](scanner). |
 | Device resources, exact-context lifetimes and failure ordering | [Resource cases](resource) and [native CUDA ABI cases](ffi). |
-| Explicit performance and replay tools | [Benchmark guide](benchmarks/README.md). |
+| Explicit performance work | [Benchmark guide](benchmarks/README.md). |
 
 Keep the checked-in fixture bytes and expected values fixed during ordinary
 tests. Compare output with the independent expectation that the case names.

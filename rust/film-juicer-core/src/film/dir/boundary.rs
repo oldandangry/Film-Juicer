@@ -103,7 +103,7 @@ impl Boundary {
             .checked_add(vertical_weights.len())
             .filter(|&count| addressable::<f64>(count))
             .ok_or_else(|| Error::new(Reason::StorageSize))?;
-        let mut weights = reserve(count, 0.0, 7).map_err(Error::new)?;
+        let mut weights = reserve(count, 0.0).map_err(Error::new)?;
         weights[..horizontal_weights.len()].copy_from_slice(&horizontal_weights);
         weights[horizontal_weights.len()..].copy_from_slice(&vertical_weights);
         Ok(Self {
@@ -337,13 +337,7 @@ fn addressable<T>(count: usize) -> bool {
         .is_some_and(|bytes| bytes <= isize::MAX as usize)
 }
 
-fn reserve<T: Clone>(count: usize, initial: T, site: u32) -> Result<Vec<T>, Reason> {
-    #[cfg(feature = "test-support")]
-    if test_support::reject(site) {
-        return Err(Reason::Allocation);
-    }
-    #[cfg(not(feature = "test-support"))]
-    let _ = site;
+fn reserve<T: Clone>(count: usize, initial: T) -> Result<Vec<T>, Reason> {
     let mut result = Vec::new();
     result
         .try_reserve_exact(count)
@@ -381,8 +375,7 @@ fn axis(input: &Input, length: i32, direction: u32) -> Result<(Axis, Vec<f64>), 
     }
     transition[1][0] = Dd::ONE;
     transition[2][1] = Dd::ONE;
-    let site = if direction == 1 { 1 } else { 4 };
-    let mut powers = reserve(period, [Dd::ZERO; 3], site).map_err(error)?;
+    let mut powers = reserve(period, [Dd::ZERO; 3]).map_err(error)?;
     powers[0][0] = Dd::from(input.coefficients[0]);
     for exponent in 1..period {
         powers[exponent] = transform(&transition, &powers[exponent - 1]);
@@ -399,7 +392,7 @@ fn axis(input: &Input, length: i32, direction: u32) -> Result<(Axis, Vec<f64>), 
     }
     let periodic_inverse =
         invert(periodic_system, 3).ok_or_else(|| error(Reason::CausalSingular))?;
-    let mut full_weights = reserve(count, 0.0, site + 1).map_err(error)?;
+    let mut full_weights = reserve(count, 0.0).map_err(error)?;
     let mut sums = [Dd::ZERO; 3];
     for sample in 0..length {
         let mut rhs = [Dd::ZERO; 3];
@@ -443,7 +436,7 @@ fn axis(input: &Input, length: i32, direction: u32) -> Result<(Axis, Vec<f64>), 
         retained = sample;
     }
     let retained_count = retained_count(retained).ok_or_else(|| error(Reason::AxisSize))?;
-    let mut weights = reserve(retained_count, 0.0, site + 2).map_err(error)?;
+    let mut weights = reserve(retained_count, 0.0).map_err(error)?;
     for row in 0..3 {
         weights[row * retained..(row + 1) * retained]
             .copy_from_slice(&full_weights[row * length..row * length + retained]);
@@ -502,29 +495,15 @@ fn reflect(index: i64, length: i64) -> i64 {
     }
 }
 
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! { static RESERVATION: Cell<u32> = const { Cell::new(0) }; }
-    pub struct Reservation;
-    impl Reservation {
-        pub fn new(site: u32) -> Self {
-            RESERVATION.set(site);
-            Self
-        }
-    }
-    impl Drop for Reservation {
-        fn drop(&mut self) {
-            RESERVATION.set(0);
-        }
-    }
-    pub(super) fn reject(site: u32) -> bool {
-        RESERVATION.get() == site
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boundary_storage_reports_reservation_failure() {
+        assert_eq!(
+            super::reserve(usize::MAX, 0.0_f64).unwrap_err(),
+            super::Reason::Allocation
+        );
+    }
     use super::*;
     use serde_json::Value;
     fn scalar(value: &Value) -> f64 {

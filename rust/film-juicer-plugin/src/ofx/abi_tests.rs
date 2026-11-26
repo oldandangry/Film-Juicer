@@ -292,45 +292,6 @@ static STRINGS: &[&[u8]] = &[
 
 const _: () = assert!(STRINGS.len() == 143);
 
-/// Return the immutable, library-lived layout observations.
-///
-/// # Safety
-/// `count` points to one writable usize for this synchronous call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fj_test_ofx_abi_facts(count: *mut usize) -> *const usize {
-    // SAFETY: The native fixture supplies a writable, disjoint count element.
-    unsafe { count.write(FACTS.len()) };
-    FACTS.as_ptr()
-}
-
-/// Return the immutable, library-lived numeric constants.
-///
-/// # Safety
-/// `count` points to one writable usize for this synchronous call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fj_test_ofx_abi_values(count: *mut usize) -> *const usize {
-    // SAFETY: The native fixture supplies a writable, disjoint count element.
-    unsafe { count.write(VALUES.len()) };
-    VALUES.as_ptr()
-}
-
-/// Return one immutable, library-lived string including its terminating NUL.
-/// An out-of-range index returns null and count zero.
-///
-/// # Safety
-/// `count` points to one writable usize for this synchronous call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fj_test_ofx_abi_string(index: usize, count: *mut usize) -> *const u8 {
-    let bytes = STRINGS.get(index).copied().unwrap_or_default();
-    // SAFETY: The native fixture supplies a writable, disjoint count element.
-    unsafe { count.write(bytes.len()) };
-    if bytes.is_empty() {
-        core::ptr::null()
-    } else {
-        bytes.as_ptr()
-    }
-}
-
 // Referent types cannot coerce mutable pointers to const pointers. These checks
 // require exact declared types, including signed coordinates, pointer
 // mutability, nullable callbacks, C calling convention and every variadic tail.
@@ -738,226 +699,30 @@ const _: fn(&OfxPluginEntryPoint) = |value| {
     > = value;
 };
 
-// Native fixture peers arrive as borrowed records, so the shared test-support
-// archive introduces no C-stub dependency in its other real consumers.
-mod calls {
-    use core::ffi::CStr;
-    use core::ptr::{null, null_mut};
-
-    use super::*;
-
-    /// # Safety
-    /// `name` is a live NUL-terminated string for this synchronous call.
-    /// The opaque host token is only compared and is never dereferenced.
-    unsafe extern "C" fn fetch_suite(
-        host: OfxPropertySetHandle,
-        name: *const c_char,
-        version: c_int,
-    ) -> *const c_void {
-        // SAFETY: The synchronous fixture supplies its live NUL-terminated name.
-        if host as usize == 1 && unsafe { CStr::from_ptr(name) } == c"fixture.suite" && version == 7
-        {
-            2_usize as *const c_void
-        } else {
-            null()
-        }
-    }
-
-    /// # Safety
-    /// `host` lends one exclusive, aligned, writable record for this call.
-    unsafe extern "C" fn set_host(host: *mut OfxHost) {
-        // SAFETY: The fixture lends one exclusive writable host copy for this call.
-        unsafe { (*host).host = 6_usize as OfxPropertySetHandle };
-    }
-
-    /// # Safety
-    /// `action` is a live NUL-terminated string for this synchronous call.
-    /// The other arguments are opaque tokens and are never dereferenced.
-    unsafe extern "C" fn main_entry(
-        action: *const c_char,
-        handle: *const c_void,
-        input: OfxPropertySetHandle,
-        output: OfxPropertySetHandle,
-    ) -> OfxStatus {
-        // SAFETY: The synchronous fixture supplies its live NUL-terminated action.
-        if unsafe { CStr::from_ptr(action) } == c"fixture.action"
-            && handle as usize == 3
-            && input as usize == 4
-            && output as usize == 5
-        {
-            17
-        } else {
-            1
-        }
-    }
-
-    /// Exercise native and Rust functions through the generated callback fields.
-    ///
-    /// # Safety
-    /// Inputs are live immutable fixture records. Outputs are exclusively writable
-    /// and disjoint from both inputs. All calls are synchronous and retain no input.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn fj_test_ofx_abi_callbacks(
-        native_host: *const OfxHost,
-        native_plugin: *const OfxPlugin,
-        rust_host: *mut OfxHost,
-        rust_plugin: *mut OfxPlugin,
-    ) -> c_int {
-        let host = OfxHost {
-            host: 1_usize as OfxPropertySetHandle,
-            fetchSuite: Some(fetch_suite),
+#[test]
+fn generated_layout_matches_c11_inventory() {
+    let declaration = include_str!("../../../../tests/ffi/ofx_abi_facts.inc");
+    let mut layout = Vec::new();
+    let mut values = Vec::new();
+    let mut strings = Vec::new();
+    for line in declaration.lines() {
+        let Some((kind, args)) = line.split_once('(') else {
+            continue;
         };
-        let plugin = OfxPlugin {
-            pluginApi: c"fixture".as_ptr(),
-            apiVersion: 1,
-            pluginIdentifier: c"fixture".as_ptr(),
-            pluginVersionMajor: 1,
-            pluginVersionMinor: 0,
-            setHost: Some(set_host),
-            mainEntry: Some(main_entry),
-        };
-        // SAFETY: The harness lends disjoint output records and immutable native
-        // records. Returned Rust function pointers and literal strings are
-        // library-lived; neither direction retains caller-owned storage.
-        unsafe {
-            rust_host.write(host);
-            rust_plugin.write(plugin);
-            let mut native_host = *native_host;
-            let native_plugin = &*native_plugin;
-            let (Some(fetch), Some(set), Some(entry)) = (
-                native_host.fetchSuite,
-                native_plugin.setHost,
-                native_plugin.mainEntry,
-            ) else {
-                return 1;
-            };
-            if fetch(native_host.host, c"fixture.suite".as_ptr(), 7) as usize != 2 {
-                return 1;
+        let mut parts = args.trim_end_matches(')').split(',').skip(1).map(str::trim);
+        match kind {
+            "FJ_OFX_TYPE" => layout.extend(parts.map(|value| value.parse::<usize>().unwrap())),
+            "FJ_OFX_FIELD" => layout.push(parts.nth(1).unwrap().parse().unwrap()),
+            "FJ_OFX_VALUE" => values.push(parts.next().unwrap().parse::<usize>().unwrap()),
+            "FJ_OFX_STRING" => {
+                let mut bytes = parts.next().unwrap().trim_matches('"').as_bytes().to_vec();
+                bytes.push(0);
+                strings.push(bytes);
             }
-            set(&raw mut native_host);
-            if native_host.host as usize != 6 {
-                return 1;
-            }
-            c_int::from(
-                entry(
-                    c"fixture.action".as_ptr(),
-                    3_usize as *const c_void,
-                    4_usize as OfxPropertySetHandle,
-                    5_usize as OfxPropertySetHandle,
-                ) != 17,
-            )
+            _ => {}
         }
     }
-
-    /// Exercise promoted argument and output-pointer shapes through actual slots.
-    ///
-    /// # Safety
-    /// `suite` lends an immutable fixture suite with the documented variadic
-    /// contracts. Returned strings remain live through this synchronous call.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn fj_test_ofx_abi_parameters(
-        suite: *const OfxParameterSuiteV1,
-    ) -> c_int {
-        // SAFETY: The harness lends an immutable fixture suite. Every
-        // vararg below has the exact promoted C type or writable output-pointer
-        // type consumed by va_arg for that shape. All output storage is call-local.
-        unsafe {
-            let suite = &*suite;
-            if suite.paramGetDerivative.is_some() || suite.paramGetIntegral.is_some() {
-                return 1;
-            }
-            let (Some(get), Some(get_at_time), Some(set), Some(set_at_time)) = (
-                suite.paramGetValue,
-                suite.paramGetValueAtTime,
-                suite.paramSetValue,
-                suite.paramSetValueAtTime,
-            ) else {
-                return 1;
-            };
-            let mut calls = 0;
-            for at_time in [false, true] {
-                macro_rules! get {
-                    ($handle:expr, $($output:expr),+) => {{
-                        calls += 1;
-                        if at_time { get_at_time($handle, 12.5_f64, $($output),+) }
-                        else { get($handle, $($output),+) }
-                    }};
-                }
-                macro_rules! set {
-                    ($handle:expr, $($input:expr),+) => {{
-                        calls += 1;
-                        if at_time { set_at_time($handle, 12.5_f64, $($input),+) }
-                        else { set($handle, $($input),+) }
-                    }};
-                }
-                for (token, expected) in [(1_usize, 23_i32), (6, 1), (7, 2)] {
-                    let handle = token as OfxParamHandle;
-                    let mut integer: c_int = 0;
-                    if get!(handle, &raw mut integer) != 0
-                        || integer != expected
-                        || set!(handle, expected) != 0
-                    {
-                        return 1;
-                    }
-                }
-                let handle = 2_usize as OfxParamHandle;
-                let mut text: *mut c_char = null_mut();
-                if get!(handle, &raw mut text) != 0
-                    || text.is_null()
-                    || CStr::from_ptr(text) != c"fixture-value"
-                    || set!(handle, c"fixture-value".as_ptr()) != 0
-                {
-                    return 1;
-                }
-                let mut x = 0.0_f64;
-                let mut y = 0.0_f64;
-                let mut z = 0.0_f64;
-                if get!(3_usize as OfxParamHandle, &raw mut x) != 0
-                    || x != 1.25
-                    || set!(3_usize as OfxParamHandle, 1.25_f64) != 0
-                    || get!(4_usize as OfxParamHandle, &raw mut x, &raw mut y) != 0
-                    || [x, y] != [1.25, 2.5]
-                    || set!(4_usize as OfxParamHandle, 1.25_f64, 2.5_f64) != 0
-                    || get!(
-                        5_usize as OfxParamHandle,
-                        &raw mut x,
-                        &raw mut y,
-                        &raw mut z
-                    ) != 0
-                    || [x, y, z] != [1.25, 2.5, 3.75]
-                    || set!(5_usize as OfxParamHandle, 1.25_f64, 2.5_f64, 3.75_f64) != 0
-                {
-                    return 1;
-                }
-            }
-            c_int::from(calls != 28)
-        }
-    }
-
-    /// Exercise the generated variadic V1 message slot with literal `%s`.
-    ///
-    /// # Safety
-    /// `suite` lends an immutable fixture suite implementing the documented
-    /// synchronous V1 message contract.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn fj_test_ofx_abi_messages(suite: *const OfxMessageSuiteV1) -> c_int {
-        // SAFETY: The harness lends an immutable fixture suite. Literal C strings stay
-        // live through the call; the single vararg is the const char* consumed by
-        // va_arg. The opaque handle is only compared, never dereferenced.
-        unsafe {
-            let suite = &*suite;
-            let Some(message) = suite.message else {
-                return 1;
-            };
-            c_int::from(
-                message(
-                    7_usize as *mut c_void,
-                    c"fixture.type".as_ptr(),
-                    c"fixture.id".as_ptr(),
-                    c"%s".as_ptr(),
-                    c"100% fixture".as_ptr(),
-                ) != 17,
-            )
-        }
-    }
+    assert_eq!(FACTS, layout);
+    assert_eq!(VALUES, values);
+    assert_eq!(STRINGS, strings);
 }

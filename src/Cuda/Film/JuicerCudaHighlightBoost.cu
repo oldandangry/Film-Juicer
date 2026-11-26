@@ -227,30 +227,14 @@ namespace JuicerCuda {
         const auto pixels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         const HighlightFrame frame{carrier, static_cast<std::size_t>(width), pixels};
         const auto blocks = static_cast<int>(std::min((pixels - 1) / kThreads + 1, static_cast<std::size_t>(blockLimit)));
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        using TestSupport::HighlightBoostFault;
-        if (const auto fault = TestSupport::consume_highlight_boost_fault(HighlightBoostFault::PartialReduction); fault != cudaSuccess) {
-            return {fault, HighlightBoostLaunchStage::PartialReduction};
-        }
-#endif
         reduce_highlight_blocks<<<blocks, kThreads, 0, stream>>>(frame, workspace);
         if (const auto status = cudaGetLastError(); status != cudaSuccess) {
             return {status, HighlightBoostLaunchStage::PartialReduction};
         }
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        if (const auto fault = TestSupport::consume_highlight_boost_fault(HighlightBoostFault::FinalReduction); fault != cudaSuccess) {
-            return {fault, HighlightBoostLaunchStage::FinalReduction};
-        }
-#endif
         finish_highlight_reduction<<<1, kThreads, 0, stream>>>(descriptor, blocks, workspace);
         if (const auto status = cudaGetLastError(); status != cudaSuccess) {
             return {status, HighlightBoostLaunchStage::FinalReduction};
         }
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-        if (const auto fault = TestSupport::consume_highlight_boost_fault(HighlightBoostFault::Apply); fault != cudaSuccess) {
-            return {fault, HighlightBoostLaunchStage::Apply};
-        }
-#endif
         apply_highlight_boost<<<blocks, kThreads, 0, stream>>>(frame, workspace);
         if (const auto status = cudaGetLastError(); status != cudaSuccess) {
             return {status, HighlightBoostLaunchStage::Apply};

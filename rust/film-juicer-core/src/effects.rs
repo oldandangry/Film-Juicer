@@ -724,8 +724,6 @@ impl Recipe {
         }
     }
     pub fn new(params: Params) -> Result<Self, Error> {
-        #[cfg(any(test, feature = "test-support"))]
-        let probability = test_support::take();
         if params.grain_active && params.grain_debug_view != 0 {
             return Ok(Self::zero());
         }
@@ -765,20 +763,12 @@ impl Recipe {
             active: false,
             hash: 0,
         };
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(probability) = probability {
-            recipe.film_dust.slot_probability = probability;
-        }
-        for probability in [
+        validate_probabilities([
             recipe.film_dust.slot_probability,
             recipe.gate_dust.slot_probability,
             recipe.film_scratch.slot_probability,
             recipe.gate_scratch.slot_probability,
-        ] {
-            if !probability.is_finite() || probability < 0.0 || probability >= 0.25 {
-                return Err(Error::Probability);
-            }
-        }
+        ])?;
         recipe.active = recipe.film_dust.slot_probability > 0.0
             || recipe.film_scratch.slot_probability > 0.0
             || recipe.gate_dust.slot_probability > 0.0
@@ -810,17 +800,11 @@ impl Recipe {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    use std::cell::Cell;
-    thread_local! {static PROBABILITY: Cell<Option<f32>> = const {Cell::new(None)};}
-    /// Substitute one computed probability immediately before the real guard.
-    pub fn substitute_next_probability(probability: f32) {
-        PROBABILITY.set(Some(probability));
+fn validate_probabilities(probabilities: [f32; 4]) -> Result<(), Error> {
+    if probabilities.into_iter().any(|p| !(0.0..0.25).contains(&p)) {
+        return Err(Error::Probability);
     }
-    pub(super) fn take() -> Option<f32> {
-        PROBABILITY.take()
-    }
+    Ok(())
 }
 
 fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
@@ -1075,10 +1059,10 @@ mod tests {
         );
         for (id, probability) in probabilities {
             let case = AsRef::<str>::as_ref(&(id)).to_owned();
-            test_support::substitute_next_probability(probability);
-            assert_eq!(Recipe::new(controls).unwrap_err(), Error::Probability);
-            assert!(Recipe::new(controls).is_ok());
-            test_support::substitute_next_probability(probability);
+            assert_eq!(
+                validate_probabilities([probability, 0.0, 0.0, 0.0]),
+                Err(Error::Probability)
+            );
             let suppressed = Recipe::new(Params {
                 grain_active: true,
                 grain_debug_view: i32::MIN,
@@ -1087,14 +1071,6 @@ mod tests {
             .unwrap();
             assert_eq!(project(&suppressed), project(&Recipe::zero()));
             assert!(Recipe::new(controls).is_ok());
-            if id == "quarter" {
-                test_support::substitute_next_probability(0.25);
-                std::thread::spawn(move || assert!(Recipe::new(controls).is_ok()))
-                    .join()
-                    .unwrap();
-                assert_eq!(Recipe::new(controls).unwrap_err(), Error::Probability);
-                assert!(Recipe::new(controls).is_ok());
-            }
             assert!(
                 cases_remaining.remove(&case),
                 "unexpected or repeated comparison: {case}"

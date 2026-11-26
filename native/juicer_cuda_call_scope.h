@@ -121,6 +121,16 @@ namespace JuicerCuda {
         std::string _diagnostic;
         std::optional<FjFrame> _frame;
         FjCudaContext _inspectedContext{};
+#if JUICER_DIAGNOSTICS_COMPILED
+        struct RenderObservation {
+            std::uint64_t snapshot;
+            std::uint64_t instance;
+            std::uint64_t scanner;
+            std::uint64_t paper;
+            std::uint32_t status;
+        };
+        std::optional<RenderObservation> _renderObservation;
+#endif
         float _pixelSizeUm = 0.0f;
         bool _hasInspectedContext = false;
         bool _admissionAttempted = false;

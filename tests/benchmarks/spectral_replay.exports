@@ -1,4 +1,0 @@
-{
-    global: OfxGetNumberOfPlugins; OfxGetPlugin; fj_spectral_replay_set_tokens;
-    local: *;
-};

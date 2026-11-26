@@ -39,10 +39,6 @@ impl Drop for Image<'_> {
         // remain live on this thread; release never retains the handle or retries.
         let result = catch_unwind(AssertUnwindSafe(|| unsafe {
             let _ = (self.callback.loaded.suites.release_image)(self.handle);
-            #[cfg(feature = "test-support")]
-            if super::test_support::render_fault(6) {
-                panic!("OFX image cleanup panic");
-            }
         }));
         if result.is_err() {
             super::super::fail_admission(self.callback.loaded);
@@ -341,20 +337,8 @@ unsafe extern "C" fn query_abort(user: *mut c_void) -> u32 {
     // mutable instance borrow spans reentry, and native never retains user.
     let access = unsafe { &*user.cast::<AbortAccess<'_>>() };
     catch_unwind(AssertUnwindSafe(|| {
-        #[cfg(feature = "test-support")]
-        if super::test_support::render_fault(5) {
-            panic!("OFX abort panic");
-        }
         // SAFETY: The effect and original suite are retained by the callback.
         let requested = unsafe { (access.callback.loaded.suites.abort)(access.callback.effect) };
-        #[cfg(feature = "test-support")]
-        if super::test_support::render_fault(7) {
-            // The fixture's C callback contained a foreign delivery exception.
-            // Relay failure after that real invocation without unwinding across
-            // C or applying the separate Rust-panic terminal-module policy.
-            access.failed.set(true);
-            return 2;
-        }
         if requested != 0 {
             cuda::sys::FJ_ABORT_REQUESTED
         } else {
@@ -408,18 +392,6 @@ impl Callback<'_> {
             clip_token: self.clip_token(&owner.handles),
             effects_geometry: effects,
         };
-        #[cfg(feature = "test-support")]
-        let raw = if let Some((seed, _, clip)) = super::test_support::render_tokens() {
-            cuda::sys::FjFrame {
-                session_seed: seed,
-                clip_token: clip,
-                ..raw
-            }
-        } else {
-            raw
-        };
-        #[cfg(feature = "test-support")]
-        super::test_support::render_frame(&raw, frame_token, &owner.state);
         let access = AbortAccess {
             callback: self,
             failed: std::cell::Cell::new(false),
@@ -455,8 +427,6 @@ impl Callback<'_> {
                             self.message(c"FilmJuicerFilmRenderFailure", completion.diagnostic());
                         }
                     }
-                    #[cfg(feature = "test-support")]
-                    super::test_support::render_complete(completion.status(), fatal, &owner.state);
                     completion.recover(&owner.state);
                     fatal
                 },

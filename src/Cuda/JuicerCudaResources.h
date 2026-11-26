@@ -442,11 +442,6 @@ namespace JuicerCuda {
     bool drain_deferred_resources(
         const ResourceManager::DeviceContextKey& key,
         Failure& outError);
-#if defined(JUICER_DEFERRED_DESTROY_TEST_HOOK)
-    namespace DeferredDestroyTest {
-        void before_drain(Resources& resources);
-    } // namespace DeferredDestroyTest
-#endif
 
     bool drain_for_context_retire(
         Resources& resources,
@@ -632,65 +627,5 @@ namespace JuicerCuda {
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
 
-#if defined(JUICER_GAUSSIAN_TEST_HOOK)
-    namespace GaussianKernelTest {
-        std::int32_t copy(Resources&, std::uint64_t key, void* destination, const void* source, std::size_t bytes) noexcept;
-        void before_insert(Resources&, std::uint64_t key) noexcept;
-        bool after_upload(Resources&, std::uint64_t key, float* candidate) noexcept;
-        void observed_free(Resources&, std::uint64_t key, void* pointer, bool success) noexcept;
-    } // namespace GaussianKernelTest
-#endif
-
-#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK) || defined(JUICER_CUDA_RENDER_TEST_HOOK)
-    namespace PinnedUploadTest {
-        struct TransferCount {
-            std::size_t calls = 0;
-            std::size_t bytes = 0;
-            bool operator==(const TransferCount&) const = default;
-        };
-        struct UploadObservation {
-            TransferCount print{};
-            std::array<TransferCount, 4> filmDensity{};
-            TransferCount mainIlluminant{};
-            TransferCount preflashIlluminant{};
-        };
-    } // namespace PinnedUploadTest
-#endif
-
-#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
-    namespace PinnedUploadTest {
-        enum class Operation : std::uint8_t {
-            Allocate,
-            CreateEvent,
-            Copy,
-            RecordEvent,
-            Synchronize
-        };
-        std::int32_t injected_error(Operation operation) noexcept;
-        void before_diagnostic();
-        void after_overwrite_staging(Resources&) noexcept;
-
-        struct Block {
-            void* pointer = nullptr;
-            void* event = nullptr;
-            std::size_t capacity = 0;
-            std::uint64_t id = 0;
-        };
-        struct Snapshot {
-            std::size_t available = 0;
-            std::size_t reserved = 0;
-            std::size_t inFlight = 0;
-            std::size_t quarantined = 0;
-            std::size_t totalBytes = 0;
-            std::vector<Block> blocks;
-        };
-        bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure);
-        Snapshot snapshot(const ResourceManager::DeviceContextKey& key);
-        void poll(const ResourceManager::DeviceContextKey& key);
-        void reset_upload_observation() noexcept;
-        UploadObservation finish_upload_observation() noexcept;
-        void observe_staged_upload(const char* label, std::size_t bytes) noexcept;
-    } // namespace PinnedUploadTest
-#endif
 
 } // namespace JuicerCuda

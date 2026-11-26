@@ -44,16 +44,6 @@ impl Instance {
     ) -> Result<bool, submission::Error> {
         self.submission.invalidate(device_id, context)
     }
-    #[cfg(feature = "test-support")]
-    pub(crate) fn observe_submission(
-        &self,
-    ) -> Result<Option<submission::Selection>, submission::Error> {
-        self.submission.observe()
-    }
-    #[cfg(test)]
-    pub(crate) fn poison_submission_for_test(&self) {
-        self.submission.poison_for_test();
-    }
     pub(crate) fn begin_capture(
         &self,
         mode: state::CaptureMode,
@@ -80,17 +70,6 @@ impl Instance {
         capture: u64,
     ) -> Result<state::SnapshotStart, state::Error> {
         self.publication.begin_snapshot(capture)
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn install(
-        &self,
-        capture: u64,
-        write_revision: u64,
-        params: recipe::Params,
-        input_identity: u64,
-    ) -> Result<state::Update, state::Error> {
-        self.publication
-            .install(capture, write_revision, params, input_identity)
     }
     pub(crate) fn install_frame(
         &self,
@@ -125,65 +104,18 @@ impl Instance {
     ) -> Result<state::Update, state::Error> {
         self.publication.invalidate_action(capture, failure)
     }
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn admit(&self, assets: &Assets) -> Result<state::Admission, state::Error> {
-        self.publication.admit(|params| {
-            #[cfg(feature = "test-support")]
-            testing::before_prepare();
-            let outcome = recipe::prepare(assets, params);
-            #[cfg(feature = "test-support")]
-            testing::after_prepare();
-            outcome
-        })
-    }
     pub(crate) fn admit_frame(
         &self,
         input: state::FrameInput<'_>,
         assets: &Assets,
         frame: recipe::FilmGrainFrame,
     ) -> Result<Arc<recipe::RenderState>, state::Error> {
-        let prepare = |params: &recipe::Params| {
-            #[cfg(feature = "test-support")]
-            testing::before_prepare();
-            let outcome = recipe::prepare_for_frame(assets, params, frame);
-            #[cfg(feature = "test-support")]
-            testing::after_prepare();
-            outcome
-        };
+        let prepare = |params: &recipe::Params| recipe::prepare_for_frame(assets, params, frame);
 
         self.publication
             .admit_film_grain_frame(input, frame, prepare)
     }
-    #[cfg(feature = "test-support")]
-    pub(crate) fn observe(&self) -> Result<state::Observation, state::Error> {
-        self.publication.observe()
-    }
     pub(crate) fn block(&self) {
         self.publication.block();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn close(self) {}
-}
-
-#[cfg(feature = "test-support")]
-pub(crate) mod testing {
-    use std::cell::Cell;
-    thread_local! {
-        static BEFORE_PREPARE: Cell<Option<fn()>> = const { Cell::new(None) };
-        static AFTER_PREPARE: Cell<Option<fn()>> = const { Cell::new(None) };
-    }
-    pub(crate) fn set_prepare_hooks(before: Option<fn()>, after: Option<fn()>) {
-        BEFORE_PREPARE.set(before);
-        AFTER_PREPARE.set(after);
-    }
-    pub(super) fn before_prepare() {
-        if let Some(hook) = BEFORE_PREPARE.get() {
-            hook();
-        }
-    }
-    pub(super) fn after_prepare() {
-        if let Some(hook) = AFTER_PREPARE.get() {
-            hook();
-        }
     }
 }
