@@ -2,14 +2,9 @@
 
 #include <array>
 #include <cstddef>
-#include <functional>
 #include <optional>
 #include <cuda_runtime_api.h>
 #include <cufft.h>
-
-struct FjCuda;
-struct FjCudaContext;
-struct FjSubmission;
 
 namespace JuicerTest {
     struct SynchronizationFault {
@@ -18,7 +13,6 @@ namespace JuicerTest {
     };
 
     struct Calls {
-        std::function<void(FjCuda*, const FjCudaContext&, const FjSubmission&)> beforeRenderAdmission;
         std::size_t uploadAllocations = 0;
         std::size_t copies = 0;
         std::size_t copyBytes = 0;

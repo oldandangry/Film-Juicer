@@ -415,8 +415,10 @@ FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const
         return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0, {}};
     }
     try {
-        // The fixture provider observes Rust's selection before the native gate.
-        JuicerCuda::ResourceOperations::before_render_admission(cuda, context, submission);
+#if defined(JUICER_TEST_SEAMS)
+        // Observe Rust's selection before the native gate.
+        JuicerTest::before_render_admission(cuda, context, submission);
+#endif
         JuicerCuda::PendingContextLossRecovery recovery;
         std::string diagnostic;
         FjRenderOutcome outcome{};

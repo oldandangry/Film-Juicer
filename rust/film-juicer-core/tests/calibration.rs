@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use film_juicer_core::assets::Assets;
 use film_juicer_core::data_io::calibration::{self, ErrorKind, Field, load_neutral_calibration};
-use film_juicer_core::recipe::{self, Calibration, PrepareError, PreparedRoute};
+use film_juicer_core::recipe::{self, Calibration, CalibrationError, PrepareError, PreparedRoute};
 use film_juicer_core::{capture, route::ScanRoute};
 
 fn repository() -> PathBuf {
@@ -135,7 +135,17 @@ fn print_preparation_retains_calibration_cause() {
             error.to_string(),
             format!("MalformedNeutralPrintCalibration phase=4A field={diagnostic}")
         );
-        let cause = error
+        let wrapper = error
+            .source()
+            .unwrap()
+            .downcast_ref::<CalibrationError>()
+            .unwrap();
+        assert!(matches!(
+            (wrapper, field),
+            (CalibrationError::Resource(_), Field::Root)
+                | (CalibrationError::Entry(_), Field::CmyCc)
+        ));
+        let cause = wrapper
             .source()
             .unwrap()
             .downcast_ref::<calibration::Error>()
@@ -156,7 +166,13 @@ fn print_preparation_retains_calibration_cause() {
         error.to_string(),
         "MalformedNeutralPrintCalibration phase=4A field=resource_read"
     );
-    let cause = error
+    let wrapper = error
+        .source()
+        .unwrap()
+        .downcast_ref::<CalibrationError>()
+        .unwrap();
+    assert!(matches!(wrapper, CalibrationError::Resource(_)));
+    let cause = wrapper
         .source()
         .unwrap()
         .downcast_ref::<calibration::Error>()

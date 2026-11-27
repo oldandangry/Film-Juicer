@@ -267,10 +267,14 @@ set_property(TARGET JuicerScannerSpectralTests PROPERTY CUDA_RESOLVE_DEVICE_SYMB
 add_test(NAME Scanner.Gpu.PreGlareXyz COMMAND JuicerScannerSpectralTests --gtest_fail_if_no_test_selected)
 set_tests_properties(Scanner.Gpu.PreGlareXyz PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
+# The scanner executable supplies the observed entry object, so it does not
+# extract the uninstrumented entry from juicer_core. The module always uses the archive.
 add_executable(JuicerScannerRouteTests
+    "${JUICER_TEST_ROOT}/native/juicer_cuda_api.cpp"
     scanner/routes_test.cpp resource/allocation_fault.cpp resource/observed_operations.cpp
     ofx/cancellation_test.cpp ofx/instance_host.cpp ofx/production_images.cpp)
 target_compile_definitions(JuicerScannerRouteTests PRIVATE
+    JUICER_TEST_SEAMS=1
     JUICER_DIFFUSION_FRAME_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/native-payload.json")
 target_link_libraries(JuicerScannerRouteTests PRIVATE
     juicer_core film_juicer_rust juicer_dependencies juicer_ofx_headers CUDA::cuda_driver

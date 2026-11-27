@@ -1,8 +1,6 @@
 #include "Cuda/JuicerCudaResourceOperations.h"
 
 namespace JuicerCuda::ResourceOperations {
-    void before_render_admission(FjCuda*, const FjCudaContext*, const FjSubmission*) {}
-
     cudaError_t allocate_upload(void** destination, std::size_t bytes) {
         return cudaMallocHost(destination, bytes);
     }
