@@ -22,21 +22,17 @@ fn original_exposure_case_id(case: &serde_json::Value) -> String {
         case["polarity"].as_u64().unwrap()
     )
 }
-fn fixture(name: &str) -> Value {
-    let platform = if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        "linux"
+fn fixture(kind: &str) -> Value {
+    let preset = match (cfg!(windows), cfg!(debug_assertions)) {
+        (false, true) => "linux-debug",
+        (false, false) => "linux-release",
+        (true, true) => "windows-clang-debug",
+        (true, false) => "windows-clang-release",
     };
-    serde_json::from_slice(
-        &fs::read(
-            root()
-                .join("tests/film/dir-fixtures")
-                .join(format!("{platform}{name}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap()
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/film/dir");
+    let read = |name| serde_json::from_slice::<Value>(&fs::read(root.join(name)).unwrap()).unwrap();
+    let manifest = read("manifest.json");
+    read(manifest["presets"][preset][kind].as_str().unwrap())
 }
 fn bits(v: &[f32]) -> Value {
     json!(v.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
@@ -84,7 +80,7 @@ fn project(recipe: &dir::Recipe) -> Value {
 #[test]
 fn exact_native_dir_and_bounds() {
     let assets = Assets::new(root().join("Resources"));
-    let captured = fixture("");
+    let captured = fixture("values");
     let cases = captured["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 64);
     let ids: Vec<String> = cases
@@ -150,8 +146,8 @@ fn exact_native_dir_and_bounds() {
 
 #[test]
 fn original_exposure_spans_and_bypasses() {
-    let default_controls = fixture("")["cases"][2]["controls"].clone();
-    let captured = fixture("-f1");
+    let default_controls = fixture("values")["cases"][2]["controls"].clone();
+    let captured = fixture("f1");
     let cases = captured.as_array().unwrap();
     let ids: Vec<String> = cases.iter().map(original_exposure_case_id).collect();
     let rows_ids: Vec<_> = IntoIterator::into_iter(&ids)
@@ -176,9 +172,13 @@ fn original_exposure_spans_and_bypasses() {
         let row = AsRef::<str>::as_ref(&(id)).to_owned();
         let name = case["case"].as_str().unwrap();
         let resources = if matches!(name, "duplicates" | "singleton") {
-            root().join("tests/film/fixtures/synthetic").join(name)
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/film/development/synthetic")
+                .join(name)
         } else {
-            root().join("tests/film/dir-fixtures/synthetic").join(name)
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/film/dir/synthetic")
+                .join(name)
         };
         let assets = Assets::new(resources);
         let development = film::Development::new(
@@ -286,8 +286,8 @@ fn minimum_keeps_zero_sign_and_rejects_before_clamp() {
 #[test]
 fn focused_native_conditionals_and_minima() {
     let assets = Assets::new(root().join("Resources"));
-    let base = fixture("");
-    let cases = fixture("-focused");
+    let base = fixture("values");
+    let cases = fixture("focused");
     let cases = cases.as_array().unwrap();
     let ids: Vec<String> = cases
         .iter()

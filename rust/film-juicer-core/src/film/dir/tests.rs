@@ -5,7 +5,7 @@ use std::path::Path;
 #[test]
 fn matrix_and_axis_errors_precede_knees() {
     let resources = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/film/fixtures/synthetic/duplicates");
+        .join("tests/fixtures/film/development/synthetic/duplicates");
     let duplicate_assets = Assets::new(resources);
     let duplicate = film::Development::new(
         duplicate_assets.film("kodak_portra_400").unwrap(),

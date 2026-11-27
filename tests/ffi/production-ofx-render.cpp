@@ -362,7 +362,13 @@ namespace {
                 "ordinary spectral fixture identity");
         const std::string referencePreset = preset.ends_with("-release") ? preset.substr(0, preset.size() - 8) + "-debug" : preset;
         require(fixture.at("reference_preset") == referencePreset, "ordinary spectral fixture reference preset");
-        const auto& rows = fixture.at("rows");
+        const auto payloadName = fixture.at("payload").get<std::string>();
+        require(payloadName == "ordinary-" + referencePreset + "-rows.json", "ordinary spectral fixture payload filename");
+        const auto payload = Json::parse(std::ifstream(path.parent_path() / payloadName));
+        require(payload.at("reference_preset") == referencePreset &&
+                    payload.at("reference_sha256") == fixture.at("reference_sha256"),
+                "ordinary spectral fixture payload reference");
+        const auto& rows = payload.at("rows");
         require(rows.is_object() && rows.size() == kOrdinaryCases.size(), "ordinary spectral fixture membership");
         std::array<std::vector<float>, kOrdinaryCases.size()> result;
         for (std::size_t route = 0; route < kOrdinaryCases.size(); ++route) {
@@ -566,8 +572,11 @@ namespace {
 
     Json captured_preflash(const EditedRenderInputs& input) {
         const auto manifest = Json::parse(std::ifstream(input.preflashFixtures / "manifest.json"));
-        return Json::parse(std::ifstream(input.preflashFixtures /
-                                         manifest.at("presets").at(input.preset).at("native").get<std::string>()));
+        const auto& selected = manifest.at("presets").at(input.preset);
+        auto captured = Json::parse(std::ifstream(input.preflashFixtures / selected.at("native").get<std::string>()));
+        auto cases = Json::parse(std::ifstream(input.preflashFixtures / selected.at("cases").get<std::string>()));
+        captured["cases"] = std::move(cases.at("cases"));
+        return captured;
     }
 
     constexpr const char* kViewingPaper = "portra_endura_viewing_d65";

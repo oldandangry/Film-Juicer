@@ -1,0 +1,4 @@
+{
+  "preset": "linux-release",
+  "payload": "native-payload.json"
+}

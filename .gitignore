@@ -60,8 +60,6 @@ vcpkg_installed/
 *.rsp
 *.lastbuildstate
 *.zip
-/DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
-/before-juicer.ofx
 
 __pycache__/
 *.py[cod]

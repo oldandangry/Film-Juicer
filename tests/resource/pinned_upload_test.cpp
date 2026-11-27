@@ -249,7 +249,7 @@ namespace {
         const std::filesystem::path directory(JUICER_PREFLASH_FIXTURES);
         const auto manifest = Json::parse(std::ifstream(directory / "manifest.json"));
         const auto fixture = Json::parse(std::ifstream(directory /
-                                                       manifest.at("presets").at(JUICER_TEST_PRESET_NAME).at("native").get<std::string>()));
+                                                       manifest.at("presets").at(JUICER_TEST_PRESET_NAME).at("cases").get<std::string>()));
         const auto& cases = fixture.at("cases");
         ASSERT_EQ(cases.at(0).at("id"), "preflash-unit");
         ASSERT_EQ(cases.at(2).at("id"), "preflash-pattern");
@@ -451,8 +451,10 @@ namespace {
     INSTANTIATE_TEST_SUITE_P(RecordFailure, PinnedUploadRecordFailure, testing::Values(cudaErrorInvalidResourceHandle, cudaErrorContextIsDestroyed));
 
     TEST_F(PinnedUpload, DirColdCallbackInstallsBothMatricesAndStagesWeights) {
-        const auto fixture = Json::parse(std::ifstream(JUICER_DIR_BOUNDARY_FIXTURE));
-        ASSERT_EQ(fixture.at("preset"), JUICER_TEST_PRESET_NAME);
+        const std::filesystem::path path(JUICER_DIR_BOUNDARY_FIXTURE);
+        const auto context = Json::parse(std::ifstream(path));
+        ASSERT_EQ(context.at("preset"), JUICER_TEST_PRESET_NAME);
+        const auto fixture = Json::parse(std::ifstream(path.parent_path() / context.at("payload").get<std::string>()));
         const auto& rows = fixture.at("cases");
         const auto row = std::ranges::find_if(rows, [](const Json& item) {
             return item.at("input").at("name") == "literal-9x6";

@@ -19,7 +19,12 @@ fn repository() -> PathBuf {
 }
 fn fixture(name: &str) -> Value {
     serde_json::from_slice(
-        &fs::read(repository().join("tests/profile/fixtures").join(name)).unwrap(),
+        &fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/profile")
+                .join(name),
+        )
+        .unwrap(),
     )
     .unwrap()
 }
@@ -117,8 +122,11 @@ fn downstream(curve_hash: u64, gamma: u64, expected: &Value) -> [u64; 3] {
 fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
     let gamma_fixture = fixture("print-gamma.json");
     let density = fixture("density.json");
-    let samples =
-        fs::read(repository().join("tests/profile/fixtures/density-samples.bin")).unwrap();
+    let samples = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/profile/density-samples.bin"),
+    )
+    .unwrap();
     let directory = Directory::new();
     let mut bundled = 0;
     let mut floors = 0;

@@ -1,0 +1,4 @@
+{
+  "preset": "linux-debug",
+  "payload": "native-payload.json"
+}

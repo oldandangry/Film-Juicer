@@ -855,7 +855,7 @@ mod tests {
             (false, false) => "linux-release",
         };
         let directory =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/film/effects-fixtures");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/film/effects");
         let manifest: Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();

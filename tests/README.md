@@ -72,13 +72,26 @@ shell with `dumpbin` available.
 
 | Area | Test and fixture owners |
 | --- | --- |
-| Rust model, publication and assets | [Core tests](../rust/film-juicer-core/tests) and unit tests beside their source owners. |
-| ABI, value preparation and owner lifetime | [ABI and bindings](../docs/ffi.md) and [native FFI cases](ffi/README.md). |
+| Rust model, publication and assets | [Core tests](../rust/film-juicer-core/tests), [core fixtures](../rust/film-juicer-core/tests/fixtures) and unit tests beside their source owners. |
+| ABI, value preparation and owner lifetime | [ABI and bindings](../docs/ffi.md) and [native FFI cases](ffi). |
 | OFX host callbacks, production renders and recovery | [OFX host fixtures](ofx/README.md), [production staged probe](ffi/production-ofx-render.cpp), and the staged frame and Print edit cases. |
 | Film v1 Full and proxy sampling | [Optical aperture cases](grain/film_apertures_test.cpp), [frozen bank](../Resources/grain/portra-400/NOTICE.md), and [independent table fixtures](grain/portra-table-fixtures). |
 | Scanner spectra, binding and schedules | [Scanner cases](scanner). |
 | Device resources, exact-context lifetimes and failure ordering | [Resource cases](resource) and [native CUDA ABI cases](ffi). |
 | Explicit performance work | [Benchmark guide](benchmarks/README.md). |
+
+Core-only fixtures live with the Rust crate. Native and cross-language fixtures
+live here, including the [DIR boundary capture](dir/boundary-fixtures),
+[Print preflash cases and products](print/preflash-fixtures), the
+[Portra tables](grain/portra-table-fixtures) and the
+[scanner binding vectors](scanner/color-fixtures/scanner-binding-v1.json).
+The staged OFX probe opens the preset-named fixture and checks its reference
+preset before reading the shared rows for that operating system.
+
+Fixture manifests record logical preset membership, stored parts and original
+capture provenance. A part can provide complete fields or replace named row
+positions with preset-specific words. Historical captures and command
+inventories remain available at the fixed archive tag.
 
 Keep the checked-in fixture bytes and expected values fixed during ordinary
 tests. Compare output with the independent expectation that the case names.
@@ -89,3 +102,5 @@ changes. Resolve and live-driver-loss acceptance have their own evidence.
 
 The [tagged test guide](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/README.md)
 records the original migration suites and commands for reproducing that baseline.
+The [tagged scanner LUT captures](https://github.com/oldandangry/Film-Juicer/tree/archive/spectral-cutover-2026-11/tests/scanner/lut-fixtures)
+remain available with their original manifest.

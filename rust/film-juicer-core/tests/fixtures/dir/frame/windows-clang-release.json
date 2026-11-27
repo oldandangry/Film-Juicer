@@ -1,0 +1,4 @@
+{
+  "preset": "windows-clang-release",
+  "payload": "native-payload.json"
+}

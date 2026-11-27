@@ -79,8 +79,8 @@ mod tests {
 
     #[test]
     fn complete_native_capture() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/frame/geometry-fixtures");
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frame/geometry");
         let read = |name: &str| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
         };

@@ -274,7 +274,7 @@ mod tests {
         let fixture: Value = serde_json::from_str(
             &std::fs::read_to_string(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../tests/scanner/color-fixtures/native.json"),
+                    .join("tests/fixtures/scanner/color/native.json"),
             )
             .unwrap(),
         )

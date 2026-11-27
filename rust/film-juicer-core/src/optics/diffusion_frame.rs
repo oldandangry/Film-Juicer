@@ -663,7 +663,7 @@ mod tests {
     fn native_capture() {
         let captured: Value = {
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/diffusion/frame-fixtures");
+                .join("tests/fixtures/optics/diffusion-frame");
             let read = |name: &str| -> Value {
                 serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
             };

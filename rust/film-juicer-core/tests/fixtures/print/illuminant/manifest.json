@@ -1,0 +1,32 @@
+{
+  "presets": {
+    "linux-debug": "rust-literal.json",
+    "linux-release": "rust-literal.json",
+    "windows-clang-debug": "rust-literal.json",
+    "windows-clang-release": "rust-literal.json"
+  },
+  "original_captures": {
+    "linux-debug-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "linux-release-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "windows-clang-debug-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "windows-clang-release-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    }
+  },
+  "files": {
+    "rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    }
+  }
+}

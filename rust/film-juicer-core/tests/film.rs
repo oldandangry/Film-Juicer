@@ -2,12 +2,21 @@
 
 #![forbid(unsafe_code)]
 
-use std::fs;
 use std::path::PathBuf;
 use film_juicer_core::assets::Assets;
 use film_juicer_core::film::{Development, Error, Params};
 use film_juicer_core::route::ScanRoute;
 use serde_json::{Value, json};
+
+#[path = "support/capture.rs"]
+mod capture;
+
+const PRESET: &str = match (cfg!(windows), cfg!(debug_assertions)) {
+    (true, true) => "windows-clang-debug",
+    (true, false) => "windows-clang-release",
+    (false, true) => "linux-debug",
+    (false, false) => "linux-release",
+};
 
 fn bits(values: &[f32]) -> Value {
     json!(
@@ -45,21 +54,11 @@ fn development_case_id(case: &Value) -> String {
 }
 #[test]
 fn matches_native_captures_and_retains_the_profile() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let preset = match (cfg!(target_os = "windows"), cfg!(debug_assertions)) {
-        (true, true) => "windows-clang-debug",
-        (true, false) => "windows-clang-release",
-        (false, true) => "linux-debug",
-        (false, false) => "linux-release",
-    };
-    let args = [
-        PathBuf::new(),
-        root.join("Resources"),
-        root.join("tests/film/fixtures")
-            .join(format!("{preset}.json")),
-    ];
-    let assets = Assets::new(PathBuf::from(&args[1]));
-    let fixture: Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixtures = root.join("tests/fixtures/film/development");
+    let manifest = capture::read(&fixtures, "manifest.json");
+    let assets = Assets::new(root.join("../../Resources"));
+    let fixture = capture::read_parts(&fixtures, &manifest["presets"][PRESET]["development"]);
     let mut count = 0;
     let cases = fixture["cases"].as_array().unwrap();
     let ledger_cases_ids: Vec<_> = IntoIterator::into_iter(cases.iter().map(development_case_id))
@@ -259,7 +258,7 @@ fn matches_native_captures_and_retains_the_profile() {
         "missing comparisons: {route_row_remaining:?}"
     );
     let retained = {
-        let temporary = Assets::new(PathBuf::from(&args[1]));
+        let temporary = Assets::new(root.join("../../Resources"));
         Development::new(
             temporary.film("kodak_portra_400").unwrap(),
             Params {
@@ -281,18 +280,13 @@ fn matches_native_captures_and_retains_the_profile() {
 
 #[test]
 fn variable_axes_and_reservation_identity_failures() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let preset = match (cfg!(target_os = "windows"), cfg!(debug_assertions)) {
-        (true, true) => "windows-clang-debug",
-        (true, false) => "windows-clang-release",
-        (false, true) => "linux-debug",
-        (false, false) => "linux-release",
-    };
-    let fixtures = root.join("tests/film/fixtures");
-    let captured: Value = serde_json::from_slice(
-        &fs::read(fixtures.join(format!("{preset}-synthetic.json"))).unwrap(),
-    )
-    .unwrap();
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/film/development");
+    let manifest = capture::read(&fixtures, "manifest.json");
+    let captured = capture::read(
+        &fixtures,
+        manifest["presets"][PRESET]["synthetic"].as_str().unwrap(),
+    );
     let cases = captured.as_array().unwrap();
     let ids: Vec<_> = cases
         .iter()

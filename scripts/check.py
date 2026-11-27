@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 NATIVE_DIRS = {"native", "src", "tests"}
 TRANSLATIONS = {".c", ".cc", ".cpp", ".cxx", ".cu"}
 HEADERS = {".h", ".hh", ".hpp", ".hxx", ".cuh", ".inc", ".inl", ".ixx"}
-GENERATED = {"src/GeneratedColorSpaces.cpp", "src/GeneratedColorSpaces.h"}
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 DEPENDENCIES = {
     "film-juicer-core": {"libm", "serde", "serde_json", "triomphe"},
@@ -82,7 +81,6 @@ def native_paths(paths):
         for path in paths
         if path.parts[0] in NATIVE_DIRS
         and path.suffix in TRANSLATIONS | HEADERS
-        and path.as_posix() not in GENERATED
         and not set(path.parts) & {"fixtures", "generated", "vendor", "vendored"}
     ]
 

@@ -55,6 +55,6 @@ Checks: >
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '^(.*[\\/])?(src|native|tests)[\\/].*'
-ExcludeHeaderFilterRegex: '^(.*[\\/])?(third_party|external|OFXS|OpenFX|vcpkg|packages|Program Files|Windows Kits|NVIDIA GPU Computing Toolkit)[\\/].*'
+ExcludeHeaderFilterRegex: '^(.*[\\/])?(third_party|external|Program Files|Windows Kits|NVIDIA GPU Computing Toolkit)[\\/].*'
 FormatStyle: none
 SystemHeaders: false

@@ -11,7 +11,11 @@ fn repository() -> PathBuf {
 }
 fn fixture() -> Value {
     serde_json::from_slice(
-        &std::fs::read(repository().join("tests/ffi/fixtures/exposure/numerical.json")).unwrap(),
+        &std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/exposure/numerical.json"),
+        )
+        .unwrap(),
     )
     .unwrap()
 }
@@ -225,8 +229,12 @@ fn reference_matches_native_sampling_reflection_and_failure_priority() {
     );
 }
 
+#[path = "support/capture.rs"]
+mod capture;
+
 fn mallett_fixture() -> Value {
-    let directory = repository().join("tests/ffi/fixtures/exposure");
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exposure");
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(directory.join("mallett-manifest.json")).unwrap())
             .unwrap();
@@ -236,11 +244,7 @@ fn mallett_fixture() -> Value {
         (true, true) => "windows-clang-debug",
         (true, false) => "windows-clang-release",
     };
-    serde_json::from_slice(
-        &std::fs::read(directory.join(manifest["presets"][preset]["numerical"].as_str().unwrap()))
-            .unwrap(),
-    )
-    .unwrap()
+    capture::read_parts(&directory, &manifest["presets"][preset]["numerical"])
 }
 fn exact_words(actual: &[f32], expected: &Value) {
     assert_eq!(actual.len(), expected.as_array().unwrap().len());

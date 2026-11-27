@@ -55,8 +55,8 @@ For a maintenance change, follow the authoritative value to its actual consumer:
 | Native workspace attachment | [`WorkspaceLayout::create`](src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp) â†’ Root frame preparation â†’ exact-context leases and execution consumers â†’ completion-aware release/alias reuse in [`ProcessRoot.cpp`](src/ProcessRoot.cpp). |
 
 Preserve arithmetic order, encodings, identities/seeds and fixture-specific bounds.
-The approved [density policy](tests/profile/fixtures/README.md) uses pinned
-`libm::erfcf`; [filtered print](tests/print/illuminant-fixtures/README.md) uses
+The approved [density policy](rust/film-juicer-core/tests/fixtures/profile/README.md) uses pinned
+`libm::erfcf`. [Filtered print](rust/film-juicer-core/tests/fixtures/print/illuminant/README.md) uses
 `libm::erff` with exact selected Rust expectations and resulting identities.
 The [tagged input-color contract](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/ffi/README.md#input-color-preparation) retains
 separate-f32 inverse authority. These are bounded numerical policies, not a
@@ -69,7 +69,7 @@ consume-once correctness. Panic containment does not make every allocation
 fallible. Native failure retention does not retain foreign images, streams,
 contexts or unloaded module code; driver loss and forced unload have no universal
 safety guarantee. Review the [ABI/lifetime contract](native/juicer_cuda_api.h)
-and [fixture limitations](tests/ffi/README.md) when changing those edges. The
+and [ABI and binding guide](docs/ffi.md) when changing those edges. The
 plug-in as a whole is not entirely memory-safe.
 
 ## Naming

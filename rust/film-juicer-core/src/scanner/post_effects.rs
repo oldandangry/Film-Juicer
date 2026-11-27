@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn complete_native_fields_identity_failures_and_owned_lifetime() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/scanner/post-effects-fixtures");
+            .join("tests/fixtures/scanner/post-effects");
         let read = |name: &str| -> Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
         };

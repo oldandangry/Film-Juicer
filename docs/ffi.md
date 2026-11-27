@@ -4,11 +4,11 @@ CMake links the module and native witnesses to the same `film_juicer_rust`
 archive under `cargo/production`. The Rust-only workflow runs locked workspace
 nextest and doctests without the CUDA toolchain.
 
-`Ffi.Host.ProductionCudaAbi` checks 678 size, alignment, offset and value facts
-from [the CUDA inventory](../tests/ffi/cuda_abi_facts.inc). The strict C11
-consumer also checks the flat call and preparation callback signatures and
-the diffusion lane counts. Locked nextest compares the generated Rust
-types and values with the same frozen layout facts. The C11 OFX ABI case
+`Ffi.Host.ProductionCudaAbi` checks the frozen size, alignment, offset and
+value facts in [the CUDA inventory](../tests/ffi/cuda_abi_facts.inc), plus the
+flat call and preparation callback signatures and diffusion lane counts.
+Locked nextest also checks 678 size, alignment, offset and value facts against
+the generated Rust bindings. The C11 OFX ABI case
 checks vendored suite field types and signatures. The loaded module and OFX
 host cases exercise discovery, variadic suite calls, reentry, and image leases.
 
@@ -78,7 +78,7 @@ They remain visible in generation logs. The emitted allowlist contains complete
 named C fields and no opaque storage replacement except the intentional
 incomplete `FjCuda` handle. C/C++/Rust field evidence and byte-for-byte native
 regeneration qualify this output; these checks do not prove render lifetime.
-The CUDA inventory contains 624 facts. It pins the 752-byte `FjFilmGrain`
+The CUDA C11 inventory pins the 752-byte `FjFilmGrain`
 layout, including the signed double `sample_origin` at byte 736.
 
 Repeat the same native command with `--api ofx`. The wrapper includes

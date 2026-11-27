@@ -16,6 +16,8 @@ if(WIN32)
 else()
     set(JUICER_TEST_PRESET_NAME "linux-${JUICER_TEST_CONFIGURATION}")
 endif()
+set(JUICER_ORDINARY_FIXTURE
+    "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/ordinary-${JUICER_TEST_PRESET_NAME}.json")
 set(JUICER_TEST_ARTIFACT_ROOT
     "${JUICER_TEST_ROOT}/out/validation/${JUICER_TEST_PRESET_NAME}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/ResourceStaging.cmake")
@@ -199,14 +201,14 @@ add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe
         "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
         "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/Resources"
-        "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/ordinary-${JUICER_TEST_PRESET_NAME}.json"
+        "${JUICER_ORDINARY_FIXTURE}"
         "${JUICER_TEST_PRESET_NAME}" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Ofx.Gpu.FrameAndPrintEdits
     COMMAND JuicerProductionPreparedRenderProbe --frame-and-print-edits
         "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>"
-        "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/spectral-v1/ordinary-${JUICER_TEST_PRESET_NAME}.json"
+        "${JUICER_ORDINARY_FIXTURE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/print/preflash-fixtures"
         "${JUICER_TEST_ARTIFACT_ROOT}"
         "${JUICER_TEST_PRESET_NAME}")

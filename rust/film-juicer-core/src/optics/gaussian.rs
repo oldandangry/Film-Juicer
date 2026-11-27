@@ -173,7 +173,7 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
             } else {
                 let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../tests/optics/gaussian-fixtures");
+                    .join("tests/fixtures/optics/gaussian");
                 let read = |name: &str| -> serde_json::Value {
                     serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
                 };

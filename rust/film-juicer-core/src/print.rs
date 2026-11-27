@@ -596,15 +596,6 @@ mod tests {
     use super::{Error, FilterParams, Illuminant};
     use serde_json::Value;
 
-    #[cfg(all(target_os = "linux", debug_assertions))]
-    const SELECTED: &str = "linux-debug-rust-literal.json";
-    #[cfg(all(target_os = "linux", not(debug_assertions)))]
-    const SELECTED: &str = "linux-release-rust-literal.json";
-    #[cfg(all(target_os = "windows", debug_assertions))]
-    const SELECTED: &str = "windows-clang-debug-rust-literal.json";
-    #[cfg(all(target_os = "windows", not(debug_assertions)))]
-    const SELECTED: &str = "windows-clang-release-rust-literal.json";
-
     fn floats<const N: usize>(value: &Value) -> [f32; N] {
         let words = value.as_array().unwrap();
         assert_eq!(words.len(), N);
@@ -613,11 +604,17 @@ mod tests {
 
     #[test]
     fn selected_characterization() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/print/illuminant-fixtures")
-            .join(SELECTED);
-        let document: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/print/illuminant");
+        let preset = match (cfg!(windows), cfg!(debug_assertions)) {
+            (false, true) => "linux-debug",
+            (false, false) => "linux-release",
+            (true, true) => "windows-clang-debug",
+            (true, false) => "windows-clang-release",
+        };
+        let manifest = crate::test_capture::read(&root, "manifest.json");
+        let document =
+            crate::test_capture::read(&root, manifest["presets"][preset].as_str().unwrap());
         let mut differences = Vec::new();
         let rows = document["cases"].as_array().unwrap();
         let cases_ids: Vec<_> =
@@ -714,17 +711,12 @@ mod preflash_tests {
     fn captured_preflash() -> (Value, Value) {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/print/preflash-fixtures");
-        let manifest: Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
-        let captured: Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                directory.join(manifest["presets"][PRESET]["native"].as_str().unwrap()),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let manifest = crate::test_capture::read(&directory, "manifest.json");
+        let selected = &manifest["presets"][PRESET];
+        let mut captured =
+            crate::test_capture::read(&directory, selected["native"].as_str().unwrap());
+        let mut cases = crate::test_capture::read(&directory, selected["cases"].as_str().unwrap());
+        captured["cases"] = cases["cases"].take();
         (manifest, captured)
     }
 
