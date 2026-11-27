@@ -9,6 +9,7 @@ mod actions;
 mod default_actions;
 mod render;
 mod params;
+mod param_id;
 mod controls;
 mod instance;
 #[allow(
@@ -227,3 +228,10 @@ pub(super) mod sys;
 
 #[cfg(test)]
 mod abi_tests;
+
+const fn ofx_str(bytes: &[u8]) -> &std::ffi::CStr {
+    match std::ffi::CStr::from_bytes_with_nul(bytes) {
+        Ok(value) => value,
+        Err(_) => panic!("generated OFX constant must be a C string"),
+    }
+}

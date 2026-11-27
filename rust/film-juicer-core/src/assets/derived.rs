@@ -35,7 +35,15 @@ impl fmt::Display for DerivedError {
         }
     }
 }
-impl std::error::Error for DerivedError {}
+impl std::error::Error for DerivedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Hull(error) => Some(error),
+            Self::Boundary(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<DerivedError> for AssetError {
     fn from(error: DerivedError) -> Self {
         Self::Derived(error)

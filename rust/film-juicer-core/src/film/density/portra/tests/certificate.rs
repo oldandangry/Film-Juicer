@@ -85,7 +85,7 @@ fn allowance_guard(development: &film::Development, [lo, hi]: [f32; 2]) -> Guard
 
 struct Proof<'a> {
     assets: &'a Assets,
-    bank: &'a std::sync::Arc<PortraGrainBank>,
+    bank: &'a PortraGrainBank,
     development: &'a film::Development,
     template: PortraGrainTable,
     gain: f32,
@@ -453,11 +453,7 @@ fn guard_report(proof: &Proof<'_>, parent: &Parent, words: Option<&[u32]>) -> se
     })
 }
 
-pub(super) fn run(
-    assets: &Assets,
-    bank: &std::sync::Arc<PortraGrainBank>,
-    development: &film::Development,
-) {
+pub(super) fn run(assets: &Assets, bank: &PortraGrainBank, development: &film::Development) {
     let Some(bundle) = std::env::var_os("FJ_PORTRA_CERTIFICATE") else {
         return;
     };

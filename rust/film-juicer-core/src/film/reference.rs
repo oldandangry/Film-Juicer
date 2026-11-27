@@ -50,6 +50,23 @@ pub enum Error {
     },
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Reconstruction { .. } => {
+                "MalformedRequiredResource phase=3B field=synthetic_reference_raw"
+            }
+            Self::Meter => "MalformedRequiredResource phase=3B field=synthetic_reference_meter",
+            Self::DensityLookup { .. } => {
+                "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for Error {}
+
 pub struct Reference {
     baseline_raw_rgb: [f32; 3],
     compensated_raw_rgb: [f32; 3],

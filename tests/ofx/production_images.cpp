@@ -173,10 +173,10 @@ namespace ofx_test {
         author(host, effect, "GlarePercent", {.uiDefault = {0.03}, .authored = {0.03}});
         author(host, effect, "GlareRoughness", {.uiDefault = {0.7}, .authored = {0.7}});
         author(host, effect, "GlareBlurSigmaPx", {.uiDefault = {0.5}, .authored = {0.5}});
-        author(host, effect, "PrintShadowCompensationFactor", {.uiDefault = {0.0}, .authored = {0.0}});
-        author(host, effect, "PrintShadowCompensationDensity", {.uiDefault = {1.2}, .authored = {1.2}});
-        author(host, effect, "PrintShadowCompensationTransition", {.uiDefault = {0.3}, .authored = {0.3}});
-        author(host, effect, "ReferenceIlluminant", {.uiDefault = {0}, .authored = {0}});
+        author(host, effect, "PrintShadowCompensationFactor", {.uiDefault = {0.0}, .authored = {0.5}});
+        author(host, effect, "PrintShadowCompensationDensity", {.uiDefault = {1.2}, .authored = {1.5}});
+        author(host, effect, "PrintShadowCompensationTransition", {.uiDefault = {0.3}, .authored = {0.75}});
+        author(host, effect, "ReferenceIlluminant", {.uiDefault = {0}, .authored = {2}});
         author(host, effect, "EnlargerIlluminant", {.uiDefault = {3}, .authored = {3}});
         author(host, effect, "OutputColorSpace", {.uiDefault = {0}, .authored = {0}});
         author(host, effect, "OutputCctfEncoding", {.uiDefault = {1}, .authored = {1}});

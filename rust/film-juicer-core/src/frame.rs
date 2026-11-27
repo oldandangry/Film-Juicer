@@ -22,6 +22,14 @@ pub enum DomainError {
     Range,
 }
 
+impl std::fmt::Display for DomainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("frame bounds exceed the supported extent")
+    }
+}
+
+impl std::error::Error for DomainError {}
+
 impl Domain {
     pub fn from_bounds(bounds: Bounds) -> Result<Self, DomainError> {
         let width = i64::from(bounds.x2) - i64::from(bounds.x1);

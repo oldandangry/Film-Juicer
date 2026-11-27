@@ -1,7 +1,7 @@
 //! Process asset ownership. Published handles outlive cache release and this owner.
 
 mod derived;
-mod grain;
+pub(crate) mod grain;
 pub use grain::{PortraGrainBank, PortraGrainError, PortraGrainRecord, PortraGrainTable};
 pub use derived::{DerivedError, Illuminants, InputHull, OutputBoundary};
 
@@ -38,7 +38,7 @@ pub enum AssetError {
     Noise(Arc<noise::Error>),
     NoiseCachePoisoned,
     Derived(DerivedError),
-    PortraGrain(Arc<PortraGrainError>),
+    PortraGrain(PortraGrainError),
 }
 
 impl fmt::Display for AssetError {
@@ -75,7 +75,7 @@ impl std::error::Error for AssetError {
             Self::Calibration(source) => Some(source.as_ref()),
             Self::Noise(source) => Some(source.as_ref()),
             Self::Derived(source) => Some(source),
-            Self::PortraGrain(source) => Some(source.as_ref()),
+            Self::PortraGrain(source) => Some(source),
             Self::MissingProfile { .. }
             | Self::ProfileCachePoisoned { .. }
             | Self::CsvCachePoisoned { .. }
@@ -169,8 +169,8 @@ type NoiseSnapshot = Result<Arc<NoiseBundle>, Arc<noise::Error>>;
 
 pub struct Assets {
     resource_dir: PathBuf,
-    portra_grain: OnceLock<Result<Arc<PortraGrainBank>, Arc<PortraGrainError>>>,
-    portra_table: Mutex<Option<Arc<PortraGrainTable>>>,
+    portra_grain: OnceLock<Result<triomphe::Arc<PortraGrainBank>, PortraGrainError>>,
+    portra_table: Mutex<Option<triomphe::Arc<PortraGrainTable>>>,
     portra_table_request: std::sync::atomic::AtomicU64,
     catalog: OnceLock<Result<CatalogSnapshot, Arc<CatalogError>>>,
     hanatos: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,

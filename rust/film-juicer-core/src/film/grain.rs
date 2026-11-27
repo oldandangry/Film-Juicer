@@ -39,6 +39,18 @@ pub enum Error {
     ZeroIdentity,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Controls => "invalid Current grain controls",
+            Self::MissingLayers => "missing density layers for Current grain",
+            Self::ZeroIdentity => "Current grain recipe has a zero identity",
+        })
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub struct Recipe {
     active: bool,

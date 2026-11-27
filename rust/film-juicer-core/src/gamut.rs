@@ -1,4 +1,4 @@
-//! Input hull construction and borrowed TC remapping.
+//! Input hull construction, chromaticity compression and output gamut policy.
 
 use crate::color::OutputSpace;
 #[cfg(test)]
@@ -9,7 +9,6 @@ mod input_hull_tests;
 mod output_gamut_tests;
 
 use crate::hash;
-use crate::reconstruction::{self, TcError};
 
 #[expect(
     clippy::approx_constant,
@@ -301,21 +300,21 @@ fn knee(distance: f64) -> f64 {
     let compressed = normalized / (1.0 + normalized.powf(1.2)).powf(1.0 / 1.2);
     0.815 + scale * compressed
 }
-fn compress(hull: InputHull<'_>, xy: [f32; 2]) -> Result<[f32; 2], TcError> {
+pub(crate) fn compress(hull: InputHull<'_>, xy: [f32; 2]) -> Option<[f32; 2]> {
     if !xy.iter().all(|v| v.is_finite()) {
-        return Err(TcError::UnusableCompressedCoordinates);
+        return None;
     }
     let center = hull.center.map(f64::from);
     let dx = f64::from(xy[0]) - center[0];
     let dy = f64::from(xy[1]) - center[1];
     let distance = dx.hypot(dy);
     if distance < 1e-9 {
-        return Ok(xy);
+        return Some(xy);
     }
     let direction = [dx / distance, dy / distance];
     let boundary = ray_polygon_distance(center, direction, hull.xy);
     if !boundary.is_finite() || boundary <= 1e-12 {
-        return Err(TcError::UnusableCompressedCoordinates);
+        return None;
     }
     let compressed_distance = knee(distance / boundary) * boundary;
     let result = [
@@ -323,48 +322,9 @@ fn compress(hull: InputHull<'_>, xy: [f32; 2]) -> Result<[f32; 2], TcError> {
         center[1] + direction[1] * compressed_distance,
     ];
     if !result.iter().all(|v| v.is_finite()) {
-        return Err(TcError::UnusableCompressedCoordinates);
+        return None;
     }
-    Ok(result.map(|v| v as f32))
-}
-fn bilinear(samples: &[f32], tc: [f32; 2], channel: usize) -> Result<f32, TcError> {
-    let cp = tc[0].clamp(0.0, 1.0) * 191.0;
-    let mp = tc[1].clamp(0.0, 1.0) * 191.0;
-    if !cp.is_finite() || !mp.is_finite() {
-        return Err(TcError::UnusableSamplingCoordinates);
-    }
-    let c0 = cp.floor() as usize;
-    let m0 = mp.floor() as usize;
-    let c1 = (c0 + 1).min(191);
-    let m1 = (m0 + 1).min(191);
-    let cf = cp - c0 as f32;
-    let mf = mp - m0 as f32;
-    let value = |c: usize, m: usize| samples[(c * 192 + m) * 4 + channel];
-    let row0 = value(c0, m0) + cf * (value(c1, m0) - value(c0, m0));
-    let row1 = value(c0, m1) + cf * (value(c1, m1) - value(c0, m1));
-    Ok(row0 + mf * (row1 - row0))
-}
-pub(crate) fn remap_tc_lut(
-    samples: &[f32; reconstruction::TC_LUT_SAMPLE_COUNT],
-    hull: InputHull<'_>,
-) -> Result<Vec<f32>, TcError> {
-    let mut output = reconstruction::tc_scratch(reconstruction::TC_LUT_SAMPLE_COUNT)?;
-    for c in 0..192 {
-        let root = (c as f32 / 191.0).sqrt();
-        for m in 0..192 {
-            let xy = [1.0 - root, (m as f32 / 191.0) * root];
-            let compressed = compress(hull, xy)?;
-            let tc = reconstruction::tri2quad(compressed[0], compressed[1]);
-            for channel in 0..3 {
-                let value = bilinear(samples, tc, channel)?;
-                if !value.is_finite() {
-                    return Err(TcError::NonfiniteRemappedSample);
-                }
-                output[(c * 192 + m) * 4 + channel] = value;
-            }
-        }
-    }
-    Ok(output)
+    Some(result.map(|v| v as f32))
 }
 
 #[cfg(test)]

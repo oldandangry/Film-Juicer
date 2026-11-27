@@ -329,6 +329,38 @@ pub enum HalationFrameError {
         sigma_px: f64,
     },
 }
+
+impl std::fmt::Display for HalationFrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PixelSize => f.write_str("halation requires a finite, positive pixel size"),
+            Self::BounceCount => {
+                f.write_str("halation bounce count is outside the supported range")
+            }
+            Self::Gaussian {
+                field,
+                channel,
+                index,
+                sigma_px,
+            } => write!(
+                f,
+                "invalid halation Gaussian field={field:?} channel={channel} index={index:?} sigma_px={sigma_px}"
+            ),
+            Self::AdvancedRadius {
+                field,
+                channel,
+                index,
+                sigma_px,
+            } => write!(
+                f,
+                "halation Gaussian radius exceeds the frame limit field={field:?} channel={channel} index={index:?} sigma_px={sigma_px}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HalationFrameError {}
+
 impl HalationFrame {
     /// Resolved scalars do not authenticate recipe provenance or admit CUDA storage.
     pub fn new(

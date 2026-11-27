@@ -161,6 +161,18 @@ pub struct Error {
     trace: Option<FailureTrace>,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid DIR frame field={:?} component={}",
+            self.field, self.component
+        )
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl Error {
     pub fn field(&self) -> Field {
         self.field

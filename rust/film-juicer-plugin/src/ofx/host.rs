@@ -271,18 +271,8 @@ impl<'a> Callback<'a> {
         Ok((first, parameters))
     }
 
-    fn validate_descriptor(&self) -> Result<(), Status> {
-        let mut unused = std::ptr::null_mut();
-        // SAFETY: OFXS validates via a second acquisition before authored writes.
-        // This unused output may be null or differ; the first handle owns writes.
-        Status::acquisition(unsafe {
-            (self.loaded.suites.effect_properties)(self.effect, &mut unused)
-        })
-    }
-
     pub(crate) fn descriptor_properties(&self) -> Result<Properties<'_>, Status> {
         let (first, _) = self.descriptor_handles()?;
-        self.validate_descriptor()?;
         Ok(Properties {
             callback: self,
             handle: first,
@@ -316,7 +306,6 @@ impl<'a> Callback<'a> {
             | b"OfxImageEffectContextRetimer" => false,
             _ => return Err(Status::FAILED),
         };
-        self.validate_descriptor()?;
         if !filter {
             return Ok(None);
         }

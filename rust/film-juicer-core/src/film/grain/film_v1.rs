@@ -1,13 +1,11 @@
 //! Admitted Film v1 controls and their canonical Portra bank.
 
-use std::sync::Arc;
+use triomphe::Arc;
 
+use crate::assets::grain::CALIBRATED_MAX_FOOTPRINT;
 use crate::assets::{PortraGrainBank, PortraGrainTable};
 use crate::{hash, route::ScanRoute};
-use super::super::{
-    Development,
-    density::{self, portra},
-};
+use super::super::{Development, density};
 
 pub const AMOUNT_EV_RANGE: std::ops::RangeInclusive<f32> = -3.0..=3.0;
 pub const TEXEL_PITCH_UM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=4.0;
@@ -213,9 +211,7 @@ impl Raster {
         let full_cell_texels =
             controls.footprint_texels(long_edge_mm, grid.extent[0].max(grid.extent[1]));
         let widest: [f64; 2] = std::array::from_fn(|i| axes[i].widest_interval(first[i], end[i]));
-        if full_cell_texels * widest[0].max(widest[1])
-            <= f64::from(portra::CALIBRATED_MAX_FOOTPRINT)
-        {
+        if full_cell_texels * widest[0].max(widest[1]) <= f64::from(CALIBRATED_MAX_FOOTPRINT) {
             let [[x_min, x_max], [y_min, y_max]] =
                 std::array::from_fn(|i| axes[i].spacing_range(first[i], end[i], widest[i]));
             let square = x_min.max(y_min) <= x_max.min(y_max) || {
@@ -303,7 +299,7 @@ impl Recipe {
         }
     }
 
-    pub fn bank(&self) -> &Arc<PortraGrainBank> {
+    pub fn bank(&self) -> &PortraGrainBank {
         &self.bank
     }
 

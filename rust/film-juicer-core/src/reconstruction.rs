@@ -268,7 +268,7 @@ mod tests {
 
 pub const TC_LUT_SAMPLE_COUNT: usize = 192 * 192 * 4;
 
-pub(crate) fn tri2quad(tx: f32, ty: f32) -> [f32; 2] {
+fn tri2quad(tx: f32, ty: f32) -> [f32; 2] {
     let x = 1.0 - tx;
     let denominator = if x < 1e-10 { 1e-10 } else { x };
     [(x * x).clamp(0.0, 1.0), (ty / denominator).clamp(0.0, 1.0)]
@@ -365,7 +365,7 @@ impl TcError {
         }
     }
 }
-pub(crate) fn tc_scratch(count: usize) -> Result<Vec<f32>, TcError> {
+fn tc_scratch(count: usize) -> Result<Vec<f32>, TcError> {
     if count
         .checked_mul(size_of::<f32>())
         .is_none_or(|bytes| bytes > isize::MAX as usize)
@@ -472,6 +472,47 @@ fn eval_hanatos_surface(params: &[f32; 15], tc: [f32; 2], center: [f32; 2]) -> f
     let normalized = raw / 2.0;
     raw / (1.0 + normalized * normalized).sqrt()
 }
+fn bilinear(samples: &[f32], tc: [f32; 2], channel: usize) -> Result<f32, TcError> {
+    let cp = tc[0].clamp(0.0, 1.0) * 191.0;
+    let mp = tc[1].clamp(0.0, 1.0) * 191.0;
+    if !cp.is_finite() || !mp.is_finite() {
+        return Err(TcError::UnusableSamplingCoordinates);
+    }
+    let c0 = cp.floor() as usize;
+    let m0 = mp.floor() as usize;
+    let c1 = (c0 + 1).min(191);
+    let m1 = (m0 + 1).min(191);
+    let cf = cp - c0 as f32;
+    let mf = mp - m0 as f32;
+    let value = |c: usize, m: usize| samples[(c * 192 + m) * 4 + channel];
+    let row0 = value(c0, m0) + cf * (value(c1, m0) - value(c0, m0));
+    let row1 = value(c0, m1) + cf * (value(c1, m1) - value(c0, m1));
+    Ok(row0 + mf * (row1 - row0))
+}
+fn remap_tc_lut(
+    samples: &[f32; TC_LUT_SAMPLE_COUNT],
+    hull: crate::gamut::InputHull<'_>,
+) -> Result<Vec<f32>, TcError> {
+    let mut output = tc_scratch(TC_LUT_SAMPLE_COUNT)?;
+    for c in 0..192 {
+        let root = (c as f32 / 191.0).sqrt();
+        for m in 0..192 {
+            let xy = [1.0 - root, (m as f32 / 191.0) * root];
+            let compressed =
+                crate::gamut::compress(hull, xy).ok_or(TcError::UnusableCompressedCoordinates)?;
+            let tc = tri2quad(compressed[0], compressed[1]);
+            for channel in 0..3 {
+                let value = bilinear(samples, tc, channel)?;
+                if !value.is_finite() {
+                    return Err(TcError::NonfiniteRemappedSample);
+                }
+                output[(c * 192 + m) * 4 + channel] = value;
+            }
+        }
+    }
+    Ok(output)
+}
+
 pub fn build_tc_lut(input: Input<'_>) -> Result<FilmTcLut, TcError> {
     if !input
         .reference_illuminant
@@ -544,7 +585,7 @@ pub fn build_tc_lut(input: Input<'_>) -> Result<FilmTcLut, TcError> {
         }
     }
     if input.input_compression_active {
-        integrated = crate::gamut::remap_tc_lut(
+        integrated = remap_tc_lut(
             integrated
                 .as_slice()
                 .try_into()

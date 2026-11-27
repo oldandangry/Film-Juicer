@@ -18,11 +18,11 @@
 namespace {
     using ofx_test::Call;
     using ofx_test::Host;
-    constexpr std::array kAcquisition{"effect_first", "param_set", "param_props", "effect_second"};
+    constexpr std::array kAcquisition{"effect_first", "param_set", "param_props"};
     constexpr std::array kRequired{"label", "grouping", "context_dimension", "context_write", "depth_dimension", "depth_write", "single_instance", "host_threading", "multiresolution", "tiles", "render_safety", "cuda_render", "cuda_stream"};
     constexpr std::array kOptional{"short_label", "long_label"};
-    constexpr std::array kRequiredIndices{4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18};
-    constexpr std::array kOptionalIndices{5, 6};
+    constexpr std::array kRequiredIndices{3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17};
+    constexpr std::array kOptionalIndices{4, 5};
 
     void require(bool condition, const std::string& detail) {
         if (!condition)
@@ -48,7 +48,7 @@ namespace {
     }
     std::vector<Call> expected(const char* label, int context = 0, int depth = 0) {
         return {
-            {"effect_first", {}, 0, {}, 0, 0}, {"param_set", {}, 0, {}, 0, 0}, {"param_props", {}, 0, {}, 0, 0}, {"effect_second", {}, 0, {}, 0, 0}, {"string", kOfxPropLabel, 0, label, 0, 1}, {"string", kOfxPropShortLabel, 0, label, 0, 1}, {"string", kOfxPropLongLabel, 0, label, 0, 1}, {"string", kOfxImageEffectPluginPropGrouping, 0, "Negative-juice", 0, 1}, {"dimension", kOfxImageEffectPropSupportedContexts, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedContexts, context, kOfxImageEffectContextFilter, 0, 1}, {"dimension", kOfxImageEffectPropSupportedPixelDepths, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedPixelDepths, depth, kOfxBitDepthFloat, 0, 1}, {"int", kOfxImageEffectPluginPropSingleInstance, 0, {}, 0, 1}, {"int", kOfxImageEffectPluginPropHostFrameThreading, 0, {}, 0, 1}, {"int", kOfxImageEffectPropSupportsMultiResolution, 0, {}, 1, 1}, {"int", kOfxImageEffectPropSupportsTiles, 0, {}, 0, 1}, {"string", kOfxImageEffectPluginRenderThreadSafety, 0, kOfxImageEffectRenderUnsafe, 0, 1}, {"string", kOfxImageEffectPropCudaRenderSupported, 0, "true", 0, 1}, {"string", kOfxImageEffectPropCudaStreamSupported, 0, "true", 0, 1}};
+            {"effect_first", {}, 0, {}, 0, 0}, {"param_set", {}, 0, {}, 0, 0}, {"param_props", {}, 0, {}, 0, 0}, {"string", kOfxPropLabel, 0, label, 0, 1}, {"string", kOfxPropShortLabel, 0, label, 0, 1}, {"string", kOfxPropLongLabel, 0, label, 0, 1}, {"string", kOfxImageEffectPluginPropGrouping, 0, "Negative-juice", 0, 1}, {"dimension", kOfxImageEffectPropSupportedContexts, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedContexts, context, kOfxImageEffectContextFilter, 0, 1}, {"dimension", kOfxImageEffectPropSupportedPixelDepths, 0, {}, 0, 1}, {"string", kOfxImageEffectPropSupportedPixelDepths, depth, kOfxBitDepthFloat, 0, 1}, {"int", kOfxImageEffectPluginPropSingleInstance, 0, {}, 0, 1}, {"int", kOfxImageEffectPluginPropHostFrameThreading, 0, {}, 0, 1}, {"int", kOfxImageEffectPropSupportsMultiResolution, 0, {}, 1, 1}, {"int", kOfxImageEffectPropSupportsTiles, 0, {}, 0, 1}, {"string", kOfxImageEffectPluginRenderThreadSafety, 0, kOfxImageEffectRenderUnsafe, 0, 1}, {"string", kOfxImageEffectPropCudaRenderSupported, 0, "true", 0, 1}, {"string", kOfxImageEffectPropCudaStreamSupported, 0, "true", 0, 1}};
     }
     std::string key(const Call& call) {
         return call.property.empty() ? call.operation : call.operation + "/" + call.property;
@@ -74,7 +74,7 @@ namespace {
         add("required", kRequired);
         add("optional", kOptional);
         ids.push_back("manifest");
-        for (const auto* id : {"null_effect", "null_first", "null_param", "null_param_props", "distinct_second", "null_second/ok", "null_second/yes", "null_second/no", "null_second/default", "failed_null/effect_first", "failed_null/param_set", "failed_null/param_props", "failed_null/effect_second", "both_optional_fail", "short_then_value", "long_then_unknown", "append_dimensions"})
+        for (const auto* id : {"null_effect", "null_first", "null_param", "null_param_props", "failed_null/effect_first", "failed_null/param_set", "failed_null/param_props", "both_optional_fail", "short_then_value", "long_then_unknown", "append_dimensions"})
             ids.emplace_back(id);
         return ids;
     }
@@ -85,7 +85,7 @@ namespace {
 
     void describe(OfxPlugin* plugin, Host& host, const DescriptorExpectation& descriptor) {
         const auto ids = describe_ids();
-        require(ids.size() == 303, "Describe membership size");
+        require(ids.size() == 282, "Describe membership size");
         const auto baseline = expected(descriptor.label);
         const auto run_matrix = [&](std::string_view group, const auto& names, const auto& indices, bool is_optional, bool is_acquisition) {
             for (std::size_t n = 0; n < names.size(); ++n)
@@ -106,7 +106,7 @@ namespace {
                     check_calls(host, calls, id);
                 }
         };
-        run_matrix("acquire", kAcquisition, std::array{0, 1, 2, 3}, false, true);
+        run_matrix("acquire", kAcquisition, std::array{0, 1, 2}, false, true);
         run_matrix("required", kRequired, kRequiredIndices, false, false);
         run_matrix("optional", kOptional, kOptionalIndices, true, false);
         host.statuses.clear();
@@ -132,7 +132,6 @@ namespace {
             host.reset_trace();
             host.statuses.clear();
             host.null_outputs.clear();
-            host.distinct_second = false;
             host.context_dimension = 0;
             host.depth_dimension = 0;
             configure();
@@ -157,20 +156,6 @@ namespace {
         },
             kOfxStatOK,
             baseline);
-        run("distinct_second", [&] {
-            host.distinct_second = true;
-        },
-            kOfxStatOK,
-            baseline);
-        const std::array accepted_values{kOfxStatOK, kOfxStatReplyYes, kOfxStatReplyNo, kOfxStatReplyDefault};
-        const std::array accepted_names{"ok", "yes", "no", "default"};
-        for (std::size_t i = 0; i < accepted_values.size(); ++i)
-            run(std::string("null_second/") + accepted_names[i], [&] {
-                host.null_outputs["effect_second"] = true;
-                host.statuses["effect_second"] = accepted_values[i];
-            },
-                kOfxStatOK,
-                baseline);
         for (std::size_t i = 0; i < kAcquisition.size(); ++i) {
             auto prefix = baseline;
             prefix.erase(prefix.begin() + static_cast<std::ptrdiff_t>(i + 1), prefix.end());
@@ -182,22 +167,22 @@ namespace {
                 prefix);
         }
         run("both_optional_fail", [&] {
-            host.statuses[key(baseline[5])] = kOfxStatErrMemory;
-            host.statuses[key(baseline[6])] = kOfxStatErrUnsupported;
+            host.statuses[key(baseline[4])] = kOfxStatErrMemory;
+            host.statuses[key(baseline[5])] = kOfxStatErrUnsupported;
         },
             kOfxStatOK,
             baseline);
         auto short_prefix = baseline;
-        short_prefix.erase(short_prefix.begin() + 8, short_prefix.end());
+        short_prefix.erase(short_prefix.begin() + 7, short_prefix.end());
         run("short_then_value", [&] {
-            host.statuses[key(baseline[5])] = kOfxStatErrMemory;
-            host.statuses[key(baseline[7])] = kOfxStatErrValue;
+            host.statuses[key(baseline[4])] = kOfxStatErrMemory;
+            host.statuses[key(baseline[6])] = kOfxStatErrValue;
         },
             kOfxStatFailed,
             short_prefix);
         run("long_then_unknown", [&] {
-            host.statuses[key(baseline[6])] = kOfxStatErrMemory;
-            host.statuses[key(baseline[7])] = kOfxStatErrUnknown;
+            host.statuses[key(baseline[5])] = kOfxStatErrMemory;
+            host.statuses[key(baseline[6])] = kOfxStatErrUnknown;
         },
             kOfxStatErrMissingHostFeature,
             short_prefix);

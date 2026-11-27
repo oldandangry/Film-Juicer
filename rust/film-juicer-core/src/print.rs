@@ -300,6 +300,22 @@ pub enum BalanceError {
     Invalid,
 }
 
+impl std::fmt::Display for BalanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Baseline { channel } => {
+                write!(f, "invalid baseline print balance channel={channel}")
+            }
+            Self::Compensated { channel } => {
+                write!(f, "invalid compensated print balance channel={channel}")
+            }
+            Self::Invalid => f.write_str("invalid print balance"),
+        }
+    }
+}
+
+impl std::error::Error for BalanceError {}
+
 /// A completed print balance; reference/scanner/whole-state completion is separate.
 #[derive(Debug)]
 pub struct Balance {
@@ -430,6 +446,15 @@ pub enum PreflashError {
     Channel { channel: usize },
 }
 
+impl std::fmt::Display for PreflashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self::Channel { channel } = self;
+        write!(f, "invalid print preflash integral channel={channel}")
+    }
+}
+
+impl std::error::Error for PreflashError {}
+
 /// The completed integral before exposure scaling and executable f32 admission.
 #[derive(Debug)]
 pub struct PreflashRaw {
@@ -488,6 +513,21 @@ pub enum Error {
     Energy,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sample { sample } => {
+                write!(f, "invalid filtered print illuminant sample={sample}")
+            }
+            Self::Energy => {
+                f.write_str("filtered print illuminant energy must be finite and positive")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub struct Illuminant {
     samples: [f32; 81],
@@ -540,22 +580,6 @@ impl Illuminant {
 
     pub fn samples(&self) -> &[f32; 81] {
         &self.samples
-    }
-}
-
-pub struct CaptureControls {
-    pub exposure: f64,
-    pub preflash: f64,
-    pub exposure_compensation: bool,
-    pub ymc: [f64; 3],
-}
-impl CaptureControls {
-    pub fn complete(self, p: &mut crate::recipe::Params) {
-        p.print_exposure = crate::exposure::finite_or(self.exposure, 1.0);
-        p.print_preflash_exposure = crate::exposure::finite_or(self.preflash, 0.0);
-        p.print_exposure_compensation = i32::from(self.exposure_compensation);
-        p.normalize_print_exposure = 1;
-        p.print_ui_ymc_cc = self.ymc.map(|v| crate::exposure::finite_or(v, 0.0));
     }
 }
 
@@ -829,7 +853,7 @@ mod preflash_tests {
             params.print_preflash_exposure = 0.125;
             params
         };
-        let prepare = |params: &recipe::Params| recipe::prepare(&assets, params).unwrap();
+        let prepare = |params: &crate::capture::Params| recipe::prepare(&assets, params).unwrap();
         fn print(state: &recipe::RenderState) -> &recipe::PrintState {
             match state.route() {
                 PreparedRoute::Print(print) => print,

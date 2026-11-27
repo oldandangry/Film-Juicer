@@ -2,9 +2,8 @@
 
 These notices cover every external registry release in the repository's
 `Cargo.lock`. Film-Juicer statically links its production Rust
-archive; this inventory includes runtime dependencies and a small superset of
-compile-time proc-macro/build dependencies. It does not describe twelve shipped
-dynamic libraries or change any dependency's license terms.
+archive. This inventory includes runtime and compile-time proc-macro/build
+dependencies.
 
 The files in each `<name>-<version>/` directory are complete, unmodified
 top-level members of that release's crates.io `.crate` archive. Each archive
@@ -140,6 +139,18 @@ Cargo.lock SHA-256: `8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3
 | --- | --- |
 | [syn-3.0.6/LICENSE-MIT](syn-3.0.6/LICENSE-MIT) | `23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | [syn-3.0.6/LICENSE-APACHE](syn-3.0.6/LICENSE-APACHE) | `62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a` |
+
+## triomphe 0.1.17
+
+Declared license: `MIT OR Apache-2.0`. Runtime fallible shared ownership for Portra grain assets.
+
+Release archive: [triomphe-0.1.17.crate](https://static.crates.io/crates/triomphe/triomphe-0.1.17.crate).
+Cargo.lock SHA-256: `0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc`.
+
+| Archive member / repository file | SHA-256 |
+| --- | --- |
+| [triomphe-0.1.17/LICENSE-MIT](triomphe-0.1.17/LICENSE-MIT) | `15656cc11a8331f28c0986b8ab97220d3e76f98e60ed388b5ffad37dfac4710c` |
+| [triomphe-0.1.17/LICENSE-APACHE](triomphe-0.1.17/LICENSE-APACHE) | `a6b7260485462860838b76ad1846d21f1605e6d239141c3aa949a601d992676c` |
 
 ## unicode-ident 1.0.26
 

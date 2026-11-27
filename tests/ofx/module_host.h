@@ -44,7 +44,6 @@ namespace ofx_test {
         bool callback_error = false;
         int context_dimension = 0;
         int depth_dimension = 0;
-        bool distinct_second = false;
 
     private:
         struct Token {
@@ -53,10 +52,8 @@ namespace ofx_test {
         };
         Token effect_token_{this, 0};
         Token first_{this, 1};
-        Token second_{this, 2};
         Token params_{this, 3};
         Token param_props_{this, 4};
-        int effect_fetches_ = 0;
 
         OfxStatus record(Call call);
         static const void* fetch(OfxPropertySetHandle, const char*, int) noexcept;

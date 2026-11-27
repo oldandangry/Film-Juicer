@@ -269,7 +269,6 @@ fn effects_math(
     }
     let geometry = frame.effects_geometry;
     let input = effects::frame::Input {
-        active: recipe.active(),
         render_extent: render,
         pixel_definition: Domain {
             x: geometry.pixel_definition.x,
@@ -288,24 +287,20 @@ fn effects_math(
         pixel_aspect_ratio: geometry.pixel_aspect_ratio,
         frame_time: frame.time_frames,
         frame_rate: frame.frame_rate,
-        gate_weave_amount: recipe.gate_weave_amount(),
         session_seed: frame.session_seed,
         clip_token: frame.clip_token,
-        recipe_hash: recipe.hash(),
-        film_dust: effects::frame::DustInput::from(recipe.film_dust()),
-        film_scratch: effects::frame::ScratchInput::from(recipe.film_scratch()),
-        gate_dust: effects::frame::DustInput::from(recipe.gate_dust()),
-        gate_scratch: effects::frame::ScratchInput::from(recipe.gate_scratch()),
     };
-    let result =
-        catch_unwind(AssertUnwindSafe(|| effects::frame::Frame::new(input))).map_err(|_| {
-            fail(
-                sys::FJ_STATUS_INTERNAL_FAILURE,
-                "physical effects frame preparation panicked",
-            )
-        })?;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        effects::frame::Frame::new(input, recipe)
+    }))
+    .map_err(|_| {
+        fail(
+            sys::FJ_STATUS_INTERNAL_FAILURE,
+            "physical effects frame preparation panicked",
+        )
+    })?;
     match result {
-        Ok(Some(value)) => Ok(crate::cuda::effects_frame::project(&value, recipe)),
+        Ok(Some(value)) => Ok(crate::cuda::effects_frame::project(&value)),
         Ok(None) => Ok(crate::cuda::effects_frame::empty()),
         Err(effects::frame::Error::InactiveIdentity) => {
             Err(fail(sys::FJ_STATUS_PREPARATION_FAILURE, ""))

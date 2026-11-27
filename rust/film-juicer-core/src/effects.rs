@@ -20,6 +20,14 @@ pub enum Error {
     Probability,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("physical defect slot probability must be in [0, 0.25)")
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub struct Dust {
     cell_width_mm: f32,
@@ -106,12 +114,31 @@ pub struct Scratch {
     strength_max: f32,
 }
 
+/// Resolved dust and scratch policy for one physical surface.
+#[derive(Debug)]
+pub struct Defects {
+    dust: Dust,
+    scratch: Scratch,
+}
+
+impl Defects {
+    pub fn dust(&self) -> &Dust {
+        &self.dust
+    }
+
+    pub fn scratch(&self) -> &Scratch {
+        &self.scratch
+    }
+
+    fn active(&self) -> bool {
+        self.dust.slot_probability > 0.0 || self.scratch.slot_probability > 0.0
+    }
+}
+
 #[derive(Debug)]
 pub struct Recipe {
-    film_dust: Dust,
-    film_scratch: Scratch,
-    gate_dust: Dust,
-    gate_scratch: Scratch,
+    film: Defects,
+    gate: Defects,
     gate_weave_amount: f64,
     active: bool,
     hash: u64,
@@ -371,52 +398,56 @@ impl Dust {
         let enabled = self.slot_probability > 0.0;
         hash::update_bytes(identity, &[u8::from(enabled)]);
         if enabled {
-            for value in [
-                self.cell_width_mm,
-                self.cell_height_mm,
-                self.slot_probability,
-                self.softness_min_mm,
-                self.softness_max_mm,
-                self.softness_size_cap_fraction,
-                self.support_x_mm,
-                self.support_y_mm,
-                self.fiber_fraction,
-                self.fiber_drift_fraction,
-                self.fiber_first_knot_min,
-                self.fiber_first_knot_max,
-                self.fiber_second_knot_min,
-                self.fiber_second_knot_max,
-                self.fiber_interior_width_min_fraction,
-                self.fiber_interior_width_max_fraction,
-                self.diameter_min_mm,
-                self.diameter_bulk_max_mm,
-                self.diameter_max_mm,
-                self.diameter_tail_fraction,
-                self.fiber_length_min_mm,
-                self.fiber_length_max_mm,
-                self.fiber_width_min_mm,
-                self.fiber_width_max_mm,
-                self.opacity_faint_cumulative,
-                self.opacity_intermediate_cumulative,
-                self.compact_opacity_min,
-                self.compact_opacity_faint_end,
-                self.compact_opacity_intermediate_end,
-                self.compact_opacity_max,
-                self.fiber_opacity_min,
-                self.fiber_opacity_faint_end,
-                self.fiber_opacity_intermediate_end,
-                self.fiber_opacity_max,
-                self.compact_dominant_aspect_min,
-                self.compact_dominant_aspect_max,
-                self.compact_subsidiary_scale_min,
-                self.compact_subsidiary_scale_max,
-                self.compact_subsidiary_aspect_min,
-                self.compact_subsidiary_aspect_max,
-                self.compact_subsidiary_offset_max,
-                self.compact_subsidiary_angle_max_radians,
-            ] {
-                hash::update_bytes(identity, &value.to_bits().to_le_bytes());
-            }
+            self.append_fields(identity);
+        }
+    }
+
+    fn append_fields(&self, identity: &mut u64) {
+        for value in [
+            self.cell_width_mm,
+            self.cell_height_mm,
+            self.slot_probability,
+            self.softness_min_mm,
+            self.softness_max_mm,
+            self.softness_size_cap_fraction,
+            self.support_x_mm,
+            self.support_y_mm,
+            self.fiber_fraction,
+            self.fiber_drift_fraction,
+            self.fiber_first_knot_min,
+            self.fiber_first_knot_max,
+            self.fiber_second_knot_min,
+            self.fiber_second_knot_max,
+            self.fiber_interior_width_min_fraction,
+            self.fiber_interior_width_max_fraction,
+            self.diameter_min_mm,
+            self.diameter_bulk_max_mm,
+            self.diameter_max_mm,
+            self.diameter_tail_fraction,
+            self.fiber_length_min_mm,
+            self.fiber_length_max_mm,
+            self.fiber_width_min_mm,
+            self.fiber_width_max_mm,
+            self.opacity_faint_cumulative,
+            self.opacity_intermediate_cumulative,
+            self.compact_opacity_min,
+            self.compact_opacity_faint_end,
+            self.compact_opacity_intermediate_end,
+            self.compact_opacity_max,
+            self.fiber_opacity_min,
+            self.fiber_opacity_faint_end,
+            self.fiber_opacity_intermediate_end,
+            self.fiber_opacity_max,
+            self.compact_dominant_aspect_min,
+            self.compact_dominant_aspect_max,
+            self.compact_subsidiary_scale_min,
+            self.compact_subsidiary_scale_max,
+            self.compact_subsidiary_aspect_min,
+            self.compact_subsidiary_aspect_max,
+            self.compact_subsidiary_offset_max,
+            self.compact_subsidiary_angle_max_radians,
+        ] {
+            hash::update_bytes(identity, &value.to_bits().to_le_bytes());
         }
     }
 }
@@ -650,46 +681,50 @@ impl Scratch {
         let enabled = self.slot_probability > 0.0;
         hash::update_bytes(identity, &[u8::from(enabled)]);
         if enabled {
-            for value in [
-                self.cell_width_mm,
-                self.cell_height_mm,
-                self.slot_probability,
-                self.softness_min_mm,
-                self.softness_max_mm,
-                self.softness_size_cap_fraction,
-                self.support_x_mm,
-                self.support_y_mm,
-                self.length_min_mm,
-                self.length_bulk_max_mm,
-                self.length_max_mm,
-                self.length_tail_fraction,
-                self.width_min_mm,
-                self.width_bulk_max_mm,
-                self.width_max_mm,
-                self.width_tail_fraction,
-                self.drift_fraction,
-                self.first_knot_min,
-                self.first_knot_max,
-                self.second_knot_min,
-                self.second_knot_max,
-                self.interior_width_min_fraction,
-                self.interior_width_max_fraction,
-                self.interior_depth_min_fraction,
-                self.interior_depth_max_fraction,
-                self.endpoint_abrupt_probability,
-                self.interruption_probability,
-                self.gap_center_min,
-                self.gap_center_max,
-                self.gap_span_min,
-                self.gap_span_max,
-                self.scuff_probability,
-                self.scuff_length_max_mm,
-                self.scuff_angle_max_radians,
-                self.strength_min,
-                self.strength_max,
-            ] {
-                hash::update_bytes(identity, &value.to_bits().to_le_bytes());
-            }
+            self.append_fields(identity);
+        }
+    }
+
+    fn append_fields(&self, identity: &mut u64) {
+        for value in [
+            self.cell_width_mm,
+            self.cell_height_mm,
+            self.slot_probability,
+            self.softness_min_mm,
+            self.softness_max_mm,
+            self.softness_size_cap_fraction,
+            self.support_x_mm,
+            self.support_y_mm,
+            self.length_min_mm,
+            self.length_bulk_max_mm,
+            self.length_max_mm,
+            self.length_tail_fraction,
+            self.width_min_mm,
+            self.width_bulk_max_mm,
+            self.width_max_mm,
+            self.width_tail_fraction,
+            self.drift_fraction,
+            self.first_knot_min,
+            self.first_knot_max,
+            self.second_knot_min,
+            self.second_knot_max,
+            self.interior_width_min_fraction,
+            self.interior_width_max_fraction,
+            self.interior_depth_min_fraction,
+            self.interior_depth_max_fraction,
+            self.endpoint_abrupt_probability,
+            self.interruption_probability,
+            self.gap_center_min,
+            self.gap_center_max,
+            self.gap_span_min,
+            self.gap_span_max,
+            self.scuff_probability,
+            self.scuff_length_max_mm,
+            self.scuff_angle_max_radians,
+            self.strength_min,
+            self.strength_max,
+        ] {
+            hash::update_bytes(identity, &value.to_bits().to_le_bytes());
         }
     }
 }
@@ -699,10 +734,10 @@ fn recipe_hash(recipe: &Recipe) -> u64 {
         return 0;
     }
     let mut identity = hash::FNV_OFFSET;
-    recipe.film_dust.append_hash(&mut identity);
-    recipe.film_scratch.append_hash(&mut identity);
-    recipe.gate_dust.append_hash(&mut identity);
-    recipe.gate_scratch.append_hash(&mut identity);
+    recipe.film.dust.append_hash(&mut identity);
+    recipe.film.scratch.append_hash(&mut identity);
+    recipe.gate.dust.append_hash(&mut identity);
+    recipe.gate.scratch.append_hash(&mut identity);
     hash::update_bytes(
         &mut identity,
         &recipe.gate_weave_amount.to_bits().to_le_bytes(),
@@ -714,10 +749,14 @@ fn recipe_hash(recipe: &Recipe) -> u64 {
 impl Recipe {
     fn zero() -> Self {
         Self {
-            film_dust: Dust::zero(),
-            film_scratch: Scratch::zero(),
-            gate_dust: Dust::zero(),
-            gate_scratch: Scratch::zero(),
+            film: Defects {
+                dust: Dust::zero(),
+                scratch: Scratch::zero(),
+            },
+            gate: Defects {
+                dust: Dust::zero(),
+                scratch: Scratch::zero(),
+            },
             gate_weave_amount: 0.0,
             active: false,
             hash: 0,
@@ -755,39 +794,34 @@ impl Recipe {
         );
         let gate_weave_amount = normalize_weave(params.gate_weave_amount);
         let mut recipe = Self {
-            film_dust,
-            film_scratch,
-            gate_dust,
-            gate_scratch,
+            film: Defects {
+                dust: film_dust,
+                scratch: film_scratch,
+            },
+            gate: Defects {
+                dust: gate_dust,
+                scratch: gate_scratch,
+            },
             gate_weave_amount,
             active: false,
             hash: 0,
         };
         validate_probabilities([
-            recipe.film_dust.slot_probability,
-            recipe.gate_dust.slot_probability,
-            recipe.film_scratch.slot_probability,
-            recipe.gate_scratch.slot_probability,
+            recipe.film.dust.slot_probability,
+            recipe.gate.dust.slot_probability,
+            recipe.film.scratch.slot_probability,
+            recipe.gate.scratch.slot_probability,
         ])?;
-        recipe.active = recipe.film_dust.slot_probability > 0.0
-            || recipe.film_scratch.slot_probability > 0.0
-            || recipe.gate_dust.slot_probability > 0.0
-            || recipe.gate_scratch.slot_probability > 0.0
-            || recipe.gate_weave_amount > 0.0;
+        recipe.active =
+            recipe.film.active() || recipe.gate.active() || recipe.gate_weave_amount > 0.0;
         recipe.hash = recipe_hash(&recipe);
         Ok(recipe)
     }
-    pub fn film_dust(&self) -> &Dust {
-        &self.film_dust
+    pub fn film(&self) -> &Defects {
+        &self.film
     }
-    pub fn film_scratch(&self) -> &Scratch {
-        &self.film_scratch
-    }
-    pub fn gate_dust(&self) -> &Dust {
-        &self.gate_dust
-    }
-    pub fn gate_scratch(&self) -> &Scratch {
-        &self.gate_scratch
+    pub fn gate(&self) -> &Defects {
+        &self.gate
     }
     pub fn gate_weave_amount(&self) -> f64 {
         self.gate_weave_amount
@@ -805,34 +839,6 @@ fn validate_probabilities(probabilities: [f32; 4]) -> Result<(), Error> {
         return Err(Error::Probability);
     }
     Ok(())
-}
-
-fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(lo, hi)
-    } else {
-        fallback
-    }
-}
-fn bounded_float(value: f64, fallback: f32, lo: f64, hi: f64) -> f32 {
-    bounded(value, f64::from(fallback), lo, hi) as f32
-}
-
-pub struct CaptureControls {
-    pub film_dust: f64,
-    pub gate_dust: f64,
-    pub film_scratch: f64,
-    pub gate_scratch: f64,
-    pub gate_weave: f64,
-}
-impl CaptureControls {
-    pub fn complete(self, p: &mut crate::recipe::Params) {
-        p.film_dust_amount = bounded_float(self.film_dust, 0.0, 0.0, 10.0);
-        p.gate_dust_amount = bounded_float(self.gate_dust, 0.0, 0.0, 10.0);
-        p.film_scratch_amount = bounded_float(self.film_scratch, 0.0, 0.0, 10.0);
-        p.gate_scratch_amount = bounded_float(self.gate_scratch, 0.0, 0.0, 10.0);
-        p.gate_weave_amount = bounded(self.gate_weave, 0.0, 0.0, 10.0);
-    }
 }
 
 #[cfg(test)]
@@ -961,8 +967,8 @@ mod tests {
         ]
     }
     fn project(value: &Recipe) -> Value {
-        json!({"film_dust": dust(value.film_dust()), "film_scratch": scratch(value.film_scratch()),
-            "gate_dust": dust(value.gate_dust()), "gate_scratch": scratch(value.gate_scratch()),
+        json!({"film_dust": dust(value.film().dust()), "film_scratch": scratch(value.film().scratch()),
+            "gate_dust": dust(value.gate().dust()), "gate_scratch": scratch(value.gate().scratch()),
             "weave": value.gate_weave_amount().to_bits(), "active": value.active(), "hash": value.hash()})
     }
     #[test]
@@ -1100,7 +1106,7 @@ mod tests {
             let recipe = Recipe::new(controls).unwrap();
             let expected = project(&recipe);
             controls.film_dust_amount = 0.0;
-            assert!(recipe.film_dust().slot_probability() > controls.film_dust_amount);
+            assert!(recipe.film().dust().slot_probability() > controls.film_dust_amount);
             (recipe, expected)
         };
         assert_eq!(project(&recipe), expected);

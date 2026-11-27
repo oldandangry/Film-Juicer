@@ -1,12 +1,31 @@
 //! Frozen Portra bank and exact-footprint tables. Adapted from Fotufilm's
 //! FilmGrainTiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 use super::{AssetError, Assets};
-use crate::film::density::portra::{
-    CALIBRATED_MAX_FOOTPRINT, MAX_FOOTPRINT, MIN_PROXY_SAMPLE_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT,
-};
 use crate::hash;
 use serde::Deserialize;
-use std::{fmt, fs, path::Path, sync::Arc};
+use std::borrow::Cow;
+use std::collections::TryReserveError;
+use std::io::{self, ErrorKind, Read};
+use std::{fmt, fs::File, path::Path};
+use triomphe::Arc;
+
+pub(crate) const MIN_RENDERED_FOOTPRINT: f32 = 0.25;
+// The 8 mm, Size 4 µm proxy of an 8192-pixel Full raster uses this cell pitch.
+// Internal samples use the subtexel convex-light certificate below.
+pub(crate) const MIN_PROXY_SAMPLE_FOOTPRINT: f32 = 8_000.0 / (8_192.0 * 4.0);
+pub(crate) const CALIBRATED_MAX_FOOTPRINT: f32 = 37.5;
+pub(crate) const SINGLE_WRAP_MAX_FOOTPRINT: f32 = 255.0;
+// 120 mm at Size 0.5 µm on a one-pixel rendered long edge.
+pub(crate) const MAX_FOOTPRINT: f32 = 240_000.0;
+
+// Exact bank-texel limits shared with the native Film sampler and raw admission.
+const _: () = {
+    assert!(MIN_RENDERED_FOOTPRINT.to_bits() == 0x3e80_0000);
+    assert!(MIN_PROXY_SAMPLE_FOOTPRINT.to_bits() == 0x3e7a_0000);
+    assert!(CALIBRATED_MAX_FOOTPRINT.to_bits() == 0x4216_0000);
+    assert!(SINGLE_WRAP_MAX_FOOTPRINT.to_bits() == 0x437f_0000);
+    assert!(MAX_FOOTPRINT.to_bits() == 0x486a_6000);
+};
 
 const RECORDS: usize = 3;
 const LEVELS: usize = 17;
@@ -17,25 +36,54 @@ const RECORD_WORDS: usize = 3 + LEVELS;
 const RECORD_HASH: u64 = 0x0f35_2397_bf64_2fdb;
 const SUMS_HASH: u64 = 0x76ab_1ed7_b762_2233;
 const TABLE_VERSION: u64 = 1;
+const MANIFEST_LIMIT: usize = 4096;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PortraGrainError {
-    Io(std::io::Error),
-    Manifest(serde_json::Error),
+    Io(Arc<io::Error>),
+    Manifest(Arc<serde_json::Error>),
+    Allocation(TryReserveError),
+    OwnerAllocation,
     Invalid(&'static str),
     CachePoisoned,
+}
+impl PortraGrainError {
+    fn io(error: io::Error) -> Self {
+        match Arc::try_new(error) {
+            Ok(error) => Self::Io(error),
+            Err(_) => Self::OwnerAllocation,
+        }
+    }
+
+    fn manifest(error: serde_json::Error) -> Self {
+        match Arc::try_new(error) {
+            Ok(error) => Self::Manifest(error),
+            Err(_) => Self::OwnerAllocation,
+        }
+    }
 }
 impl fmt::Display for PortraGrainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "Portra grain resource: {e}"),
             Self::Manifest(e) => write!(f, "Portra grain manifest: {e}"),
+            Self::Allocation(e) => write!(f, "Portra grain allocation: {e}"),
+            Self::OwnerAllocation => f.write_str("Portra grain shared allocation failed"),
             Self::Invalid(reason) => write!(f, "invalid Portra grain: {reason}"),
             Self::CachePoisoned => write!(f, "Portra grain table cache poisoned"),
         }
     }
 }
-impl std::error::Error for PortraGrainError {}
+impl std::error::Error for PortraGrainError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error.as_ref()),
+            Self::Manifest(error) => Some(error.as_ref()),
+            Self::Allocation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PortraGrainRecord {
@@ -71,26 +119,65 @@ pub struct PortraGrainTable {
     version: u64,
 }
 #[derive(Deserialize)]
-struct Manifest {
+struct Manifest<'a> {
     version: u32,
-    stock: String,
-    records: String,
-    sums: String,
-    records_sha256: String,
-    sums_sha256: String,
+    #[serde(borrow)]
+    stock: Cow<'a, str>,
+    #[serde(borrow)]
+    records: Cow<'a, str>,
+    #[serde(borrow)]
+    sums: Cow<'a, str>,
+    #[serde(borrow)]
+    records_sha256: Cow<'a, str>,
+    #[serde(borrow)]
+    sums_sha256: Cow<'a, str>,
 }
+fn read_retrying_interrupt(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match reader.read(bytes) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 fn words(path: &Path, count: usize) -> Result<Vec<f32>, PortraGrainError> {
-    let bytes = fs::read(path).map_err(PortraGrainError::Io)?;
-    if bytes.len() != count * 4 {
+    let file = File::open(path).map_err(PortraGrainError::io)?;
+    if file.metadata().map_err(PortraGrainError::io)?.len() != (count * size_of::<f32>()) as u64 {
         return Err(PortraGrainError::Invalid("word count"));
     }
-    let values: Vec<f32> = bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .copied()
-        .map(f32::from_le_bytes)
-        .collect();
+    read_words(file, count)
+}
+
+fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, PortraGrainError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(PortraGrainError::Allocation)?;
+    let mut bytes = [0; 8192];
+    let mut remaining = count * size_of::<f32>();
+    while remaining > 0 {
+        let chunk = &mut bytes[..remaining.min(8192)];
+        reader.read_exact(chunk).map_err(|error| {
+            if error.kind() == ErrorKind::UnexpectedEof {
+                PortraGrainError::Invalid("word count")
+            } else {
+                PortraGrainError::io(error)
+            }
+        })?;
+        values.extend(
+            chunk
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .copied()
+                .map(f32::from_le_bytes),
+        );
+        remaining -= chunk.len();
+    }
+    if read_retrying_interrupt(&mut reader, &mut bytes[..1]).map_err(PortraGrainError::io)? != 0 {
+        return Err(PortraGrainError::Invalid("word count"));
+    }
     if values.iter().any(|v| !v.is_finite()) {
         return Err(PortraGrainError::Invalid("nonfinite word"));
     }
@@ -98,9 +185,22 @@ fn words(path: &Path, count: usize) -> Result<Vec<f32>, PortraGrainError> {
 }
 fn load_bank(root: &Path) -> Result<PortraGrainBank, PortraGrainError> {
     let dir = root.join("grain/portra-400");
-    let manifest: Manifest =
-        serde_json::from_slice(&fs::read(dir.join("manifest.json")).map_err(PortraGrainError::Io)?)
-            .map_err(PortraGrainError::Manifest)?;
+    let mut file = File::open(dir.join("manifest.json")).map_err(PortraGrainError::io)?;
+    let mut bytes = [0; MANIFEST_LIMIT + 1];
+    let mut len = 0;
+    while len < bytes.len() {
+        let read =
+            read_retrying_interrupt(&mut file, &mut bytes[len..]).map_err(PortraGrainError::io)?;
+        if read == 0 {
+            break;
+        }
+        len += read;
+    }
+    if len > MANIFEST_LIMIT {
+        return Err(PortraGrainError::Invalid("manifest size"));
+    }
+    let manifest: Manifest<'_> =
+        serde_json::from_slice(&bytes[..len]).map_err(PortraGrainError::manifest)?;
     if manifest.version != 1
         || manifest.stock != "kodak_portra_400"
         || manifest.records != "records.f32"
@@ -151,20 +251,18 @@ impl Assets {
     pub fn portra_grain_bank(&self) -> Result<Arc<PortraGrainBank>, AssetError> {
         self.portra_grain
             .get_or_init(|| {
-                load_bank(&self.resource_dir)
-                    .map(Arc::new)
-                    .map_err(Arc::new)
+                Arc::try_new(load_bank(&self.resource_dir)?)
+                    .map_err(|_| PortraGrainError::OwnerAllocation)
             })
-            .as_ref()
-            .map(Arc::clone)
-            .map_err(|e| AssetError::PortraGrain(Arc::clone(e)))
+            .clone()
+            .map_err(AssetError::PortraGrain)
     }
     pub fn portra_grain_table(
         &self,
-        bank: &Arc<PortraGrainBank>,
+        bank: &PortraGrainBank,
         footprint: f32,
     ) -> Result<Arc<PortraGrainTable>, AssetError> {
-        let fail = |e| AssetError::PortraGrain(Arc::new(e));
+        let fail = AssetError::PortraGrain;
         if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
             return Err(fail(PortraGrainError::Invalid("unsupported footprint")));
         }
@@ -184,7 +282,8 @@ impl Assets {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .wrapping_add(1)
         };
-        let result = Arc::new(measure(bank, footprint).map_err(fail)?);
+        let result = Arc::try_new(measure(bank, footprint).map_err(fail)?)
+            .map_err(|_| fail(PortraGrainError::OwnerAllocation))?;
         let mut cache = self
             .portra_table
             .lock()
@@ -261,8 +360,16 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
         bank_identity: bank.identity,
         version: TABLE_VERSION,
     };
+    const SAMPLES: usize = 128 * 128;
+    let mut fields = Vec::new();
+    fields
+        .try_reserve_exact(LEVELS * SAMPLES)
+        .map_err(PortraGrainError::Allocation)?;
+    fields.resize(LEVELS * SAMPLES, 0.0_f64);
+    let (fields, []) = fields.as_chunks_mut::<SAMPLES>() else {
+        unreachable!()
+    };
     for r in 0..RECORDS {
-        let mut fields = vec![vec![0.0_f64; 128 * 128]; LEVELS];
         let positions = (0..128 * 128).map(|i| {
             let x = ((i % 128 * 7919) % 4096) as f64 * pitch;
             let y = ((i / 128 * 104729) % 4096) as f64 * pitch;
@@ -322,19 +429,17 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
                 }
             }
         }
-        let means: Vec<f64> = fields
-            .iter()
-            .map(|v| {
-                if footprint > SINGLE_WRAP_MAX_FOOTPRINT {
-                    // Exact periods can give constant light. Center before
-                    // summation so a constant field has exactly zero variance.
-                    let first = v[0];
-                    first + v.iter().map(|sample| sample - first).sum::<f64>() / v.len() as f64
-                } else {
-                    v.iter().sum::<f64>() / v.len() as f64
-                }
-            })
-            .collect();
+        let means: [f64; LEVELS] = std::array::from_fn(|level| {
+            let v = &fields[level];
+            if footprint > SINGLE_WRAP_MAX_FOOTPRINT {
+                // Exact periods can give constant light. Center before
+                // summation so a constant field has exactly zero variance.
+                let first = v[0];
+                first + v.iter().map(|sample| sample - first).sum::<f64>() / v.len() as f64
+            } else {
+                v.iter().sum::<f64>() / v.len() as f64
+            }
+        });
         for (target, mean) in table.mean_density[r].iter_mut().zip(&means) {
             *target = *mean as f32;
         }
@@ -368,7 +473,60 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
     use std::path::PathBuf;
+
+    #[test]
+    fn portra_word_eof_probe_retries_interrupted() {
+        struct EofProbe<'a> {
+            bytes: &'a [u8],
+            interruptions: usize,
+            trailing_error: Option<ErrorKind>,
+        }
+
+        impl Read for EofProbe<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if bytes.len() != 1 {
+                    return self.bytes.read(bytes);
+                }
+                assert!(self.bytes.len() <= 1, "probe before expected words");
+                if self.interruptions == 0 {
+                    self.interruptions += 1;
+                    return Err(ErrorKind::Interrupted.into());
+                }
+                if let Some(kind) = self.trailing_error {
+                    return Err(kind.into());
+                }
+                self.bytes.read(bytes)
+            }
+        }
+
+        let mut data = [0; 5];
+        data[..4].copy_from_slice(&1.25_f32.to_le_bytes());
+        let mut reader = EofProbe {
+            bytes: &data[..4],
+            interruptions: 0,
+            trailing_error: None,
+        };
+        assert_eq!(read_words(&mut reader, 1).unwrap(), [1.25]);
+        assert_eq!(reader.interruptions, 1);
+
+        reader.bytes = &data;
+        reader.interruptions = 0;
+        assert!(matches!(
+            read_words(&mut reader, 1),
+            Err(PortraGrainError::Invalid("word count"))
+        ));
+        assert_eq!(reader.interruptions, 1);
+
+        reader.bytes = &data[..4];
+        reader.interruptions = 0;
+        reader.trailing_error = Some(ErrorKind::PermissionDenied);
+        let error = read_words(&mut reader, 1).unwrap_err();
+        let cause = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(cause.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(reader.interruptions, 1);
+    }
 
     #[test]
     fn frozen_tables_and_cache() {

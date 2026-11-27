@@ -162,6 +162,18 @@ pub struct Error {
     tolerance: f64,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid DIR boundary reason={:?} axis={} row={} length={} sigma_px={}",
+            self.reason, self.axis, self.row, self.length, self.sigma_px
+        )
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl Error {
     fn new(reason: Reason) -> Self {
         Self {
