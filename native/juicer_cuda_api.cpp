@@ -24,6 +24,37 @@
 #include "Logging.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+namespace {
+
+    struct ExceptionMessages {
+        const char* allocation;
+        const char* unexpected;
+    };
+
+    JuicerCuda::Failure current_exception_failure(ExceptionMessages messages) noexcept {
+        JuicerCuda::Failure failure;
+        try {
+            throw;
+        } catch (const JuicerCuda::ExecutionFailure& detail) {
+            JuicerCuda::set_failure(failure, detail.failure.status, detail.failure.diagnostic);
+            failure.cleanupContextLoss = detail.failure.cleanupContextLoss;
+        } catch (const std::bad_alloc&) {
+            JuicerCuda::set_failure(failure, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, messages.allocation);
+        } catch (const std::exception& detail) {
+            JuicerCuda::set_failure(failure, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
+        } catch (...) {
+            JuicerCuda::set_failure(failure, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, messages.unexpected);
+        }
+        return failure;
+    }
+
+    FjStatus write_exception(ExceptionMessages messages, FjErrorBuffer* error) noexcept {
+        const auto failure = current_exception_failure(messages);
+        return JuicerCuda::write_status(failure.status, failure.diagnostic, error);
+    }
+
+} // namespace
+
 struct FjCuda final {
     enum class Lifecycle : std::uint8_t {
         Accepting,
@@ -95,12 +126,9 @@ struct FjCuda final {
             return save_failure(failure.status, failure.diagnostic.empty() ? "CUDA shutdown failed; native graph retained" : std::string_view(failure.diagnostic));
         } catch (const JuicerCuda::ExecutionFailure& detail) {
             return save_failure(detail.failure.status, detail.failure.diagnostic);
-        } catch (const std::bad_alloc&) {
-            return save_failure({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown allocation failed");
-        } catch (const std::exception& detail) {
-            return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
         } catch (...) {
-            return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown failed with unknown exception");
+            const auto failure = current_exception_failure({"CUDA shutdown allocation failed", "CUDA shutdown failed with unknown exception"});
+            return save_failure(failure.status, failure.diagnostic);
         }
     }
 
@@ -264,12 +292,8 @@ FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error) {
         return status(published ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE, error, published ? "" : "CUDA runtime already has an owner");
     } catch (const JuicerCuda::ExecutionFailure& failure) {
         return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
-    } catch (const std::bad_alloc&) {
-        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA owner allocation failed");
-    } catch (const std::exception& errorDetail) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, errorDetail.what());
     } catch (...) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA owner creation failed");
+        return write_exception({"CUDA owner allocation failed", "CUDA owner creation failed"}, error);
     }
 }
 
@@ -285,12 +309,8 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
         return call.inspect(frame, out_context, error);
     } catch (const JuicerCuda::ExecutionFailure& failure) {
         return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
-    } catch (const std::bad_alloc&) {
-        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA inspection allocation failed");
-    } catch (const std::exception& detail) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
     } catch (...) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA inspection failed");
+        return write_exception({"CUDA inspection allocation failed", "CUDA inspection failed"}, error);
     }
 }
 
@@ -370,12 +390,8 @@ static FjStatus inspect_frame(const FjFrame* frame, FjCudaContext* outContext, F
         }
         *outContext = FjCudaContext{device, reinterpret_cast<std::uintptr_t>(context), 0};
         return status(FJ_STATUS_SUCCESS, error, "");
-    } catch (const std::bad_alloc&) {
-        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA inspection allocation failed");
-    } catch (const std::exception& detail) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
     } catch (...) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA inspection failed");
+        return write_exception({"CUDA inspection allocation failed", "CUDA inspection failed"}, error);
     }
 }
 
@@ -438,12 +454,8 @@ FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const
         return outcome;
     } catch (const JuicerCuda::ExecutionFailure& failure) {
         return {JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error), 0, {}};
-    } catch (const std::bad_alloc&) {
-        return {status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA render allocation failed"), 0, {}};
-    } catch (const std::exception& detail) {
-        return {status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what()), 0, {}};
     } catch (...) {
-        return {status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA render failed with unknown exception"), 0, {}};
+        return {write_exception({"CUDA render allocation failed", "CUDA render failed with unknown exception"}, error), 0, {}};
     }
 }
 
@@ -571,12 +583,9 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
     } catch (JuicerCuda::ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);
         return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U, {}};
-    } catch (const std::bad_alloc&) {
-        return result({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA render allocation failed");
-    } catch (const std::exception& detail) {
-        return result({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
     } catch (...) {
-        return result({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA render failed with unknown exception");
+        const auto failure = current_exception_failure({"CUDA render allocation failed", "CUDA render failed with unknown exception"});
+        return result(failure.status, failure.diagnostic);
     }
 }
 
@@ -631,12 +640,8 @@ FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorB
         return status(FJ_STATUS_SUCCESS, error, "");
     } catch (const JuicerCuda::ExecutionFailure& detail) {
         return JuicerCuda::write_status(detail.failure.status, detail.failure.diagnostic.empty() ? "CUDA instance retirement failed" : std::string_view(detail.failure.diagnostic), error);
-    } catch (const std::bad_alloc&) {
-        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA instance retirement allocation failed");
-    } catch (const std::exception& detail) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
     } catch (...) {
-        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA instance retirement failed with unknown exception");
+        return write_exception({"CUDA instance retirement allocation failed", "CUDA instance retirement failed with unknown exception"}, error);
     }
 }
 
@@ -672,12 +677,9 @@ FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
         return JuicerCuda::write_status(result,
                                         result.category == FJ_STATUS_SUCCESS ? std::string_view{} : std::string_view{cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
                                         error);
-    } catch (const std::bad_alloc&) {
-        return terminal_admission_failure(cuda, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown admission allocation failed", false, error);
-    } catch (const std::exception& detail) {
-        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), false, error);
     } catch (...) {
-        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown admission failed", false, error);
+        const auto failure = current_exception_failure({"CUDA shutdown admission allocation failed", "CUDA shutdown admission failed"});
+        return terminal_admission_failure(cuda, failure.status, failure.diagnostic, false, error);
     }
 }
 
@@ -713,12 +715,9 @@ FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
         if (!closed) {
             JuicerCuda::write_status(result, {cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength}, nativeError);
         }
-    } catch (const std::bad_alloc&) {
-        result = terminal_admission_failure(cuda, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission allocation failed", true, nativeError);
-    } catch (const std::exception& detail) {
-        result = terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), true, nativeError);
     } catch (...) {
-        result = terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission failed", true, nativeError);
+        const auto failure = current_exception_failure({"CUDA destroy admission allocation failed", "CUDA destroy admission failed"});
+        result = terminal_admission_failure(cuda, failure.status, failure.diagnostic, true, nativeError);
     }
     // Native metadata destruction stays outside every native lock. Uncertain
     // retention keeps only the native graph; the Rust owner handles host cleanup.

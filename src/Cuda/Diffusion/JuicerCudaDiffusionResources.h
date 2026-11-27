@@ -11,7 +11,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
-#include "Cuda/JuicerCudaDeviceLedger.h"
+#include "Cuda/Resources/TrackedResources.h"
 #include "DiffusionExecution.h"
 
 namespace JuicerCuda::Diffusion {
@@ -32,34 +32,60 @@ namespace JuicerCuda::Diffusion {
         FailedQuarantined
     };
 
+    enum class WorkspaceCompletion : std::uint8_t {
+        Complete,
+        Recorded,
+        Unfenced
+    };
+
+    class CufftPlan final {
+    public:
+        CufftPlan() noexcept = default;
+        CufftPlan(const CufftPlan&) = delete;
+        CufftPlan& operator=(const CufftPlan&) = delete;
+        CufftPlan(CufftPlan&& other) noexcept : _handle(std::exchange(other._handle, 0)) {}
+        CufftPlan& operator=(CufftPlan&& other) noexcept;
+
+        [[nodiscard]] cufftHandle get() const noexcept {
+            return _handle;
+        }
+        cufftResult create() noexcept;
+        cufftResult destroy_after_completion() noexcept;
+        void forget_after_context_loss() noexcept {
+            _handle = 0;
+        }
+
+    private:
+        cufftHandle _handle = 0;
+    };
+
     struct DiffusionSpectrumEntry {
         Spektrafilm::DiffusionSpectrumKey key{};
         SpectrumPackageView spectra{};
-        std::array<DeviceByteReservation, 3> spectrumReservations{};
-        void* buildEventOpaque = nullptr;
+        std::array<TrackedDeviceBuffer, 3> spectrumBuffers{};
+        RetiredEvent buildEvent;
         std::uint64_t releaseSequence = 0;
         std::uint8_t pendingWorkspaceMask = 0;
         SpectrumEntryState state = SpectrumEntryState::Vacant;
         bool leased = false;
+        bool buildEventRecorded = false;
     };
 
     struct DiffusionWorkspaceSlot {
         Spektrafilm::DiffusionPlanKey planKey{};
-        cufftHandle r2cPlan = 0;
-        cufftHandle c2rPlan = 0;
+        CufftPlan r2cPlan;
+        CufftPlan c2rPlan;
         DeviceByteReservation planAllowanceReservation;
-        void* workArea = nullptr;
-        DeviceByteReservation workAreaReservation;
-        float* transformBuffer = nullptr;
-        DeviceByteReservation transformReservation;
+        TrackedDeviceBuffer workArea;
+        TrackedDeviceBuffer transform;
         StagePlaneSet stagePlanes{};
-        std::array<DeviceByteReservation, 4> stagePlaneReservations{};
+        std::array<TrackedDeviceBuffer, 4> stagePlaneBuffers{};
         std::uint64_t transformCapacityBytes = 0;
         std::uint64_t stagePlaneCapacityElements = 0;
         std::uint64_t releaseSequence = 0;
-        void* completionEventOpaque = nullptr;
+        RetiredEvent completionEvent;
         WorkspaceSlotState state = WorkspaceSlotState::Vacant;
-        bool completionUnknown = false;
+        WorkspaceCompletion completion = WorkspaceCompletion::Complete;
     };
 
     struct DiffusionContextResources {

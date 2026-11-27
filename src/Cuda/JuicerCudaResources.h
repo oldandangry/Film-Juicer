@@ -22,7 +22,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaFilmGrain.h"
 
-#include "Cuda/JuicerCudaDeviceLedger.h"
+#include "Cuda/Resources/TrackedResources.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -171,27 +171,31 @@ namespace JuicerCuda {
     struct ScanErrorBuffer {
         int* device = nullptr;
         int* host = nullptr;
+        cudaEvent_t event = nullptr;
     };
 
     struct Resources {
         struct PendingFrameUseEvent {
-            void* eventOpaque = nullptr;
+            RetiredEvent event;
+            bool recorded = false;
         };
 
         enum class RetireKind : std::uint8_t {
             DeviceFree = 0,
             HostPinnedFree = 1,
-            EventDestroy = 2
+            EventOnly = 2
         };
 
         struct RetireEntry {
-            void* ptr = nullptr;
+            PinnedBuffer pinnedBuffer;
             std::size_t bytes = 0;
             RetireKind kind = RetireKind::DeviceFree;
             bool scratchTier = false;
-            void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
+            RetiredEvent completion;
             bool requiresContextDrain = false;
-            DeviceByteReservation deviceReservation;
+            bool completionRecorded = false;
+            bool stagingActive = false;
+            TrackedDeviceBuffer deviceBuffer;
 
             RetireEntry() noexcept = default;
             RetireEntry(const RetireEntry&) = delete;
@@ -267,13 +271,15 @@ namespace JuicerCuda {
 
         struct PendingScanErrorReadback {
             int* host = nullptr;
-            void* eventOpaque = nullptr;
+            cudaEvent_t event = nullptr;
             ScanErrorReadbackIdentity identity{};
             bool hasReadback = false;
         };
 
         struct ScanErrorBufferSlot {
-            ScanErrorBuffer buffer;
+            PinnedBuffer host;
+            RetiredEvent event;
+            int* device = nullptr;
             bool leased = false;
         };
 
@@ -283,8 +289,8 @@ namespace JuicerCuda {
         ResourceManager::DeviceContextKey ownerContextKey{};
         std::uint64_t contextEpoch = 0;
         std::shared_ptr<DeviceAllocationLedger> deviceLedger;
-        std::map<void*, DeviceByteReservation> deviceAllocationRecords;
-        std::map<void*, DeviceByteReservation>
+        TrackedDeviceAllocations deviceAllocationRecords;
+        TrackedDeviceAllocations
             contextLossOnlyDeviceAllocationRecords;
         // Owns immutable Gaussian weights for this exact context/epoch. Named
         // Gaussian slots below are non-owning views into this cache.
@@ -306,7 +312,6 @@ namespace JuicerCuda {
         // Shared single-plane WÃƒâ€”H float scratch used as a blur/unsharp intermediate.
         // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
         float* sharedTmpPlane = nullptr;
-        void* unfencedFrameUseStreamOpaque = nullptr;
         std::size_t sharedTmpCapacityElements = 0;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 
@@ -341,8 +346,10 @@ namespace JuicerCuda {
         std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
         // Deferred frees to avoid blocking synchronize/free in hot paths.
         std::vector<RetireEntry> retireQueue;
+        // Scratch attachment preparation owns these under the native call gate.
+        std::array<RetiredEvent, 2> defectRetirementEvents;
         // Completed untimed cudaEvent_t handles available for later completion fences.
-        std::vector<void*> completionEventPoolOpaque;
+        std::vector<RetiredEvent> completionEventPool;
         // Scan-error leases remain pending until their original stream event completes.
         std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
         std::vector<ScanErrorBufferSlot> scanErrorBuffers;
@@ -573,13 +580,13 @@ namespace JuicerCuda {
         Resources& resources,
         void* ptr,
         std::size_t bytes,
-        DeviceByteReservation&& reservation,
+        TrackedDeviceBuffer& allocation,
         void* cudaStreamOpaque,
         const char* label,
         Failure& outError);
     bool adopt_failed_frame_allocation_record(
         Resources& resources,
-        std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
+        TrackedDeviceAllocations::node_type& allocationRecord,
         bool completionCertain,
         Failure& outError) noexcept;
     struct ScanErrorReadbackResult {
@@ -591,8 +598,7 @@ namespace JuicerCuda {
     bool release_scan_error_buffer(Resources& resources, int* host, Failure& outError);
     bool retain_scan_error_readback(
         Resources& resources,
-        int*& host,
-        void*& eventOpaque,
+        const ScanErrorBuffer& buffer,
         ScanErrorReadbackIdentity& identity,
         bool hasReadback,
         Failure& outError);
@@ -605,18 +611,16 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        Failure& outError);
+        Failure& outError) noexcept;
 
-    bool register_frame_status_staging(Resources& resources, void* host, std::size_t bytes, Failure& outError);
+    bool allocate_frame_status_staging(Resources& resources, std::size_t bytes, void*& host, cudaEvent_t& event, Failure& outError);
     bool retire_frame_status_staging(
         Resources& resources,
         void* host,
-        cudaEvent_t completionEvent,
+        bool completionRecorded,
         bool requiresContextDrain,
         Failure& outError);
-    void quarantine_unfenced_frame_use(
-        Resources& resources,
-        void* cudaStreamOpaque) noexcept;
+    void quarantine_unfenced_frame_use(Resources& resources) noexcept;
 
     enum class PinnedUploadPurgeDisposition : std::uint8_t {
         NormalRetire = 0,
@@ -624,11 +628,12 @@ namespace JuicerCuda {
     };
 
     // Purges process-shared pinned upload staging blocks for one device/context key.
-    void purge_pinned_upload_staging_for_context(
+    bool purge_pinned_upload_staging_for_context(
         int deviceId,
         void* contextOpaque,
         std::uint64_t epoch,
-        PinnedUploadPurgeDisposition disposition) noexcept;
+        PinnedUploadPurgeDisposition disposition,
+        Failure& failure) noexcept;
 
 
 } // namespace JuicerCuda

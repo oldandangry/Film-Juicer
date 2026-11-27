@@ -1,3 +1,5 @@
+#include <cstdio>
+#include "Cuda/JuicerCudaResourceOperations.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 
 #include <array>
@@ -45,28 +47,26 @@ namespace JuicerCuda::Diffusion::Detail {
         float normalization = 0.0f;
     };
 
-    JuicerCuda::Diffusion::LaunchResult validation_failure(
-        const char* stage,
-        int code) noexcept {
-        return {JuicerCuda::Diffusion::FailureApi::Validation, code, stage};
+    JuicerCuda::Diffusion::LaunchResult launch_failure(
+        const char* stage, FjStatus status, const char* api, int code) noexcept {
+        JuicerCuda::Diffusion::LaunchResult result;
+        result.stage = stage;
+        std::array<char, 256> message{};
+        std::snprintf(message.data(), message.size(), "DiffusionLaunchFailure api=%s code=%d stage=%s", api, code, stage);
+        JuicerCuda::set_failure(result.failure, status, message.data());
+        return result;
     }
 
-    JuicerCuda::Diffusion::LaunchResult cuda_failure(
-        const char* stage,
-        cudaError_t code) noexcept {
-        return {
-            JuicerCuda::Diffusion::FailureApi::Cuda,
-            static_cast<int>(code),
-            stage};
+    JuicerCuda::Diffusion::LaunchResult validation_failure(const char* stage, int code) noexcept {
+        return launch_failure(stage, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "validation", code);
     }
 
-    JuicerCuda::Diffusion::LaunchResult cufft_failure(
-        const char* stage,
-        cufftResult code) noexcept {
-        return {
-            JuicerCuda::Diffusion::FailureApi::Cufft,
-            static_cast<int>(code),
-            stage};
+    JuicerCuda::Diffusion::LaunchResult cuda_failure(const char* stage, cudaError_t code) noexcept {
+        return launch_failure(stage, JuicerCuda::runtime_failure_status(code), "cuda", static_cast<int>(code));
+    }
+
+    JuicerCuda::Diffusion::LaunchResult cufft_failure(const char* stage, cufftResult code) noexcept {
+        return launch_failure(stage, JuicerCuda::cufft_failure_status(code), "cufft", static_cast<int>(code));
     }
 
     JuicerCuda::Diffusion::LaunchResult success() noexcept {
@@ -182,7 +182,7 @@ namespace JuicerCuda::Diffusion::Detail {
 
     JuicerCuda::Diffusion::LaunchResult validate_package_request(
         const JuicerCuda::Diffusion::SpectrumBuildRequest& request) noexcept {
-        const auto planeValidation = validate_plane_request(
+        auto planeValidation = validate_plane_request(
             request,
             JuicerCuda::Diffusion::SemanticRgbChannel::Red);
         if (!planeValidation.ok()) {
@@ -648,7 +648,7 @@ namespace JuicerCuda::Diffusion {
     LaunchResult build_psf_plane(
         const SpectrumBuildRequest& request,
         SemanticRgbChannel channel) noexcept {
-        const LaunchResult validation = validate_plane_request(request, channel);
+        LaunchResult validation = validate_plane_request(request, channel);
         if (!validation.ok()) {
             return validation;
         }
@@ -723,7 +723,7 @@ namespace JuicerCuda::Diffusion {
 
     LaunchResult build_spectrum_package(
         const SpectrumBuildRequest& request) noexcept {
-        const LaunchResult validation = validate_package_request(request);
+        LaunchResult validation = validate_package_request(request);
         if (!validation.ok()) {
             return validation;
         }
@@ -751,12 +751,12 @@ namespace JuicerCuda::Diffusion {
                 reinterpret_cast<double*>(destinations[channel]);
             planeRequest.normalizationScratchBytes =
                 static_cast<std::size_t>(request.layout.transformBytes);
-            const LaunchResult plane =
+            LaunchResult plane =
                 build_psf_plane(planeRequest, kChannels[channel]);
             if (!plane.ok()) {
                 return plane;
             }
-            const cufftResult transformResult = cufftExecR2C(
+            const cufftResult transformResult = ResourceOperations::execute_spectrum_r2c(
                 request.r2cPlan,
                 request.transformBuffer,
                 reinterpret_cast<cufftComplex*>(request.transformBuffer));
@@ -777,7 +777,7 @@ namespace JuicerCuda::Diffusion {
     }
 
     LaunchResult launch_stage(StageLaunchRequest& request) noexcept {
-        const LaunchResult validation = validate_stage_request(request);
+        LaunchResult validation = validate_stage_request(request);
         if (!validation.ok()) {
             return validation;
         }
@@ -792,7 +792,7 @@ namespace JuicerCuda::Diffusion {
             request.spectra.blue};
 
         for (int channel = 0; channel < 3; ++channel) {
-            const LaunchResult launched = launch_all_tiles(
+            LaunchResult launched = launch_all_tiles(
                 request,
                 *current[channel],
                 request.planes->auxiliary,

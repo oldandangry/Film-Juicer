@@ -499,7 +499,7 @@ namespace JuicerCuda {
         int* scanErrorFlag = nullptr;
     };
 
-    struct DirectPipelineRunParams {
+    struct FilmScanRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
         void* dst = nullptr;
@@ -513,20 +513,9 @@ namespace JuicerCuda {
         FilmRawPayload filmRaw{};
     };
 
-    struct PrintPipelineRunParams {
-        const void* src = nullptr;
-        std::size_t srcRowBytes = 0;
-        void* dst = nullptr;
-        std::size_t dstRowBytes = 0;
-        int width = 0;
-        int height = 0;
-        int nComponents = 0;
-        FilmExposurePayload filmExpose{};
-        FilmDevelopPayload filmDevelop{};
+    struct PrintPipelineRunParams : FilmScanRunParams {
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
-        ScanStagePayload scanStage{};
-        FilmRawPayload filmRaw{};
     };
 
 } // namespace JuicerCuda

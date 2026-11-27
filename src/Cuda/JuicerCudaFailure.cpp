@@ -1,5 +1,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 
+#include <utility>
+
 #include <algorithm>
 #include <cstring>
 
@@ -57,6 +59,14 @@ namespace JuicerCuda {
     void record_cleanup_context_loss(Failure& failure, FjStatus cleanupStatus) noexcept {
         if (cleanupStatus.category == FJ_STATUS_CONTEXT_LOSS && !context_loss(failure)) {
             failure.cleanupContextLoss = cleanupStatus;
+        }
+    }
+
+    void retain_first_failure(Failure& first, Failure&& next) noexcept {
+        if (first.status.category == FJ_STATUS_SUCCESS) {
+            first = std::move(next);
+        } else if (const auto loss = context_loss_status(next)) {
+            record_cleanup_context_loss(first, *loss);
         }
     }
 

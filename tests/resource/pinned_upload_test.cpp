@@ -20,9 +20,11 @@
 
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResourceOperations.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
 #include "RenderValues.h"
 
+#include "allocation_fault.h"
 #include "observed_operations.h"
 
 using JuicerTest::calls;
@@ -112,7 +114,7 @@ namespace {
             if (ledger) {
                 EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
             }
-            JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire);
+            EXPECT_TRUE(JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure)) << failure.diagnostic;
             if (destination) {
                 EXPECT_EQ(cudaFree(destination), cudaSuccess);
             }
@@ -145,6 +147,61 @@ namespace {
         void* destination = nullptr;
         JuicerCuda::Failure failure;
     };
+
+    TEST_F(PinnedUpload, MetadataAllocationFailurePrecedesAnyCudaHandleAcquisition) {
+        const std::array source{0.25F, 0.5F};
+        // Initialize the policy before fault injection and force a new block for this epoch.
+        ASSERT_TRUE(JuicerCuda::purge_pinned_upload_staging_for_context(
+            key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure))
+            << failure.diagnostic;
+        const auto initialCharge = JuicerCuda::ResourceManager::global_state().pinnedStagingBytes.load();
+        const auto before = calls.uploadAllocations;
+        JuicerTest::fail_allocation_after(0);
+        const bool uploaded = upload(source.data(), sizeof(source));
+        EXPECT_TRUE(JuicerTest::take_allocation_fault());
+        EXPECT_FALSE(uploaded);
+        EXPECT_EQ(failure.diagnostic, "test source: pinned staging pool_insert_failed");
+        EXPECT_EQ(calls.uploadAllocations, before);
+        EXPECT_EQ(JuicerCuda::ResourceManager::global_state().pinnedStagingBytes.load(), initialCharge);
+        EXPECT_EQ(calls.copies, 0U);
+        EXPECT_TRUE(upload(source.data(), sizeof(source))) << failure.diagnostic;
+        EXPECT_EQ(calls.uploadAllocations, before + 1);
+    }
+
+    TEST_F(PinnedUpload, UnpublishedBlockRetainsBothHandlesAndCapacityUntilRetry) {
+        const std::array source{0.25F, 0.5F};
+        const auto charged = [] {
+            return JuicerCuda::ResourceManager::global_state().pinnedStagingBytes.load();
+        };
+        const auto initialCharge = charged();
+        const auto eventDestroys = calls.successfulEventDestroys;
+        const auto hostFrees = calls.successfulHostFrees;
+        // Return a real event along with a synthetic creation failure so both
+        // of the unpublished handles are present on the rollback path.
+        calls.nextCreateUploadEvent = cudaErrorInvalidResourceHandle;
+        calls.nextDestroyEvent = cudaErrorContextIsDestroyed;
+        calls.nextFreeHost = cudaErrorInvalidValue;
+        EXPECT_FALSE(upload(source.data(), sizeof(source)));
+        EXPECT_EQ(failure.status.native_code, cudaErrorInvalidResourceHandle);
+        EXPECT_TRUE(JuicerCuda::context_loss(failure));
+        EXPECT_EQ(charged(), initialCharge + sizeof(source));
+        EXPECT_EQ(calls.successfulEventDestroys, eventDestroys);
+        EXPECT_EQ(calls.successfulHostFrees, hostFrees);
+        EXPECT_EQ(calls.nextDestroyEvent, cudaSuccess);
+        EXPECT_EQ(calls.nextFreeHost, cudaSuccess);
+        EXPECT_EQ(calls.copies, 0U);
+
+        ASSERT_TRUE(JuicerCuda::purge_pinned_upload_staging_for_context(
+            key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure))
+            << failure.diagnostic;
+        EXPECT_EQ(charged(), initialCharge);
+        EXPECT_EQ(calls.successfulEventDestroys, eventDestroys + 1);
+        EXPECT_EQ(calls.successfulHostFrees, hostFrees + 1);
+        ASSERT_TRUE(JuicerCuda::purge_pinned_upload_staging_for_context(
+            key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure));
+        EXPECT_EQ(calls.successfulEventDestroys, eventDestroys + 1);
+        EXPECT_EQ(calls.successfulHostFrees, hostFrees + 1);
+    }
 
     struct PrintUploadInput {
         std::array<float, 2> axis{-2.0f, 0.0f};
@@ -341,6 +398,28 @@ namespace {
         EXPECT_FALSE(gate.timed_out());
     }
 
+    TEST_F(PinnedUpload, ForeignContextCannotDisposeOfTheProducingEpoch) {
+        constexpr std::array<std::uint8_t, 4> source{0x31, 0x52, 0x73, 0x94};
+        ASSERT_TRUE(upload(source.data(), source.size())) << failure.diagnostic;
+        require_cuda(cudaStreamSynchronize(stream));
+        auto* const staging = calls.lastStaging;
+        auto* const completion = calls.lastEvent;
+        CUcontext foreign = nullptr;
+        ASSERT_EQ(cuCtxCreate(&foreign, nullptr, 0, key.deviceId), CUDA_SUCCESS);
+        const bool retired = JuicerCuda::purge_pinned_upload_staging_for_context(
+            key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure);
+        EXPECT_FALSE(retired);
+        EXPECT_EQ(failure.status.category, FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_EQ(failure.status.api, FJ_API_NONE);
+        EXPECT_EQ(cuCtxDestroy(foreign), CUDA_SUCCESS);
+        ASSERT_EQ(cuCtxSetCurrent(reinterpret_cast<CUcontext>(key.contextOpaque)), CUDA_SUCCESS);
+        ASSERT_TRUE(upload(source.data(), source.size())) << failure.diagnostic;
+        EXPECT_EQ(calls.lastStaging, staging);
+        EXPECT_EQ(calls.lastEvent, completion);
+        require_cuda(cudaStreamSynchronize(stream));
+        EXPECT_EQ(read<std::uint8_t>(destination, source.size()), (std::vector<std::uint8_t>{source.begin(), source.end()}));
+    }
+
     class PinnedUploadRecordFailure : public PinnedUpload, public testing::WithParamInterface<cudaError_t> {};
 
     TEST_P(PinnedUploadRecordFailure, QuarantinedUploadCannotReuseAnOlderSuccessfulEvent) {
@@ -366,8 +445,7 @@ namespace {
         require_cuda(cudaStreamSynchronize(stream));
         EXPECT_EQ(read<std::uint8_t>(destination, bytes), source);
         EXPECT_FALSE(gate.timed_out());
-        JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire);
-        require_cuda(cudaFreeHost(quarantined));
+        EXPECT_TRUE(JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, 1, PinnedUploadPurgeDisposition::NormalRetire, failure)) << failure.diagnostic;
     }
 
     INSTANTIATE_TEST_SUITE_P(RecordFailure, PinnedUploadRecordFailure, testing::Values(cudaErrorInvalidResourceHandle, cudaErrorContextIsDestroyed));

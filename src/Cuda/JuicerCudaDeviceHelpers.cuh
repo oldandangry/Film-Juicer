@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "Cuda/JuicerCudaPayloads.h"
+#include "juicer_cuda_api.h"
 
 static __device__ __forceinline__ bool device_isfinite(float v) {
     return isfinite(v);
@@ -114,7 +115,7 @@ struct ChromaticAdaptationDeviceInput {
 };
 
 struct InputCctfDecodingDevice {
-    int inputColorSpaceIndex = 0;
+    std::uint32_t inputColorSpaceIndex = FJ_INPUT_DWG;
     int applyCctfDecoding = 0;
 };
 
@@ -199,24 +200,23 @@ static __device__ __forceinline__ void apply_input_cctf_decoding_device(
     InputCctfDecodingDevice config,
     const float inRgb[3],
     float outRgb[3]) {
-    if (!config.applyCctfDecoding) {
-        outRgb[0] = device_sanitize_channel(inRgb[0]);
-        outRgb[1] = device_sanitize_channel(inRgb[1]);
-        outRgb[2] = device_sanitize_channel(inRgb[2]);
-        return;
-    }
-
-    if (config.inputColorSpaceIndex == 1) {
-        outRgb[0] = decode_bt2020_channel_device(inRgb[0]);
-        outRgb[1] = decode_bt2020_channel_device(inRgb[1]);
-        outRgb[2] = decode_bt2020_channel_device(inRgb[2]);
-        return;
-    }
-    if (config.inputColorSpaceIndex == 3) {
-        outRgb[0] = decode_srgb_channel_device(inRgb[0]);
-        outRgb[1] = decode_srgb_channel_device(inRgb[1]);
-        outRgb[2] = decode_srgb_channel_device(inRgb[2]);
-        return;
+    if (config.applyCctfDecoding) {
+        switch (config.inputColorSpaceIndex) {
+            case FJ_INPUT_BT2020:
+                outRgb[0] = decode_bt2020_channel_device(inRgb[0]);
+                outRgb[1] = decode_bt2020_channel_device(inRgb[1]);
+                outRgb[2] = decode_bt2020_channel_device(inRgb[2]);
+                return;
+            case FJ_INPUT_SRGB_REC709:
+                outRgb[0] = decode_srgb_channel_device(inRgb[0]);
+                outRgb[1] = decode_srgb_channel_device(inRgb[1]);
+                outRgb[2] = decode_srgb_channel_device(inRgb[2]);
+                return;
+            case FJ_INPUT_DWG:
+            case FJ_INPUT_ACES2065_1:
+            default:
+                break;
+        }
     }
 
     outRgb[0] = device_sanitize_channel(inRgb[0]);

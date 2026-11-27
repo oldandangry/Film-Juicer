@@ -60,24 +60,20 @@ namespace JuicerCuda::Diffusion {
         cudaStream_t stream = nullptr;
     };
 
-    enum class FailureApi : std::uint8_t {
-        None,
-        Validation,
-        Cuda,
-        Cufft
-    };
-
     struct LaunchResult {
-        FailureApi api = FailureApi::None;
-        int code = 0;
+        LaunchResult() noexcept = default;
+        LaunchResult(const LaunchResult&) = delete;
+        LaunchResult& operator=(const LaunchResult&) = delete;
+        LaunchResult(LaunchResult&&) noexcept = default;
+        LaunchResult& operator=(LaunchResult&&) noexcept = default;
+
+        Failure failure{{FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}};
         const char* stage = nullptr;
 
         [[nodiscard]] bool ok() const noexcept {
-            return api == FailureApi::None;
+            return failure.status.category == FJ_STATUS_SUCCESS;
         }
     };
-
-    FjStatus launch_failure_status(const LaunchResult& result) noexcept;
 
     LaunchResult build_psf_plane(
         const SpectrumBuildRequest& request,

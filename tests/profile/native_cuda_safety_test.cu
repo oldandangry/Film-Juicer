@@ -1,3 +1,4 @@
+#include "Cuda/Film/FilmLaunchers.h"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -12,7 +13,6 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include "Cuda/Film/JuicerCudaDensityStages.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
 
 namespace {
@@ -182,7 +182,7 @@ namespace {
                 plane->upload(std::array{0.0f, 1000.0f});
             }
             JuicerCuda::CameraFilmLinearExposurePlanes planes{red.data(), green.data(), blue.data(), 2};
-            JuicerCuda::DirectPipelineRunParams direct{};
+            JuicerCuda::FilmScanRunParams direct{};
             direct.width = 2;
             direct.height = 1;
             direct.filmDevelop.densR = {x.data(), yC.data(), count, 0, count - 1};
@@ -193,8 +193,8 @@ namespace {
             print.height = 1;
             print.filmDevelop = direct.filmDevelop;
             for (const bool printRoute : {false, true}) {
-                const auto status = printRoute ? juicer_cuda_print_focused_capture_density_from_camera_film_linear(&print, planes, c.data(), m.data(), yellow.data(), nullptr)
-                                               : juicer_cuda_direct_focused_capture_density_from_camera_film_linear(&direct, planes, c.data(), m.data(), yellow.data(), nullptr);
+                const auto status = printRoute ? juicer_cuda_capture_density_from_camera_film_linear(&print, planes, c.data(), m.data(), yellow.data(), nullptr)
+                                               : juicer_cuda_capture_density_from_camera_film_linear(&direct, planes, c.data(), m.data(), yellow.data(), nullptr);
                 require_cuda(status);
                 float channelScale = 1.0f;
                 for (const DeviceFloats* output : {&c, &m, &yellow}) {

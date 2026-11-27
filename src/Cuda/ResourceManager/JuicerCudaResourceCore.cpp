@@ -114,7 +114,7 @@ namespace JuicerCuda::ResourceManager {
     }
 
     std::uint64_t hash_scratch_request_descriptor(const ScratchRequestDescriptor& descriptor) noexcept {
-        constexpr std::uint64_t kFnvOffset = 1469598103934665603ull;
+        constexpr std::uint64_t kFnvOffset = 14695981039346656037ull;
         constexpr std::uint64_t kFnvPrime = 1099511628211ull;
         std::uint64_t hash = kFnvOffset;
         auto mix = [&](std::uint64_t value) {

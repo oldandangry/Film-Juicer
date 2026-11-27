@@ -19,7 +19,7 @@ if(WIN32)
         $<$<COMPILE_LANGUAGE:CXX>:/O2;/Oi;/Ob2;/Gy>)
     target_compile_options(juicer_settings INTERFACE
         $<$<COMPILE_LANGUAGE:CUDA>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
-    target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO /OPT:REF /OPT:ICF)
+    target_link_options(juicer_settings INTERFACE "$<HOST_LINK:/DEBUG,/INCREMENTAL:NO,/OPT:REF,/OPT:ICF>")
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         message(FATAL_ERROR "Windows requires ClangCl with NVCC/MSVC")
     endif()
