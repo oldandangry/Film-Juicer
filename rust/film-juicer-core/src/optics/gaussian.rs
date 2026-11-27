@@ -7,6 +7,18 @@ pub enum GaussianKernelError {
     Allocation,
 }
 
+impl std::fmt::Display for GaussianKernelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Radius => "Gaussian radius is outside 1..=2048 pixels",
+            Self::Sigma => "Gaussian sigma must be finite and positive",
+            Self::Allocation => "Gaussian weights allocation failed",
+        })
+    }
+}
+
+impl std::error::Error for GaussianKernelError {}
+
 #[derive(Debug)]
 pub struct GaussianKernel {
     radius: u32,

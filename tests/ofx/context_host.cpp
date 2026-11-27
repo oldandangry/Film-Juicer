@@ -88,7 +88,6 @@ namespace ofx_test {
     }
     void ContextHost::reset_trace() {
         calls.clear();
-        effect_fetches_ = 0;
         callback_error = false;
     }
     OfxStatus ContextHost::record(ContextCall call) {
@@ -137,10 +136,9 @@ namespace ofx_test {
     OfxStatus ContextHost::effect_properties(OfxImageEffectHandle raw, OfxPropertySetHandle* out) noexcept {
         auto& s = *reinterpret_cast<Token*>(raw)->owner;
         try {
-            bool second = s.effect_fetches_++ != 0;
-            const char* key = second ? "effect_second" : "effect_first";
+            const char* key = "effect_first";
             auto status = s.record({key, {}, {}, 0, 0, 0});
-            *out = s.null_outputs[key] ? nullptr : reinterpret_cast<OfxPropertySetHandle>(second && s.distinct_second ? &s.second_ : &s.first_);
+            *out = s.null_outputs[key] ? nullptr : reinterpret_cast<OfxPropertySetHandle>(&s.first_);
             return status;
         } catch (...) {
             s.callback_error = true;

@@ -501,7 +501,7 @@ namespace {
         for (const auto& [id, name] : pairs) {
             ContextHost host;
             host.context = name;
-            require(describe(plugin, host) == kOfxStatOK && host.definitions.empty() && host.calls.size() == 5 && !host.callback_error, "nonfilter context");
+            require(describe(plugin, host) == kOfxStatOK && host.definitions.empty() && host.calls.size() == 4 && !host.callback_error, "nonfilter context");
         }
         {
             ContextHost host;
@@ -522,9 +522,9 @@ namespace {
         }
     }
     void acquisitions_case(OfxPlugin* plugin, const ContextHost& baseline) {
-        const std::vector<std::string> names{"effect_first", "param_set", "param_props", "get_string/OfxImageEffectPropContext", "effect_second"};
+        const std::vector<std::string> names{"effect_first", "param_set", "param_props", "get_string/OfxImageEffectPropContext"};
         auto ids = matrix_rows("status", names);
-        for (const auto* id : {"null_first", "null_params_filter", "null_params_nonfilter", "null_param_props", "null_second", "distinct_second", "null_context", "failed_null_context", "failed_null_first"})
+        for (const auto* id : {"null_first", "null_params_filter", "null_params_nonfilter", "null_param_props", "null_context", "failed_null_context", "failed_null_first"})
             ids.emplace_back(id);
         for (const auto& name : names)
             for (int status = 0; status < 15; ++status) {
@@ -559,7 +559,7 @@ namespace {
             auto expected = baseline.calls;
             expected.erase(expected.begin() + static_cast<std::ptrdiff_t>(call_end(expected, "param_props") - 1));
             expected[call_end(expected, "get_string/OfxImageEffectPropContext") - 1].text = kOfxImageEffectContextGeneral;
-            const auto count = call_end(expected, "effect_second");
+            const auto count = call_end(expected, "get_string/OfxImageEffectPropContext");
             require(describe(plugin, h) == kOfxStatOK && h.definitions.empty(), "null params nonfilter");
             require(matches_trace(h, expected, count), "null params nonfilter trace");
         }
@@ -568,17 +568,6 @@ namespace {
             h.null_outputs["param_props"] = true;
             require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions, "unused params properties");
             require(matches_trace(h, baseline.calls, baseline.calls.size()), "unused params properties trace");
-        }
-        {
-            ContextHost h;
-            h.null_outputs["effect_second"] = true;
-            require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions, "unused second properties");
-            require(matches_trace(h, baseline.calls, baseline.calls.size()), "unused second properties trace");
-        }
-        {
-            ContextHost h;
-            h.distinct_second = true;
-            require(describe(plugin, h) == kOfxStatOK && h.definitions == baseline.definitions && h.calls == baseline.calls, "second properties target");
         }
         {
             ContextHost h;
@@ -792,6 +781,10 @@ int main(int argc, char** argv) try {
     ContextHost oracle;
     ofx_test::reference::context(ofx_test::reference::read(argv[2], "context"), oracle);
     retire_scanner_grid_from_reference(oracle);
+    require(std::erase_if(oracle.calls, [](const auto& call) {
+                return call.operation == "effect_second";
+            }) == 1,
+            "archived duplicate descriptor acquisition count");
     reference_case(oracle, oracle.startup);
     ContextHost binding;
     candidate->setHost(binding.binding());

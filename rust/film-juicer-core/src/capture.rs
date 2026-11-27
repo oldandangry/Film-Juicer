@@ -1,5 +1,6 @@
 //! Identity of completed host controls before preparation admission.
-use crate::{hash, optics, recipe::Params, route::ScanRoute};
+use crate::film::{dir, grain};
+use crate::{hash, optics, route::ScanRoute};
 
 struct Mixer(u64);
 impl Mixer {
@@ -36,7 +37,142 @@ impl Mixer {
     }
 }
 /// Hash copied key bytes before UTF-8 admission, matching the native snapshot stream.
-pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
+/// Captured recipe inputs. Integer choices stay unadmitted until their
+/// owning construction stage, preserving competing-failure precedence.
+pub struct Params {
+    pub print_exposure: f64,
+    pub print_preflash_exposure: f64,
+    pub print_gamma_factor: f64,
+    pub preflash_m_filter_cc: f64,
+    pub preflash_y_filter_cc: f64,
+    pub glare_percent: f64,
+    pub glare_roughness: f64,
+    pub glare_blur_sigma_px: f64,
+    pub camera_exposure_compensation_ev: f64,
+    pub camera_film_format_long_edge_mm: f32,
+    pub film_gamma_factor: f32,
+    pub scanner_lens_blur_sigma_px: f64,
+    pub scanner_black_level: f64,
+    pub scanner_white_level: f64,
+    pub gate_weave_amount: f64,
+    pub scanner_unsharp_mask: [f64; 2],
+    pub print_ui_ymc_cc: [f64; 3],
+    pub camera_filter_uv: [f64; 3],
+    pub camera_filter_ir: [f64; 3],
+    pub camera_diffusion: optics::DiffusionParams,
+    pub enlarger_diffusion: optics::DiffusionParams,
+    pub dir_couplers: dir::Params,
+    pub film_profile_key: String,
+    pub print_profile_key: String,
+    pub spectral_upsampling_mode: i32,
+    pub enl_ill: i32,
+    pub normalize_print_exposure: i32,
+    pub print_exposure_compensation: i32,
+    pub input_color_space: i32,
+    pub input_cctf_decoding: i32,
+    pub input_compression_enabled: i32,
+    pub hanatos2025_adaptation_window: i32,
+    pub hanatos2025_adaptation_surface: i32,
+    pub camera_auto_exposure_enabled: i32,
+    pub camera_metering_method: i32,
+    pub scatter_halation: HalationControls,
+    pub highlight_boost: optics::highlight_boost::Controls,
+    pub scanner_black_correction: i32,
+    pub scanner_white_correction: i32,
+    pub output_color_space: i32,
+    pub output_cctf_encoding: i32,
+    pub output_gamut_compression_enabled: i32,
+    pub grain: grain::Params,
+    pub film_grain: grain::film_v1::Selection,
+    pub film_dust_amount: f32,
+    pub film_scratch_amount: f32,
+    pub gate_dust_amount: f32,
+    pub gate_scratch_amount: f32,
+    pub scan_route: ScanRoute,
+    pub glare_active: bool,
+    pub camera_filter_override: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HalationControls {
+    pub active: bool,
+    pub scatter_amount: f32,
+    pub scatter_spatial_scale: f32,
+    pub halation_amount: f32,
+    pub halation_spatial_scale: f32,
+    pub shape: optics::HalationShape,
+    pub reflection: HalationReflectionSource,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum HalationReflectionSource {
+    #[default]
+    Profile,
+    Custom {
+        strength: [f64; 3],
+        first_sigma_um: [f64; 3],
+    },
+}
+
+impl HalationReflectionSource {
+    pub fn validate(self) -> Result<Self, optics::Error> {
+        match self {
+            Self::Profile => Ok(self),
+            Self::Custom {
+                strength,
+                first_sigma_um,
+            } => Ok(Self::Custom {
+                strength: optics::halation_triplet(
+                    strength,
+                    optics::HALATION_MAX_AUTHORED,
+                    optics::Field::ReflectionStrength,
+                )?,
+                first_sigma_um: optics::halation_triplet(
+                    first_sigma_um,
+                    optics::HALATION_MAX_AUTHORED,
+                    optics::Field::FirstBounceSigma,
+                )?,
+            }),
+        }
+    }
+
+    pub(crate) fn resolve(
+        self,
+        profile_sigma_um: [f32; 3],
+        profile_strength: [f32; 3],
+    ) -> Result<([f32; 3], [f32; 3]), optics::Error> {
+        match self.validate()? {
+            Self::Profile => Ok((profile_sigma_um, profile_strength)),
+            Self::Custom {
+                strength,
+                first_sigma_um,
+            } => Ok((first_sigma_um.map(|v| v as f32), strength.map(|v| v as f32))),
+        }
+    }
+}
+
+pub(crate) fn current_grain(params: &Params) -> grain::Params {
+    if params.film_grain.controls().is_some() {
+        return grain::Params {
+            active: false,
+            ..params.grain
+        };
+    }
+    params.grain
+}
+
+#[cfg(test)]
+pub(crate) fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
+    capture_identity(p, film_key, print_key, 0, ShadowControls::default())
+}
+
+fn capture_identity(
+    p: &Params,
+    film_key: &[u8],
+    print_key: &[u8],
+    reference_illuminant: i32,
+    shadow: ShadowControls,
+) -> u64 {
     let mut h = Mixer(0);
     h.string(film_key);
     let route = match p.scan_route {
@@ -61,11 +197,11 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
         h.canonical_retained(p.preflash_y_filter_cc);
     }
     h.int(p.spectral_upsampling_mode);
-    h.int(p.ref_ill);
+    h.int(reference_illuminant);
     for v in [
-        p.print_shadow_compensation_factor,
-        p.print_shadow_compensation_density,
-        p.print_shadow_compensation_transition,
+        bounded(shadow.factor, 0.0, 0.0, 1.0),
+        bounded(shadow.density, 1.2, 0.0, 3.0),
+        bounded(shadow.transition, 0.3, 0.0, 2.0),
     ] {
         h.add((v * 10000.0) as u64);
     }
@@ -150,7 +286,7 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
             h.double(shape.bounce_decay);
             h.add(shape.renormalize as u64);
         }
-        if let crate::recipe::HalationReflectionSource::Custom {
+        if let HalationReflectionSource::Custom {
             strength,
             first_sigma_um,
         } = s.reflection
@@ -188,7 +324,7 @@ pub fn hash_params(p: &Params, film_key: &[u8], print_key: &[u8]) -> u64 {
             h.add(u64::from(value.to_bits()));
         }
     }
-    let g = crate::recipe::current_grain(p);
+    let g = current_grain(p);
     if g.active {
         h.add(1);
         h.add(g.sublayers_active as u64);
@@ -258,8 +394,15 @@ pub struct Captured {
     identity: u64,
 }
 impl Captured {
-    pub fn new(params: Params, film_key: Vec<u8>, print_key: Vec<u8>) -> Self {
-        let identity = hash_params(&params, &film_key, &print_key);
+    pub fn new(
+        params: Params,
+        film_key: Vec<u8>,
+        print_key: Vec<u8>,
+        reference_illuminant: i32,
+        shadow: ShadowControls,
+    ) -> Self {
+        let identity =
+            capture_identity(&params, &film_key, &print_key, reference_illuminant, shadow);
         Self {
             params,
             film_key,
@@ -303,16 +446,13 @@ pub fn default_route(positive: bool) -> ScanRoute {
 }
 /// Initial snapshot values used before each ordered family capture completes.
 pub fn defaults() -> Params {
-    let diffusion = optics::diffusion(false, 1, [0.5, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    let diffusion = diffusion(false, 1, [0.5, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     Params {
         print_exposure: 1.0,
         print_preflash_exposure: 0.0,
         print_gamma_factor: 1.0,
         preflash_m_filter_cc: 0.0,
         preflash_y_filter_cc: 0.0,
-        print_shadow_compensation_factor: 0.0,
-        print_shadow_compensation_density: 1.2,
-        print_shadow_compensation_transition: 0.3,
         glare_percent: 0.03,
         glare_roughness: 0.7,
         glare_blur_sigma_px: 0.5,
@@ -333,7 +473,6 @@ pub fn defaults() -> Params {
         film_profile_key: String::new(),
         print_profile_key: String::new(),
         spectral_upsampling_mode: 0,
-        ref_ill: 0,
         enl_ill: 3,
         normalize_print_exposure: 1,
         print_exposure_compensation: 1,
@@ -344,7 +483,7 @@ pub fn defaults() -> Params {
         hanatos2025_adaptation_surface: 0,
         camera_auto_exposure_enabled: 1,
         camera_metering_method: 0,
-        scatter_halation: crate::recipe::HalationControls::default(),
+        scatter_halation: HalationControls::default(),
         highlight_boost: optics::highlight_boost::Controls::default(),
         scanner_black_correction: 0,
         scanner_white_correction: 0,
@@ -382,5 +521,160 @@ pub fn defaults() -> Params {
         scan_route: ScanRoute::NegativePrint,
         glare_active: true,
         camera_filter_override: false,
+    }
+}
+
+pub struct PrintControls {
+    pub exposure: f64,
+    pub preflash: f64,
+    pub exposure_compensation: bool,
+    pub ymc: [f64; 3],
+}
+impl PrintControls {
+    pub fn complete(self, p: &mut Params) {
+        p.print_exposure = crate::exposure::finite_or(self.exposure, 1.0);
+        p.print_preflash_exposure = crate::exposure::finite_or(self.preflash, 0.0);
+        p.print_exposure_compensation = i32::from(self.exposure_compensation);
+        p.normalize_print_exposure = 1;
+        p.print_ui_ymc_cc = self.ymc.map(|v| crate::exposure::finite_or(v, 0.0));
+    }
+}
+
+fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+fn bounded_float(value: f64, fallback: f32, lo: f64, hi: f64) -> f32 {
+    bounded(value, f64::from(fallback), lo, hi) as f32
+}
+
+pub struct GlareControls {
+    pub active: bool,
+    pub percent: f64,
+    pub roughness: f64,
+    pub blur: f64,
+}
+impl GlareControls {
+    pub fn complete(self, p: &mut Params) {
+        p.glare_active = self.active;
+        p.glare_percent = f64::from(bounded_float(self.percent, 0.03, 0.0, 1.0));
+        p.glare_roughness = f64::from(bounded_float(self.roughness, 0.7, 0.0, 1.0));
+        p.glare_blur_sigma_px = f64::from(bounded_float(self.blur, 0.5, 0.0, 10.0));
+    }
+}
+
+pub fn capture_levels(black: f64, white: f64) -> (f64, f64) {
+    (
+        bounded(black, 0.01, 0.0, 1.0),
+        bounded(white, 0.98, 0.0, 1.0),
+    )
+}
+
+/// Saved shadow controls contribute to capture reuse, even on Direct routes.
+pub struct ShadowControls {
+    pub factor: f64,
+    pub density: f64,
+    pub transition: f64,
+}
+#[cfg(test)]
+impl Default for ShadowControls {
+    fn default() -> Self {
+        Self {
+            factor: 0.0,
+            density: 1.2,
+            transition: 0.3,
+        }
+    }
+}
+
+pub struct EffectsControls {
+    pub film_dust: f64,
+    pub gate_dust: f64,
+    pub film_scratch: f64,
+    pub gate_scratch: f64,
+    pub gate_weave: f64,
+}
+impl EffectsControls {
+    pub fn complete(self, p: &mut Params) {
+        p.film_dust_amount = bounded_float(self.film_dust, 0.0, 0.0, 10.0);
+        p.gate_dust_amount = bounded_float(self.gate_dust, 0.0, 0.0, 10.0);
+        p.film_scratch_amount = bounded_float(self.film_scratch, 0.0, 0.0, 10.0);
+        p.gate_scratch_amount = bounded_float(self.gate_scratch, 0.0, 0.0, 10.0);
+        p.gate_weave_amount = bounded(self.gate_weave, 0.0, 0.0, 10.0);
+    }
+}
+
+pub fn halation(active: bool, values: [f64; 4]) -> Result<HalationControls, &'static str> {
+    let mut result = HalationControls {
+        active,
+        ..Default::default()
+    };
+    if !active {
+        return Ok(result);
+    }
+    const DIAGNOSTICS: [[&str; 3]; 4] = [
+        [
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=above_maximum",
+        ],
+    ];
+    let mut out = [0.0; 4];
+    for (i, raw) in values.into_iter().enumerate() {
+        let reason = if !raw.is_finite() {
+            Some(0)
+        } else if raw < 0.0 {
+            Some(1)
+        } else if raw > 2.0 {
+            Some(2)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(DIAGNOSTICS[i][reason]);
+        }
+        let v = raw as f32;
+        out[i] = if v == 0.0 { 0.0 } else { v };
+    }
+    [
+        result.scatter_amount,
+        result.scatter_spatial_scale,
+        result.halation_amount,
+        result.halation_spatial_scale,
+    ] = out;
+    Ok(result)
+}
+
+pub fn diffusion(active: bool, family: i32, values: [f64; 9]) -> optics::DiffusionParams {
+    optics::DiffusionParams {
+        active,
+        family: family.clamp(0, 3) as u32,
+        strength: values[0],
+        spatial_scale: values[1],
+        halo_warmth: values[2],
+        core_intensity: values[3],
+        core_size: values[4],
+        halo_intensity: values[5],
+        halo_size: values[6],
+        bloom_intensity: values[7],
+        bloom_size: values[8],
     }
 }

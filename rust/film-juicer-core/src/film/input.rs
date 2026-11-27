@@ -86,7 +86,14 @@ impl fmt::Display for Error {
         })
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Sensitivity(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 pub struct Recipe {
     color: color::InputColor,

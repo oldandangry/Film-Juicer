@@ -8,7 +8,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::recipe::{Params, PrepareError, RenderState};
+use crate::capture::Params;
+use crate::recipe::{PrepareError, RenderState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureFailureKind {
@@ -56,6 +57,14 @@ impl CaptureFailure {
         std::str::from_utf8(&self.diagnostic[..self.len]).expect("bounded UTF-8 diagnostic")
     }
 }
+
+impl fmt::Display for CaptureFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.diagnostic())
+    }
+}
+
+impl std::error::Error for CaptureFailure {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureMode {
@@ -160,7 +169,7 @@ impl fmt::Display for Error {
             Self::Uninitialized => f.write_str("render snapshot is uninitialized"),
             Self::Capturing => f.write_str("render snapshot capture in progress"),
             Self::RefreshRequired => f.write_str("render snapshot needs a fresh read"),
-            Self::CaptureFailed(failure) => f.write_str(failure.diagnostic()),
+            Self::CaptureFailed(failure) => failure.fmt(f),
             Self::InvalidCaptureTicket => f.write_str("invalid capture ticket"),
             Self::InvalidCaptureOperation => f.write_str("invalid capture phase or write revision"),
             Self::Preparation(error) => error.fmt(f),
@@ -171,6 +180,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::CaptureFailed(failure) => Some(failure),
             Self::Preparation(error) => Some(error),
             _ => None,
         }
@@ -258,6 +268,16 @@ struct State {
     build: u64,
 }
 impl State {
+    fn published(
+        &self,
+        identity: u64,
+        film_raster: Option<crate::film::grain::film_v1::Raster>,
+    ) -> Option<&Published> {
+        self.published
+            .as_ref()
+            .filter(|published| published.matches(identity, film_raster))
+    }
+
     fn current(&self, capture: u64) -> Result<bool, Error> {
         if capture == 0 || capture > self.issued {
             return Err(Error::InvalidCaptureTicket);
@@ -304,11 +324,8 @@ impl Publication {
         }
     }
     fn lock(&self) -> Result<MutexGuard<'_, State>, Error> {
-        if self.rebuild.is_poisoned() {
-            return Err(Error::Poisoned);
-        }
         let state = self.state.lock().map_err(|_| Error::Poisoned)?;
-        if matches!(state.pending, Pending::Blocked) {
+        if self.rebuild.is_poisoned() || matches!(state.pending, Pending::Blocked) {
             return Err(Error::Poisoned);
         }
         Ok(state)
@@ -632,14 +649,14 @@ impl Publication {
             Some(crate::recipe::FilmGrainFrame::Raster(raster)) => Some(raster),
             None => None,
         };
+        if let Some(published) = self.lock()?.published(input.identity, film_raster) {
+            return Ok(Arc::clone(&published.state));
+        }
+        #[cfg(test)]
+        tests::observe_rebuild_contention(&self.rebuild);
         let _rebuild = self.rebuild.lock().map_err(|_| Error::Poisoned)?;
-        {
-            let state = self.lock()?;
-            if let Some(published) = &state.published
-                && published.matches(input.identity, film_raster)
-            {
-                return Ok(Arc::clone(&published.state));
-            }
+        if let Some(published) = self.lock()?.published(input.identity, film_raster) {
+            return Ok(Arc::clone(&published.state));
         }
         let candidate = prepare()?;
         let mut state = self.lock()?;
@@ -667,7 +684,11 @@ impl Publication {
     ) -> Result<Admission, Error> {
         // An unfinished host action never waits for a builder or reentrant host work.
         {
-            self.lock()?.input()?;
+            let state = self.lock()?;
+            let (_, identity) = state.input()?;
+            if let Some(published) = state.published(identity, None) {
+                return Ok(published.admission());
+            }
         }
         #[cfg(test)]
         tests::observe_rebuild_contention(&self.rebuild);
@@ -676,9 +697,7 @@ impl Publication {
             let (params, identity) = {
                 let state = self.lock()?;
                 let (params, identity) = state.input()?;
-                if let Some(published) = &state.published
-                    && published.matches(identity, None)
-                {
+                if let Some(published) = state.published(identity, None) {
                     return Ok(published.admission());
                 }
                 (Arc::clone(params), identity)
@@ -1774,6 +1793,232 @@ mod tests {
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(backing_words(&first), backing_words(&second));
+    }
+    #[test]
+    fn saved_capture_controls_invalidate_without_changing_prepared_film() {
+        use crate::capture::{Captured, ShadowControls};
+        use film::grain::film_v1::{Controls, Raster, Selection};
+
+        let assets = assets();
+        for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
+            let publication = Publication::new();
+            let frame = recipe::FilmGrainFrame::Raster(Raster {
+                rendered_long_edge_px: 4832,
+                candidate_full_grid: None,
+            });
+            let stage = |reference_illuminant, shadow| {
+                let mut params = params(route, 1);
+                params.film_grain = Selection::FilmV1(Controls {
+                    amount_ev: 0.0,
+                    texel_pitch_um: 1.0,
+                    chroma_fraction: 1.0,
+                });
+                let (params, identity) = Captured::new(
+                    params,
+                    b"kodak_portra_400".to_vec(),
+                    b"kodak_portra_endura".to_vec(),
+                    reference_illuminant,
+                    shadow,
+                )
+                .admit()
+                .unwrap();
+                publication.stage(valid(identity, params)).unwrap();
+                identity
+            };
+            let admit = || {
+                publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                        recipe::prepare_for_frame(&assets, params, frame)
+                    })
+                    .unwrap()
+            };
+            for (index, (reference_illuminant, shadow)) in [
+                (2, ShadowControls::default()),
+                (
+                    0,
+                    ShadowControls {
+                        factor: 0.5,
+                        ..ShadowControls::default()
+                    },
+                ),
+                (
+                    0,
+                    ShadowControls {
+                        density: 1.5,
+                        ..ShadowControls::default()
+                    },
+                ),
+                (
+                    0,
+                    ShadowControls {
+                        transition: 0.75,
+                        ..ShadowControls::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let unchanged = stage(0, ShadowControls::default());
+                let first = admit();
+                assert_eq!(stage(0, ShadowControls::default()), unchanged);
+                let same = publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |_| {
+                        panic!("unchanged saved controls rebuilt")
+                    })
+                    .unwrap();
+                assert!(Arc::ptr_eq(&first, &same));
+                let edited = stage(reference_illuminant, shadow);
+                assert_ne!(unchanged, edited);
+                let changed = admit();
+                assert!(!Arc::ptr_eq(&first, &changed));
+                assert_eq!(first.hash(), changed.hash());
+                assert_eq!(
+                    first.film_grain().unwrap().hash(),
+                    changed.film_grain().unwrap().hash()
+                );
+                assert_eq!(backing_words(&first), backing_words(&changed));
+                let state = publication.lock().unwrap();
+                let published = state.published.as_ref().unwrap();
+                assert_eq!(published.identity, edited);
+                assert_eq!(published.build, 2 * (index as u64 + 1));
+            }
+        }
+    }
+    #[test]
+    fn warm_admission_reuses_current_state_during_obsolete_rebuild() {
+        let assets = assets();
+        let publication = Publication::new();
+        publication.stage(valid(1, direct())).unwrap();
+        let first = publication
+            .admit(|params| recipe::prepare(&assets, params))
+            .unwrap();
+        publication
+            .stage(valid(2, params(ScanRoute::NegativePrint, 1)))
+            .unwrap();
+
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (warm_tx, warm_rx) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let publication = &publication;
+            let assets = &assets;
+            let builder = scope.spawn(move || {
+                publication
+                    .admit(|params| {
+                        assert_eq!(params.scan_route, ScanRoute::NegativePrint);
+                        started_tx.send(()).unwrap();
+                        release_rx.recv_timeout(RENDEZVOUS).unwrap();
+                        recipe::prepare(assets, params)
+                    })
+                    .unwrap()
+            });
+            started_rx.recv_timeout(RENDEZVOUS).unwrap();
+            publication.stage(TestInput::Capturing).unwrap();
+            assert!(matches!(
+                publication.admit(|_| panic!("pending capture built")),
+                Err(Error::Capturing)
+            ));
+            publication.stage(valid(1, direct())).unwrap();
+            let warm = scope.spawn(move || {
+                warm_tx
+                    .send(publication.admit(|_| panic!("warm capture rebuilt")))
+                    .unwrap();
+            });
+            let before_release = warm_rx.recv_timeout(RENDEZVOUS);
+            release_tx.send(()).unwrap();
+            let warm_admission = before_release
+                .expect("warm admission waited for obsolete rebuild")
+                .unwrap();
+            warm.join().unwrap();
+            for admission in [warm_admission, builder.join().unwrap()] {
+                assert_eq!((admission.input_identity(), admission.build()), (1, 1));
+                assert!(Arc::ptr_eq(&first.state, &admission.state));
+            }
+        });
+        let state = publication.lock().unwrap();
+        let published = state.published.as_ref().unwrap();
+        assert_eq!((published.identity, published.build), (1, 1));
+        assert!(Arc::ptr_eq(&first.state, &published.state));
+    }
+    #[test]
+    fn warm_film_frame_reuses_matching_raster_during_another_raster_build() {
+        use film::grain::film_v1::{Controls, Raster, Selection};
+
+        let assets = assets();
+        let publication = Publication::new();
+        let mut params = direct();
+        params.film_grain = Selection::FilmV1(Controls {
+            amount_ev: 0.0,
+            texel_pitch_um: 1.0,
+            chroma_fraction: 1.0,
+        });
+        publication.stage(valid(1, params)).unwrap();
+        let frame = |rendered_long_edge_px| {
+            recipe::FilmGrainFrame::Raster(Raster {
+                rendered_long_edge_px,
+                candidate_full_grid: None,
+            })
+        };
+        let first = frame(4832);
+        let second = frame(7418);
+        let held = publication
+            .admit_film_grain_frame(publication.frame_input().unwrap(), first, |params| {
+                recipe::prepare_for_frame(&assets, params, first)
+            })
+            .unwrap();
+
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (warm_tx, warm_rx) = mpsc::sync_channel(1);
+        let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let publication = &publication;
+            let assets = &assets;
+            let builder = scope.spawn(move || {
+                publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), second, |params| {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv_timeout(RENDEZVOUS).unwrap();
+                        recipe::prepare_for_frame(assets, params, second)
+                    })
+                    .unwrap()
+            });
+            started_rx.recv_timeout(RENDEZVOUS).unwrap();
+            let warm = scope.spawn(move || {
+                warm_tx
+                    .send(publication.admit_film_grain_frame(
+                        publication.frame_input().unwrap(),
+                        first,
+                        |_| panic!("matching Film raster rebuilt"),
+                    ))
+                    .unwrap()
+            });
+            let waiter = scope.spawn(move || {
+                REBUILD_WAITER.set(Some(waiting_tx));
+                publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), second, |_| {
+                        panic!("matching Film raster rebuilt after waiting")
+                    })
+                    .unwrap()
+            });
+            let waiting = waiting_rx.recv_timeout(RENDEZVOUS);
+            let before_release = warm_rx.recv_timeout(RENDEZVOUS);
+            release_tx.send(()).unwrap();
+            waiting.expect("different Film raster skipped the rebuild gate");
+            let matched = before_release
+                .expect("matching Film raster waited for the rebuild")
+                .unwrap();
+            warm.join().unwrap();
+            assert!(Arc::ptr_eq(&held, &matched));
+            let built = builder.join().unwrap();
+            assert!(!Arc::ptr_eq(&held, &built));
+            assert!(Arc::ptr_eq(&built, &waiter.join().unwrap()));
+            let state = publication.lock().unwrap();
+            let published = state.published.as_ref().unwrap();
+            assert_eq!((published.identity, published.build), (1, 2));
+            assert!(Arc::ptr_eq(&built, &published.state));
+        });
     }
     #[test]
     fn poisoned_state_blocks_admission() {

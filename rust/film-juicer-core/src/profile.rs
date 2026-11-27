@@ -176,6 +176,34 @@ pub struct CatalogEntryError {
     pub kind: CatalogEntryErrorKind,
 }
 
+impl std::fmt::Display for CatalogEntryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "catalog entry {}: ", self.path.display())?;
+        match &self.kind {
+            CatalogEntryErrorKind::Read(source) => write!(f, "{source}"),
+            CatalogEntryErrorKind::Json(source) => write!(f, "{source}"),
+            CatalogEntryErrorKind::MissingStock => f.write_str("missing stock"),
+            CatalogEntryErrorKind::UnsupportedRole => f.write_str("unsupported profile role"),
+        }
+    }
+}
+
+impl std::error::Error for CatalogEntryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self {
+                kind: CatalogEntryErrorKind::Read(error),
+                ..
+            } => Some(error),
+            Self {
+                kind: CatalogEntryErrorKind::Json(error),
+                ..
+            } => Some(error),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum CatalogEntryErrorKind {
     Read(io::Error),
@@ -206,7 +234,14 @@ impl fmt::Display for CatalogError {
         }
     }
 }
-impl std::error::Error for CatalogError {}
+impl std::error::Error for CatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Directory { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 fn decode_json(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
@@ -611,7 +646,21 @@ impl fmt::Display for ProfileError {
         }
     }
 }
-impl std::error::Error for ProfileError {}
+impl std::error::Error for ProfileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self {
+                kind: ProfileErrorKind::Read(error),
+                ..
+            } => Some(error),
+            Self {
+                kind: ProfileErrorKind::Json(error),
+                ..
+            } => Some(error),
+            _ => None,
+        }
+    }
+}
 
 // Private failures acquire path/role/stock once, at the file-loading boundary.
 #[derive(Debug)]

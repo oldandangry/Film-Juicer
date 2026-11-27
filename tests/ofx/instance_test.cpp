@@ -14,9 +14,9 @@
 namespace {
     using ofx_test::InstanceCall;
     using ofx_test::InstanceHost;
-    void require(bool condition, const char* message) {
+    void require(bool condition, std::string_view message) {
         if (!condition)
-            throw std::runtime_error(message);
+            throw std::runtime_error(std::string(message));
     }
     OfxStatus call(OfxPlugin* plugin, const char* action, const void* handle = nullptr, OfxPropertySetHandle input = nullptr) {
         return plugin->mainEntry(action, handle, input, nullptr);
@@ -881,6 +881,61 @@ namespace {
     OfxStatus change(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const char* reason, const char* name) {
         return call(plugin, kOfxActionInstanceChanged, effect, host.change_args({reason, kOfxTypeParameter, name}));
     }
+    void saved_control_getters(OfxPlugin* plugin, InstanceHost& host) {
+        using ofx_test::InstanceValue;
+        const std::array saved{
+            std::pair{"ReferenceIlluminant", InstanceValue{2}},
+            std::pair{"PrintShadowCompensationFactor", InstanceValue{0.5}},
+            std::pair{"PrintShadowCompensationDensity", InstanceValue{1.5}},
+            std::pair{"PrintShadowCompensationTransition", InstanceValue{0.75}},
+        };
+        auto* effect = host.create_effect();
+        for (const auto& [name, value] : saved)
+            host.set_value(effect, name, {value});
+        const auto getters = [&] {
+            std::vector<InstanceCall> reads;
+            for (const auto& entry : host.calls())
+                if (entry.operation == "param_get")
+                    reads.push_back(entry);
+            return reads;
+        };
+        require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "create saved-control instance");
+        const auto* owner = host.instance_data(effect);
+        const auto capture = [&] {
+            return change(plugin, host, effect, kOfxChangeUserEdited, "Exposure");
+        };
+        require(capture() == kOfxStatReplyDefault, "initialize saved controls");
+        host.clear_calls();
+        require(capture() == kOfxStatReplyDefault, "load saved controls");
+        const auto expected = getters();
+        const auto require_order = [&](const auto& names) {
+            require(std::ranges::search(expected, names, {}, &InstanceCall::target).begin() != expected.end(),
+                    "saved capture getter order");
+        };
+        require_order(std::array{"SpectralUpsampling", "ReferenceIlluminant", "EnlargerIlluminant"});
+        require_order(std::array{"PrintShadowCompensationFactor", "PrintShadowCompensationDensity", "PrintShadowCompensationTransition", "GlareActive"});
+        for (const auto& [name, value] : saved) {
+            const auto target = std::ranges::find_if(expected, [name](const auto& entry) {
+                return entry.target == name;
+            });
+            require(target != expected.end() && target->values == std::vector{value},
+                    std::string("saved getter value: ") + name);
+            host.clear_calls();
+            host.fail_next(std::string("param_get/") + name, kOfxStatErrMemory);
+            require(capture() == kOfxStatErrMemory && host.instance_data(effect) == owner,
+                    std::string("saved getter status and instance preservation: ") + name);
+            const auto actual = getters();
+            require(actual.size() == static_cast<std::size_t>(target - expected.begin()) + 1 &&
+                        std::equal(actual.begin(), actual.end() - 1, expected.begin()) &&
+                        actual.back().target == name && actual.back().status == kOfxStatErrMemory,
+                    std::string("first failing saved getter: ") + name);
+            host.clear_calls();
+            require(capture() == kOfxStatReplyDefault && getters() == expected,
+                    std::string("saved getter recovery: ") + name);
+        }
+        require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "release recovered instance");
+    }
+
     void candidate_cohort(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
         plugin->setHost(host.binding());
         require(call(plugin, kOfxActionLoad) == kOfxStatOK, "candidate load");
@@ -1071,6 +1126,7 @@ namespace {
         const auto contexts = context_cases(plugin, host, &reference.contexts);
         require(contexts.size() == reference.contexts.size(), "context membership");
         acquisition_cases(plugin, host, reference.ordinary_create);
+        saved_control_getters(plugin, host);
         require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "candidate unload");
     }
 

@@ -26,7 +26,7 @@ HEADERS = {".h", ".hh", ".hpp", ".hxx", ".cuh", ".inc", ".inl", ".ixx"}
 GENERATED = {"src/GeneratedColorSpaces.cpp", "src/GeneratedColorSpaces.h"}
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 DEPENDENCIES = {
-    "film-juicer-core": {"libm", "serde", "serde_json"},
+    "film-juicer-core": {"libm", "serde", "serde_json", "triomphe"},
     "film-juicer-plugin": {"film-juicer-core"},
 }
 RUST_NOTICE_RELEASES = {
@@ -40,6 +40,7 @@ RUST_NOTICE_RELEASES = {
     "serde_derive": "1.0.229",
     "serde_json": "1.0.151",
     "syn": "3.0.6",
+    "triomphe": "0.1.17",
     "unicode-ident": "1.0.26",
     "zmij": "1.0.23",
 }

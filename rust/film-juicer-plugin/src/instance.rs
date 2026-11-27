@@ -85,7 +85,7 @@ impl Instance {
         &self,
         capture: u64,
         write_revision: u64,
-        params: recipe::Params,
+        params: film_juicer_core::capture::Params,
         input_identity: u64,
     ) -> Result<state::FrameInstall<'_>, state::Error> {
         self.publication
@@ -120,7 +120,9 @@ impl Instance {
         assets: &Assets,
         frame: recipe::FilmGrainFrame,
     ) -> Result<Arc<recipe::RenderState>, state::Error> {
-        let prepare = |params: &recipe::Params| recipe::prepare_for_frame(assets, params, frame);
+        let prepare = |params: &film_juicer_core::capture::Params| {
+            recipe::prepare_for_frame(assets, params, frame)
+        };
 
         self.publication
             .admit_film_grain_frame(input, frame, prepare)

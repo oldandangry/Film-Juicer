@@ -1,15 +1,12 @@
 //! Projection of physical effects from the resolved frame and recipe.
 
-use film_juicer_core::{
-    effects::{self, frame::Frame},
-    frame::Domain,
-};
+use film_juicer_core::{effects::frame::Frame, frame::Domain};
 use super::{
     effects_projection::{project_dust, project_scratch},
     sys::{FjDefectOrigin, FjExtent, FjFilmEffects},
 };
 
-pub(super) fn project(v: &Frame, recipe: &effects::Recipe) -> FjFilmEffects {
+pub(super) fn project(v: &Frame<'_>) -> FjFilmEffects {
     let extent = |e: Domain| FjExtent {
         x: e.x,
         y: e.y,
@@ -17,10 +14,10 @@ pub(super) fn project(v: &Frame, recipe: &effects::Recipe) -> FjFilmEffects {
         height: e.height,
     };
     FjFilmEffects {
-        film_dust: project_dust(recipe.film_dust()),
-        gate_dust: project_dust(recipe.gate_dust()),
-        film_scratch: project_scratch(recipe.film_scratch()),
-        gate_scratch: project_scratch(recipe.gate_scratch()),
+        film_dust: project_dust(v.film().dust()),
+        gate_dust: project_dust(v.gate().dust()),
+        film_scratch: project_scratch(v.film().scratch()),
+        gate_scratch: project_scratch(v.gate().scratch()),
         flags: u32::from(v.weave_active())
             | (u32::from(v.film_active()) << 1)
             | (u32::from(v.gate_transmittance_active()) << 2)

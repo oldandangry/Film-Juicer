@@ -89,7 +89,6 @@ namespace ofx_test {
     }
     void Host::reset_trace() {
         calls.clear();
-        effect_fetches_ = 0;
         callback_error = false;
     }
 
@@ -132,10 +131,9 @@ namespace ofx_test {
     OfxStatus Host::get_effect_properties(OfxImageEffectHandle raw, OfxPropertySetHandle* out) noexcept {
         auto& self = *reinterpret_cast<Token*>(raw)->owner;
         try {
-            const bool second = self.effect_fetches_++ != 0;
-            const std::string key = second ? "effect_second" : "effect_first";
+            const char* key = "effect_first";
             const auto status = self.record({key, {}, 0, {}, 0, 0});
-            *out = self.null_outputs[key] ? nullptr : reinterpret_cast<OfxPropertySetHandle>(second && self.distinct_second ? &self.second_ : &self.first_);
+            *out = self.null_outputs[key] ? nullptr : reinterpret_cast<OfxPropertySetHandle>(&self.first_);
             return status;
         } catch (...) {
             self.callback_error = true;

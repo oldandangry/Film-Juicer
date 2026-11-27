@@ -56,14 +56,13 @@ namespace ofx_test {
         std::function<void()> reentry;
         std::string context = kOfxImageEffectContextFilter;
         bool callback_error = false;
-        bool distinct_second = false;
 
     private:
         struct Token {
             ContextHost* owner;
             int target;
         };
-        Token host_token_{this, 0}, effect_token_{this, 1}, first_{this, 2}, second_{this, 3}, params_{this, 4}, param_props_{this, 5}, input_{this, 6};
+        Token host_token_{this, 0}, effect_token_{this, 1}, first_{this, 2}, params_{this, 4}, param_props_{this, 5}, input_{this, 6};
         std::vector<std::unique_ptr<Token>> tokens_;
         OfxHost host_{};
         OfxPropertySuiteV1 property_{};
@@ -72,7 +71,6 @@ namespace ofx_test {
         OfxMessageSuiteV1 message_{};
         OfxMemorySuiteV1 memory_{};
         OfxMultiThreadSuiteV1 thread_{};
-        int effect_fetches_ = 0;
         OfxStatus record(ContextCall call);
         static const void* fetch(OfxPropertySetHandle, const char*, int) noexcept;
         static OfxStatus effect_properties(OfxImageEffectHandle, OfxPropertySetHandle*) noexcept;

@@ -8,6 +8,7 @@ use film_juicer_core::{
     route::ScanRoute,
     state,
 };
+use super::param_id::ParamId;
 use super::host::{Callback, Status};
 use crate::cuda;
 use film_juicer_core::film::grain::film_v1::{ProxyGrid, Raster, Selection};
@@ -224,8 +225,8 @@ fn frame_position(time: f64) -> Result<(f64, u64), Status> {
     Ok((time, time.floor() as i64 as u64))
 }
 
-fn allocation(error: &state::Error) -> bool {
-    match error {
+fn allocation_status(error: &state::Error) -> Option<Status> {
+    let allocation = match error {
         state::Error::CaptureFailed(failure) => {
             failure.kind() == state::CaptureFailureKind::Allocation
         }
@@ -233,13 +234,14 @@ fn allocation(error: &state::Error) -> bool {
             failure_category(error) == cuda::sys::FJ_STATUS_ALLOCATION_FAILURE
         }
         _ => false,
-    }
+    };
+    allocation.then_some(Status::MEMORY)
 }
 
 fn cutoff(callback: &Callback<'_>, owner: &super::instance::Owner) -> Result<(), Status> {
     let access = callback.parameter_access(&owner.handles);
-    let film = access.profile_key(c"FilmProfileKey", b"kodak_portra_400")?;
-    let print = access.profile_key(c"PrintProfileKey", b"kodak_portra_endura")?;
+    let film = access.profile_key(ParamId::FilmProfileKey, b"kodak_portra_400")?;
+    let print = access.profile_key(ParamId::PrintProfileKey, b"kodak_portra_endura")?;
     let capacity = 192usize
         .checked_add(film.len())
         .and_then(|size| size.checked_add(print.len()))
@@ -349,8 +351,10 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
         Err(
             state::Error::Uninitialized | state::Error::RefreshRequired | state::Error::Capturing,
         ) => return Err(Status::FAILED),
-        Err(error) if allocation(&error) => return Err(Status::MEMORY),
         Err(error) => {
+            if let Some(status) = allocation_status(&error) {
+                return Err(status);
+            }
             let mut text = AdmissionText(String::new());
             let diagnostic = write!(text, "{error}");
             let diagnostic = diagnostic.and_then(|()| {
@@ -469,9 +473,13 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
 
 fn failure_category(error: &film_juicer_core::recipe::PrepareError) -> u32 {
     use crate::cuda::sys::*;
+    use film_juicer_core::assets::{AssetError, PortraGrainError};
     use film_juicer_core::recipe::{self, PrepareError as E};
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
+        E::Asset(AssetError::PortraGrain(
+            PortraGrainError::Allocation(_) | PortraGrainError::OwnerAllocation,
+        )) => FJ_STATUS_ALLOCATION_FAILURE,
         E::Control(recipe::ControlError::FilmGrain) | E::FilmGrainFootprint { .. } => {
             FJ_STATUS_UNSUPPORTED_INPUT
         }
@@ -509,6 +517,31 @@ fn failure_category(error: &film_juicer_core::recipe::PrepareError) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::frame_position;
+
+    #[test]
+    fn portra_allocation_status() {
+        use super::{Status, allocation_status, state};
+        use crate::ofx::sys::kOfxStatErrMemory;
+        use film_juicer_core::assets::{AssetError, PortraGrainError};
+        use film_juicer_core::recipe::PrepareError;
+
+        let status = |error| {
+            allocation_status(&state::Error::Preparation(PrepareError::Asset(
+                AssetError::PortraGrain(error),
+            )))
+            .map(Status::code)
+        };
+        let reserve = Vec::<u8>::new().try_reserve_exact(usize::MAX).unwrap_err();
+        assert_eq!(
+            status(PortraGrainError::Allocation(reserve)),
+            Some(kOfxStatErrMemory)
+        );
+        assert_eq!(
+            status(PortraGrainError::OwnerAllocation),
+            Some(kOfxStatErrMemory)
+        );
+        assert!(status(PortraGrainError::Invalid("word count")).is_none());
+    }
 
     #[test]
     fn film_aperture_geometry_matches_native_wire_vectors() {

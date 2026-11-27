@@ -1,29 +1,15 @@
 //! Film v1 allowance for the version-1 frozen Portra summed-area bank.
 
 use crate::assets::{PortraGrainBank, PortraGrainTable};
+use crate::assets::grain::{CALIBRATED_MAX_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT};
+use crate::assets::grain::{MAX_FOOTPRINT, MIN_PROXY_SAMPLE_FOOTPRINT};
+#[cfg(test)]
+use crate::assets::grain::MIN_RENDERED_FOOTPRINT;
 
 mod placement_extrema;
 mod periodic_extrema;
 #[cfg(test)]
 mod calibration_interval;
-pub(crate) const MIN_RENDERED_FOOTPRINT: f32 = 0.25;
-// The 8 mm, Size 4 µm proxy of an 8192-pixel Full raster uses this cell pitch.
-// Internal samples use the subtexel convex-light certificate below.
-pub(crate) const MIN_PROXY_SAMPLE_FOOTPRINT: f32 = 8_000.0 / (8_192.0 * 4.0);
-pub(crate) const CALIBRATED_MAX_FOOTPRINT: f32 = 37.5;
-pub(crate) const SINGLE_WRAP_MAX_FOOTPRINT: f32 = 255.0;
-// 120 mm at Size 0.5 µm on a one-pixel rendered long edge.
-pub(crate) const MAX_FOOTPRINT: f32 = 240_000.0;
-
-// Exact bank-texel limits shared with the native Film sampler and raw admission.
-const _: () = {
-    assert!(MIN_RENDERED_FOOTPRINT.to_bits() == 0x3e80_0000);
-    assert!(MIN_PROXY_SAMPLE_FOOTPRINT.to_bits() == 0x3e7a_0000);
-    assert!(CALIBRATED_MAX_FOOTPRINT.to_bits() == 0x4216_0000);
-    assert!(SINGLE_WRAP_MAX_FOOTPRINT.to_bits() == 0x437f_0000);
-    assert!(MAX_FOOTPRINT.to_bits() == 0x486a_6000);
-};
-
 // Outward-rounded extrema of footprint times the single-placement OD delta
 // from -log10(mean light), paired with each band's upper footprint.
 // continuous_footprint_certificate recomputes these enclosures from the bank.

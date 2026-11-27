@@ -875,6 +875,38 @@ namespace {
             };
             const auto ordinary = render(&expected[route]);
             if (route == 0) {
+                const std::array saved{
+                    std::pair{"ReferenceIlluminant", InstanceValue{0}},
+                    std::pair{"PrintShadowCompensationFactor", InstanceValue{0.0}},
+                    std::pair{"PrintShadowCompensationDensity", InstanceValue{1.2}},
+                    std::pair{"PrintShadowCompensationTransition", InstanceValue{0.3}},
+                };
+                for (const auto& [name, defaultValue] : saved) {
+                    const auto authored = host.value(effect, name);
+                    host.set_value(effect, name, {defaultValue});
+                    auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name});
+                    host.clear_calls();
+                    host.fail_next(std::string("param_get/") + name, kOfxStatErrMemory);
+                    require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatErrMemory,
+                            std::string("saved capture failure: ") + name);
+                    const auto last = std::find_if(host.calls().rbegin(), host.calls().rend(), [](const auto& call) {
+                        return call.operation == "param_get";
+                    });
+                    require(last != host.calls().rend() && last->target == name && last->status == kOfxStatErrMemory,
+                            std::string("saved capture stops at getter: ") + name);
+                    const auto sourceReleases = host.image_release_count(effect, "Source");
+                    const auto outputReleases = host.image_release_count(effect, "Output");
+                    require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrMemory &&
+                                host.image_release_count(effect, "Source") == sourceReleases + 1 &&
+                                host.image_release_count(effect, "Output") == outputReleases + 1,
+                            std::string("failed capture blocks cached render and releases both images: ") + name);
+                    edit(name, {defaultValue});
+                    require(render(&expected[route]) == ordinary, std::string("saved control edit preserves pixels: ") + name);
+                    edit(name, authored);
+                    require(render(&expected[route]) == ordinary, std::string("saved control restored: ") + name);
+                }
+            }
+            if (route == 0) {
                 edit("FilmProfileKey", {std::string("kodak_ektar_100")});
                 edit("ScanRoute", {std::string(test.route)});
                 const auto ektar = render();

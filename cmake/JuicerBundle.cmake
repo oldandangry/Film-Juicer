@@ -56,6 +56,8 @@ install(FILES third_party/rust/serde_json-1.0.151/LICENSE-MIT third_party/rust/s
     DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_json-1.0.151")
 install(FILES third_party/rust/syn-3.0.6/LICENSE-MIT third_party/rust/syn-3.0.6/LICENSE-APACHE
     DESTINATION "${JUICER_CONTENTS}/Legal/rust/syn-3.0.6")
+install(FILES third_party/rust/triomphe-0.1.17/LICENSE-MIT third_party/rust/triomphe-0.1.17/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/triomphe-0.1.17")
 install(FILES third_party/rust/unicode-ident-1.0.26/LICENSE-MIT third_party/rust/unicode-ident-1.0.26/LICENSE-APACHE
     third_party/rust/unicode-ident-1.0.26/LICENSE-UNICODE
     DESTINATION "${JUICER_CONTENTS}/Legal/rust/unicode-ident-1.0.26")

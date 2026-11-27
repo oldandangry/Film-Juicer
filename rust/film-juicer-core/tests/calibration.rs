@@ -7,13 +7,17 @@
 
 #![forbid(unsafe_code)]
 
+use std::error::Error as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 
-use film_juicer_core::data_io::calibration::{ErrorKind, Field, load_neutral_calibration};
+use film_juicer_core::assets::Assets;
+use film_juicer_core::data_io::calibration::{self, ErrorKind, Field, load_neutral_calibration};
+use film_juicer_core::recipe::{self, Calibration, PrepareError, PreparedRoute};
+use film_juicer_core::{capture, route::ScanRoute};
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -81,6 +85,99 @@ const FILMS: &[&str] = &[
     "kodak_vision3_500t",
     "kodak_vision3_50d",
 ];
+
+#[test]
+fn print_preparation_retains_calibration_cause() {
+    let directory = Directory::new();
+    let resources = repository().join("Resources");
+    for filename in [
+        "cie1931_2deg.csv",
+        "profiles/kodak_portra_400.json",
+        "profiles/kodak_portra_endura.json",
+        "luts/spectral_upsampling/mallett2019_basis.npy",
+        "illuminants/D65.csv",
+        "illuminants/D55.csv",
+        "illuminants/D50.csv",
+        "illuminants/T.csv",
+        "illuminants/K75P.csv",
+        "filters/heat_absorbing/schott/KG3.csv",
+        "filters/lens_transmission/canon/canon_24_f28_is.csv",
+    ] {
+        let target = directory.0.join(filename);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(resources.join(filename), target).unwrap();
+    }
+    let path = directory.0.join("filters/neutral_print_filters.json");
+    let mut params = capture::defaults();
+    params.film_profile_key = "kodak_portra_400".into();
+    params.print_profile_key = "kodak_portra_endura".into();
+    params.scan_route = ScanRoute::NegativePrint;
+    params.spectral_upsampling_mode = 1;
+    params.enl_ill = 3;
+
+    for (input, field, diagnostic, selection) in [
+        ("[]", Field::Root, "root", None),
+        (
+            r#"{"kodak_portra_endura":{"TH-KG3":{"kodak_portra_400":[1,2]}}}"#,
+            Field::CmyCc,
+            "cmy_cc",
+            Some(["kodak_portra_endura", "TH-KG3", "kodak_portra_400"]),
+        ),
+    ] {
+        fs::write(&path, input).unwrap();
+        // Calibration is evaluated before Print gamma.
+        params.print_gamma_factor = 0.0;
+        let assets = Assets::new(directory.0.clone());
+        let Err(error @ PrepareError::Calibration(_)) = recipe::prepare(&assets, &params) else {
+            panic!("expected calibration to be the first failure");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("MalformedNeutralPrintCalibration phase=4A field={diagnostic}")
+        );
+        let cause = error
+            .source()
+            .unwrap()
+            .downcast_ref::<calibration::Error>()
+            .unwrap();
+        assert_eq!(cause.path(), path);
+        assert_eq!(cause.selection(), selection);
+        assert_eq!(cause.kind(), ErrorKind::Malformed(field));
+    }
+
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let Err(error @ PrepareError::Calibration(_)) =
+        recipe::prepare(&Assets::new(directory.0.clone()), &params)
+    else {
+        panic!("expected calibration resource read failure");
+    };
+    assert_eq!(
+        error.to_string(),
+        "MalformedNeutralPrintCalibration phase=4A field=resource_read"
+    );
+    let cause = error
+        .source()
+        .unwrap()
+        .downcast_ref::<calibration::Error>()
+        .unwrap();
+    assert_eq!(cause.path(), path);
+    assert_eq!(cause.selection(), None);
+    assert!(matches!(cause.kind(), ErrorKind::Read(_)));
+    fs::remove_dir(&path).unwrap();
+
+    params.print_gamma_factor = 1.0;
+    for expected in [Calibration::MissingFile, Calibration::MissingEntry] {
+        if expected == Calibration::MissingEntry {
+            fs::write(&path, "{}").unwrap();
+        }
+        let state = recipe::prepare(&Assets::new(directory.0.clone()), &params).unwrap();
+        let PreparedRoute::Print(print) = state.route() else {
+            panic!("expected Print preparation");
+        };
+        assert_eq!(print.calibration(), expected);
+    }
+}
 
 #[test]
 fn bundled_calibration() {

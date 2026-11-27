@@ -28,6 +28,14 @@ pub enum Error {
     Range,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.diagnostic())
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl Error {
     pub fn diagnostic(self) -> &'static str {
         match self {

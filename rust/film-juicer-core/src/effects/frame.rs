@@ -2,189 +2,10 @@
 
 use crate::{frame::Domain, hash};
 
-/// Resolved static literals. Construction does not normalize authored policy.
-#[derive(Clone, Copy, Debug)]
-pub struct DustInput {
-    pub cell_width_mm: f32,
-    pub cell_height_mm: f32,
-    pub slot_probability: f32,
-    pub softness_min_mm: f32,
-    pub softness_max_mm: f32,
-    pub softness_size_cap_fraction: f32,
-    pub support_x_mm: f32,
-    pub support_y_mm: f32,
-    pub fiber_fraction: f32,
-    pub fiber_drift_fraction: f32,
-    pub fiber_first_knot_min: f32,
-    pub fiber_first_knot_max: f32,
-    pub fiber_second_knot_min: f32,
-    pub fiber_second_knot_max: f32,
-    pub fiber_interior_width_min_fraction: f32,
-    pub fiber_interior_width_max_fraction: f32,
-    pub diameter_min_mm: f32,
-    pub diameter_bulk_max_mm: f32,
-    pub diameter_max_mm: f32,
-    pub diameter_tail_fraction: f32,
-    pub fiber_length_min_mm: f32,
-    pub fiber_length_max_mm: f32,
-    pub fiber_width_min_mm: f32,
-    pub fiber_width_max_mm: f32,
-    pub opacity_faint_cumulative: f32,
-    pub opacity_intermediate_cumulative: f32,
-    pub compact_opacity_min: f32,
-    pub compact_opacity_faint_end: f32,
-    pub compact_opacity_intermediate_end: f32,
-    pub compact_opacity_max: f32,
-    pub fiber_opacity_min: f32,
-    pub fiber_opacity_faint_end: f32,
-    pub fiber_opacity_intermediate_end: f32,
-    pub fiber_opacity_max: f32,
-    pub compact_dominant_aspect_min: f32,
-    pub compact_dominant_aspect_max: f32,
-    pub compact_subsidiary_scale_min: f32,
-    pub compact_subsidiary_scale_max: f32,
-    pub compact_subsidiary_aspect_min: f32,
-    pub compact_subsidiary_aspect_max: f32,
-    pub compact_subsidiary_offset_max: f32,
-    pub compact_subsidiary_angle_max_radians: f32,
-}
-
-impl From<&super::Dust> for DustInput {
-    fn from(v: &super::Dust) -> Self {
-        Self {
-            cell_width_mm: v.cell_width_mm,
-            cell_height_mm: v.cell_height_mm,
-            slot_probability: v.slot_probability,
-            softness_min_mm: v.softness_min_mm,
-            softness_max_mm: v.softness_max_mm,
-            softness_size_cap_fraction: v.softness_size_cap_fraction,
-            support_x_mm: v.support_x_mm,
-            support_y_mm: v.support_y_mm,
-            fiber_fraction: v.fiber_fraction,
-            fiber_drift_fraction: v.fiber_drift_fraction,
-            fiber_first_knot_min: v.fiber_first_knot_min,
-            fiber_first_knot_max: v.fiber_first_knot_max,
-            fiber_second_knot_min: v.fiber_second_knot_min,
-            fiber_second_knot_max: v.fiber_second_knot_max,
-            fiber_interior_width_min_fraction: v.fiber_interior_width_min_fraction,
-            fiber_interior_width_max_fraction: v.fiber_interior_width_max_fraction,
-            diameter_min_mm: v.diameter_min_mm,
-            diameter_bulk_max_mm: v.diameter_bulk_max_mm,
-            diameter_max_mm: v.diameter_max_mm,
-            diameter_tail_fraction: v.diameter_tail_fraction,
-            fiber_length_min_mm: v.fiber_length_min_mm,
-            fiber_length_max_mm: v.fiber_length_max_mm,
-            fiber_width_min_mm: v.fiber_width_min_mm,
-            fiber_width_max_mm: v.fiber_width_max_mm,
-            opacity_faint_cumulative: v.opacity_faint_cumulative,
-            opacity_intermediate_cumulative: v.opacity_intermediate_cumulative,
-            compact_opacity_min: v.compact_opacity_min,
-            compact_opacity_faint_end: v.compact_opacity_faint_end,
-            compact_opacity_intermediate_end: v.compact_opacity_intermediate_end,
-            compact_opacity_max: v.compact_opacity_max,
-            fiber_opacity_min: v.fiber_opacity_min,
-            fiber_opacity_faint_end: v.fiber_opacity_faint_end,
-            fiber_opacity_intermediate_end: v.fiber_opacity_intermediate_end,
-            fiber_opacity_max: v.fiber_opacity_max,
-            compact_dominant_aspect_min: v.compact_dominant_aspect_min,
-            compact_dominant_aspect_max: v.compact_dominant_aspect_max,
-            compact_subsidiary_scale_min: v.compact_subsidiary_scale_min,
-            compact_subsidiary_scale_max: v.compact_subsidiary_scale_max,
-            compact_subsidiary_aspect_min: v.compact_subsidiary_aspect_min,
-            compact_subsidiary_aspect_max: v.compact_subsidiary_aspect_max,
-            compact_subsidiary_offset_max: v.compact_subsidiary_offset_max,
-            compact_subsidiary_angle_max_radians: v.compact_subsidiary_angle_max_radians,
-        }
-    }
-}
-
-/// Resolved static literals. Construction does not normalize authored policy.
-#[derive(Clone, Copy, Debug)]
-pub struct ScratchInput {
-    pub cell_width_mm: f32,
-    pub cell_height_mm: f32,
-    pub slot_probability: f32,
-    pub softness_min_mm: f32,
-    pub softness_max_mm: f32,
-    pub softness_size_cap_fraction: f32,
-    pub support_x_mm: f32,
-    pub support_y_mm: f32,
-    pub length_min_mm: f32,
-    pub length_bulk_max_mm: f32,
-    pub length_max_mm: f32,
-    pub length_tail_fraction: f32,
-    pub width_min_mm: f32,
-    pub width_bulk_max_mm: f32,
-    pub width_max_mm: f32,
-    pub width_tail_fraction: f32,
-    pub drift_fraction: f32,
-    pub first_knot_min: f32,
-    pub first_knot_max: f32,
-    pub second_knot_min: f32,
-    pub second_knot_max: f32,
-    pub interior_width_min_fraction: f32,
-    pub interior_width_max_fraction: f32,
-    pub interior_depth_min_fraction: f32,
-    pub interior_depth_max_fraction: f32,
-    pub endpoint_abrupt_probability: f32,
-    pub interruption_probability: f32,
-    pub gap_center_min: f32,
-    pub gap_center_max: f32,
-    pub gap_span_min: f32,
-    pub gap_span_max: f32,
-    pub scuff_probability: f32,
-    pub scuff_length_max_mm: f32,
-    pub scuff_angle_max_radians: f32,
-    pub strength_min: f32,
-    pub strength_max: f32,
-}
-
-impl From<&super::Scratch> for ScratchInput {
-    fn from(v: &super::Scratch) -> Self {
-        Self {
-            cell_width_mm: v.cell_width_mm,
-            cell_height_mm: v.cell_height_mm,
-            slot_probability: v.slot_probability,
-            softness_min_mm: v.softness_min_mm,
-            softness_max_mm: v.softness_max_mm,
-            softness_size_cap_fraction: v.softness_size_cap_fraction,
-            support_x_mm: v.support_x_mm,
-            support_y_mm: v.support_y_mm,
-            length_min_mm: v.length_min_mm,
-            length_bulk_max_mm: v.length_bulk_max_mm,
-            length_max_mm: v.length_max_mm,
-            length_tail_fraction: v.length_tail_fraction,
-            width_min_mm: v.width_min_mm,
-            width_bulk_max_mm: v.width_bulk_max_mm,
-            width_max_mm: v.width_max_mm,
-            width_tail_fraction: v.width_tail_fraction,
-            drift_fraction: v.drift_fraction,
-            first_knot_min: v.first_knot_min,
-            first_knot_max: v.first_knot_max,
-            second_knot_min: v.second_knot_min,
-            second_knot_max: v.second_knot_max,
-            interior_width_min_fraction: v.interior_width_min_fraction,
-            interior_width_max_fraction: v.interior_width_max_fraction,
-            interior_depth_min_fraction: v.interior_depth_min_fraction,
-            interior_depth_max_fraction: v.interior_depth_max_fraction,
-            endpoint_abrupt_probability: v.endpoint_abrupt_probability,
-            interruption_probability: v.interruption_probability,
-            gap_center_min: v.gap_center_min,
-            gap_center_max: v.gap_center_max,
-            gap_span_min: v.gap_span_min,
-            gap_span_max: v.gap_span_max,
-            scuff_probability: v.scuff_probability,
-            scuff_length_max_mm: v.scuff_length_max_mm,
-            scuff_angle_max_radians: v.scuff_angle_max_radians,
-            strength_min: v.strength_min,
-            strength_max: v.strength_max,
-        }
-    }
-}
+use super::{Defects, Recipe};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
-    pub active: bool,
     pub render_extent: Domain,
     pub pixel_definition: Domain,
     pub pixel_size_um: f32,
@@ -198,14 +19,8 @@ pub struct Input {
     pub pixel_aspect_ratio: f64,
     pub frame_time: f64,
     pub frame_rate: f64,
-    pub gate_weave_amount: f64,
     pub session_seed: u64,
     pub clip_token: u64,
-    pub recipe_hash: u64,
-    pub film_dust: DustInput,
-    pub film_scratch: ScratchInput,
-    pub gate_dust: DustInput,
-    pub gate_scratch: ScratchInput,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,6 +28,19 @@ pub enum Error {
     InactiveIdentity,
     GeometryOrPolicy,
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InactiveIdentity => "inactive physical effects have a recipe identity",
+            Self::GeometryOrPolicy => {
+                "ResourceDescriptorMismatch phase=effects_descriptor field=geometry_or_policy"
+            }
+        })
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Origin {
@@ -230,7 +58,9 @@ const EMPTY_ORIGIN: Origin = Origin {
 };
 
 #[derive(Debug)]
-pub struct Frame {
+pub struct Frame<'a> {
+    film: &'a Defects,
+    gate: &'a Defects,
     render_extent: Domain,
     full_frame_extent: Domain,
     origins: [Origin; 4],
@@ -250,6 +80,39 @@ pub struct Frame {
     requires_full_frame: bool,
     recipe_hash: u64,
     hash: u64,
+}
+
+impl Defects {
+    fn dust_grid(&self) -> Grid {
+        Grid {
+            slot_probability: self.dust.slot_probability,
+            cell_width_mm: self.dust.cell_width_mm,
+            cell_height_mm: self.dust.cell_height_mm,
+            support_x_mm: self.dust.support_x_mm,
+            support_y_mm: self.dust.support_y_mm,
+            softness_max_mm: self.dust.softness_max_mm,
+        }
+    }
+
+    fn scratch_grid(&self) -> Grid {
+        Grid {
+            slot_probability: self.scratch.slot_probability,
+            cell_width_mm: self.scratch.cell_width_mm,
+            cell_height_mm: self.scratch.cell_height_mm,
+            support_x_mm: self.scratch.support_x_mm,
+            support_y_mm: self.scratch.support_y_mm,
+            softness_max_mm: self.scratch.softness_max_mm,
+        }
+    }
+}
+
+struct Grid {
+    slot_probability: f32,
+    cell_width_mm: f32,
+    cell_height_mm: f32,
+    support_x_mm: f32,
+    support_y_mm: f32,
+    softness_max_mm: f32,
 }
 
 const CELL_LIMIT: f64 = 4503599627370496.0;
@@ -363,14 +226,14 @@ fn gate_weave(session: u64, time: f64, pixel_size_um: f64, amount: f64) -> [f32;
     out
 }
 
-impl Frame {
+impl<'a> Frame<'a> {
     #[expect(
         clippy::neg_cmp_op_on_partial_ord,
         reason = "preserve native ordered comparisons and consumed-field admission"
     )]
-    pub fn new(input: Input) -> Result<Option<Self>, Error> {
-        if !input.active {
-            return if input.recipe_hash == 0 {
+    pub fn new(input: Input, recipe: &'a Recipe) -> Result<Option<Self>, Error> {
+        if !recipe.active() {
+            return if recipe.hash() == 0 {
                 Ok(None)
             } else {
                 Err(Error::InactiveIdentity)
@@ -403,11 +266,11 @@ impl Frame {
         {
             return Err(Error::GeometryOrPolicy);
         }
-        let film_active =
-            input.film_dust.slot_probability > 0.0 || input.film_scratch.slot_probability > 0.0;
-        let gate_transmittance_active =
-            input.gate_dust.slot_probability > 0.0 || input.gate_scratch.slot_probability > 0.0;
-        let weave_active = input.gate_weave_amount > 0.0;
+        let film = recipe.film();
+        let gate = recipe.gate();
+        let film_active = film.active();
+        let gate_transmittance_active = gate.active();
+        let weave_active = recipe.gate_weave_amount() > 0.0;
         if weave_active && render != full {
             return Err(Error::GeometryOrPolicy);
         }
@@ -444,50 +307,22 @@ impl Frame {
         };
         // All participating origins precede every grid check, FD/FS/GD/GS, X before Y.
         let families = [
-            (
-                input.film_dust.slot_probability,
-                input.film_dust.cell_width_mm,
-                input.film_dust.cell_height_mm,
-                input.film_dust.support_x_mm,
-                input.film_dust.support_y_mm,
-                input.film_dust.softness_max_mm,
-            ),
-            (
-                input.film_scratch.slot_probability,
-                input.film_scratch.cell_width_mm,
-                input.film_scratch.cell_height_mm,
-                input.film_scratch.support_x_mm,
-                input.film_scratch.support_y_mm,
-                input.film_scratch.softness_max_mm,
-            ),
-            (
-                input.gate_dust.slot_probability,
-                input.gate_dust.cell_width_mm,
-                input.gate_dust.cell_height_mm,
-                input.gate_dust.support_x_mm,
-                input.gate_dust.support_y_mm,
-                input.gate_dust.softness_max_mm,
-            ),
-            (
-                input.gate_scratch.slot_probability,
-                input.gate_scratch.cell_width_mm,
-                input.gate_scratch.cell_height_mm,
-                input.gate_scratch.support_x_mm,
-                input.gate_scratch.support_y_mm,
-                input.gate_scratch.softness_max_mm,
-            ),
+            film.dust_grid(),
+            film.scratch_grid(),
+            gate.dust_grid(),
+            gate.scratch_grid(),
         ];
         let mut origins = [EMPTY_ORIGIN; 4];
-        for (index, &(probability, width, height, _, _, _)) in families.iter().enumerate() {
-            if probability > 0.0 {
-                let (cell_x, local_x_mm) = split_origin([phase_x, 0.0], width)?;
+        for (index, grid) in families.iter().enumerate() {
+            if grid.slot_probability > 0.0 {
+                let (cell_x, local_x_mm) = split_origin([phase_x, 0.0], grid.cell_width_mm)?;
                 let (cell_y, local_y_mm) = split_origin(
                     if index < 2 {
                         [high, low + phase_y]
                     } else {
                         [phase_y, 0.0]
                     },
-                    height,
+                    grid.cell_height_mm,
                 )?;
                 origins[index] = Origin {
                     cell_x,
@@ -497,19 +332,17 @@ impl Frame {
                 };
             }
         }
-        for (index, &(probability, width, height, support_x, support_y, softness)) in
-            families.iter().enumerate()
-        {
-            if probability > 0.0 {
+        for (index, grid) in families.iter().enumerate() {
+            if grid.slot_probability > 0.0 {
                 // Keep the support sums in f32 before widening.
                 let nx = ((f64::from(full.width) * f64::from(step_x)
-                    + 2.0 * f64::from(support_x + softness + step_x))
-                    / f64::from(width))
+                    + 2.0 * f64::from(grid.support_x_mm + grid.softness_max_mm + step_x))
+                    / f64::from(grid.cell_width_mm))
                 .ceil()
                     + 2.0;
                 let ny = ((f64::from(full.height) * f64::from(step_y)
-                    + 2.0 * f64::from(support_y + softness + step_y))
-                    / f64::from(height))
+                    + 2.0 * f64::from(grid.support_y_mm + grid.softness_max_mm + step_y))
+                    / f64::from(grid.cell_height_mm))
                 .ceil()
                     + 2.0;
                 if !nx.is_finite()
@@ -537,7 +370,7 @@ impl Frame {
                 input.session_seed,
                 input.frame_time / input.frame_rate,
                 f64::from(input.pixel_size_um),
-                input.gate_weave_amount,
+                recipe.gate_weave_amount(),
             );
             if !weave.iter().all(|v| v.is_finite()) {
                 return Err(Error::GeometryOrPolicy);
@@ -547,6 +380,8 @@ impl Frame {
             [0.0, 0.0, 1.0, 0.0]
         };
         let mut frame = Self {
+            film,
+            gate,
             render_extent: render,
             full_frame_extent: full,
             origins,
@@ -572,11 +407,17 @@ impl Frame {
             gate_transmittance_active,
             gate_output_active: weave_active || gate_transmittance_active,
             requires_full_frame: weave_active,
-            recipe_hash: input.recipe_hash,
+            recipe_hash: recipe.hash(),
             hash: 0,
         };
-        frame.hash = frame.identity(&input);
+        frame.hash = frame.identity();
         Ok(Some(frame))
+    }
+    pub fn film(&self) -> &Defects {
+        self.film
+    }
+    pub fn gate(&self) -> &Defects {
+        self.gate
     }
     pub fn render_extent(&self) -> Domain {
         self.render_extent
@@ -635,7 +476,7 @@ impl Frame {
     pub fn hash(&self) -> u64 {
         self.hash
     }
-    fn identity(&self, input: &Input) -> u64 {
+    fn identity(&self) -> u64 {
         if !self.film_active && !self.gate_output_active {
             return 0;
         }
@@ -672,355 +513,34 @@ impl Frame {
             hash::update_bytes(&mut hash, &[u8::from(v)]);
         }
         hash::update_bytes(&mut hash, &self.recipe_hash.to_le_bytes());
-        if input.film_dust.slot_probability > 0.0 {
-            let p = &input.film_dust;
-            hash::update_bytes(&mut hash, &p.cell_width_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.cell_height_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.slot_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.softness_size_cap_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.support_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.support_y_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_drift_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_first_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_first_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_second_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_second_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_interior_width_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_interior_width_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.diameter_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_length_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_width_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_width_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.opacity_faint_cumulative.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.opacity_intermediate_cumulative.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.compact_opacity_min.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_opacity_faint_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_opacity_intermediate_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.compact_opacity_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_opacity_min.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_opacity_faint_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_opacity_intermediate_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.fiber_opacity_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_dominant_aspect_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_dominant_aspect_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_scale_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_scale_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_aspect_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_aspect_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_offset_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_angle_max_radians
-                    .to_bits()
-                    .to_le_bytes(),
-            );
-            let o = self.origins[0];
-            hash::update_bytes(&mut hash, &o.cell_x.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.cell_y.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_y_mm.to_bits().to_le_bytes());
-        }
-        if input.film_scratch.slot_probability > 0.0 {
-            let p = &input.film_scratch;
-            hash::update_bytes(&mut hash, &p.cell_width_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.cell_height_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.slot_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.softness_size_cap_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.support_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.support_y_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.drift_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.first_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.first_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.second_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.second_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_width_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_width_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_depth_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_depth_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.endpoint_abrupt_probability.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interruption_probability.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.gap_center_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_center_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_span_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_span_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.scuff_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.scuff_length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.scuff_angle_max_radians.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.strength_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.strength_max.to_bits().to_le_bytes());
-            let o = self.origins[1];
-            hash::update_bytes(&mut hash, &o.cell_x.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.cell_y.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_y_mm.to_bits().to_le_bytes());
-        }
-        if input.gate_dust.slot_probability > 0.0 {
-            let p = &input.gate_dust;
-            hash::update_bytes(&mut hash, &p.cell_width_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.cell_height_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.slot_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.softness_size_cap_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.support_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.support_y_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_drift_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_first_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_first_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_second_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_second_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_interior_width_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_interior_width_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.diameter_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.diameter_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_length_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_width_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_width_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.opacity_faint_cumulative.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.opacity_intermediate_cumulative.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.compact_opacity_min.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_opacity_faint_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_opacity_intermediate_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.compact_opacity_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.fiber_opacity_min.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_opacity_faint_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.fiber_opacity_intermediate_end.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.fiber_opacity_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_dominant_aspect_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_dominant_aspect_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_scale_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_scale_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_aspect_min.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_aspect_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_offset_max.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.compact_subsidiary_angle_max_radians
-                    .to_bits()
-                    .to_le_bytes(),
-            );
-            let o = self.origins[2];
-            hash::update_bytes(&mut hash, &o.cell_x.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.cell_y.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_y_mm.to_bits().to_le_bytes());
-        }
-        if input.gate_scratch.slot_probability > 0.0 {
-            let p = &input.gate_scratch;
-            hash::update_bytes(&mut hash, &p.cell_width_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.cell_height_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.slot_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.softness_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.softness_size_cap_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.support_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.support_y_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.length_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_min_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_bulk_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.width_tail_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.drift_fraction.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.first_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.first_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.second_knot_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.second_knot_max.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_width_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_width_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_depth_min_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interior_depth_max_fraction.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.endpoint_abrupt_probability.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(
-                &mut hash,
-                &p.interruption_probability.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.gap_center_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_center_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_span_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.gap_span_max.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.scuff_probability.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.scuff_length_max_mm.to_bits().to_le_bytes());
-            hash::update_bytes(
-                &mut hash,
-                &p.scuff_angle_max_radians.to_bits().to_le_bytes(),
-            );
-            hash::update_bytes(&mut hash, &p.strength_min.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &p.strength_max.to_bits().to_le_bytes());
-            let o = self.origins[3];
-            hash::update_bytes(&mut hash, &o.cell_x.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.cell_y.to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_x_mm.to_bits().to_le_bytes());
-            hash::update_bytes(&mut hash, &o.local_y_mm.to_bits().to_le_bytes());
+        for (defects, [dust_origin, scratch_origin]) in [
+            (self.film, [self.origins[0], self.origins[1]]),
+            (self.gate, [self.origins[2], self.origins[3]]),
+        ] {
+            if defects.dust.slot_probability > 0.0 {
+                defects.dust.append_fields(&mut hash);
+                append_origin(&mut hash, dust_origin);
+            }
+            if defects.scratch.slot_probability > 0.0 {
+                defects.scratch.append_fields(&mut hash);
+                append_origin(&mut hash, scratch_origin);
+            }
         }
         hash
     }
 }
 
+fn append_origin(identity: &mut u64, origin: Origin) {
+    hash::update_bytes(identity, &origin.cell_x.to_le_bytes());
+    hash::update_bytes(identity, &origin.cell_y.to_le_bytes());
+    hash::update_bytes(identity, &origin.local_x_mm.to_bits().to_le_bytes());
+    hash::update_bytes(identity, &origin.local_y_mm.to_bits().to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::{Dust, Scratch};
     use serde_json::{Value, json};
     fn scalar(v: &Value) -> f32 {
         f32::from_bits(v.as_u64().unwrap() as u32)
@@ -1036,8 +556,8 @@ mod tests {
             height: v[3].as_i64().unwrap() as i32,
         }
     }
-    fn dust(v: &Value) -> DustInput {
-        DustInput {
+    fn dust(v: &Value) -> Dust {
+        Dust {
             cell_width_mm: scalar(&v["cell_width_mm"]),
             cell_height_mm: scalar(&v["cell_height_mm"]),
             slot_probability: scalar(&v["slot_probability"]),
@@ -1084,8 +604,8 @@ mod tests {
             ),
         }
     }
-    fn scratch(v: &Value) -> ScratchInput {
-        ScratchInput {
+    fn scratch(v: &Value) -> Scratch {
+        Scratch {
             cell_width_mm: scalar(&v["cell_width_mm"]),
             cell_height_mm: scalar(&v["cell_height_mm"]),
             slot_probability: scalar(&v["slot_probability"]),
@@ -1126,7 +646,6 @@ mod tests {
     }
     fn input(v: &Value) -> Input {
         Input {
-            active: v["active"].as_bool().unwrap(),
             render_extent: domain(&v["render_extent"]),
             pixel_definition: domain(&v["pixel_definition"]),
             pixel_size_um: scalar(&v["pixel_size_um"]),
@@ -1140,17 +659,11 @@ mod tests {
             pixel_aspect_ratio: wide(&v["pixel_aspect_ratio"]),
             frame_time: wide(&v["frame_time"]),
             frame_rate: wide(&v["frame_rate"]),
-            gate_weave_amount: wide(&v["gate_weave_amount"]),
             session_seed: v["session_seed"].as_u64().unwrap(),
             clip_token: v["clip_token"].as_u64().unwrap(),
-            recipe_hash: v["recipe_hash"].as_u64().unwrap(),
-            film_dust: dust(&v["film_dust"]),
-            film_scratch: scratch(&v["film_scratch"]),
-            gate_dust: dust(&v["gate_dust"]),
-            gate_scratch: scratch(&v["gate_scratch"]),
         }
     }
-    fn fields(v: &Frame) -> Value {
+    fn fields(v: &Frame<'_>) -> Value {
         let extent = |e: Domain| json!([e.x, e.y, e.width, e.height]);
         json!({
             "render_extent": extent(v.render_extent()), "full_frame_extent": extent(v.full_frame_extent()),
@@ -1240,7 +753,20 @@ mod tests {
             }
             let case = AsRef::<str>::as_ref(&(format!("{group}/{}", v["id"].as_str().unwrap())))
                 .to_owned();
-            let result = Frame::new(input(v));
+            let recipe = Recipe {
+                film: Defects {
+                    dust: dust(&v["film_dust"]),
+                    scratch: scratch(&v["film_scratch"]),
+                },
+                gate: Defects {
+                    dust: dust(&v["gate_dust"]),
+                    scratch: scratch(&v["gate_scratch"]),
+                },
+                active: v["active"].as_bool().unwrap(),
+                gate_weave_amount: wide(&v["gate_weave_amount"]),
+                hash: v["recipe_hash"].as_u64().unwrap(),
+            };
+            let result = Frame::new(input(v), &recipe);
             assert_eq!(
                 result.is_ok(),
                 row["success"].as_bool().unwrap(),

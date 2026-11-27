@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,6 +11,7 @@ use state::{
     CaptureFailure, CaptureFailureKind, CaptureMode, CaptureStart, FrameInput, FrameInstall, Update,
 };
 
+use super::param_id::ParamId;
 use super::controls::{self, CaptureError};
 use super::host::{Admission, Callback, InstanceHandles, ParameterAccess, Status};
 
@@ -169,19 +169,19 @@ impl Controls<'_> {
     fn access(&self) -> ParameterAccess<'_> {
         self.callback.parameter_access(&self.owner.handles)
     }
-    pub(super) fn double(&self, name: &CStr) -> Result<f64, Status> {
+    pub(super) fn double(&self, name: ParamId) -> Result<f64, Status> {
         self.access().double(name)
     }
-    pub(super) fn integer(&self, name: &CStr) -> Result<i32, Status> {
+    pub(super) fn integer(&self, name: ParamId) -> Result<i32, Status> {
         self.access().integer(name)
     }
-    pub(super) fn double2(&self, name: &CStr) -> Result<[f64; 2], Status> {
+    pub(super) fn double2(&self, name: ParamId) -> Result<[f64; 2], Status> {
         self.access().double2(name)
     }
-    pub(super) fn double3(&self, name: &CStr) -> Result<[f64; 3], Status> {
+    pub(super) fn double3(&self, name: ParamId) -> Result<[f64; 3], Status> {
         self.access().double3(name)
     }
-    pub(super) fn string_bytes(&self, name: &CStr) -> Result<Vec<u8>, Status> {
+    pub(super) fn string_bytes(&self, name: ParamId) -> Result<Vec<u8>, Status> {
         self.access().string_bytes(name)
     }
     fn write(&self, operation: impl FnOnce() -> Result<(), Status>) -> Result<(), Status> {
@@ -225,19 +225,19 @@ impl Controls<'_> {
         outcome?;
         end.map(|_| ())
     }
-    pub(super) fn set_double(&self, name: &CStr, value: f64) -> Result<(), Status> {
+    pub(super) fn set_double(&self, name: ParamId, value: f64) -> Result<(), Status> {
         self.write(|| self.access().set_double(name, value))
     }
-    pub(super) fn set_integer(&self, name: &CStr, value: i32) -> Result<(), Status> {
+    pub(super) fn set_integer(&self, name: ParamId, value: i32) -> Result<(), Status> {
         self.write(|| self.access().set_integer(name, value))
     }
-    pub(super) fn set_double2(&self, name: &CStr, value: [f64; 2]) -> Result<(), Status> {
+    pub(super) fn set_double2(&self, name: ParamId, value: [f64; 2]) -> Result<(), Status> {
         self.write(|| self.access().set_double2(name, value))
     }
-    pub(super) fn set_double3(&self, name: &CStr, value: [f64; 3]) -> Result<(), Status> {
+    pub(super) fn set_double3(&self, name: ParamId, value: [f64; 3]) -> Result<(), Status> {
         self.write(|| self.access().set_double3(name, value))
     }
-    pub(super) fn set_string_bytes(&self, name: &CStr, value: &[u8]) -> Result<(), Status> {
+    pub(super) fn set_string_bytes(&self, name: ParamId, value: &[u8]) -> Result<(), Status> {
         self.write(|| self.access().set_string_bytes(name, value))
     }
     fn property(&self, operation: impl FnOnce() -> Result<(), Status>) -> Result<(), Status> {
@@ -253,16 +253,16 @@ impl Controls<'_> {
         let _call = HostCall::new(self.owner);
         operation()
     }
-    pub(super) fn set_enabled(&self, name: &CStr, value: bool) -> Result<(), Status> {
+    pub(super) fn set_enabled(&self, name: ParamId, value: bool) -> Result<(), Status> {
         self.property(|| self.access().set_enabled(name, value))
     }
-    pub(super) fn set_secret(&self, name: &CStr, value: bool) -> Result<(), Status> {
+    pub(super) fn set_secret(&self, name: ParamId, value: bool) -> Result<(), Status> {
         self.property(|| self.access().set_secret(name, value))
     }
-    pub(super) fn set_label(&self, name: &CStr, value: &[u8]) -> Result<(), Status> {
+    pub(super) fn set_label(&self, name: ParamId, value: &[u8]) -> Result<(), Status> {
         self.property(|| self.access().set_label(name, value))
     }
-    pub(super) fn set_hint(&self, name: &CStr, value: &[u8]) -> Result<(), Status> {
+    pub(super) fn set_hint(&self, name: ParamId, value: &[u8]) -> Result<(), Status> {
         self.property(|| self.access().set_hint(name, value))
     }
     pub(super) fn base_grain_label(&self) -> &[u8] {
@@ -319,13 +319,13 @@ impl Controls<'_> {
 impl Owner {
     pub(super) fn new(callback: &Callback<'_>, handles: InstanceHandles) -> Result<Self, Status> {
         let access = callback.parameter_access(&handles);
-        let label = access.label(c"GrainPreset")?;
-        let hint = access.hint(c"GrainChroma")?;
+        let label = access.label(ParamId::GrainPreset)?;
+        let hint = access.hint(ParamId::GrainChroma)?;
         for name in [
-            c"GrainParticleScaleMaster",
-            c"GrainParticleScaleLayersMaster",
-            c"GrainDensityMinMaster",
-            c"GrainUniformityMaster",
+            ParamId::GrainParticleScaleMaster,
+            ParamId::GrainParticleScaleLayersMaster,
+            ParamId::GrainDensityMinMaster,
+            ParamId::GrainUniformityMaster,
         ] {
             let _ = access.double(name)?;
         }
@@ -417,7 +417,7 @@ impl Owner {
                 if capture.initial
                     || name == b"FilmProfileKey"
                     || (name == b"CouplersGammaUseStock"
-                        && controls.integer(c"CouplersGammaUseStock")? != 0)
+                        && controls.integer(ParamId::CouplersGammaUseStock)? != 0)
                 {
                     controls::apply_dir_defaults(&controls)?;
                 }

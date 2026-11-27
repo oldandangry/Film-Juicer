@@ -9,6 +9,7 @@ publish = false
 libm = "=0.2.15"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+triomphe = { version = "=0.1.17", default-features = false }
 
 [lints]
 workspace = true
