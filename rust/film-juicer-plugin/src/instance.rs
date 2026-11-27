@@ -37,12 +37,22 @@ impl Instance {
     ) -> Result<submission::Selection, submission::Error> {
         self.submission.select(key)
     }
+    pub(crate) fn publish_submission(
+        &self,
+        selection: &submission::Reservation,
+    ) -> Result<(), submission::Error> {
+        self.submission.publish(selection)
+    }
     pub(crate) fn invalidate_submission(
         &self,
+        instance: u64,
         device_id: i32,
         context: usize,
+        epoch: u64,
+        id: u64,
     ) -> Result<bool, submission::Error> {
-        self.submission.invalidate(device_id, context)
+        self.submission
+            .invalidate(instance, device_id, context, epoch, id)
     }
     pub(crate) fn begin_capture(
         &self,

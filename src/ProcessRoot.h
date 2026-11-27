@@ -98,8 +98,7 @@ namespace JuicerProcess {
         Root& operator=(const Root&) = delete;
 
         FramePreparationToken begin_frame_preparation() noexcept;
-        bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
-        bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
+        bool retire_context(const FjCudaRetirement& identity, JuicerCuda::Failure& failure);
         struct AutoExposureBufferRequest {
             bool enabled = false;
             JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
@@ -539,7 +538,8 @@ namespace JuicerProcess {
         bool retire_cuda_context(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             bool contextReset,
-            JuicerCuda::Failure& outError);
+            JuicerCuda::Failure& outError,
+            const FjCudaRetirement* identity = nullptr);
 
         bool _acceptFramePreparation = true;
         std::mutex _cudaResourcesMutex;

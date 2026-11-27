@@ -20,16 +20,19 @@ namespace JuicerCuda {
 
         struct RegistryContextSnapshot {
             std::uint64_t contextEpoch = 0;
+            bool inspectionOnly = false;
         };
 
         // Exact-context admission and explicit two-phase retirement.
-        bool registry_begin_submission(
-            const DeviceContextKey& key,
-            RegistryContextSnapshot& outSnapshot) noexcept;
+        std::uint64_t registry_inspect_context(const DeviceContextKey& key);
+        bool registry_accepts_epoch(const DeviceContextKey& key, std::uint64_t epoch);
+        bool registry_begin_submission(const DeviceContextKey& key, std::uint64_t epoch);
+        void registry_fail_epoch(const DeviceContextKey& key, const FjCudaRetirement& identity) noexcept;
         bool registry_note_submission_end(const DeviceContextKey& key) noexcept;
         bool registry_begin_owner_retire(
             const DeviceContextKey& key,
-            RegistryContextSnapshot& outSnapshot) noexcept;
+            const FjCudaRetirement* identity,
+            RegistryContextSnapshot& outSnapshot);
         bool registry_retire(const DeviceContextKey& key) noexcept;
         void registry_snapshot_context_keys(std::vector<DeviceContextKey>& outKeys);
 

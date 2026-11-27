@@ -66,33 +66,30 @@ fn diffusion_input(value: &optics::Diffusion) -> diffusion_frame::StageInput {
 
 fn empty_diffusion() -> sys::FjDiffusion {
     sys::FjDiffusion {
-        family: 0,
         scatter_fraction: 0.0,
-        group_weights: [0.0; 3],
-        group_lambda_um: [0.0; 3],
-        warmth: 0.0,
-        spatial_scale: 0.0,
-        pixel_size_um: 0.0,
+        lambda_px: [0.0; 9],
+        red_weights: [0.0; 9],
+        green_weights: [0.0; 9],
+        blue_weights: [0.0; 9],
         radius_px: 0,
         sample_hash: 0,
         hash: 0,
     }
 }
 
-fn diffusion_stage(value: &diffusion_frame::Stage) -> sys::FjDiffusion {
+fn diffusion_stage(value: &diffusion_frame::Stage) -> Result<sys::FjDiffusion, Error> {
     let fields = value.sample().fields();
-    sys::FjDiffusion {
-        family: fields.family,
+    let components = diffusion_frame::Components::new(fields).map_err(optics_error)?;
+    Ok(sys::FjDiffusion {
         scatter_fraction: value.scatter_fraction(),
-        group_weights: fields.group_weights,
-        group_lambda_um: fields.group_lambda_um,
-        warmth: fields.warmth,
-        spatial_scale: fields.spatial_scale,
-        pixel_size_um: fields.pixel_size_um,
+        lambda_px: *components.lambda_px(),
+        red_weights: *components.red_weights(),
+        green_weights: *components.green_weights(),
+        blue_weights: *components.blue_weights(),
         radius_px: fields.radius_px,
         sample_hash: fields.hash,
         hash: value.hash(),
-    }
+    })
 }
 
 const EMPTY_HALATION_GAUSSIAN: sys::FjHalationGaussian = sys::FjHalationGaussian {
@@ -205,7 +202,7 @@ fn halation_error(error: optics::HalationFrameError) -> Error {
 pub(super) fn prepare(
     state: &recipe::RenderState,
     full_frame: sys::FjExtent,
-) -> Result<super::edge::FjPreparedFramePolicy, Error> {
+) -> Result<super::edge::PreparedFramePolicy, Error> {
     let geometry = catch_unwind(AssertUnwindSafe(|| {
         crate::cuda::geometry::checked_geometry(
             domain(full_frame),
@@ -271,11 +268,11 @@ pub(super) fn prepare(
         projected_optics.diffusion_hash = frame.hash();
         if let Some(camera) = frame.camera() {
             projected_optics.flags |= sys::FJ_OPTICS_CAMERA_DIFFUSION;
-            projected_optics.camera = diffusion_stage(camera);
+            projected_optics.camera = diffusion_stage(camera)?;
         }
         if let Some(enlarger) = frame.enlarger() {
             projected_optics.flags |= sys::FJ_OPTICS_ENLARGER_DIFFUSION;
-            projected_optics.enlarger = diffusion_stage(enlarger);
+            projected_optics.enlarger = diffusion_stage(enlarger)?;
         }
     } else {
         projected_optics.full_frame = sys::FjExtent {
@@ -300,12 +297,11 @@ pub(super) fn prepare(
         };
     }
 
-    Ok(super::edge::FjPreparedFramePolicy {
-        geometry: crate::cuda::geometry::FjFrameGeometry {
+    Ok(super::edge::PreparedFramePolicy {
+        geometry: crate::cuda::geometry::FrameGeometry {
             full_frame,
             pixel_size_um: geometry.pixel_size_um(),
         },
         optics: projected_optics,
-        recipe_hash: state.hash(),
     })
 }

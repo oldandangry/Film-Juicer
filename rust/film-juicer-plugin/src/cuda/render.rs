@@ -1,155 +1,16 @@
 //! Ordered rendering of one held complete state through borrowed native access.
 #![forbid(unsafe_code)]
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use film_juicer_core::{
     assets::{AssetError, Assets},
     film::input::Meter,
     recipe::RenderState,
 };
-
-use crate::asset_noise::NoiseOwner;
 use crate::{instance::Instance, submission};
-
 use super::{
-    Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome,
-    edge::{self, Failure},
-    sys,
+    edge::{self, Abort, Failure, Frame, FramePolicy},
+    sys, Owner,
 };
-
-struct CallGuard<'owner, 'call> {
-    owner: &'owner mut OwnerBorrow<'call>,
-    noise: Option<Result<NoiseOwner, AssetError>>,
-    admitted: bool,
-    completed: bool,
-    render_outcome_valid: bool,
-    abort_failed: bool,
-    recovery_scope_entered: bool,
-    inspected: Option<sys::FjCudaContext>,
-    force_fatal: bool,
-}
-
-impl<'owner, 'call> CallGuard<'owner, 'call> {
-    fn new(owner: &'owner mut OwnerBorrow<'call>) -> Self {
-        Self {
-            owner,
-            noise: None,
-            admitted: false,
-            completed: false,
-            render_outcome_valid: false,
-            abort_failed: false,
-            recovery_scope_entered: false,
-            inspected: None,
-            force_fatal: true,
-        }
-    }
-
-    fn complete(
-        &mut self,
-        outcome: sys::FjRenderOutcome,
-        diagnostic: &str,
-    ) -> edge::FjCallCompletionResult {
-        if self.admitted {
-            self.admitted = false;
-            self.owner.release();
-        }
-        self.completed = true;
-        self.owner.complete(&edge::FjCallCompletionInput {
-            outcome,
-            diagnostic: sys::FjStringView {
-                data: diagnostic.as_ptr().cast(),
-                count: diagnostic.len(),
-            },
-            render_outcome_valid: u32::from(self.render_outcome_valid),
-            abort_failed: u32::from(self.abort_failed),
-            recovery_scope_entered: u32::from(self.recovery_scope_entered),
-            has_inspected_context: u32::from(self.inspected.is_some()),
-            inspected_context: self.inspected.unwrap_or(sys::FjCudaContext {
-                device_id: 0,
-                context: 0,
-            }),
-            force_fatal: u32::from(self.force_fatal),
-        })
-    }
-
-    fn finish(
-        mut self,
-        result: Result<(sys::FjRenderOutcome, String), Failure>,
-    ) -> Result<RenderOutcome, RenderError> {
-        let (outcome, diagnostic) = result.unwrap_or_else(|failure| {
-            (
-                sys::FjRenderOutcome {
-                    status: failure.status,
-                    flags: 0,
-                },
-                failure.diagnostic,
-            )
-        });
-        let completion = self.complete(outcome, &diagnostic);
-        // The no-throw native continuation has completed delivery and recovery.
-        // A cached source/error may still retain its allocation after this clone.
-        let dropped_noise = self.noise.take();
-        drop(dropped_noise);
-        if completion.outcome.status.category == sys::FJ_STATUS_SUCCESS
-            || completion.outcome.status.category == sys::FJ_STATUS_CANCELLED
-        {
-            Ok(RenderOutcome { completion })
-        } else {
-            Err(RenderError { completion })
-        }
-    }
-
-    fn abort(&mut self, abort: &Abort<'_>) -> Result<bool, Failure> {
-        match abort.query() {
-            Ok(requested) => Ok(requested),
-            Err(failure) => {
-                self.abort_failed = true;
-                Err(failure)
-            }
-        }
-    }
-
-    fn enter(
-        &mut self,
-        assets: &Assets,
-        state: Option<&RenderState>,
-        frame: &Frame<'_>,
-    ) -> Result<sys::FjAutoExposure, Failure> {
-        let preview = if let Some(state) = state {
-            self.owner.preview(frame, meter(state.input().meter()))?
-        } else {
-            empty_preview()
-        };
-        if state.is_some_and(|state| state.grain().active()) {
-            self.owner.precheck()?;
-            let noise = assets.noise().map(NoiseOwner::new);
-            self.noise = Some(noise);
-        }
-        self.owner.admit()?;
-        self.admitted = true;
-        let inspected = self.owner.inspect(frame);
-        self.inspected = Some(inspected?);
-        Ok(preview)
-    }
-}
-
-impl Drop for CallGuard<'_, '_> {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.force_fatal = true;
-            self.complete(
-                sys::FjRenderOutcome {
-                    status: edge::status(sys::FJ_STATUS_INTERNAL_FAILURE),
-                    flags: 0,
-                },
-                "prepared render unwound",
-            );
-        }
-        let dropped_noise = self.noise.take();
-        drop(dropped_noise);
-    }
-}
 
 fn meter(value: Meter) -> u32 {
     match value {
@@ -163,34 +24,11 @@ fn meter(value: Meter) -> u32 {
     }
 }
 
-fn empty_preview() -> sys::FjAutoExposure {
-    sys::FjAutoExposure {
-        source_bounds: sys::FjRect {
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 0,
-        },
-        meter_bounds: sys::FjRect {
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 0,
-        },
-        preview_width: 0,
-        preview_height: 0,
-        method: 0,
-        hash: 0,
-    }
-}
-
-fn cancelled() -> (sys::FjRenderOutcome, String) {
+fn cancelled() -> (sys::FjRenderOutcome, String, bool) {
     (
-        sys::FjRenderOutcome {
-            status: edge::status(sys::FJ_STATUS_CANCELLED),
-            flags: 0,
-        },
+        edge::failed_outcome(edge::status(sys::FJ_STATUS_CANCELLED)),
         String::new(),
+        false,
     )
 }
 
@@ -252,95 +90,91 @@ fn noise_failure(error: &AssetError) -> Failure {
     Failure::new(category, error.to_string())
 }
 
-pub(crate) fn render(
-    owner: &mut OwnerBorrow<'_>,
+pub(super) fn render(
+    owner: &Owner,
     assets: &Assets,
     state: &RenderState,
     frame: &Frame<'_>,
     policy: &FramePolicy,
     instance: &Instance,
     abort: &Abort<'_>,
-) -> Result<RenderOutcome, RenderError> {
-    let mut guard = CallGuard::new(owner);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let film_grain = super::frame::film_grain(state, frame.raw())?;
-        let preview = guard.enter(assets, Some(state), frame)?;
-        if guard.abort(abort)? {
-            guard.force_fatal = false;
-            return Ok(cancelled());
+) -> Result<(sys::FjRenderOutcome, String, bool), Failure> {
+    let film_grain = super::frame::film_grain(state, frame.raw())?;
+    let preview = edge::metering(frame, meter(state.input().meter()))?;
+    let context = owner.inspect(frame)?;
+    if abort.query()? {
+        return Ok(cancelled());
+    }
+    preflight(state, frame.raw(), policy)?;
+    if abort.query()? {
+        return Ok(cancelled());
+    }
+    let selection = instance
+        .select_submission(submission::Key {
+            frame_token: frame.frame_token(),
+            device_id: context.device_id,
+            context: context.context,
+            epoch: context.epoch,
+            upload_core: state.upload_core_hash(),
+            dir: state.dir().hash(),
+            scanner: state.scanner_hash(),
+            auto_exposure: preview.hash,
+        })
+        .map_err(|error| Failure::new(sys::FJ_STATUS_INTERNAL_FAILURE, error.to_string()))?;
+    let reservation = &selection.reservation;
+    let selected = sys::FjSubmission {
+        instance_token: instance
+            .identity()
+            .expect("selected initialized identity")
+            .instance_token,
+        frame_token: reservation.key.frame_token,
+        submission_id: reservation.id,
+        upload_core_hash: reservation.key.upload_core,
+        dir_hash: reservation.key.dir,
+        scanner_hash: reservation.key.scanner,
+        auto_exposure_hash: reservation.key.auto_exposure,
+    };
+    let descriptors = super::frame::prepare(state, frame.raw())?;
+    let noise = state
+        .grain()
+        .active()
+        .then(|| assets.noise())
+        .transpose()
+        .map_err(|error| noise_failure(&error))?;
+    let noise = noise.map(crate::asset_noise::NoiseOwner::new);
+    let noise_view = noise.as_ref().map(crate::asset_noise::NoiseOwner::view);
+    let prepared = super::projection::host_data(
+        state,
+        &policy.raw().optics,
+        &descriptors,
+        &preview,
+        noise_view.as_ref(),
+    )
+    .map_err(|diagnostic| Failure::new(sys::FJ_STATUS_PREPARATION_FAILURE, diagnostic))?;
+    let prepared = sys::FjPreparedHostData {
+        film_grain: film_grain
+            .as_ref()
+            .map_or(std::ptr::null(), std::ptr::from_ref),
+        ..prepared
+    };
+    let host_preparation = super::host_preparation::Call::new();
+    let (outcome, mut diagnostic) = owner.execute(
+        &context,
+        frame,
+        &selected,
+        &prepared,
+        abort,
+        &host_preparation,
+    );
+    let mut fatal = false;
+    if outcome.flags & sys::FJ_RENDER_ADMITTED != 0 {
+        if let Err(error) = instance.publish_submission(reservation) {
+            fatal = true;
+            if diagnostic.is_empty() {
+                diagnostic = error.to_string();
+            }
         }
-        preflight(state, frame.raw(), policy)?;
-        guard.recovery_scope_entered = true;
-        guard.force_fatal = false;
-        if guard.abort(abort)? {
-            return Ok(cancelled());
-        }
-        let context = guard.inspected.expect("successful inspection");
-        let selection = instance
-            .select_submission(submission::Key {
-                frame_token: frame.frame_token(),
-                device_id: context.device_id,
-                context: context.context,
-                upload_core: state.upload_core_hash(),
-                dir: state.dir().hash(),
-                scanner: state.scanner_hash(),
-                auto_exposure: preview.hash,
-            })
-            .map_err(|error| {
-                guard.force_fatal = true;
-                Failure::new(sys::FJ_STATUS_INTERNAL_FAILURE, error.to_string())
-            })?;
-        let selected = sys::FjSubmission {
-            instance_token: instance
-                .identity()
-                .expect("selected initialized identity")
-                .instance_token,
-            frame_token: selection.key.frame_token,
-            submission_id: selection.id,
-            upload_core_hash: selection.key.upload_core,
-            dir_hash: selection.key.dir,
-            scanner_hash: selection.key.scanner,
-            auto_exposure_hash: selection.key.auto_exposure,
-        };
-        guard.owner.trace_submission(&selected, selection.reused);
-        guard.render_outcome_valid = true;
-        let math = super::frame::prepare(state, frame.raw(), policy.raw())?;
-        let descriptors = guard.owner.descriptors(&math)?;
-        let noise = match guard.noise.as_ref() {
-            Some(Ok(owner)) => Some(owner.view()),
-            Some(Err(error)) => return Err(noise_failure(error)),
-            None => None,
-        };
-        let prepared = super::projection::host_data(
-            state,
-            &policy.raw().optics,
-            &descriptors,
-            &preview,
-            noise.as_ref(),
-        )
-        .map_err(|diagnostic| Failure::new(sys::FJ_STATUS_PREPARATION_FAILURE, diagnostic))?;
-        let prepared = sys::FjPreparedHostData {
-            film_grain: film_grain
-                .as_ref()
-                .map_or(std::ptr::null(), std::ptr::from_ref),
-            ..prepared
-        };
-        let host_preparation = super::host_preparation::Call::new();
-        Ok(guard.owner.execute(
-            &context,
-            frame,
-            &selected,
-            &prepared,
-            abort,
-            &host_preparation,
-        ))
-    }))
-    .unwrap_or_else(|_| {
-        guard.force_fatal = true;
-        Err(Failure::new(
-            sys::FJ_STATUS_INTERNAL_FAILURE,
-            "prepared render panicked",
-        ))
-    });
-    guard.finish(result)
+        edge::trace_submission(frame, &selected, selection.reused);
+    }
+    Ok((outcome, diagnostic, fatal))
 }

@@ -72,9 +72,8 @@ namespace JuicerCuda {
     struct PendingContextLossRecovery {
         void observe(const char* stageTag, const Failure& observed) noexcept;
 
-        bool pending = false;
-        Failure failure;
-        const char* stage = nullptr;
+        bool submissionAdmitted = false;
+        const char* lossStage = nullptr;
     };
 
 

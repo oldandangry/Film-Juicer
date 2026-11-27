@@ -4,18 +4,26 @@ CMake links the module and native witnesses to the same `film_juicer_rust`
 archive under `cargo/production`. The Rust-only workflow runs locked workspace
 nextest and doctests without the CUDA toolchain.
 
-`Ffi.Host.ProductionCudaAbi` checks 624 size, alignment, offset and value facts
+`Ffi.Host.ProductionCudaAbi` checks 678 size, alignment, offset and value facts
 from [the CUDA inventory](../tests/ffi/cuda_abi_facts.inc). The strict C11
-consumer also checks the retained call signatures, DIR boundary ownership and
-diffusion component admission. Locked nextest compares the generated Rust
+consumer also checks the flat call and preparation callback signatures and
+the diffusion lane counts. Locked nextest compares the generated Rust
 types and values with the same frozen layout facts. The C11 OFX ABI case
 checks vendored suite field types and signatures. The loaded module and OFX
 host cases exercise discovery, variadic suite calls, reentry, and image leases.
 
 The standard discovery exports in `native/ofx_exports.cpp` delegate to Rust.
 Rust owns OFX callbacks and their image leases. Native Root owns CUDA
-admission, frame resources and retirement. The current render continuation
-and the DIR and diffusion C entries remain part of this ABI.
+admission, frame resources and retirement. Inspection returns an idle
+context epoch. Render revalidates that epoch, its current context, both
+device images and the stream before submitting work. A context-loss outcome
+identifies the producing epoch for retirement after host completion.
+
+Rust supplies resolved diffusion lanes and a synchronous preparation table.
+A cold DIR request can borrow weights through native render return. Native
+staging owns any queued upload after that point. An absent stream is
+synchronized on return. An explicitly supplied default stream has the same
+completion contract as other supplied streams.
 
 ## Binding maintenance
 

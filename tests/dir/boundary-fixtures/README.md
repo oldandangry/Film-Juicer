@@ -18,9 +18,9 @@ including the explicit fused product residual. No numerical tolerance is widened
 `checked.json` supplies separately authored representation-safety and typed failure
 expectations. `manifest.json` also specifies 171 production C11 result rows:
 117 value/safety cases, 51 raw-admission/diagnostic cases and three lifetime cases.
-Diagnostic lengths count bytes written without the NUL. These rows bind complete
-values and metadata to the actual testing-OFF archive probe; they are not new
-numerical captures. The original scientific inputs and payload hashes remain
+Diagnostic lengths count bytes written without the NUL. These rows describe the historical archive probe. The current GPU resource
+case checks the installed terminal matrices and staged weights against the
+same literal capture. The original scientific inputs and payload hashes remain
 distinct from this protocol schema.
 
 The original 99-case cohort and later geometry extension were both executed by

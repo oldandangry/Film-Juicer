@@ -9,7 +9,6 @@
 #include "ScanRoute.h"
 #include "ScatterHalation.h"
 
-struct FjDirFrameMath;
 
 // Production photographic policy and profile ownership live in Rust PreparedState.
 // Native descriptors and coefficients bind CUDA execution. Frame resources, scratch,
@@ -152,6 +151,7 @@ namespace Spektrafilm {
         double boundaryTruncationAccuracy = 1.0e-11;
         double boundaryCertificationTolerance = 5.0e-7;
         std::uint32_t boundaryDerivationVersion = 1u;
+        std::uint64_t boundaryIdentity = 0;
     };
 
     struct DirFilterPlan {
@@ -371,10 +371,6 @@ namespace Spektrafilm {
 
     // Bind the resolved Rust frame math before composing native scratch roles,
     // aliases and execution hash.
-    bool bind_spatial_dir_math(const FjDirFrameMath&, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool finish_spatial_dir_descriptor(float pixelSizeUm, SpatialDirDescriptor&);
-
-    bool compose_spatial_dir_descriptor(
-        const FjDirFrameMath&, float pixelSizeUm, const char* traceRouteLabel, SpatialDirDescriptor& out);
 
 } // namespace Spektrafilm

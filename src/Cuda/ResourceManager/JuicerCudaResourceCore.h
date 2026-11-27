@@ -188,6 +188,7 @@ namespace JuicerCuda {
             std::uint64_t snapshotId = 0;
             DeviceContextKey deviceContextKey{};
             KeyDigests keyDigests{};
+            std::uint64_t contextEpoch = 0;
         };
 
         struct SubmissionTransaction {

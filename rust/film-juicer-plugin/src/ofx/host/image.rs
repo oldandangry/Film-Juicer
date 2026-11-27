@@ -416,18 +416,20 @@ impl Callback<'_> {
                 |completion| {
                     if completion.deferred_dir_error() {
                         self.message(c"FilmJuicerDeferredCudaFailure", completion.diagnostic());
+                    } else if completion.context_loss_pending() {
+                        self.message(c"FilmJuicerCudaContextLoss", completion.diagnostic());
                     }
                     let fatal = completion.fatal() || access.failed.get();
                     if fatal {
                         completion.trace_failure();
                         if state.film_grain().is_some()
                             && !completion.deferred_dir_error()
+                            && !completion.context_loss_pending()
                             && !completion.diagnostic().is_empty()
                         {
                             self.message(c"FilmJuicerFilmRenderFailure", completion.diagnostic());
                         }
                     }
-                    completion.recover(&owner.state);
                     fatal
                 },
             )

@@ -7,7 +7,24 @@
 #include "Cuda/JuicerCudaPayloads.h"
 #include "FilmEffectsFrameDescriptors.h"
 #include "RenderValues.h"
-#include "juicer_cuda_frame_values.h"
+#include "juicer_cuda_api.h"
+
+struct FjGrainCoefficients {
+    uint32_t flags;
+    uint32_t debug_view;
+    size_t sublayer_count;
+    float micro_structure[2];
+    float clump_temporal_mix;
+    float size_mix_scale;
+    float amplitude;
+    float chroma_mix;
+    float chroma_shared_weight;
+    float chroma_independent_weight;
+    float particle_density_min_cmy[3];
+    float uniformity_cmy[3];
+    float layer_axis_block_prefix_max[3][16];
+};
+
 
 namespace JuicerCuda {
 

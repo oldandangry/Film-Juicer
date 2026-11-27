@@ -359,14 +359,13 @@ namespace JuicerCuda {
                 return false;
             }
 
-            RegistryContextSnapshot contextSnapshot{};
             if (!registry_begin_submission(
                     outTransaction.snapshot.deviceContextKey,
-                    contextSnapshot)) {
+                    outTransaction.snapshot.contextEpoch)) {
                 outError.diagnostic = "registry submission admission failed";
                 return false;
             }
-            outTransaction.contextEpoch = contextSnapshot.contextEpoch;
+            outTransaction.contextEpoch = outTransaction.snapshot.contextEpoch;
 
             std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
             if (leaseGeneration == 0) {

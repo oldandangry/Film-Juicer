@@ -1,40 +1,11 @@
-//! Native DIR reflected-boundary description and scoped host ownership.
+//! Reflected-boundary projection for a cold native cache miss.
 
+use std::ffi::c_void;
 use std::mem::{align_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use film_juicer_core::film::dir::boundary::{Boundary, Error, Input};
 
-use crate::cuda::sys::{FjDirGaussian, FjErrorBuffer, FjStatus};
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjDirBoundaryInput {
-    pub(crate) component: FjDirGaussian,
-    pub(crate) width: i32,
-    pub(crate) height: i32,
-}
-
-#[repr(C)]
-pub(crate) struct FjDirBoundaryOwner {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjDirBoundaryView {
-    pub(crate) weights: *const f64,
-    pub(crate) count: usize,
-    pub(crate) identity: u64,
-    pub(crate) width: i32,
-    pub(crate) height: i32,
-    pub(crate) horizontal_length: i32,
-    pub(crate) vertical_length: i32,
-    pub(crate) horizontal_terminal_size: i32,
-    pub(crate) vertical_terminal_size: i32,
-    pub(crate) horizontal_terminal: [f64; 9],
-    pub(crate) vertical_terminal: [f64; 9],
-}
+use super::{edge, sys::*};
 
 const EMPTY_VIEW: FjDirBoundaryView = FjDirBoundaryView {
     weights: std::ptr::null(),
@@ -49,18 +20,6 @@ const EMPTY_VIEW: FjDirBoundaryView = FjDirBoundaryView {
     horizontal_terminal: [0.0; 9],
     vertical_terminal: [0.0; 9],
 };
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct FjDirBoundaryFailure {
-    pub(crate) reason: u32,
-    pub(crate) axis: u32,
-    pub(crate) row: u32,
-    pub(crate) length: i32,
-    pub(crate) sigma_px: f32,
-    pub(crate) sum: f64,
-    pub(crate) tolerance: f64,
-}
 
 fn failure(reason: u32) -> FjDirBoundaryFailure {
     FjDirBoundaryFailure {
@@ -126,84 +85,28 @@ fn valid<T>(pointer: *const T) -> bool {
         && (pointer as usize).checked_add(size_of::<T>()).is_some()
 }
 
-struct Diagnostic {
-    record: *mut FjErrorBuffer,
-    data: *mut u8,
-    capacity: usize,
-}
-impl Diagnostic {
-    /// # Safety
-    /// The optional initialized record and nonempty backing are live/exclusive/disjoint.
-    unsafe fn admit(record: *mut FjErrorBuffer) -> Result<Self, ()> {
-        let mut writer = Self {
-            record,
-            data: std::ptr::null_mut(),
-            capacity: 0,
-        };
-        if record.is_null() {
-            return Ok(writer);
-        }
-        if !valid(record) {
-            return Err(());
-        }
-        // SAFETY: Independent numeric admission precedes caller-authorized record access.
-        unsafe {
-            (*record).length = 0;
-            writer.capacity = (*record).capacity;
-            if writer.capacity != 0 {
-                writer.data = (*record).data.cast();
-                if writer.data.is_null()
-                    || writer.capacity > isize::MAX as usize
-                    || (writer.data as usize)
-                        .checked_add(writer.capacity)
-                        .is_none()
-                {
-                    return Err(());
-                }
-                writer.data.write(0);
-            }
-        }
-        Ok(writer)
-    }
-    fn write(&mut self, text: &str) {
-        let count = text.len().min(self.capacity.saturating_sub(1));
-        // SAFETY: Admitted exclusive backing has capacity; count reserves its NUL.
-        unsafe {
-            if self.capacity != 0 {
-                std::ptr::copy_nonoverlapping(text.as_ptr(), self.data, count);
-                self.data.add(count).write(0);
-            }
-            if !self.record.is_null() {
-                (*self.record).length = count;
-            }
-        }
-    }
-}
-
 /// # Safety
-/// Independently authorized writable outputs/diagnostics are live, aligned and
-/// mutually disjoint, including backing and input. Admission proves no provenance.
-unsafe fn call<T: Copy>(
-    out: *mut T,
-    empty: T,
+/// Non-null pointers refer to disjoint caller-owned ABI storage. This function
+/// validates alignment and initializes the output records before calling body.
+unsafe fn call(
+    out: *mut FjDirBoundaryView,
     details: *mut FjDirBoundaryFailure,
     error: *mut FjErrorBuffer,
-    release: bool,
-    body: impl FnOnce() -> Result<T, FjDirBoundaryFailure>,
+    body: impl FnOnce() -> Result<FjDirBoundaryView, FjDirBoundaryFailure>,
 ) -> FjStatus {
     let valid_out = valid(out);
     let valid_details = valid(details);
     // SAFETY: Clear each independently admitted peer before other admission.
     unsafe {
         if valid_out {
-            out.write(empty);
+            out.write(EMPTY_VIEW);
         }
         if valid_details {
             details.write(failure(0));
         }
     }
     // SAFETY: Optional diagnostics have the same authorized storage/disjointness contract.
-    let mut diagnostic = unsafe { Diagnostic::admit(error) };
+    let mut diagnostic = unsafe { edge::Diagnostic::admit(error) };
     let result = if !valid_out || !valid_details || diagnostic.is_err() {
         Err(failure(1))
     } else {
@@ -225,18 +128,14 @@ unsafe fn call<T: Copy>(
                 }
             }
             if let Ok(writer) = &mut diagnostic {
-                writer.write(if release && rejected.reason == 13 {
-                    "spatial DIR reflected-boundary release panicked"
-                } else {
-                    MESSAGES[rejected.reason as usize]
-                });
+                writer.write(MESSAGES[rejected.reason as usize]);
             }
             status(rejected.reason)
         }
     }
 }
 
-fn project(raw: &FjDirBoundaryInput) -> Result<Input, FjDirBoundaryFailure> {
+pub(super) fn project(raw: &FjDirBoundaryInput) -> Result<Input, FjDirBoundaryFailure> {
     let c = &raw.component;
     if !(c.reference_operator == 3 && c.weight > 0.0) {
         return Err(failure(2));
@@ -264,67 +163,34 @@ fn project(raw: &FjDirBoundaryInput) -> Result<Input, FjDirBoundaryFailure> {
 }
 
 /// # Safety
-/// Input and disjoint writable peers are initialized/live/aligned through return.
-pub(crate) unsafe fn describe(
+/// The native caller supplies live, disjoint callback records and the
+/// outer render's backing. Invocations are synchronous and serial.
+pub(super) unsafe extern "C" fn prepare(
+    user: *mut c_void,
     input: *const FjDirBoundaryInput,
-    out: *mut u64,
-    details: *mut FjDirBoundaryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Common admission clears peers before authorizing the immutable input borrow.
-    unsafe {
-        call(out, 0, details, error, false, || {
-            if !valid(input) {
-                return Err(failure(1));
-            }
-
-            project(&*input).map(|input| input.key().value())
-        })
-    }
-}
-
-/// # Safety
-/// Input/peers are live/aligned/disjoint; one successful owner transfers to release.
-pub(crate) unsafe fn acquire(
-    input: *const FjDirBoundaryInput,
-    out: *mut *mut FjDirBoundaryOwner,
-    details: *mut FjDirBoundaryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Common admission precedes the authorized immutable input borrow and ownership transfer.
-    unsafe {
-        call(out, std::ptr::null_mut(), details, error, false, || {
-            if !valid(input) {
-                return Err(failure(1));
-            }
-
-            let input = project(&*input)?;
-            let boundary = Boundary::new(input).map_err(FjDirBoundaryFailure::from)?;
-            // The small Box retains the established infallible allocator-abort limitation.
-            let owner = Box::new(boundary);
-            Ok(Box::into_raw(owner).cast())
-        })
-    }
-}
-
-/// # Safety
-/// Borrow a legitimate live owner excluding release; exclusive peers are disjoint.
-/// The immutable storage and all returned views expire at matching release.
-pub(crate) unsafe fn view(
-    owner: *const FjDirBoundaryOwner,
     out: *mut FjDirBoundaryView,
     details: *mut FjDirBoundaryFailure,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
-    // SAFETY: Common admission and caller-guaranteed owner provenance precede the borrow.
+    // SAFETY: The callback contract establishes exclusive outputs and
+    // serial access to the render-local backing once the records are checked.
     unsafe {
-        call(out, EMPTY_VIEW, details, error, false, || {
-            if !valid(owner.cast::<Boundary>()) {
-                return Err(failure(1));
+        call(out, details, error, || {
+            if !valid(input) || !valid(user.cast::<super::host_preparation::Backing>()) {
+                return Err(failure(FJ_DIR_BOUNDARY_RAW));
             }
-
-            let boundary = &*owner.cast::<Boundary>();
-            let result = FjDirBoundaryView {
+            let request = &*input;
+            let input = project(request)?;
+            if input.key().value() != request.component.boundary_identity {
+                return Err(failure(FJ_DIR_BOUNDARY_REQUEST));
+            }
+            let backing = &mut *user.cast::<super::host_preparation::Backing>();
+            backing
+                .boundaries
+                .try_reserve(1)
+                .map_err(|_| failure(FJ_DIR_BOUNDARY_ALLOCATION))?;
+            let boundary = Boundary::new(input).map_err(FjDirBoundaryFailure::from)?;
+            let view = FjDirBoundaryView {
                 weights: boundary.weights().as_ptr(),
                 count: boundary.weights().len(),
                 identity: boundary.key().value(),
@@ -337,145 +203,89 @@ pub(crate) unsafe fn view(
                 horizontal_terminal: *boundary.horizontal().terminal(),
                 vertical_terminal: *boundary.vertical().terminal(),
             };
-            Ok(result)
+            // Moving Boundary does not move its weight allocation. Subsequent
+            // cold misses leave every previous view valid through native return.
+            backing.boundaries.push(boundary);
+            Ok(view)
         })
     }
 }
 
-/// # Safety
-/// NULL or one matching live owner transfers exactly once, excluding all readers.
-/// Malformed diagnostics and contained unwind still consume an admitted owner.
-pub(crate) unsafe fn release(
-    owner: *mut FjDirBoundaryOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    let admitted = owner.is_null() || valid(owner.cast::<Boundary>());
-    let owned = if admitted && !owner.is_null() {
-        // SAFETY: The caller transfers this exact Box before any fallible diagnostic work.
-        Some(unsafe { Box::from_raw(owner.cast::<Boundary>()) })
-    } else {
-        None
-    };
-    let mut out = 0_u32;
-    let mut details = failure(0);
-    // SAFETY: Local peers and caller-authorized diagnostics satisfy common admission.
-    // The captured Box drops even if malformed diagnostics reject before invocation.
-    unsafe {
-        call(&mut out, 0, &mut details, error, true, move || {
-            if !admitted {
-                return Err(failure(1));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_callback_keeps_first_weights_live_across_later_acquisition() {
+        // Representative words from the tagged literal-9x6 capture. The native
+        // installation witness compares all weights and both matrices.
+        let expected_key = 11_586_933_080_928_547_342;
+        let mut input = FjDirBoundaryInput {
+            width: 9,
+            height: 6,
+            component: FjDirGaussian {
+                sigma_px: 4.0,
+                weight: 1.0,
+                radius: 12,
+                reference_operator: FJ_DIR_OPERATOR_YVV_REFLECT,
+                feedforward: 0.5,
+                feedback: [0.5, 0.0, 0.0],
+                normalization_denominator: 2.0,
+                feedforward_numerator: 1.0,
+                feedback_numerators: [1.0, 0.0, 0.0],
+                boundary_truncation_accuracy: 1e-11,
+                boundary_certification_tolerance: 1e-6,
+                boundary_derivation_version: 1,
+                boundary_identity: 1,
+            },
+        };
+        let call = crate::cuda::host_preparation::Call::new();
+        let host = call.raw();
+        let acquire = |input: &FjDirBoundaryInput, view: &mut FjDirBoundaryView| {
+            let mut failure = failure(FJ_DIR_BOUNDARY_NONE);
+            // SAFETY: The call retains backing, and the input and outputs are distinct.
+            unsafe {
+                host.dir_boundary.unwrap()(
+                    host.user,
+                    input,
+                    view,
+                    &mut failure,
+                    std::ptr::null_mut(),
+                )
             }
-
-            drop(owned);
-            Ok(0)
-        })
+        };
+        let mut first = EMPTY_VIEW;
+        assert_eq!(
+            acquire(&input, &mut first).category,
+            FJ_STATUS_PREPARATION_FAILURE
+        );
+        assert!(first.weights.is_null());
+        input.component.boundary_identity = project(&input)
+            .unwrap_or_else(|_| panic!("invalid boundary"))
+            .key()
+            .value();
+        assert_eq!(acquire(&input, &mut first).category, FJ_STATUS_SUCCESS);
+        assert_eq!(first.identity, expected_key);
+        let mut second = EMPTY_VIEW;
+        std::mem::swap(&mut input.width, &mut input.height);
+        input.component.boundary_identity = project(&input)
+            .unwrap_or_else(|_| panic!("invalid boundary"))
+            .key()
+            .value();
+        assert_eq!(acquire(&input, &mut second).category, FJ_STATUS_SUCCESS);
+        assert_ne!(first.weights, second.weights);
+        // SAFETY: Both callback views still borrow the live outer call.
+        let actual = unsafe { std::slice::from_raw_parts(first.weights, first.count) };
+        assert_eq!(actual.len(), 45);
+        assert_eq!(actual[0].to_bits(), 4_602_678_870_712_451_073);
+        assert_eq!(actual[44].to_bits(), 4_591_421_469_774_413_848);
+        assert_eq!(
+            first.horizontal_terminal[1].to_bits(),
+            4_598_175_219_545_276_416
+        );
+        assert_eq!(
+            first.vertical_terminal[8].to_bits(),
+            4_607_182_418_800_017_408
+        );
     }
 }
-
-/// # Safety
-/// Identical initialized, live, disjoint record contract to describe.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_dir_boundary_describe(
-    input: *const FjDirBoundaryInput,
-    out: *mut u64,
-    details: *mut FjDirBoundaryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the unchanged checked contract.
-    unsafe { describe(input, out, details, error) }
-}
-/// # Safety
-/// Identical storage and ownership-transfer contract to acquire.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_dir_boundary_acquire(
-    input: *const FjDirBoundaryInput,
-    out: *mut *mut FjDirBoundaryOwner,
-    details: *mut FjDirBoundaryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the unchanged checked contract.
-    unsafe { acquire(input, out, details, error) }
-}
-/// # Safety
-/// Identical legitimate-owner borrow and storage-expiry contract to view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_dir_boundary_view(
-    owner: *const FjDirBoundaryOwner,
-    out: *mut FjDirBoundaryView,
-    details: *mut FjDirBoundaryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the unchanged checked contract.
-    unsafe { view(owner, out, details, error) }
-}
-/// # Safety
-/// Identical consume-once ownership and diagnostic contract to release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_dir_boundary_release(
-    owner: *mut FjDirBoundaryOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the unchanged checked contract.
-    unsafe { release(owner, error) }
-}
-
-const _: () = {
-    assert!(size_of::<FjDirBoundaryInput>() == 120 && align_of::<FjDirBoundaryInput>() == 8);
-    assert!(size_of::<FjDirBoundaryView>() == 192 && align_of::<FjDirBoundaryView>() == 8);
-    assert!(size_of::<FjDirBoundaryFailure>() == 40 && align_of::<FjDirBoundaryFailure>() == 8);
-};
-
-const _: () = {
-    assert!(size_of::<FjDirBoundaryInput>() == 120 && align_of::<FjDirBoundaryInput>() == 8);
-    assert!(std::mem::offset_of!(FjDirBoundaryInput, component) == 0);
-    assert!(std::mem::offset_of!(FjDirBoundaryInput, width) == 112);
-    assert!(std::mem::offset_of!(FjDirBoundaryInput, height) == 116);
-    assert!(size_of::<FjDirBoundaryView>() == 192 && align_of::<FjDirBoundaryView>() == 8);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, weights) == 0);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, count) == 8);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, identity) == 16);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, width) == 24);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, height) == 28);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, horizontal_length) == 32);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, vertical_length) == 36);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, horizontal_terminal_size) == 40);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, vertical_terminal_size) == 44);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, horizontal_terminal) == 48);
-    assert!(std::mem::offset_of!(FjDirBoundaryView, vertical_terminal) == 120);
-    assert!(size_of::<FjDirBoundaryFailure>() == 40 && align_of::<FjDirBoundaryFailure>() == 8);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, reason) == 0);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, axis) == 4);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, row) == 8);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, length) == 12);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, sigma_px) == 16);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, sum) == 24);
-    assert!(std::mem::offset_of!(FjDirBoundaryFailure, tolerance) == 32);
-};
-
-const _: fn(FjDirBoundaryInput) = |v| {
-    let _: FjDirGaussian = v.component;
-    let _: i32 = v.width;
-    let _: i32 = v.height;
-};
-const _: fn(FjDirBoundaryView) = |v| {
-    let _: *const f64 = v.weights;
-    let _: usize = v.count;
-    let _: u64 = v.identity;
-    let _: i32 = v.width;
-    let _: i32 = v.height;
-    let _: i32 = v.horizontal_length;
-    let _: i32 = v.vertical_length;
-    let _: i32 = v.horizontal_terminal_size;
-    let _: i32 = v.vertical_terminal_size;
-    let _: [f64; 9] = v.horizontal_terminal;
-    let _: [f64; 9] = v.vertical_terminal;
-};
-const _: fn(FjDirBoundaryFailure) = |v| {
-    let _: u32 = v.reason;
-    let _: u32 = v.axis;
-    let _: u32 = v.row;
-    let _: i32 = v.length;
-    let _: f32 = v.sigma_px;
-    let _: f64 = v.sum;
-    let _: f64 = v.tolerance;
-};
