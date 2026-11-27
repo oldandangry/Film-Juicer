@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <filesystem>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -548,6 +547,5 @@ namespace JuicerProcess {
         CudaContextResourceMap _cudaContextResources;
     };
 
-    std::filesystem::path data_directory();
 
 } // namespace JuicerProcess

@@ -175,7 +175,7 @@ namespace {
         EXPECT_FALSE(make_scratch_request_descriptor(kExtent, std::monostate{}, {}));
     }
 
-    TEST(ScratchRequest, DirectAndPrintTierCompositionsKeepTheirGeneration) {
+    TEST(ScratchRequest, DirectAndPrintTierCompositionsUseTheCorrectOffset) {
         struct Composition {
             const char* name = nullptr;
             ActiveDirScratch::Layout source;
@@ -184,16 +184,16 @@ namespace {
             bool print = false;
             std::uint64_t generation = 0;
         };
-        // Product characterization captured from the accepted 7415a8c constructor.
-        // Each row names source/target storage and the direct/print attachment shape.
-        const std::array<Composition, 8> compositions{{{"direct-fir", kFir, kFir, true, false, 13369519279501012274ull},
-                                                       {"print-fir", kFir, kFir, false, true, 6993612232329871157ull},
-                                                       {"direct-yvv-alias", kYvv, kYvv, true, false, 16398215074749439696ull},
-                                                       {"print-yvv-cached", kYvv, kCached, false, true, 8834133510794582629ull},
-                                                       {"direct-yvv-cached-alias", kCached, kCached, true, false, 10089080395616178954ull},
-                                                       {"print-yvv-single-temp", {DirScratchTier::Tier1IChannels, {3, 3, 1, 0}}, {DirScratchTier::Tier2, {3, 3, 1, 3}}, false, true, 12556773535806495577ull},
-                                                       {"direct-yvv-streamed", {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, true, false, 13344895294117419568ull},
-                                                       {"print-yvv-bg-cache", {DirScratchTier::Tier2, {3, 3, 3, 2}}, {DirScratchTier::Tier2, {3, 3, 3, 2}}, true, true, 15096511039551998049ull}}};
+        // Preserve the characterized 7415a8c layouts and check their exact
+        // word-mixed keys with the corrected 64-bit FNV offset basis.
+        const std::array<Composition, 8> compositions{{{"direct-fir", kFir, kFir, true, false, 12188901082039452940ull},
+                                                       {"print-fir", kFir, kFir, false, true, 7770371023301078287ull},
+                                                       {"direct-yvv-alias", kYvv, kYvv, true, false, 6713902229260063890ull},
+                                                       {"print-yvv-cached", kYvv, kCached, false, true, 9083283243898330179ull},
+                                                       {"direct-yvv-cached-alias", kCached, kCached, true, false, 5817559785660538724ull},
+                                                       {"print-yvv-single-temp", {DirScratchTier::Tier1IChannels, {3, 3, 1, 0}}, {DirScratchTier::Tier2, {3, 3, 1, 3}}, false, true, 3755573892791981919ull},
+                                                       {"direct-yvv-streamed", {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, true, false, 16458248716578255154ull},
+                                                       {"print-yvv-bg-cache", {DirScratchTier::Tier2, {3, 3, 3, 2}}, {DirScratchTier::Tier2, {3, 3, 3, 2}}, true, true, 3800630940274450427ull}}};
         for (const auto& composition : compositions) {
             SCOPED_TRACE(composition.name);
             const auto active = ActiveDirScratch::create(kDescriptorHash, composition.source, composition.target);

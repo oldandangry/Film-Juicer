@@ -250,9 +250,10 @@ namespace JuicerLogging {
         }
         const int level = diagnostics_level();
         if (level == 1) {
-            // Best-effort "errors only" filter at level 1 without requiring call site changes.
-            // Convention in this codebase: error logs typically contain "FATAL:".
-            if (msg.find("FATAL") == std::string::npos && msg.find("ERROR") == std::string::npos) {
+            if (msg.find("FATAL") == std::string::npos &&
+                msg.find("ERROR") == std::string::npos &&
+                msg.find("error=") == std::string::npos &&
+                msg.find("fatal=") == std::string::npos) {
                 return;
             }
         }
@@ -266,22 +267,6 @@ namespace JuicerLogging {
         }
     }
 
-    Scope::Scope(const char* t, std::string n) : tag(t), name(std::move(n)) {
-        active = enabled(2);
-        if (active) {
-            write(tag, "BEGIN " + name);
-        }
-    }
-
-    Scope::~Scope() noexcept {
-        try {
-            if (active) {
-                write(tag, "END   " + name);
-            }
-        } catch (...) {
-            discard_current_exception();
-        }
-    }
 
 } // namespace JuicerLogging
 

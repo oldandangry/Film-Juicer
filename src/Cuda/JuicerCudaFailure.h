@@ -25,6 +25,8 @@ namespace JuicerCuda {
     bool context_loss(const Failure& failure) noexcept;
     std::optional<FjStatus> context_loss_status(const Failure& failure) noexcept;
     void record_cleanup_context_loss(Failure& failure, FjStatus cleanupStatus) noexcept;
+    // The destination starts at success and retains the first failure's origin.
+    void retain_first_failure(Failure& first, Failure&& next) noexcept;
     // Diagnostic storage cannot replace an already selected failure origin.
     void set_failure(Failure& failure, FjStatus status, std::string_view diagnostic) noexcept;
     FjStatus write_status(FjStatus status, std::string_view diagnostic, FjErrorBuffer* error) noexcept;

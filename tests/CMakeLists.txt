@@ -266,7 +266,7 @@ add_test(NAME Scanner.Gpu.PreGlareXyz COMMAND JuicerScannerSpectralTests --gtest
 set_tests_properties(Scanner.Gpu.PreGlareXyz PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerScannerRouteTests
-    scanner/routes_test.cpp resource/observed_operations.cpp
+    scanner/routes_test.cpp resource/allocation_fault.cpp resource/observed_operations.cpp
     ofx/cancellation_test.cpp ofx/instance_host.cpp ofx/production_images.cpp)
 target_compile_definitions(JuicerScannerRouteTests PRIVATE
     JUICER_DIFFUSION_FRAME_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/native-payload.json")
@@ -287,7 +287,8 @@ else()
 endif()
 set_tests_properties(Scanner.Gpu.Routes PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
-add_executable(JuicerPinnedUploadTests resource/pinned_upload_test.cpp resource/observed_operations.cpp)
+add_executable(JuicerPinnedUploadTests
+    resource/pinned_upload_test.cpp resource/observed_operations.cpp resource/allocation_fault.cpp)
 target_compile_definitions(JuicerPinnedUploadTests PRIVATE
     JUICER_TEST_SEAMS=1
     JUICER_TEST_PRESET_NAME="${JUICER_TEST_PRESET_NAME}"

@@ -96,8 +96,8 @@ set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE 
 if(WIN32)
     target_compile_definitions(juicer PRIVATE _WINDLL)
 elseif(UNIX)
-    # Static cuFFT contains relocatable device code even though our kernels do
-    # not need separable compilation. Resolve it once at the final module.
+    # Native stage launchers call kernels in their own translation unit.
+    # Resolve static cuFFT device symbols at the final module link.
     set_property(TARGET juicer PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     target_link_options(juicer PRIVATE
         -static-libstdc++ -static-libgcc

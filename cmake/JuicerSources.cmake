@@ -6,24 +6,46 @@ set(JUICER_NATIVE_SOURCES
     native/juicer_cuda_prepared.cpp
     native/juicer_host_preparation.cpp
     src/Cuda/JuicerCudaDeviceLedger.cpp
-    src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
-    src/Cuda/JuicerCudaExecutor.cpp
+    src/Cuda/Diffusion/DiffusionBuild.cpp
+    src/Cuda/Diffusion/DiffusionCache.cpp
+    src/Cuda/Diffusion/DiffusionLease.cpp
+    src/Cuda/Executor/Admission.cpp
+    src/Cuda/Executor/FilmStages.cpp
+    src/Cuda/Executor/ScanStages.cpp
+    src/Cuda/Executor/Direct.cpp
+    src/Cuda/Executor/Print.cpp
     src/Cuda/JuicerCudaFilmGrainStage.cpp
     src/Cuda/JuicerCudaFailure.cpp
     src/Cuda/JuicerCudaDriver.cpp
-    src/Cuda/JuicerCudaResources.cpp
+    src/Cuda/Resources/Lifecycle.cpp
+    src/Cuda/Resources/PinnedUploadPool.cpp
+    src/Cuda/Resources/Uploads.cpp
+    src/Cuda/Resources/RouteResources.cpp
+    src/Cuda/Resources/ScratchPool.cpp
+    src/Cuda/Resources/FilterCache.cpp
     src/Cuda/Scan/JuicerCudaScannerBinding.cpp
     src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp
     src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp
     src/ProcessRoot.cpp
+    src/PreparedCudaFrame.cpp
+    src/PreparedCudaFrameViews.cpp
+    src/PreparedFrameLayout.cpp
     src/DiffusionExecution.cpp
     src/Cuda/JuicerCudaFilmPayloads.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusion.cu
     src/Cuda/Film/JuicerCudaScatterHalation.cu
     src/Cuda/Film/JuicerCudaHighlightBoost.cu
-    src/Cuda/Film/JuicerCudaFilmPipeline.cu
+    src/Cuda/JuicerCudaBlur.cu
+    src/Cuda/Film/FilmDevelop.cu
+    src/Cuda/Film/SpatialDir.cu
+    src/Cuda/Film/VisualGrain.cu
+    src/Cuda/Film/FilmV1Grain.cu
     src/Cuda/JuicerCudaAutoExposure.cu
-    src/Cuda/Scan/JuicerCudaScanPipeline.cu
+    src/Cuda/Scan/PrintDevelop.cu
+    src/Cuda/Scan/SpectralScan.cu
+    src/Cuda/Scan/PostEffects.cu
+    src/Cuda/Scan/FilmDefects.cu
+    src/Cuda/Scan/PrintGlare.cu
 )
 
 set(JUICER_HOST_SOURCES
