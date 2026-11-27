@@ -13,7 +13,6 @@
         "grain-linux-debug-products.json"
       ],
       "synthetic": "synthetic.json",
-      "ofx": "linux-debug-ofx.txt",
       "original_values": "linux-debug.json"
     },
     "linux-release": {
@@ -22,7 +21,6 @@
         "grain-linux-debug-products.json"
       ],
       "synthetic": "synthetic.json",
-      "ofx": "linux-debug-ofx.txt",
       "original_values": "linux-debug.json"
     },
     "windows-clang-debug": {
@@ -31,7 +29,6 @@
         "grain-windows-clang-debug-products.json"
       ],
       "synthetic": "synthetic.json",
-      "ofx": "windows-clang-debug-ofx.txt",
       "original_values": "windows-clang-debug.json"
     },
     "windows-clang-release": {
@@ -40,13 +37,24 @@
         "grain-windows-clang-debug-products.json"
       ],
       "synthetic": "synthetic.json",
-      "ofx": "windows-clang-debug-ofx.txt",
       "original_values": "windows-clang-debug.json"
     }
   },
+  "archived_ofx": {
+    "tag": "archive/spectral-cutover-2026-11",
+    "directory": "tests/film/grain-fixtures",
+    "presets": {
+      "linux-debug": "linux-debug-ofx.txt",
+      "linux-release": "linux-debug-ofx.txt",
+      "windows-clang-debug": "windows-clang-debug-ofx.txt",
+      "windows-clang-release": "windows-clang-debug-ofx.txt"
+    },
+    "sha256": {
+      "linux-debug-ofx.txt": "2d70568b99a92654c19370aad445d3df412effd5b0905bd967a4a5f0f81ca958",
+      "windows-clang-debug-ofx.txt": "6a4264693d20b3a6c1b494021386a69acd4da0f9e1094beb0cb82c9420f8bb58"
+    }
+  },
   "payload_sha256": {
-    "linux-debug-ofx.txt": "2d70568b99a92654c19370aad445d3df412effd5b0905bd967a4a5f0f81ca958",
-    "windows-clang-debug-ofx.txt": "6a4264693d20b3a6c1b494021386a69acd4da0f9e1094beb0cb82c9420f8bb58",
     "synthetic/negative-n1/profiles/kodak_portra_400.json": "c3dd6b6354e7c2eae3d6b71bd52828f13f0e7b926e67c115ea5ee40cea9b4102",
     "synthetic/negative-n1/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
     "synthetic/negative-n21/profiles/kodak_portra_400.json": "ed6b7da33dc18718cfaa680e4b924fd1c8405dc63b15d9243371292fc91a6770",

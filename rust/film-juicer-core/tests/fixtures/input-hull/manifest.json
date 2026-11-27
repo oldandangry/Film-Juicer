@@ -17,13 +17,13 @@
     },
     "windows-clang-debug": {
       "records": "records-1.json",
-      "rays": "rays-1.json",
+      "rays": "rays-0.json",
       "tables": "tables-0.bin",
       "primitives": "primitives-1.bin"
     },
     "windows-clang-release": {
       "records": "records-1.json",
-      "rays": "rays-1.json",
+      "rays": "rays-0.json",
       "tables": "tables-0.bin",
       "primitives": "primitives-1.bin"
     }
@@ -34,7 +34,6 @@
     "tables-0.bin": "ec56e38cd44d0a208d5fb4f5177f2b9acd5da96d05676fe3615972693ccb2b1e",
     "primitives-0.bin": "c2d5994cf483d92f76d34b6de9c7e7b9389cd1b26154adfe43edac91ce473c0b",
     "records-1.json": "33a2aa5ec550f003f753c63c2e80e05cf45fedd3360842d5799a599bf63f8312",
-    "rays-1.json": "25dc5d2a038f9378701b2c820515d52509e23df4fe2858233daee0a31530c769",
     "primitives-1.bin": "0ae3969b642da82bd9e1137e623c2f8a92475701ead7c4931c6872376243508c"
   },
   "provenance": {

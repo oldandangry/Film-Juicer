@@ -18,22 +18,18 @@
     "windows-clang-debug": {
       "records": "records-1.json",
       "tables": "tables-0.bin",
-      "extra": "extra-1.json"
+      "extra": "extra-0.json"
     },
     "windows-clang-release": {
       "records": "records-1.json",
       "tables": "tables-0.bin",
-      "extra": "extra-1.json"
+      "extra": "extra-0.json"
     }
   },
   "files": {
     "extra-0.json": {
       "sha256": "1e640067b848d6e58db255dd221dbe267f3f64d8ddc44b3ef62898a52aac1661",
       "bytes": 6055
-    },
-    "extra-1.json": {
-      "sha256": "8a6a6be3991d63b46bb1b311880adff6da4d2cf15ccdd5d8d4bedd95d15c5ff1",
-      "bytes": 6056
     },
     "records-0.json": {
       "sha256": "aa333f04191a1be67959cb60e173e1267c30b0059d6b16826b656c6f046d60cb",
