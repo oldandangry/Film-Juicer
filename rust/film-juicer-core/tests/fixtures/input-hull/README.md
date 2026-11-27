@@ -4,8 +4,10 @@ These are exact-bit product-contract captures of the approved native A8 producer
 at `e9b4abbb8b146ffdd0f4fbc5f8c61e7e87134c2a`, before Rust translation.
 All four native presets were captured and repeated in fresh processes. Exact
 Rust primitive, complete intermediate, polygon/hash and A6 regression gates
-passed before adoption. The manifest names each capture and its byte identity.
-Files share a name only when the complete payload is byte-identical.
+passed before adoption. All four presets select `rays-0.json` because the
+original captures decode to the same ordered rows and exact words. The
+manifest retains each preset’s original native digest. Both byte-pinned ray
+captures are available in the [tagged input hull fixtures](https://github.com/oldandangry/Film-Juicer/tree/archive/spectral-cutover-2026-11/tests/ffi/fixtures/input_hull).
 
 The records preserve 14 source/structure/failure cases, all f64 locus/center,
 1024 ordered forward/weighted/inverse complex values, radii/scale, 1025 closed
