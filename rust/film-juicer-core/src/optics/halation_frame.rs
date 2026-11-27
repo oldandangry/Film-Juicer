@@ -668,7 +668,7 @@ mod tests {
             return serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/scatter_halation/frame-fixtures");
+            .join("tests/fixtures/optics/halation-frame");
         let read = |name: &str| -> Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
         };
@@ -729,7 +729,7 @@ mod tests {
         let checked: Value = serde_json::from_slice(
             &std::fs::read(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../tests/scatter_halation/frame-fixtures/checked.json"),
+                    .join("tests/fixtures/optics/halation-frame/checked.json"),
             )
             .unwrap(),
         )

@@ -30,3 +30,7 @@ pub mod recipe;
 pub mod state;
 
 pub mod capture;
+
+#[cfg(test)]
+#[path = "../tests/support/capture.rs"]
+mod test_capture;

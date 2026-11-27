@@ -4,7 +4,7 @@ use serde_json::Value;
 fn fixture() -> Value {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/ffi/fixtures/output-color/native.json"
+        "/tests/fixtures/output-color/native.json"
     ))
     .expect("immutable native output-color fixture");
     serde_json::from_str(&source).unwrap()

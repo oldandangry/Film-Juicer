@@ -836,8 +836,7 @@ mod tests {
 
     #[test]
     fn adjusted_gamma_coefficients_match_independent_native_bits() {
-        let root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile");
         let gamma: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("print-gamma.json")).unwrap()).unwrap();
         let density: serde_json::Value =

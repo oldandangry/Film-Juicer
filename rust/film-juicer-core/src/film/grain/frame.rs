@@ -117,16 +117,17 @@ mod tests {
         out
     }
     fn captured() -> Value {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/grain/frame-fixtures");
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grain/frame");
         let preset = match (cfg!(windows), cfg!(debug_assertions)) {
             (false, true) => "linux-debug",
             (false, false) => "linux-release",
             (true, true) => "windows-clang-debug",
             (true, false) => "windows-clang-release",
         };
-        serde_json::from_slice(&std::fs::read(root.join(format!("{preset}.json"))).unwrap())
-            .unwrap()
+        let context = crate::test_capture::read(&root, &format!("{preset}.json"));
+        assert_eq!(context["preset"], preset);
+        crate::test_capture::read(&root, context["payload"].as_str().unwrap())
     }
     #[test]
     fn complete_native_values_and_ordered_failures() {
@@ -351,7 +352,7 @@ mod tests {
             (Field::LayerCurve, 0, 0, true)
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/grain/frame-fixtures/checked.json");
+            .join("tests/fixtures/grain/frame/checked.json");
         let checked: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let rows = checked["gaussian_safety"].as_array().unwrap();
         let gaussian_cases_ids: Vec<_> = IntoIterator::into_iter(

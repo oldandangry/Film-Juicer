@@ -1,0 +1,3 @@
+{
+  "provenance": {"kind":"Film-Juicer characterization","native_parent":"5a6fbecc47e52decad6608219333e6b20ee6c329","native_tree":"5cbfe266b1ae19eea36947289ec82926c2c7f1c2","preset":"linux-debug","native_capture_sha256":"bb37eb819de8395275830930e42e3a474ef0d8dc3e5744399576a67d687dadb1","comparison":"exact f32 words, tags and u64 identities; CMY exposure-major, layers [layer][channel][sample]","approved_profile_math":"accepted Rust completed profiles; development and final-state oracle is native"}
+}

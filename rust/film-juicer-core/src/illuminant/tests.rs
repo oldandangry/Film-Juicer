@@ -44,10 +44,10 @@ fn fixture() -> Value {
     } else {
         "release"
     };
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../tests/ffi/fixtures/illuminants/construction-{platform}-{profile}.json"
-    ));
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illuminants");
+    let manifest = crate::test_capture::read(&root, "construction-manifest.json");
+    let logical = format!("construction-{platform}-{profile}.json");
+    crate::test_capture::read_parts(&root, &manifest["payloads"][logical])
 }
 fn ids(rows: &[Value], label: &str) -> Vec<String> {
     rows.iter()

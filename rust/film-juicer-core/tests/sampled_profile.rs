@@ -23,7 +23,12 @@ fn repository() -> PathBuf {
 
 fn fixture(name: &str) -> Value {
     serde_json::from_slice(
-        &fs::read(repository().join("tests/profile/fixtures").join(name)).unwrap(),
+        &fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/profile")
+                .join(name),
+        )
+        .unwrap(),
     )
     .unwrap()
 }
@@ -166,8 +171,11 @@ struct DensityFixture {
 fn all_bundled_profiles_match_independent_completed_fields_and_approved_density() {
     let expected = fixture("completed.json");
     let density: DensityFixture = serde_json::from_value(fixture("density.json")).unwrap();
-    let payload =
-        fs::read(repository().join("tests/profile/fixtures/density-samples.bin")).unwrap();
+    let payload = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/profile/density-samples.bin"),
+    )
+    .unwrap();
     let catalog = load_catalog(&repository().join("Resources")).unwrap();
     let mut count = 0;
     let entries: Vec<_> = catalog

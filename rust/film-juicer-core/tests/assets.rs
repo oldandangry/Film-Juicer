@@ -20,7 +20,12 @@ fn repository() -> PathBuf {
 
 fn fixture(name: &str) -> Value {
     serde_json::from_slice(
-        &fs::read(repository().join("tests/profile/fixtures").join(name)).unwrap(),
+        &fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/profile")
+                .join(name),
+        )
+        .unwrap(),
     )
     .unwrap()
 }
@@ -1106,8 +1111,11 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
     drop(assets);
     let gamma = fixture("print-gamma.json");
     let density = fixture("density.json");
-    let samples =
-        fs::read(repository().join("tests/profile/fixtures/density-samples.bin")).unwrap();
+    let samples = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/profile/density-samples.bin"),
+    )
+    .unwrap();
     let mut cases = 0;
     let captured_rows = gamma["captured"].as_array().unwrap();
     let density_cases = density["cases"].as_array().unwrap();

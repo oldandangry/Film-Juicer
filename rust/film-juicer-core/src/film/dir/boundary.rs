@@ -555,13 +555,14 @@ mod tests {
             (true, true) => "windows-clang-debug",
             (true, false) => "windows-clang-release",
         };
-        let captured: Value =
-            serde_json::from_slice(&std::fs::read(root.join(format!("{preset}.json"))).unwrap())
-                .unwrap();
-        assert_eq!(captured["preset"], preset);
+        let context = crate::test_capture::read(&root, &format!("{preset}.json"));
+        assert_eq!(context["preset"], preset);
+        let captured = crate::test_capture::read(&root, context["payload"].as_str().unwrap());
+        let checked =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dir/boundary");
         (
             captured,
-            serde_json::from_slice(&std::fs::read(root.join("checked.json")).unwrap()).unwrap(),
+            crate::test_capture::read(&checked, "checked.json"),
         )
     }
     fn words(values: &[f64]) -> Value {

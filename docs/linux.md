@@ -5,7 +5,7 @@ Resolve CUDA installation. The public host and GPU CTest suite has passed in
 WSL2 and native Arch/CachyOS Debug and Release configurations. A native
 Arch/CachyOS bundle has also been installed and reported working in Resolve.
 This is primary-machine evidence, not a general distro compatibility claim.
-See [the migration record](../tests/MIGRATION.md) for the completed validation
+See [the tagged migration record](https://github.com/oldandangry/Film-Juicer/blob/archive/spectral-cutover-2026-11/tests/MIGRATION.md) for the completed validation
 and measured toolchain/driver context.
 
 Extract the archive, close Resolve, and copy the complete `juicer.ofx.bundle`

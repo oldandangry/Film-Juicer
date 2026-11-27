@@ -38,7 +38,7 @@ fn double_pairs<const N: usize>(v: &[[f64; 2]; N]) -> Value {
     json!(v.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>())
 }
 fn fixture_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/ffi/fixtures/input_hull")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/input-hull")
 }
 fn membership() -> Value {
     let manifest: Value =

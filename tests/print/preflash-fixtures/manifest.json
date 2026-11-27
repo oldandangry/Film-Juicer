@@ -26,35 +26,39 @@
       "sha256": "589e4a46b871be97efd463a4c9beb740853754381a26cab52fe7d5f4b254890d",
       "bytes": 145452
     },
-    "linux-debug.json": {
-      "sha256": "99af4f2232514b6c06fa655b889745e8b95cbcc097a9cf862fbed4a2413225f5",
-      "bytes": 460277
+    "native-cases.json": {
+      "sha256": "39293a88b2421748d5d341408e9ca05823e936efb51c73d01def7f2c958d6f85",
+      "bytes": 147934
     },
-    "linux-release.json": {
-      "sha256": "a189773dd6df54716e4e431454351b855704d9371e4cb7d2a2409af3daf07adb",
-      "bytes": 460279
+    "windows-products.json": {
+      "sha256": "e6e60106581e5955807427852f51ef188e4f7b09ece579fa6939c903fb3c4db9",
+      "bytes": 328176
     },
-    "windows-clang-debug.json": {
-      "sha256": "68fce39ae84eca29c137f40f433a94feb26f1a7cd842df5e6a6f6b3776df5fa3",
-      "bytes": 484147
-    },
-    "windows-clang-release.json": {
-      "sha256": "ac041648a6dde62cde406f8180b155c2a8ef36f176176f4d222ae23600af0809",
-      "bytes": 484149
+    "linux-products.json": {
+      "sha256": "a4b5d7b4925db615c66f2505fb2e99018510b2405748d34bffc83e599e5f428b",
+      "bytes": 312319
     }
   },
   "presets": {
     "linux-debug": {
-      "native": "linux-debug.json"
+      "native": "linux-products.json",
+      "original_native": "linux-debug.json",
+      "cases": "native-cases.json"
     },
     "linux-release": {
-      "native": "linux-release.json"
+      "native": "linux-products.json",
+      "original_native": "linux-release.json",
+      "cases": "native-cases.json"
     },
     "windows-clang-debug": {
-      "native": "windows-clang-debug.json"
+      "native": "windows-products.json",
+      "original_native": "windows-clang-debug.json",
+      "cases": "native-cases.json"
     },
     "windows-clang-release": {
-      "native": "windows-clang-release.json"
+      "native": "windows-products.json",
+      "original_native": "windows-clang-release.json",
+      "cases": "native-cases.json"
     }
   },
   "capture_contexts": {
@@ -493,6 +497,24 @@
       "capture_exit": 0,
       "native_literal_rows": 19,
       "actual_caller_rows": 72
+    }
+  },
+  "original_native_files": {
+    "linux-debug.json": {
+      "sha256": "99af4f2232514b6c06fa655b889745e8b95cbcc097a9cf862fbed4a2413225f5",
+      "bytes": 460277
+    },
+    "linux-release.json": {
+      "sha256": "a189773dd6df54716e4e431454351b855704d9371e4cb7d2a2409af3daf07adb",
+      "bytes": 460279
+    },
+    "windows-clang-debug.json": {
+      "sha256": "68fce39ae84eca29c137f40f433a94feb26f1a7cd842df5e6a6f6b3776df5fa3",
+      "bytes": 484147
+    },
+    "windows-clang-release.json": {
+      "sha256": "ac041648a6dde62cde406f8180b155c2a8ef36f176176f4d222ae23600af0809",
+      "bytes": 484149
     }
   }
 }

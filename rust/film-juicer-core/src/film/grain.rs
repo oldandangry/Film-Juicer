@@ -686,15 +686,14 @@ mod tests {
             (false, true) => "linux-debug",
             (false, false) => "linux-release",
         };
-        let directory = root().join("tests/film/grain-fixtures");
-        let manifest: Value =
-            serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
-                .unwrap();
-        serde_json::from_slice(
-            &std::fs::read(directory.join(manifest["presets"][preset][kind].as_str().unwrap()))
-                .unwrap(),
-        )
-        .unwrap()
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/film/grain");
+        let manifest = crate::test_capture::read(&directory, "manifest.json");
+        let selected = &manifest["presets"][preset][kind];
+        match kind {
+            "values" => crate::test_capture::read_parts(&directory, selected),
+            "synthetic" => crate::test_capture::read(&directory, selected.as_str().unwrap()),
+            _ => panic!("unknown grain capture {kind}"),
+        }
     }
     fn floats<const N: usize>(v: &Value) -> [f32; N] {
         std::array::from_fn(|i| f32::from_bits(v[i].as_u64().unwrap() as u32))
@@ -946,8 +945,8 @@ mod tests {
                 )
                 .to_owned();
                 let directory = if let Some(name) = row["source"].as_str() {
-                    root()
-                        .join("tests/film/grain-fixtures/synthetic")
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/fixtures/film/grain/synthetic")
                         .join(name)
                 } else {
                     root().join("Resources")

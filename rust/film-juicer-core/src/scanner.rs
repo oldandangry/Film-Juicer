@@ -783,13 +783,14 @@ mod tests {
     #[test]
     fn exact_native_correction_and_actual_resource_inputs() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/scanner/correction-fixtures");
+            .join("tests/fixtures/scanner/correction");
         let read = |path| {
             serde_json::from_str::<Value>(&std::fs::read_to_string(directory.join(path)).unwrap())
                 .unwrap()
         };
         let manifest = read("manifest.json");
-        let captured = read(manifest["presets"][PRESET]["native"].as_str().unwrap());
+        let captured =
+            crate::test_capture::read_parts(&directory, &manifest["presets"][PRESET]["native"]);
         let checked = read("checked-expectations.json");
         assert_eq!(captured["cases"].as_array().unwrap().len(), 150);
         assert_eq!(captured["products"].as_array().unwrap().len(), 48);

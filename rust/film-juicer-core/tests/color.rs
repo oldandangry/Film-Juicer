@@ -1,13 +1,13 @@
 use film_juicer_core::color::{self, Whites};
 use serde_json::Value;
 
+#[path = "support/capture.rs"]
+mod capture;
+
 fn fixture(logical_name: &str, manifest_name: &str) -> Value {
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/ffi/fixtures/color");
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(root.join(manifest_name)).unwrap()).unwrap();
-    let payload = manifest["payloads"][logical_name].as_str().unwrap();
-    serde_json::from_str(&std::fs::read_to_string(root.join(payload)).unwrap()).unwrap()
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/color");
+    let manifest = capture::read(&root, manifest_name);
+    capture::read_parts(&root, &manifest["payloads"][logical_name])
 }
 
 fn triplet(value: &Value) -> [f32; 3] {

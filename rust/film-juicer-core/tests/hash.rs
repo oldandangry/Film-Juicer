@@ -1,4 +1,4 @@
-//! Independent native primitive vectors; see tests/profile/fixtures/manifest.json.
+//! Independent native primitive vectors; see tests/fixtures/profile/manifest.json.
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +18,7 @@ struct Vector {
 
 #[test]
 fn native_float_and_mask_vectors_match() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures/hash.json");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile/hash.json");
     let vectors: Vec<Vector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vectors.len(), 16);
     let cases_ids: Vec<_> = IntoIterator::into_iter(vectors.iter().map(|vector| &vector.id))
@@ -148,8 +148,8 @@ struct ResourceVector {
 
 #[test]
 fn independent_resource_vectors_match_without_changing_samples() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/profile/fixtures/resource-hash.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile/resource-hash.json");
     let vectors: Vec<ResourceVector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vectors.len(), 13);
     let cases_ids: Vec<_> = IntoIterator::into_iter(vectors.iter().map(|vector| &vector.id))
@@ -196,7 +196,7 @@ fn independent_resource_vectors_match_without_changing_samples() {
 
 #[test]
 fn resource_hash_preserves_existing_native_finite_vectors() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures/hash.json");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile/hash.json");
     let vectors: Vec<Vector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     let finite: Vec<_> = vectors
         .iter()

@@ -435,19 +435,17 @@ mod tests {
     #[test]
     fn unchanged_whole_native_words_and_failure_progress() {
         let root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/dir/frame-fixtures");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dir/frame");
         let preset = match (cfg!(windows), cfg!(debug_assertions)) {
             (false, true) => "linux-debug",
             (false, false) => "linux-release",
             (true, true) => "windows-clang-debug",
             (true, false) => "windows-clang-release",
         };
-        let captured: Value =
-            serde_json::from_slice(&std::fs::read(root.join(format!("{preset}.json"))).unwrap())
-                .unwrap();
-        let checked: Value =
-            serde_json::from_slice(&std::fs::read(root.join("checked.json")).unwrap()).unwrap();
-        assert_eq!(captured["preset"], preset);
+        let context = crate::test_capture::read(&root, &format!("{preset}.json"));
+        assert_eq!(context["preset"], preset);
+        let captured = crate::test_capture::read(&root, context["payload"].as_str().unwrap());
+        let checked = crate::test_capture::read(&root, "checked.json");
         assert_eq!(captured["cases"].as_array().unwrap().len(), 74);
         assert_eq!(captured["products"].as_array().unwrap().len(), 24);
         let cases = captured["cases"].as_array().unwrap();

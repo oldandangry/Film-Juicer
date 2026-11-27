@@ -679,7 +679,7 @@ mod tests {
     }
     fn read(name: &str) -> Value {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/film/effects-frame-fixtures");
+            .join("tests/fixtures/film/effects-frame");
         serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
     }
     fn captured() -> Value {
@@ -691,7 +691,9 @@ mod tests {
         };
         let logical = format!("{preset}.json");
         let manifest = read("manifest.json");
-        let mut captured = read(manifest["payloads"][&logical].as_str().unwrap());
+        let mut captured = read(manifest["common"].as_str().unwrap());
+        let products = read(manifest["payloads"][&logical].as_str().unwrap());
+        captured["products"] = products["products"].clone();
         let context = read(manifest["contexts"][&logical].as_str().unwrap());
         assert_eq!(context["preset"], preset);
         for (key, value) in context.as_object().unwrap() {

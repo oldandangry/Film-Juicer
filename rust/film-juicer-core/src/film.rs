@@ -228,7 +228,6 @@ pub fn capture_gamma(raw: f64) -> Result<f32, &'static str> {
 mod tests {
     use super::{curve_hash, normalize_curves};
     use crate::hash;
-    use serde_json::Value;
     use std::path::PathBuf;
 
     #[test]
@@ -239,10 +238,13 @@ mod tests {
             (false, true) => "linux-debug",
             (false, false) => "linux-release",
         };
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/film/fixtures")
-            .join(format!("{preset}-primitive.json"));
-        let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/film/development");
+        let manifest = crate::test_capture::read(&root, "manifest.json");
+        let fixture = crate::test_capture::read(
+            &root,
+            manifest["presets"][preset]["primitive"].as_str().unwrap(),
+        );
         let normalization = fixture["normalization"].as_array().unwrap();
         let normalization_cases_ids: Vec<_> = IntoIterator::into_iter(
             normalization

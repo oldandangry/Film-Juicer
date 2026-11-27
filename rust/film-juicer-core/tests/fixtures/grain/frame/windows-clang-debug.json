@@ -1,0 +1,4 @@
+{
+  "preset": "windows-clang-debug",
+  "payload": "native-payload.json"
+}

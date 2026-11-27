@@ -1,6 +1,6 @@
 //! Exact approved Rust samples, with independent native characterization/replay.
 //! Provenance, the owner-approved exception and binary layout are in
-//! tests/profile/fixtures/README.md and manifest.json.
+//! tests/fixtures/profile/README.md and manifest.json.
 
 #![forbid(unsafe_code)]
 
@@ -80,7 +80,7 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile");
     let mut fixture: Fixture =
         serde_json::from_slice(&fs::read(root.join("density.json")).unwrap()).unwrap();
     fixture.samples = fs::read(root.join("density-samples.bin")).unwrap();

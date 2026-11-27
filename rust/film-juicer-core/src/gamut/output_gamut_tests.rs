@@ -13,7 +13,7 @@ fn bits<const N: usize>(value: [f64; N]) -> Vec<u64> {
     value.map(f64::to_bits).to_vec()
 }
 fn root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/ffi/fixtures/output_gamut")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-gamut")
 }
 fn load(name: &str) -> Value {
     serde_json::from_slice(&fs::read(root().join(name)).unwrap()).unwrap()
