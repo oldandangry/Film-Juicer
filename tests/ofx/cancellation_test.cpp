@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -12,8 +13,19 @@
 #include "../resource/observed_operations.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
+#include "juicer_cuda_owner.h"
 #include "juicer_ofx_api.h"
 #include "production_images.h"
+
+namespace {
+    thread_local std::function<void(FjCuda*, const FjCudaContext&, const FjSubmission&)> beforeRenderAdmission;
+}
+
+void JuicerTest::before_render_admission(FjCuda* owner, const FjCudaContext* context, const FjSubmission* submission) {
+    if (beforeRenderAdmission && owner && context && submission) {
+        beforeRenderAdmission(owner, *context, *submission);
+    }
+}
 
 namespace {
     constexpr ofx_test::Case kDirect{"negative-direct", "negative-direct", "NegativeDirectScan", 0, 4};
@@ -84,7 +96,7 @@ namespace {
 
     TEST_F(ImplicitStreamOfx, CancellationBeforeNativeAdmissionPreservesThePublishedId) {
         std::vector<FjSubmission> selections;
-        auto& observe = JuicerTest::calls.beforeRenderAdmission;
+        auto& observe = beforeRenderAdmission;
         observe = [&](FjCuda*, const FjCudaContext&, const FjSubmission& selected) {
             selections.push_back(selected);
         };
@@ -126,7 +138,7 @@ namespace {
             FjCudaContext context;
             FjSubmission submission;
         };
-        auto& observe = JuicerTest::calls.beforeRenderAdmission;
+        auto& observe = beforeRenderAdmission;
         FjCudaRetirement idle{};
         FjCuda* native = nullptr;
         observe = [&](FjCuda* owner, const FjCudaContext& context, const FjSubmission&) {

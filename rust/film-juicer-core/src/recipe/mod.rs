@@ -104,6 +104,29 @@ impl CalibrationError {
     }
 }
 
+impl fmt::Display for CalibrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let field = match self.cause().kind() {
+            calibration::ErrorKind::Read(_) | calibration::ErrorKind::MissingFile => {
+                "resource_read"
+            }
+            calibration::ErrorKind::Malformed(calibration::Field::Root) => "root",
+            calibration::ErrorKind::Malformed(calibration::Field::PrintProfile) => "print_profile",
+            calibration::ErrorKind::Malformed(calibration::Field::PrintIlluminant) => {
+                "print_illuminant"
+            }
+            calibration::ErrorKind::Malformed(calibration::Field::CmyCc) => "cmy_cc",
+        };
+        write!(f, "MalformedNeutralPrintCalibration phase=4A field={field}")
+    }
+}
+
+impl StdError for CalibrationError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.cause())
+    }
+}
+
 #[derive(Debug)]
 pub enum PrepareError {
     Asset(AssetError),
@@ -231,21 +254,7 @@ impl fmt::Display for PrepareError {
             Self::PrintPreflash(_) => {
                 f.write_str("MalformedRequiredResource phase=4B field=preflash_raw")
             }
-            Self::Calibration(error) => {
-                let field = match error.cause().kind() {
-                    calibration::ErrorKind::Read(_) => "resource_read",
-                    calibration::ErrorKind::Malformed(calibration::Field::Root) => "root",
-                    calibration::ErrorKind::Malformed(calibration::Field::PrintProfile) => {
-                        "print_profile"
-                    }
-                    calibration::ErrorKind::Malformed(calibration::Field::PrintIlluminant) => {
-                        "print_illuminant"
-                    }
-                    calibration::ErrorKind::Malformed(calibration::Field::CmyCc) => "cmy_cc",
-                    calibration::ErrorKind::MissingFile => "resource_read",
-                };
-                write!(f, "MalformedNeutralPrintCalibration phase=4A field={field}")
-            }
+            Self::Calibration(error) => error.fmt(f),
             Self::OutputTransform(error) => error.fmt(f),
             Self::ScannerColor(error) => error.fmt(f),
             Self::ScannerCorrection(error) => error.fmt(f),
@@ -277,7 +286,7 @@ impl StdError for PrepareError {
             Self::PrintIlluminant(error) => Some(error),
             Self::PrintBalance(error) => Some(error),
             Self::PrintPreflash(error) => Some(error),
-            Self::Calibration(error) => Some(error.cause()),
+            Self::Calibration(error) => Some(error),
             Self::OutputTransform(error) => Some(error),
             Self::ScannerColor(error) => Some(error),
             Self::ScannerCorrection(error) => Some(error),

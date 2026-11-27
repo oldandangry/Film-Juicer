@@ -11,6 +11,12 @@ namespace JuicerProcess {
     class Root;
 }
 
+#if defined(JUICER_TEST_SEAMS)
+namespace JuicerTest {
+    void before_render_admission(FjCuda* owner, const FjCudaContext* context, const FjSubmission* submission);
+}
+#endif
+
 namespace JuicerCuda {
 
     struct PendingContextLossRecovery;

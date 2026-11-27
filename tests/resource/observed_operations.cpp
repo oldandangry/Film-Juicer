@@ -18,12 +18,6 @@ namespace {
 namespace JuicerCuda::ResourceOperations {
     using JuicerTest::calls;
 
-    void before_render_admission(FjCuda* owner, const FjCudaContext* context, const FjSubmission* submission) {
-        if (calls.beforeRenderAdmission && owner && context && submission) {
-            calls.beforeRenderAdmission(owner, *context, *submission);
-        }
-    }
-
     cudaError_t allocate_upload(void** destination, std::size_t bytes) {
         ++calls.uploadAllocations;
         return cudaMallocHost(destination, bytes);

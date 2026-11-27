@@ -5,10 +5,6 @@
 #include <cuda_runtime_api.h>
 #include <cufft.h>
 
-struct FjCuda;
-struct FjCudaContext;
-struct FjSubmission;
-
 namespace JuicerCuda {
     struct Failure;
     struct Resources;
@@ -28,7 +24,6 @@ namespace JuicerCuda {
         Failure& outError) noexcept;
 
     namespace ResourceOperations {
-        void before_render_admission(FjCuda* owner, const FjCudaContext* context, const FjSubmission* submission);
         cudaError_t allocate_upload(void** destination, std::size_t bytes);
         cudaError_t create_upload_event(cudaEvent_t* event);
         cudaError_t copy_upload(void* destination, const void* source, std::size_t bytes, cudaStream_t stream);
