@@ -309,7 +309,7 @@ namespace JuicerCuda {
         float* tablesIllum = nullptr;
         float* mallettBasis = nullptr;
 
-        // Shared single-plane WÃƒâ€”H float scratch used as a blur/unsharp intermediate.
+        // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
         // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
         float* sharedTmpPlane = nullptr;
         std::size_t sharedTmpCapacityElements = 0;

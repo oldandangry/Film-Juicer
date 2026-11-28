@@ -79,9 +79,8 @@ third_party/rust/*/* -text -whitespace
 third_party/ofxs/Legal/OFXS-LICENSE.txt -whitespace
 third_party/ofxs/OpenFX-1.4/include/ofxImageEffect.h -whitespace
 
-# Preserve reviewed bytes of A5 numerical and GPU replay fixtures.
+# Preserve reviewed bytes of A5 numerical fixtures.
 rust/film-juicer-core/tests/fixtures/exposure/** -text whitespace=cr-at-eol
-tests/ofx/fixtures/exposure/** -text whitespace=cr-at-eol
 
 # Preserve original bytes of provenance-pinned native input-hull captures.
 rust/film-juicer-core/tests/fixtures/input-hull/** -text whitespace=cr-at-eol

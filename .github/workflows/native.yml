@@ -244,8 +244,6 @@ jobs:
         if: matrix.suite == 'host'
         shell: pwsh
         run: |
-          python -m pip install -r tests/requirements.txt
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $python = (Get-Command python).Source
           cmake --preset $env:PRESET -DBUILD_TESTING=ON -DJUICER_BUILD_BENCHMARKS=OFF "-DPython3_EXECUTABLE=$python" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

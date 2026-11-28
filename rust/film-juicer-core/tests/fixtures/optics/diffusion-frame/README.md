@@ -1,9 +1,8 @@
 # Diffusion construction characterization
 
 This cohort characterizes the unchanged Film-Juicer native sample, frame and
-nine-component producers at the source revision in `manifest.json`. It is
-separate from the external spektrafilm reference fixtures in the parent folder.
-Floating values use binary64 words; signed zeros and all 36 component values are
+nine-component producers at the source revision in `manifest.json`. Floating
+values use binary64 words; signed zeros and all 36 component values are
 compared exactly. No expectations are generated during ordinary tests.
 
 The four original native/profile captures contain 94 standalone sample cases,
