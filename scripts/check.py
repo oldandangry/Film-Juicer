@@ -476,6 +476,7 @@ def check_bundle(args):
         "CUDA/cuFFT-LICENSE.txt",
         "fotufilm/LICENSE.Fotufilm",
         "fotufilm/NOTICE.md",
+        "fotufilm/GOLD-200-NOTICE.md",
         "fotufilm/ENGINE-NOTICE.md",
         "ofxs/OpenFX-LICENSE.txt",
         "openrand/LICENSE.MIT",
@@ -485,6 +486,9 @@ def check_bundle(args):
     }
     if not required_notices <= notices or any(name.startswith("nlohmann/") for name in notices):
         raise ValueError(f"unexpected license inventory: {sorted(notices)}")
+    for stock, notice in (("portra-400", "NOTICE.md"), ("gold-200", "GOLD-200-NOTICE.md")):
+        if digest(legal / "fotufilm" / notice) != digest(ROOT / "Resources/grain" / stock / "NOTICE.md"):
+            raise ValueError(f"bundled grain notice differs from source: {notice}")
     for name in notices:
         if re.search(rb"(?:[A-Za-z]:[/\\]Users[/\\]|/(?:home|mnt/[a-z]/Users)/)", (legal / name).read_bytes()):
             raise ValueError(f"personal path in legal notice: {name}")

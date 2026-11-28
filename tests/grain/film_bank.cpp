@@ -74,13 +74,13 @@ namespace GrainPrototype {
         return tables;
     }
 
-    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint) {
-        return read_bank_tables(directory, directory, footprint);
+    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory) {
+        return read_bank_tables(directory, tableDirectory.empty() ? directory : tableDirectory, footprint);
     }
 
     FilmBank read_film_bank(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory) {
         FilmBank bank{};
-        bank.tables = read_bank_tables(directory, tableDirectory.empty() ? directory : tableDirectory, footprint);
+        bank.tables = read_film_tables(directory, footprint, tableDirectory);
         bank.sums.resize(kBankEntries);
         read_words(directory / "sums.f32", bank.sums.data(), bank.sums.size());
         return bank;

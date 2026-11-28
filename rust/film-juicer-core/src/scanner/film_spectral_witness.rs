@@ -1,10 +1,11 @@
-//! Signed Portra Film density envelope and enlarger transmission witnesses.
+//! Signed Film v1 density and spectral transmission witnesses.
 
+use crate::assets::FilmGrainStock;
 use crate::{
     assets::Assets,
     film::{
         self,
-        density::{Bounds, portra},
+        density::{Bounds, film_v1},
     },
     route::ScanRoute,
 };
@@ -14,7 +15,7 @@ fn portra_small_format_high_gain_bounds() {
     let assets =
         Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
     let film = assets.film("kodak_portra_400").unwrap();
-    let bank = assets.portra_grain_bank().unwrap();
+    let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
     for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
         let development = film::Development::new(
             film.clone(),
@@ -37,11 +38,11 @@ fn portra_small_format_high_gain_bounds() {
             (36.0, 4832.0, 3),
         ] {
             let footprint = (f64::from(mm) * 2000.0 / width) as f32;
-            let table = assets.portra_grain_table(&bank, footprint).unwrap();
+            let table = assets.film_grain_table(&bank, footprint).unwrap();
             let gain = 2.0_f32.powi(amount) / 0.5;
             let original = Bounds::film_v1(
                 &development,
-                portra::allowances(&bank, &table, gain).unwrap(),
+                film_v1::allowances(&bank, &table, gain).unwrap(),
             );
             if width >= 3840.0 && amount == 3 && mm == 8.0 {
                 assert!(matches!(
@@ -57,7 +58,7 @@ fn portra_small_format_high_gain_bounds() {
                 assert!(original.is_ok());
             }
             for colour in [0.0, 0.37, 1.0] {
-                let bounds = Bounds::portra_film_v1(&development, &bank, &table, gain, colour)
+                let bounds = Bounds::for_film_grain(&development, &bank, &table, gain, colour)
                     .unwrap_or_else(|error| panic!("{route:?} {mm} mm {width} px {amount} EV, width {footprint}, Colour {colour}: {error}"));
                 println!(
                     "{route:?} {mm} mm {width} px {amount} EV Size 0.5 Colour {colour} width {footprint}"
@@ -139,14 +140,43 @@ fn portra_film_envelope_and_enlarger_transmission() {
     }
 }
 
+#[test]
+fn gold_film_envelope_and_enlarger_transmission() {
+    for (footprint, gain, colour) in [
+        (9.375, 1.0, 1.0),
+        (16_000.0 / 4832.0, 16.0, 1.0),
+        (16_000.0 / 3840.0, 16.0, 0.37),
+        (1.953_125, 16.0, 0.0),
+        (0.25, 2.0, 1.0),
+        (37.5_f32.next_up(), 16.0, 1.0),
+        (255.0_f32.next_up(), 16.0, 1.0),
+        (256.0, 16.0, 0.5),
+        (240_000.0 / 92.0, 16.0, 1.0),
+        (240_000.0, 16.0, 1.0),
+    ] {
+        stock_spectral_witness(FilmGrainStock::Gold200, footprint, gain, colour);
+    }
+}
+
 fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
+    stock_spectral_witness(FilmGrainStock::Portra400, footprint, gain, colour);
+}
+
+fn stock_spectral_witness(stock: FilmGrainStock, footprint: f32, gain: f32, colour: f32) {
     const REL: f64 = 0.01;
     let assets =
         Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
-    let film = assets.film("kodak_portra_400").unwrap();
+    let film = assets.film(stock.key()).unwrap();
     let paper = assets.print("kodak_portra_endura").unwrap();
     let curves = assets.illuminants().unwrap();
     let tungsten = curves.tungsten().unwrap();
+    let d50 = curves.d50().unwrap();
+    let cmf = assets.cmf().unwrap();
+    let observer: [[f32; 3]; 81] = std::array::from_fn(|i| {
+        let wavelength = 380.0 + i as f32 * 5.0;
+        let row = cmf.rows().iter().find(|row| row[0] == wavelength).unwrap();
+        [row[1], row[2], row[3]]
+    });
     let development = film::Development::new(
         film.clone(),
         film::Params {
@@ -156,9 +186,12 @@ fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
         },
     )
     .unwrap();
-    let bank = assets.portra_grain_bank().unwrap();
-    let table = assets.portra_grain_table(&bank, footprint).unwrap();
-    let bounds = Bounds::portra_film_v1(&development, &bank, &table, gain, colour).unwrap();
+    let bank = assets.film_grain_bank(stock).unwrap();
+    let table = assets.film_grain_table(&bank, footprint).unwrap();
+    let bounds =
+        Bounds::for_film_grain(&development, &bank, &table, gain, colour).unwrap_or_else(|error| {
+            panic!("{stock:?}, footprint {footprint}, gain {gain}, Colour {colour}: {error}")
+        });
     println!("spectral witness footprint {footprint}, gain {gain}, Colour {colour}");
     verify_density_box(&development, &bounds);
     let lo = *bounds.minimum_cmy();
@@ -178,18 +211,29 @@ fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
                 let density = [c, m, y];
                 let mut print64 = [0.0_f64; 3];
                 let mut print32 = [0.0_f32; 3];
+                let mut xyz64 = [0.0_f64; 3];
+                let mut xyz32 = [0.0_f32; 3];
                 for i in 0..81 {
                     let spectral64 = f64::from(density[0]) * f64::from(dyes[i][0])
                         + f64::from(density[1]) * f64::from(dyes[i][1])
                         + f64::from(density[2]) * f64::from(dyes[i][2])
                         + f64::from(base[i]);
-                    let print_light = 10.0_f64.powf(-spectral64) * f64::from(tungsten[i]);
+                    let transmission64 = 10.0_f64.powf(-spectral64);
+                    let print_light = transmission64 * f64::from(tungsten[i]);
                     let spectral32 = density[0] * dyes[i][0]
                         + density[1] * dyes[i][1]
                         + density[2] * dyes[i][2]
                         + base[i];
-                    let light32 = (-spectral32 * std::f32::consts::LOG2_10).exp2() * tungsten[i];
+                    let transmission32 = (-spectral32 * std::f32::consts::LOG2_10).exp2();
+                    let light32 = transmission32 * tungsten[i];
                     for k in 0..3 {
+                        // Check D50 scanner XYZ using this stock's actual dyes,
+                        // with a separate Float64 spectral integration.
+                        if transmission64.is_finite() && transmission32.is_finite() {
+                            xyz64[k] +=
+                                transmission64 * f64::from(d50[i]) * f64::from(observer[i][k]);
+                            xyz32[k] += transmission32 * (d50[i] * observer[i][k]);
+                        }
                         let sens = paper.tables().linear_sensitivity()[i][k];
                         if !sens.is_nan() {
                             if !print_light.is_nan() {
@@ -202,6 +246,13 @@ fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
                     }
                 }
                 for k in 0..3 {
+                    assert!(xyz32[k].is_finite() && xyz64[k].is_finite());
+                    assert!(
+                        (f64::from(xyz32[k]) - xyz64[k]).abs() <= 1e-10 + REL * xyz64[k].abs(),
+                        "scanner XYZ {density:?} channel {k}: {} vs {}",
+                        xyz32[k],
+                        xyz64[k]
+                    );
                     assert!(print32[k].is_finite() && print64[k].is_finite());
                     assert!(
                         (f64::from(print32[k]) - print64[k]).abs() <= 1e-8 + REL * print64[k].abs(),

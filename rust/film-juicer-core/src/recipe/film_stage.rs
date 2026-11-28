@@ -7,7 +7,7 @@ use super::{
     ControlError, FilmGrainFootprintKind, FilmGrainFrame, FilmReconstruction, PrepareError,
     ReconstructionStorage,
 };
-use crate::assets::{Assets, InputHull, SpectraLut};
+use crate::assets::{Assets, FilmGrainStock, InputHull, SpectraLut};
 use crate::capture::{HalationReflectionSource, Params, current_grain};
 use crate::film::{density, dir, grain, input, reference};
 use crate::{color, effects, exposure, gamut, optics, reconstruction, spectral};
@@ -118,63 +118,56 @@ pub(super) fn prepare_grain(
     params: &Params,
     frame: Option<FilmGrainFrame>,
 ) -> Result<Option<grain::film_v1::Recipe>, PrepareError> {
-    if let Some(controls) = params.film_grain.controls()
-        && !controls.valid(
-            &params.film_profile_key,
-            params.camera_film_format_long_edge_mm,
-            params.scan_route,
-        )
-    {
+    let Some(controls) = params.film_grain.controls() else {
+        return Ok(None);
+    };
+    let stock =
+        FilmGrainStock::for_profile(&params.film_profile_key).ok_or(ControlError::FilmGrain)?;
+    let long_edge_mm = params.camera_film_format_long_edge_mm;
+    if !controls.valid(long_edge_mm, params.scan_route) {
         return Err(ControlError::FilmGrain.into());
     }
-    params
-        .film_grain
-        .controls()
-        // Keep the authored selection for current_grain(), which disables
-        // Current while Film is selected, including on a grain-free thumbnail.
-        .filter(|_| !matches!(frame, Some(FilmGrainFrame::Thumbnail)))
-        .map(|controls| {
-            let Some(FilmGrainFrame::Raster(raster)) = frame else {
-                return Err(PrepareError::FilmGrainGeometry);
-            };
-            let long_edge_mm = params.camera_film_format_long_edge_mm;
-            let (rendered_texels, sample_texels, sampling) =
-                raster.sampling(controls, long_edge_mm);
-            for (kind, width_texels, minimum) in [
-                (
-                    FilmGrainFootprintKind::Rendered,
-                    rendered_texels,
-                    crate::assets::grain::MIN_RENDERED_FOOTPRINT,
-                ),
-                (
-                    FilmGrainFootprintKind::Sample,
-                    sample_texels,
-                    crate::assets::grain::MIN_PROXY_SAMPLE_FOOTPRINT,
-                ),
-            ] {
-                let supported_texels = minimum..=crate::assets::grain::MAX_FOOTPRINT;
-                if !supported_texels.contains(&width_texels) {
-                    return Err(PrepareError::FilmGrainFootprint {
-                        kind,
-                        long_edge_mm,
-                        texel_pitch_um: controls.texel_pitch_um,
-                        width_texels,
-                        supported_texels,
-                    });
-                }
-            }
-            let bank = assets.portra_grain_bank()?;
-            let table = assets.portra_grain_table(&bank, sample_texels)?;
-            Ok::<_, PrepareError>(grain::film_v1::Recipe::new(
-                bank,
-                table,
-                controls,
-                raster,
-                rendered_texels,
-                sampling,
-            ))
-        })
-        .transpose()
+    // Keep the authored selection for current_grain(), which disables
+    // Current while Film is selected, including on a grain-free thumbnail.
+    let raster = match frame {
+        Some(FilmGrainFrame::Thumbnail) => return Ok(None),
+        Some(FilmGrainFrame::Raster(raster)) => raster,
+        None => return Err(PrepareError::FilmGrainGeometry),
+    };
+    let (rendered_texels, sample_texels, sampling) = raster.sampling(controls, long_edge_mm);
+    for (kind, width_texels, minimum) in [
+        (
+            FilmGrainFootprintKind::Rendered,
+            rendered_texels,
+            crate::assets::grain::MIN_RENDERED_FOOTPRINT,
+        ),
+        (
+            FilmGrainFootprintKind::Sample,
+            sample_texels,
+            crate::assets::grain::MIN_PROXY_SAMPLE_FOOTPRINT,
+        ),
+    ] {
+        let supported_texels = minimum..=crate::assets::grain::MAX_FOOTPRINT;
+        if !supported_texels.contains(&width_texels) {
+            return Err(PrepareError::FilmGrainFootprint {
+                kind,
+                long_edge_mm,
+                texel_pitch_um: controls.texel_pitch_um,
+                width_texels,
+                supported_texels,
+            });
+        }
+    }
+    let bank = assets.film_grain_bank(stock)?;
+    let table = assets.film_grain_table(&bank, sample_texels)?;
+    Ok(Some(grain::film_v1::Recipe::new(
+        bank,
+        table,
+        controls,
+        raster,
+        rendered_texels,
+        sampling,
+    )))
 }
 
 pub(super) struct FilmStage {

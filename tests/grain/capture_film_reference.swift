@@ -1,53 +1,68 @@
 // Explicit maintenance adapter for Fotufilm 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 // Input is the completed Film-Juicer CDF3 response sampled into three CMY records.
-// The generated stock-derived bank stays in ignored evidence.
+// Run through scripts/generate-film-bank.py with an explicit calibration and destination.
 import Foundation
 import FotufilmCore
 
-struct Profile: Decodable {
+struct Request: Decodable {
     struct DataBlock: Decodable {
         let log_exposure: [Float]
         let density_curves: [[Float]]
     }
+    struct Capture: Decodable {
+        let stock: String
+        let polarity: String
+    }
+    struct Calibration: Decodable {
+        let strength: Float
+        let size_mm: Float
+        let layer_weights: [Float]
+        let base_density_offset: Float
+        let fog_density: Float
+        let read_density: GranularityReadDensity
+        let radius_span: Float
+        let sublayer_shares: [Float]
+        let coating_density_scale: Float
+    }
     let data: DataBlock
+    let capture: Capture
+    let calibration: Calibration
 }
 
 let arguments = CommandLine.arguments
-let legacy = arguments.count == 3
-guard legacy || arguments.count >= 4 else {
-    fatalError("usage: capture_film_reference [portra|gold|provia] RESPONSE_JSON OUTPUT_DIRECTORY [FOOTPRINT ...]")
-}
-let stockName = legacy ? "portra" : arguments[1]
-precondition(["portra", "gold", "provia"].contains(stockName), "expected portra, gold or provia")
-let reversal = stockName == "provia"
-let responseIndex = legacy ? 1 : 2
-let outputIndex = legacy ? 2 : 3
-let requestedLabels = legacy ? [] : Array(arguments.dropFirst(4))
-let source = try JSONDecoder().decode(Profile.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[responseIndex])))
-precondition(source.data.density_curves.count == source.data.log_exposure.count &&
-             source.data.density_curves.allSatisfy { $0.count == 3 }, "expected one CMY row per exposure")
-for channel in 0..<3 {
-    let values = source.data.density_curves.map { $0[channel] }
-    precondition(zip(values, values.dropFirst()).allSatisfy { reversal ? $0.0 >= $0.1 : $0.0 <= $0.1 }, "unexpected CDF3 response direction")
-}
-let offset: Float = 0.1
+precondition(arguments.count >= 3, "usage: graincapture REQUEST_JSON OUTPUT_DIRECTORY [FOOTPRINT ...]")
+let requestedLabels = Array(arguments.dropFirst(3))
+let request = try JSONDecoder().decode(Request.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[1])))
+let calibration = request.calibration
+let reversal = request.capture.polarity == "positive"
+precondition(reversal || request.capture.polarity == "negative", "unexpected capture polarity")
+let response = request.data
+precondition(response.density_curves.count >= 2 &&
+             response.density_curves.count == response.log_exposure.count &&
+             response.density_curves.allSatisfy { $0.count == 3 }, "expected one CMY row per exposure")
+let offset = calibration.base_density_offset
 let curves = try (0..<3).map { channel -> CharacteristicCurve in
-    let raw = source.data.density_curves.map { $0[channel] }
+    let raw = response.density_curves.map { $0[channel] }
+    precondition(zip(raw, raw.dropFirst()).allSatisfy { reversal ? $0.0 >= $0.1 : $0.0 <= $0.1 },
+                 "CDF3 channel \(channel) does not follow the capture polarity")
+    // Fotufilm's reversal stock expects increasing internal curves. Reflect
+    // the density about the endpoint sum, then keep its reversal flag set.
     let densities = raw.map { (reversal ? raw[0] + raw[raw.count - 1] - $0 : $0) + offset }
     return CharacteristicCurve(dMin: densities[0], gamma: 1, toe: -3, toeWidth: 1,
                                shoulder: 4, shoulderWidth: 1,
-                               sampled: try SampledCharacteristicCurve(logExposure: source.data.log_exposure,
+                               sampled: try SampledCharacteristicCurve(logExposure: response.log_exposure,
                                                                         density: densities))
 }
-let stock = FilmStock(name: stockName == "portra" ? "Portra 400 response, synthetic G1 grain" : "\(stockName) CDF3 response, research grain",
+let stock = FilmStock(name: request.capture.stock,
                       sensitivity: [[1,0,0],[0,1,0],[0,0,1]], curves: curves,
                       couplerInhibition: [[0,0,0],[0,0,0],[0,0,0]], couplerDiffusionMM: 0,
-                      grainStrength: reversal ? 0.008 : (stockName == "portra" ? 0.010 : 0.0105), grainSizeMM: reversal ? 0.004 : 0.005,
-                      grainLayerWeights: reversal ? [0.75,1,1.2] : [0.7,1,1.35],
-                      crystalGrainPopulation: CrystalGrainPopulation(radiusSpan: 6,
-                          sublayerShares: [0.25,0.25,0.25,0.25], coatingDensityScale: 1),
-                      grainFogDensity: 0.03, granularityReadDensity: .net, halationStrength: [0,0,0],
-                      paperCurve: curves[0], isReversal: reversal)
+                      grainStrength: calibration.strength, grainSizeMM: calibration.size_mm,
+                      grainLayerWeights: calibration.layer_weights,
+                      crystalGrainPopulation: CrystalGrainPopulation(radiusSpan: calibration.radius_span,
+                          sublayerShares: calibration.sublayer_shares,
+                          coatingDensityScale: calibration.coating_density_scale),
+                      grainFogDensity: calibration.fog_density, granularityReadDensity: calibration.read_density,
+                      halationStrength: [0,0,0], paperCurve: curves[0], isReversal: reversal)
 let grain = FilmGrain(stock: stock)
 let frozenDirectory = ProcessInfo.processInfo.environment["FROZEN_FILM_BANK"]
 let tiles = try frozenDirectory.map { try FilmGrain.Tiles.captureFrozen(directory: URL(fileURLWithPath: $0)) } ?? grain.tiles()
@@ -63,7 +78,7 @@ for r in 0..<3 {
     precondition(output.planes[r][0] == checkGross[r] + delta, "upstream origin mismatch")
 }
 }
-let destination = URL(fileURLWithPath: arguments[outputIndex], isDirectory: true)
+let destination = URL(fileURLWithPath: arguments[2], isDirectory: true)
 func writeFloats(_ values: [Float], _ name: String) throws {
     var bytes = Data(capacity: values.count * 4)
     for value in values {

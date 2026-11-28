@@ -1136,7 +1136,7 @@ mod tests {
                 (
                     "stock",
                     Params {
-                        film_profile_key: "kodak_gold_200".into(),
+                        film_profile_key: "kodak_ektar_100".into(),
                         ..authored()
                     },
                 ),

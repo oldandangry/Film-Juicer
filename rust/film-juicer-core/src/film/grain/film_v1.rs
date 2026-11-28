@@ -1,9 +1,9 @@
-//! Admitted Film v1 controls and their canonical Portra bank.
+//! Admitted Film v1 controls and their selected frozen bank.
 
 use triomphe::Arc;
 
 use crate::assets::grain::CALIBRATED_MAX_FOOTPRINT;
-use crate::assets::{PortraGrainBank, PortraGrainTable};
+use crate::assets::{FilmGrainBank, FilmGrainTable};
 use crate::{hash, route::ScanRoute};
 use super::super::{Development, density};
 
@@ -42,8 +42,8 @@ impl Selection {
 }
 
 pub struct Recipe {
-    bank: Arc<PortraGrainBank>,
-    table: Arc<PortraGrainTable>,
+    bank: Arc<FilmGrainBank>,
+    table: Arc<FilmGrainTable>,
     raster: Raster,
     rendered_footprint_texels: f32,
     sampling: Sampling,
@@ -240,9 +240,8 @@ impl Raster {
 }
 
 impl Controls {
-    pub(crate) fn valid(self, stock: &str, long_edge_mm: f32, route: ScanRoute) -> bool {
-        stock == "kodak_portra_400"
-            && super::super::input::film_format_mm(f64::from(long_edge_mm)).is_ok()
+    pub(crate) fn valid(self, long_edge_mm: f32, route: ScanRoute) -> bool {
+        super::super::input::film_format_mm(f64::from(long_edge_mm)).is_ok()
             && matches!(route, ScanRoute::NegativeDirect | ScanRoute::NegativePrint)
             && AMOUNT_EV_RANGE.contains(&self.amount_ev)
             && TEXEL_PITCH_UM_RANGE.contains(&self.texel_pitch_um)
@@ -256,8 +255,8 @@ impl Controls {
 
 impl Recipe {
     pub(crate) fn new(
-        bank: Arc<PortraGrainBank>,
-        table: Arc<PortraGrainTable>,
+        bank: Arc<FilmGrainBank>,
+        table: Arc<FilmGrainTable>,
         controls: Controls,
         raster: Raster,
         rendered_footprint_texels: f32,
@@ -299,11 +298,11 @@ impl Recipe {
         }
     }
 
-    pub fn bank(&self) -> &PortraGrainBank {
+    pub fn bank(&self) -> &FilmGrainBank {
         &self.bank
     }
 
-    pub fn table(&self) -> &PortraGrainTable {
+    pub fn table(&self) -> &FilmGrainTable {
         &self.table
     }
 
@@ -332,7 +331,7 @@ impl Recipe {
         development: &Development,
     ) -> Result<density::Bounds, density::Error> {
         // Transmission averaging preserves the density enclosure of its samples.
-        density::Bounds::portra_film_v1(
+        density::Bounds::for_film_grain(
             development,
             &self.bank,
             &self.table,
@@ -360,9 +359,7 @@ mod tests {
             texel_pitch_um: DEFAULT_TEXEL_PITCH_UM,
             chroma_fraction: DEFAULT_CHROMA_FRACTION,
         };
-        let valid = |controls: Controls| {
-            controls.valid("kodak_portra_400", 36.0, ScanRoute::NegativeDirect)
-        };
+        let valid = |controls: Controls| controls.valid(36.0, ScanRoute::NegativeDirect);
         assert!(valid(defaults));
         type SetControl = fn(Controls, f32) -> Controls;
         let controls: [(SetControl, f32, f32); 3] = [

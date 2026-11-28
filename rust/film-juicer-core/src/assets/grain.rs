@@ -1,4 +1,4 @@
-//! Frozen Portra bank and exact-footprint tables. Adapted from Fotufilm's
+//! Frozen Film v1 banks and exact-footprint tables. Adapted from Fotufilm's
 //! FilmGrainTiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 use super::{AssetError, Assets};
 use crate::hash;
@@ -6,16 +6,20 @@ use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::io::{self, ErrorKind, Read};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::{fmt, fs::File, path::Path};
 use triomphe::Arc;
 
 pub(crate) const MIN_RENDERED_FOOTPRINT: f32 = 0.25;
-// The 8 mm, Size 4 µm proxy of an 8192-pixel Full raster uses this cell pitch.
+// The 8 mm, Size 4 Ã‚Âµm proxy of an 8192-pixel Full raster uses this cell pitch.
 // Internal samples use the subtexel convex-light certificate below.
 pub(crate) const MIN_PROXY_SAMPLE_FOOTPRINT: f32 = 8_000.0 / (8_192.0 * 4.0);
 pub(crate) const CALIBRATED_MAX_FOOTPRINT: f32 = 37.5;
 pub(crate) const SINGLE_WRAP_MAX_FOOTPRINT: f32 = 255.0;
-// 120 mm at Size 0.5 µm on a one-pixel rendered long edge.
+// 120 mm at Size 0.5 Ã‚Âµm on a one-pixel rendered long edge.
 pub(crate) const MAX_FOOTPRINT: f32 = 240_000.0;
 
 // Exact bank-texel limits shared with the native Film sampler and raw admission.
@@ -33,13 +37,66 @@ const _: () = assert!(RECORDS == 3 && LEVELS == 17);
 const STRIDE: usize = 257;
 const TILE: usize = STRIDE * STRIDE;
 const RECORD_WORDS: usize = 3 + LEVELS;
-const RECORD_HASH: u64 = 0x0f35_2397_bf64_2fdb;
-const SUMS_HASH: u64 = 0x76ab_1ed7_b762_2233;
 const TABLE_VERSION: u64 = 1;
 const MANIFEST_LIMIT: usize = 4096;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilmGrainStock {
+    Portra400,
+    Gold200,
+}
+
+struct BankSource {
+    directory: &'static str,
+    records_sha256: &'static str,
+    sums_sha256: &'static str,
+    records_hash: u64,
+    sums_hash: u64,
+}
+
+impl FilmGrainStock {
+    pub(crate) fn for_profile(key: &str) -> Option<Self> {
+        [Self::Portra400, Self::Gold200]
+            .into_iter()
+            .find(|stock| stock.key() == key)
+    }
+
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Portra400 => "kodak_portra_400",
+            Self::Gold200 => "kodak_gold_200",
+        }
+    }
+
+    const fn source(self) -> BankSource {
+        match self {
+            Self::Portra400 => BankSource {
+                directory: "grain/portra-400",
+                records_sha256: "4b2f7cc90bec83f5a63510beca5c224d78bd35ca79c64a785f8eaa7335bd3cdb",
+                sums_sha256: "b5dc55ffca1a7165dfe1316f269ffb9e270aad54575d3a675fa63825b628d1d5",
+                records_hash: 0x0f35_2397_bf64_2fdb,
+                sums_hash: 0x76ab_1ed7_b762_2233,
+            },
+            Self::Gold200 => BankSource {
+                directory: "grain/gold-200",
+                records_sha256: "1fc0a39ab8d0e46f8350c2a2b66934cc922f42e348ac3a6e0d4814b1329fa54d",
+                sums_sha256: "0dabacd1b8759604cfc4ad824c932c1650c1ec9dc75e8909781fcd43a13acf8f",
+                records_hash: 0x4c00_32c5_1a59_7a3e,
+                sums_hash: 0xf7e0_0ac3_3376_91c0,
+            },
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Cache {
+    bank: OnceLock<Result<Arc<FilmGrainBank>, FilmGrainError>>,
+    table: Mutex<Option<Arc<FilmGrainTable>>>,
+    table_request: AtomicU64,
+}
+
 #[derive(Debug, Clone)]
-pub enum PortraGrainError {
+pub enum FilmGrainError {
     Io(Arc<io::Error>),
     Manifest(Arc<serde_json::Error>),
     Allocation(TryReserveError),
@@ -47,7 +104,7 @@ pub enum PortraGrainError {
     Invalid(&'static str),
     CachePoisoned,
 }
-impl PortraGrainError {
+impl FilmGrainError {
     fn io(error: io::Error) -> Self {
         match Arc::try_new(error) {
             Ok(error) => Self::Io(error),
@@ -62,19 +119,19 @@ impl PortraGrainError {
         }
     }
 }
-impl fmt::Display for PortraGrainError {
+impl fmt::Display for FilmGrainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "Portra grain resource: {e}"),
-            Self::Manifest(e) => write!(f, "Portra grain manifest: {e}"),
-            Self::Allocation(e) => write!(f, "Portra grain allocation: {e}"),
-            Self::OwnerAllocation => f.write_str("Portra grain shared allocation failed"),
-            Self::Invalid(reason) => write!(f, "invalid Portra grain: {reason}"),
-            Self::CachePoisoned => write!(f, "Portra grain table cache poisoned"),
+            Self::Io(e) => write!(f, "resource: {e}"),
+            Self::Manifest(e) => write!(f, "manifest: {e}"),
+            Self::Allocation(e) => write!(f, "allocation: {e}"),
+            Self::OwnerAllocation => f.write_str("shared allocation failed"),
+            Self::Invalid(reason) => write!(f, "invalid {reason}"),
+            Self::CachePoisoned => f.write_str("table cache poisoned"),
         }
     }
 }
-impl std::error::Error for PortraGrainError {
+impl std::error::Error for FilmGrainError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error.as_ref()),
@@ -86,20 +143,24 @@ impl std::error::Error for PortraGrainError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PortraGrainRecord {
+pub struct FilmGrainRecord {
     pub minimum_gross: f32,
     pub maximum_gross: f32,
     pub offset: f32,
     pub mean_light: [f32; LEVELS],
 }
 #[derive(Debug)]
-pub struct PortraGrainBank {
-    records: [PortraGrainRecord; RECORDS],
+pub struct FilmGrainBank {
+    stock: FilmGrainStock,
+    records: [FilmGrainRecord; RECORDS],
     sums: Vec<f32>,
     identity: u64,
 }
-impl PortraGrainBank {
-    pub fn records(&self) -> &[PortraGrainRecord; RECORDS] {
+impl FilmGrainBank {
+    pub(crate) fn stock(&self) -> FilmGrainStock {
+        self.stock
+    }
+    pub fn records(&self) -> &[FilmGrainRecord; RECORDS] {
         &self.records
     }
     pub fn sums(&self) -> &[f32] {
@@ -111,7 +172,7 @@ impl PortraGrainBank {
 }
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
-pub struct PortraGrainTable {
+pub struct FilmGrainTable {
     pub footprint: f32,
     pub mean_density: [[f32; LEVELS]; RECORDS],
     pub correlation: [[f32; LEVELS]; RECORDS],
@@ -141,28 +202,28 @@ fn read_retrying_interrupt(reader: &mut impl Read, bytes: &mut [u8]) -> io::Resu
     }
 }
 
-fn words(path: &Path, count: usize) -> Result<Vec<f32>, PortraGrainError> {
-    let file = File::open(path).map_err(PortraGrainError::io)?;
-    if file.metadata().map_err(PortraGrainError::io)?.len() != (count * size_of::<f32>()) as u64 {
-        return Err(PortraGrainError::Invalid("word count"));
+fn words(path: &Path, count: usize) -> Result<Vec<f32>, FilmGrainError> {
+    let file = File::open(path).map_err(FilmGrainError::io)?;
+    if file.metadata().map_err(FilmGrainError::io)?.len() != (count * size_of::<f32>()) as u64 {
+        return Err(FilmGrainError::Invalid("word count"));
     }
     read_words(file, count)
 }
 
-fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, PortraGrainError> {
+fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, FilmGrainError> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
-        .map_err(PortraGrainError::Allocation)?;
+        .map_err(FilmGrainError::Allocation)?;
     let mut bytes = [0; 8192];
     let mut remaining = count * size_of::<f32>();
     while remaining > 0 {
         let chunk = &mut bytes[..remaining.min(8192)];
         reader.read_exact(chunk).map_err(|error| {
             if error.kind() == ErrorKind::UnexpectedEof {
-                PortraGrainError::Invalid("word count")
+                FilmGrainError::Invalid("word count")
             } else {
-                PortraGrainError::io(error)
+                FilmGrainError::io(error)
             }
         })?;
         values.extend(
@@ -175,59 +236,58 @@ fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, PortraGra
         );
         remaining -= chunk.len();
     }
-    if read_retrying_interrupt(&mut reader, &mut bytes[..1]).map_err(PortraGrainError::io)? != 0 {
-        return Err(PortraGrainError::Invalid("word count"));
+    if read_retrying_interrupt(&mut reader, &mut bytes[..1]).map_err(FilmGrainError::io)? != 0 {
+        return Err(FilmGrainError::Invalid("word count"));
     }
     if values.iter().any(|v| !v.is_finite()) {
-        return Err(PortraGrainError::Invalid("nonfinite word"));
+        return Err(FilmGrainError::Invalid("nonfinite word"));
     }
     Ok(values)
 }
-fn load_bank(root: &Path) -> Result<PortraGrainBank, PortraGrainError> {
-    let dir = root.join("grain/portra-400");
-    let mut file = File::open(dir.join("manifest.json")).map_err(PortraGrainError::io)?;
+fn load_bank(root: &Path, stock: FilmGrainStock) -> Result<FilmGrainBank, FilmGrainError> {
+    let source = stock.source();
+    let dir = root.join(source.directory);
+    let mut file = File::open(dir.join("manifest.json")).map_err(FilmGrainError::io)?;
     let mut bytes = [0; MANIFEST_LIMIT + 1];
     let mut len = 0;
     while len < bytes.len() {
         let read =
-            read_retrying_interrupt(&mut file, &mut bytes[len..]).map_err(PortraGrainError::io)?;
+            read_retrying_interrupt(&mut file, &mut bytes[len..]).map_err(FilmGrainError::io)?;
         if read == 0 {
             break;
         }
         len += read;
     }
     if len > MANIFEST_LIMIT {
-        return Err(PortraGrainError::Invalid("manifest size"));
+        return Err(FilmGrainError::Invalid("manifest size"));
     }
     let manifest: Manifest<'_> =
-        serde_json::from_slice(&bytes[..len]).map_err(PortraGrainError::manifest)?;
+        serde_json::from_slice(&bytes[..len]).map_err(FilmGrainError::manifest)?;
     if manifest.version != 1
-        || manifest.stock != "kodak_portra_400"
+        || manifest.stock != stock.key()
         || manifest.records != "records.f32"
         || manifest.sums != "sums.f32"
-        || manifest.records_sha256
-            != "4b2f7cc90bec83f5a63510beca5c224d78bd35ca79c64a785f8eaa7335bd3cdb"
-        || manifest.sums_sha256
-            != "b5dc55ffca1a7165dfe1316f269ffb9e270aad54575d3a675fa63825b628d1d5"
+        || manifest.records_sha256 != source.records_sha256
+        || manifest.sums_sha256 != source.sums_sha256
     {
-        return Err(PortraGrainError::Invalid("manifest association or version"));
+        return Err(FilmGrainError::Invalid("manifest association or version"));
     }
     let raw = words(&dir.join("records.f32"), RECORDS * RECORD_WORDS)?;
     let sums = words(&dir.join("sums.f32"), RECORDS * LEVELS * TILE)?;
     let rh = hash::resource_f32s(&raw);
     let sh = hash::resource_f32s(&sums);
-    if rh != RECORD_HASH || sh != SUMS_HASH {
-        return Err(PortraGrainError::Invalid("bank identity"));
+    if rh != source.records_hash || sh != source.sums_hash {
+        return Err(FilmGrainError::Invalid("bank identity"));
     }
     for tile in sums.as_chunks::<TILE>().0 {
         if tile[..STRIDE].iter().any(|&v| v != 0.0) || (0..STRIDE).any(|y| tile[y * STRIDE] != 0.0)
         {
-            return Err(PortraGrainError::Invalid("SAT border"));
+            return Err(FilmGrainError::Invalid("SAT border"));
         }
     }
     let records = std::array::from_fn(|r| {
         let start = r * RECORD_WORDS;
-        PortraGrainRecord {
+        FilmGrainRecord {
             minimum_gross: raw[start],
             maximum_gross: raw[start + 1],
             offset: raw[start + 2],
@@ -238,39 +298,42 @@ fn load_bank(root: &Path) -> Result<PortraGrainBank, PortraGrainError> {
         .iter()
         .any(|r| r.maximum_gross - r.minimum_gross < 1e-6)
     {
-        return Err(PortraGrainError::Invalid("density range"));
+        return Err(FilmGrainError::Invalid("density range"));
     }
     let identity = hash::u64s(&[rh, sh]);
-    Ok(PortraGrainBank {
+    Ok(FilmGrainBank {
+        stock,
         records,
         sums,
         identity,
     })
 }
 impl Assets {
-    pub fn portra_grain_bank(&self) -> Result<Arc<PortraGrainBank>, AssetError> {
-        self.portra_grain
+    pub fn film_grain_bank(&self, stock: FilmGrainStock) -> Result<Arc<FilmGrainBank>, AssetError> {
+        self.film_grain[stock as usize]
+            .bank
             .get_or_init(|| {
-                Arc::try_new(load_bank(&self.resource_dir)?)
-                    .map_err(|_| PortraGrainError::OwnerAllocation)
+                Arc::try_new(load_bank(&self.resource_dir, stock)?)
+                    .map_err(|_| FilmGrainError::OwnerAllocation)
             })
             .clone()
-            .map_err(AssetError::PortraGrain)
+            .map_err(|error| AssetError::FilmGrain(stock, error))
     }
-    pub fn portra_grain_table(
+    pub fn film_grain_table(
         &self,
-        bank: &PortraGrainBank,
+        bank: &FilmGrainBank,
         footprint: f32,
-    ) -> Result<Arc<PortraGrainTable>, AssetError> {
-        let fail = AssetError::PortraGrain;
+    ) -> Result<Arc<FilmGrainTable>, AssetError> {
+        let owner = &self.film_grain[bank.stock as usize];
+        let fail = |error| AssetError::FilmGrain(bank.stock, error);
         if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
-            return Err(fail(PortraGrainError::Invalid("unsupported footprint")));
+            return Err(fail(FilmGrainError::Invalid("unsupported footprint")));
         }
         let request = {
-            let cache = self
-                .portra_table
+            let cache = owner
+                .table
                 .lock()
-                .map_err(|_| fail(PortraGrainError::CachePoisoned))?;
+                .map_err(|_| fail(FilmGrainError::CachePoisoned))?;
             if let Some(t) = cache.as_ref().filter(|t| {
                 t.bank_identity == bank.identity
                     && t.footprint.to_bits() == footprint.to_bits()
@@ -278,16 +341,17 @@ impl Assets {
             }) {
                 return Ok(Arc::clone(t));
             }
-            self.portra_table_request
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            owner
+                .table_request
+                .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1)
         };
         let result = Arc::try_new(measure(bank, footprint).map_err(fail)?)
-            .map_err(|_| fail(PortraGrainError::OwnerAllocation))?;
-        let mut cache = self
-            .portra_table
+            .map_err(|_| fail(FilmGrainError::OwnerAllocation))?;
+        let mut cache = owner
+            .table
             .lock()
-            .map_err(|_| fail(PortraGrainError::CachePoisoned))?;
+            .map_err(|_| fail(FilmGrainError::CachePoisoned))?;
         if let Some(t) = cache.as_ref().filter(|t| {
             t.bank_identity == bank.identity
                 && t.footprint.to_bits() == footprint.to_bits()
@@ -295,11 +359,7 @@ impl Assets {
         }) {
             return Ok(Arc::clone(t));
         }
-        if self
-            .portra_table_request
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == request
-        {
+        if owner.table_request.load(Ordering::Relaxed) == request {
             *cache = Some(Arc::clone(&result));
         }
         Ok(result)
@@ -351,9 +411,9 @@ fn periodic_prefix(s: &[f32], x: f64, y: f64) -> f64 {
         + nx * ny * f64::from(s[TILE - 1])
 }
 
-fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, PortraGrainError> {
+fn measure(bank: &FilmGrainBank, footprint: f32) -> Result<FilmGrainTable, FilmGrainError> {
     let pitch = f64::from(footprint);
-    let mut table = PortraGrainTable {
+    let mut table = FilmGrainTable {
         footprint,
         mean_density: [[0.0; LEVELS]; RECORDS],
         correlation: [[1.0; LEVELS]; RECORDS],
@@ -364,7 +424,7 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
     let mut fields = Vec::new();
     fields
         .try_reserve_exact(LEVELS * SAMPLES)
-        .map_err(PortraGrainError::Allocation)?;
+        .map_err(FilmGrainError::Allocation)?;
     fields.resize(LEVELS * SAMPLES, 0.0_f64);
     let (fields, []) = fields.as_chunks_mut::<SAMPLES>() else {
         unreachable!()
@@ -464,7 +524,7 @@ fn measure(bank: &PortraGrainBank, footprint: f32) -> Result<PortraGrainTable, P
             .any(|v| !v.is_finite())
             || table.correlation[r].iter().any(|&v| v <= -0.9997)
         {
-            return Err(PortraGrainError::Invalid("computed normalization"));
+            return Err(FilmGrainError::Invalid("computed normalization"));
         }
     }
     Ok(table)
@@ -515,7 +575,7 @@ mod tests {
         reader.interruptions = 0;
         assert!(matches!(
             read_words(&mut reader, 1),
-            Err(PortraGrainError::Invalid("word count"))
+            Err(FilmGrainError::Invalid("word count"))
         ));
         assert_eq!(reader.interruptions, 1);
 
@@ -532,7 +592,9 @@ mod tests {
     fn frozen_tables_and_cache() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
         let assets = Assets::new(root);
-        let bank = assets.portra_grain_bank().expect("packaged Portra bank");
+        let bank = assets
+            .film_grain_bank(FilmGrainStock::Portra400)
+            .expect("packaged Portra bank");
         let fixtures: [(f32, &[u8]); 5] = [
             (
                 0.25,
@@ -555,10 +617,130 @@ mod tests {
                 include_bytes!("../../../../tests/grain/portra-table-fixtures/footprint-37.5.f32"),
             ),
         ];
-        for (footprint, bytes) in fixtures {
-            let table = assets
-                .portra_grain_table(&bank, footprint)
-                .expect("footprint");
+        compare_tables(&assets, &bank, &fixtures);
+        assert!(assets.film_grain_table(&bank, f32::NAN).is_err());
+        assert!(
+            assets
+                .film_grain_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT.next_down())
+                .is_err()
+        );
+        assert!(
+            assets
+                .film_grain_table(&bank, MAX_FOOTPRINT.next_up())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn gold_tables_and_stock_switch() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
+        let assets = Assets::new(root);
+        let portra = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let portra_table = assets.film_grain_table(&portra, 9.375).unwrap();
+        let gold = assets.film_grain_bank(FilmGrainStock::Gold200).unwrap();
+        let fixtures: [(f32, &[u8]); 4] = [
+            (
+                1.0,
+                include_bytes!("../../../../tests/grain/gold-reference/footprint-1.f32"),
+            ),
+            (
+                32.0,
+                include_bytes!("../../../../tests/grain/gold-reference/footprint-32.f32"),
+            ),
+            (
+                37.5,
+                include_bytes!("../../../../tests/grain/gold-reference/footprint-37.5.f32"),
+            ),
+            (
+                9.375,
+                include_bytes!("../../../../tests/grain/gold-reference/footprint-9.375.f32"),
+            ),
+        ];
+        compare_tables(&assets, &gold, &fixtures);
+        let gold_table = assets.film_grain_table(&gold, 9.375).unwrap();
+        assert_ne!(portra.identity(), gold.identity());
+        assert_ne!(portra_table.mean_density, gold_table.mean_density);
+        assert_ne!(portra_table.correlation, gold_table.correlation);
+        let restored = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        assert!(Arc::ptr_eq(&portra, &restored));
+        assert!(Arc::ptr_eq(
+            &portra_table,
+            &assets.film_grain_table(&restored, 9.375).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &gold_table,
+            &assets.film_grain_table(&gold, 9.375).unwrap()
+        ));
+    }
+
+    #[test]
+    fn invalid_gold_bank_does_not_poison_portra() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("juicer-gold-bank-{}-{id}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let scratch = Scratch(root);
+        let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
+        let portra = scratch.0.join("grain/portra-400");
+        fs::create_dir_all(&portra).unwrap();
+        for name in ["manifest.json", "records.f32", "sums.f32"] {
+            fs::copy(
+                resources.join("grain/portra-400").join(name),
+                portra.join(name),
+            )
+            .unwrap();
+        }
+        let gold = scratch.0.join("grain/gold-200");
+        let check = || {
+            let assets = Assets::new(scratch.0.clone());
+            let Err(AssetError::FilmGrain(FilmGrainStock::Gold200, error)) =
+                assets.film_grain_bank(FilmGrainStock::Gold200)
+            else {
+                panic!("Gold asset failure lost its stock or kind");
+            };
+            let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+            assets.film_grain_table(&bank, 9.375).unwrap();
+            error
+        };
+        assert!(
+            matches!(check(), FilmGrainError::Io(error) if error.kind() == ErrorKind::NotFound)
+        );
+        fs::create_dir(&gold).unwrap();
+        fs::copy(portra.join("manifest.json"), gold.join("manifest.json")).unwrap();
+        assert!(matches!(
+            check(),
+            FilmGrainError::Invalid("manifest association or version")
+        ));
+        fs::copy(
+            resources.join("grain/gold-200/manifest.json"),
+            gold.join("manifest.json"),
+        )
+        .unwrap();
+        fs::copy(portra.join("records.f32"), gold.join("records.f32")).unwrap();
+        fs::copy(
+            resources.join("grain/gold-200/sums.f32"),
+            gold.join("sums.f32"),
+        )
+        .unwrap();
+        assert!(matches!(check(), FilmGrainError::Invalid("bank identity")));
+    }
+
+    fn compare_tables(assets: &Assets, bank: &FilmGrainBank, fixtures: &[(f32, &[u8])]) {
+        for &(footprint, bytes) in fixtures {
+            let table = assets.film_grain_table(bank, footprint).expect("footprint");
             let expected: Vec<f32> = bytes
                 .as_chunks::<4>()
                 .0
@@ -583,19 +765,8 @@ mod tests {
             }
             assert!(Arc::ptr_eq(
                 &table,
-                &assets.portra_grain_table(&bank, footprint).unwrap()
+                &assets.film_grain_table(bank, footprint).unwrap()
             ));
         }
-        assert!(assets.portra_grain_table(&bank, f32::NAN).is_err());
-        assert!(
-            assets
-                .portra_grain_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT.next_down())
-                .is_err()
-        );
-        assert!(
-            assets
-                .portra_grain_table(&bank, MAX_FOOTPRINT.next_up())
-                .is_err()
-        );
     }
 }

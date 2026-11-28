@@ -1081,13 +1081,95 @@ namespace {
         return 0;
     }
 
+    struct GoldLook {
+        std::filesystem::path module, source, destination;
+        int width, height;
+    };
+
+    int gold_look(const GoldLook& request) {
+        const auto& [path, sourcePath, destination, width, height] = request;
+        require(width > 0 && height > 0 && width <= 16384 && height <= 16384, "invalid comparison raster");
+        require(std::filesystem::create_directory(destination), "comparison destination already exists");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA for the Gold comparison");
+        CUcontext original = nullptr;
+        driver.check(driver.get_current(&original), "read original CUDA context");
+        ContextRestore restore(driver, original);
+        require_cuda(cudaSetDevice(0), "select comparison CUDA device");
+        Module module(path);
+        const auto get = module.symbol<OfxPlugin* (*)(int)>("OfxGetPlugin");
+        InstanceHost host;
+        Lifecycle lifecycle(get(0), host);
+        require(lifecycle.load() == kOfxStatOK, "load Gold comparison module");
+        require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
+                "describe Gold comparison context");
+
+        const auto rowWords = static_cast<std::size_t>(width) * 4;
+        const auto rowBytes = static_cast<std::streamsize>(rowWords * sizeof(float));
+        const auto pitch = rowWords + kPitchPadding;
+        std::vector<float> source(pitch * height);
+        std::ifstream input(sourcePath, std::ios::binary);
+        for (int y = 0; y < height; ++y) {
+            require(static_cast<bool>(input.read(reinterpret_cast<char*>(source.data() + pitch * y), rowBytes)),
+                    "comparison source must contain a complete linear BT.2020 Float32 RGBA raster");
+        }
+        require(input.peek() == std::ifstream::traits_type::eof(), "comparison source has trailing bytes");
+
+        DeviceBuffers device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create comparison stream");
+        const auto bytes = source.size() * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, bytes), "allocate comparison source");
+        require_cuda(cudaMalloc(&device.destination, bytes), "allocate comparison destination");
+        for (const auto& [name, route] : std::array{
+                 std::pair{"direct", "NegativeDirectScan"}, std::pair{"print", "NegativePrintScan"}}) {
+            const Case test{name, name, route, 0, 4, width, height, 1, 37.0};
+            auto* effect = host.create_effect();
+            require(host.value(effect, "GrainModel") == std::vector<InstanceValue>{std::string("current")},
+                    "comparison requires the Current descriptor default");
+            host.set_value(effect, "CameraAutoExposure", {0});
+            host.set_value(effect, "CameraFilmFormatPreset", {2});
+            host.set_value(effect, "CameraFilmFormatMm", {36.0});
+            host.set_value(effect, "FilmProfileKey", {std::string("kodak_gold_200")});
+            host.set_value(effect, "ScanRoute", {std::string(route)});
+            host.set_value(effect, "InputColorSpace", {1});
+            host.set_value(effect, "ScannerUnsharpMask", {0.0, 0.0});
+            host.set_value(effect, "GrainActive", {1});
+            require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "create Gold comparison effect");
+            lifecycle.created(effect);
+            configure(host, effect, test, device);
+            std::vector<std::uint32_t> current;
+            std::vector<std::uint32_t> film;
+            (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, current, true);
+            host.set_value(effect, "GrainModel", {std::string("film_v1")});
+            auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainModel"});
+            require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "select Film v1");
+            (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, film, true);
+            require(film != current, "comparison engines produced equal words");
+            for (const auto& [engine, words] : std::array{
+                     std::pair{"current", &current}, std::pair{"film-v1", &film}}) {
+                std::ofstream stream(destination / (std::string(name) + "-" + engine + ".f32"), std::ios::binary);
+                stream.write(reinterpret_cast<const char*>(words->data()),
+                             static_cast<std::streamsize>(words->size() * sizeof(std::uint32_t)));
+                require(static_cast<bool>(stream), "write Gold comparison output");
+            }
+            require(lifecycle.destroy(effect) == kOfxStatOK, "destroy Gold comparison effect");
+        }
+        device.close();
+        require(lifecycle.unload() == kOfxStatOK && !host.callback_error(), "unload Gold comparison module");
+        module.close();
+        restore.restore();
+        return 0;
+    }
+
     int film_v1_witness(const std::filesystem::path& path) {
         require(path.filename() == "juicer.ofx", "expected standard module");
         const auto resources = path.parent_path().parent_path() / "Resources";
-        require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
-                    std::filesystem::is_regular_file(resources / "grain/portra-400/records.f32") &&
-                    std::filesystem::is_regular_file(resources / "grain/portra-400/sums.f32"),
-                "preview bundle grain bank missing");
+        for (const auto* stock : {"portra-400", "gold-200"}) {
+            for (const auto* file : {"manifest.json", "records.f32", "sums.f32"}) {
+                const auto bankPath = resources / "grain" / stock / file;
+                require(std::filesystem::is_regular_file(bankPath), "staged grain bank missing " + bankPath.string());
+            }
+        }
         const CudaDriver driver;
         driver.check(driver.init(0), "initialize CUDA driver");
         CUcontext original = nullptr;
@@ -1147,6 +1229,11 @@ namespace {
                 auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name});
                 require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault,
                         "preview control change");
+            };
+            auto change_stock = [&](const char* key) {
+                change("FilmProfileKey", {std::string(key)});
+                // The profile edit sets the stock's default scan route.
+                change("ScanRoute", {std::string(test.route)});
             };
             auto render = [&](double time) {
                 host.set_property(host.action_args(), kOfxPropTime, {time});
@@ -1231,6 +1318,15 @@ namespace {
                         row["finite_rgb"] = true;
                         row["alpha_padding_source_preserved"] = true;
                         row["released_both_images_once"] = true;
+                        if (height == 96 && width == 4832 && amount == 3.0 && mm == 8.0) {
+                            change_stock("kodak_gold_200");
+                            change("GrainActive", {0});
+                            const auto goldOff = render(37.375);
+                            change("GrainActive", {1});
+                            require(render(37.375) != goldOff, "Gold high-gain Film did not change delivered pixels");
+                            change_stock("kodak_portra_400");
+                            row["gold_high_gain_fractional"] = true;
+                        }
                         if (mm != 36.0 && width != 1920 && amount == 3.0)
                             require(highGain.emplace(width, height, mm).second, "repeated high-gain Full combination");
                     } catch (const std::exception& error) {
@@ -1543,7 +1639,7 @@ namespace {
                             // and stock are unchanged so they cannot mask rejection.
                             change("FilmGrainAmountEv", {4.0});
                             const auto reject_film_controls = [&] {
-                                reject(kOfxStatErrFatal, "FilmJuicerRenderAdmission", "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls");
+                                reject(kOfxStatErrFatal, "FilmJuicerRenderAdmission", "Film v1 requires Kodak Portra 400 or Kodak Gold 200, a supported camera film format, a negative route and valid Film grain controls");
                             };
                             reject_film_controls();
                             source_flag({});
@@ -1802,7 +1898,52 @@ namespace {
             require(render(37.0) == current, "Current output changed after Film");
             change("GrainActive", {0});
             require(render(37.0) == off, "grain-off output changed after model edits");
-            routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
+            Json row{{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}};
+            if (std::string_view(test.id).ends_with("-hd")) {
+                constexpr double time = 37.375;
+                change("GrainActive", {1});
+                change("GrainModel", {std::string("film_v1")});
+                const auto portra = render(time);
+                change_stock("kodak_gold_200");
+                const auto gold = render(time);
+                require(gold != portra && render(time) == gold, "Gold did not select distinct, repeatable Film words");
+                require(render(time + 0.25) != gold, "Gold fractional time did not change Film output");
+                change("GrainActive", {0});
+                const auto goldOff = render(time);
+                require(goldOff != gold, "Gold Film did not change delivered pixels");
+                change("GrainModel", {std::string("current")});
+                change("GrainActive", {1});
+                const auto goldCurrent = render(time);
+                require(goldCurrent != goldOff && goldCurrent != gold, "Gold Current did not select a distinct grain path");
+                change("GrainModel", {std::string("film_v1")});
+                host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, {1});
+                require(render(time) == goldOff, "Gold flagged thumbnail did not match grain-off pixels");
+                change_stock("kodak_ektar_100");
+                host.clear_calls();
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                        "unsupported stock was admitted with Film enabled on a thumbnail");
+                host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, {});
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                        "unsupported stock was admitted with Film enabled on the timeline");
+                change_stock("kodak_gold_200");
+                require(render(time) == gold, "Gold did not recover its fixed-time words after model and thumbnail edits");
+                // At 40 mm and Size 0.5, the rendered pitch is over the
+                // 37.5-texel cutoff while Full cells use half that pitch.
+                change("CameraFilmFormatMm", {40.0});
+                change("FilmGrainTexelPitchUm", {0.5});
+                const auto wideGold = render(time);
+                set_grain_geometry(host, effect, {{0, 0, 3840, 2160}, {0, 0, 1920, 1080}, {0.5, 0.5}});
+                const auto proxyGold = render(time);
+                require(proxyGold != wideGold && proxyGold == render(time), "Gold integrated proxy was not distinct and repeatable");
+                set_grain_geometry(host, effect, {{0, 0, 1920, 1080}, {0, 0, 1920, 1080}});
+                change("CameraFilmFormatPreset", {2});
+                change("FilmGrainTexelPitchUm", sizeDefault);
+                require(render(time) == gold, "Gold did not return to the original Full output");
+                change_stock("kodak_portra_400");
+                require(render(time) == portra, "Portra did not return bit-exactly after Gold");
+                row["gold"] = {{"current_and_film", true}, {"thumbnail_and_off", true}, {"unsupported_stock_rejected", true}, {"integrated_proxy", true}, {"portra_gold_portra", true}};
+            }
+            routes.push_back(std::move(row));
             require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
             device.release_images();
         }
@@ -1824,6 +1965,9 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 7 && std::string_view(argv[1]) == "--gold-look") {
+            return gold_look({.module = argv[2], .source = argv[3], .destination = argv[4], .width = std::stoi(argv[5]), .height = std::stoi(argv[6])});
+        }
         if (argc == 7 && std::string_view(argv[1]) == "--frame-and-print-edits") {
             return frame_and_print_edits({argv[2], argv[3], argv[4], argv[5], argv[6]});
         }

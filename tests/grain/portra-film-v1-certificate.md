@@ -16,7 +16,7 @@ brightest box corner, selecting the upper density wherever its dye is negative.
 
 ## Placement and projection
 
-[`continuous_footprint_certificate`](../../rust/film-juicer-core/src/film/density/portra.rs)
+[`continuous_footprint_certificate`](../../rust/film-juicer-core/src/film/density/film_v1.rs)
 recomputes the signed extrema and paired bright deficits from the frozen SAT
 words. For subtexel placement, the Float64 weighted texels form a convex light
 combination. For rectangles, the proof checks fractional translations between
@@ -63,7 +63,7 @@ each pair of adjacent levels, plus both angular errors, gives the conservative
 correlation bound. At `e ≥ n` the interval carries no useful correlation bound
 and can be split or rechecked from the production constructor.
 
-[`Bounds::portra_film_v1`](../../rust/film-juicer-core/src/film/density.rs)
+[`Bounds::for_film_grain`](../../rust/film-juicer-core/src/film/density.rs)
 tries the original signed enclosure first. A calibrated table from 1 through
 37.5 must also meet the production scaled mean and adjacent-correlation limits.
 The tighter placement certificate covers the bands through 10. For widths

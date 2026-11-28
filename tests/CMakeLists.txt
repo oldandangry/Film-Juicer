@@ -319,6 +319,8 @@ add_executable(JuicerGrainOfxApertureTests
 target_compile_definitions(JuicerGrainOfxApertureTests PRIVATE
     JUICER_GRAIN_TEST_BANK="${JUICER_TEST_RESOURCE_DIR}/grain/portra-400"
     JUICER_GRAIN_TEST_TABLES="${CMAKE_CURRENT_SOURCE_DIR}/grain/portra-table-fixtures"
+    JUICER_GRAIN_GOLD_BANK="${JUICER_TEST_RESOURCE_DIR}/grain/gold-200"
+    JUICER_GRAIN_GOLD_REFERENCE="${CMAKE_CURRENT_SOURCE_DIR}/grain/gold-reference"
     JUICER_GRAIN_APERTURE_WIRE="${CMAKE_CURRENT_SOURCE_DIR}/grain/film-aperture-geometry.txt")
 target_link_libraries(JuicerGrainOfxApertureTests PRIVATE
     juicer_core film_juicer_rust juicer_cuda_resource_operations juicer_dependencies

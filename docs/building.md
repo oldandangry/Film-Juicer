@@ -119,13 +119,16 @@ statically and localizes those implementation symbols at the OFX C boundary so
 host libraries cannot interpose an incompatible libstdc++ implementation. See
 [Linux installation](linux.md) for host requirements.
 
-## Portra 400 Film v1
+## Film v1 grain banks
 
-The standard Film-Juicer bundle includes the spectral scanner, the Portra 400
-Film v1 grain model, and the grain bank and notices. It uses the established
+See [Film v1 bank authoring](film-v1-bank-authoring.md) to generate and compare a
+stock bank with the pinned Swift tool in scratch.
+
+The standard Film-Juicer bundle includes the spectral scanner, Film v1 banks
+for Kodak Portra 400 and Kodak Gold 200, and their notices. It uses the established
 OFX identifier, `com.juicer.Juicer`. The grain model defaults to **Current**.
 Use the Release preset and `bundle-archive`. See the
-[Film v1 settings and limits](../README.md#portra-400-film-v1).
+[Film v1 settings and limits](../README.md#portra-400-and-gold-200-film-v1).
 
 Archived Grain Preview projects use `com.juicer.Juicer.GrainPreview`. On a
 project copy, open the project with its archived plug-in available and record

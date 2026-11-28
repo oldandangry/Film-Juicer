@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 
 use film_juicer_core::assets::{
-    AssetError, Assets, PortraGrainBank, PortraGrainError, PortraGrainTable,
+    AssetError, Assets, FilmGrainStock, FilmGrainBank, FilmGrainError, FilmGrainTable,
 };
 use film_juicer_core::capture;
 use film_juicer_core::film::grain::film_v1::{Controls, Raster, Selection};
@@ -97,34 +97,39 @@ fn portra_allocation_failure_preserves_cache_and_retry() {
         candidate_full_grid: None,
     });
     let prepare = || recipe::prepare_for_frame(&assets, &params, frame);
-    let bank = assets.portra_grain_bank().unwrap();
-    assert!(Arc::ptr_eq(&bank, &assets.portra_grain_bank().unwrap()));
+    let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+    assert!(Arc::ptr_eq(
+        &bank,
+        &assets.film_grain_bank(FilmGrainStock::Portra400).unwrap()
+    ));
     assets.film(&params.film_profile_key).unwrap();
-    let old_table = assets.portra_grain_table(&bank, 0.25).unwrap();
+    let old_table = assets.film_grain_table(&bank, 0.25).unwrap();
 
     let scratch = 17 * 128 * 128 * size_of::<f64>();
     let scratch_failure = fail_once(scratch, prepare);
     assert!(matches!(
         scratch_failure,
-        Err(PrepareError::Asset(AssetError::PortraGrain(
-            PortraGrainError::Allocation(_)
+        Err(PrepareError::Asset(AssetError::FilmGrain(
+            _,
+            FilmGrainError::Allocation(_)
         )))
     ));
     assert!(Arc::ptr_eq(
         &old_table,
-        &assets.portra_grain_table(&bank, 0.25).unwrap()
+        &assets.film_grain_table(&bank, 0.25).unwrap()
     ));
 
-    let owner_failure = fail_once(shared_owner_size::<PortraGrainTable>(), prepare);
+    let owner_failure = fail_once(shared_owner_size::<FilmGrainTable>(), prepare);
     assert!(matches!(
         owner_failure,
-        Err(PrepareError::Asset(AssetError::PortraGrain(
-            PortraGrainError::OwnerAllocation
+        Err(PrepareError::Asset(AssetError::FilmGrain(
+            _,
+            FilmGrainError::OwnerAllocation
         )))
     ));
     assert!(Arc::ptr_eq(
         &old_table,
-        &assets.portra_grain_table(&bank, 0.25).unwrap()
+        &assets.film_grain_table(&bank, 0.25).unwrap()
     ));
 
     let state = prepare().unwrap();
@@ -132,35 +137,38 @@ fn portra_allocation_failure_preserves_cache_and_retry() {
     assert_eq!(table.footprint.to_bits(), 0.5_f32.to_bits());
     assert!(std::ptr::eq(
         table,
-        &*assets.portra_grain_table(&bank, 0.5).unwrap()
+        &*assets.film_grain_table(&bank, 0.5).unwrap()
     ));
 
     let assets = Assets::new(resource.clone());
-    let failed_bank = fail_once(shared_owner_size::<PortraGrainBank>(), || {
-        assets.portra_grain_bank()
+    let failed_bank = fail_once(shared_owner_size::<FilmGrainBank>(), || {
+        assets.film_grain_bank(FilmGrainStock::Portra400)
     });
     assert!(matches!(
         failed_bank,
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
     assert!(matches!(
-        assets.portra_grain_bank(),
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        assets.film_grain_bank(FilmGrainStock::Portra400),
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
 
     let assets = Assets::new(resource);
     let sums_bytes = 3 * 17 * 257 * 257 * size_of::<f32>();
-    let error = fail_once(sums_bytes, || assets.portra_grain_bank()).unwrap_err();
+    let error = fail_once(sums_bytes, || {
+        assets.film_grain_bank(FilmGrainStock::Portra400)
+    })
+    .unwrap_err();
     let cause = error
         .source()
         .unwrap()
-        .downcast_ref::<PortraGrainError>()
+        .downcast_ref::<FilmGrainError>()
         .unwrap();
-    assert!(matches!(cause, PortraGrainError::Allocation(_)));
+    assert!(matches!(cause, FilmGrainError::Allocation(_)));
     assert!(cause.source().is_some());
     assert!(matches!(
-        assets.portra_grain_bank(),
-        Err(AssetError::PortraGrain(PortraGrainError::Allocation(_)))
+        assets.film_grain_bank(FilmGrainStock::Portra400),
+        Err(AssetError::FilmGrain(_, FilmGrainError::Allocation(_)))
     ));
 
     let scratch = std::env::var_os("JUICER_TEST_ARTIFACT_DIR")
@@ -173,29 +181,29 @@ fn portra_allocation_failure_preserves_cache_and_retry() {
     fs::create_dir_all(&bank_dir).unwrap();
     let assets = Assets::new(scratch.clone());
     let failed_io_error = fail_once(shared_owner_size::<std::io::Error>(), || {
-        assets.portra_grain_bank()
+        assets.film_grain_bank(FilmGrainStock::Portra400)
     });
     assert!(matches!(
         failed_io_error,
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
     assert!(matches!(
-        assets.portra_grain_bank(),
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        assets.film_grain_bank(FilmGrainStock::Portra400),
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
 
     fs::write(bank_dir.join("manifest.json"), b"{").unwrap();
     let assets = Assets::new(scratch.clone());
     let failed_manifest_error = fail_once(shared_owner_size::<serde_json::Error>(), || {
-        assets.portra_grain_bank()
+        assets.film_grain_bank(FilmGrainStock::Portra400)
     });
     assert!(matches!(
         failed_manifest_error,
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
     assert!(matches!(
-        assets.portra_grain_bank(),
-        Err(AssetError::PortraGrain(PortraGrainError::OwnerAllocation))
+        assets.film_grain_bank(FilmGrainStock::Portra400),
+        Err(AssetError::FilmGrain(_, FilmGrainError::OwnerAllocation))
     ));
     fs::remove_dir_all(scratch).unwrap();
 }

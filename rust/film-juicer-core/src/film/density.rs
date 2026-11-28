@@ -6,7 +6,7 @@ use crate::hash;
 use crate::profile::Polarity;
 use crate::route::ScanRoute;
 use super::Development;
-pub(crate) mod portra;
+pub(crate) mod film_v1;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Minimum {
@@ -38,13 +38,13 @@ impl fmt::Display for Error {
                 "film density span requires finite positive result channel={channel}"
             ),
             Self::FilmNormalization => {
-                f.write_str("Film v1 normalization falls outside the Portra density certificate")
+                f.write_str("Film v1 normalization falls outside the bank density certificate")
             }
             Self::FilmProjectionSpan => {
-                f.write_str("Portra Film v1 projection requires a finite CMY span within 64 D")
+                f.write_str("Film v1 projection requires a finite CMY span within 64 D")
             }
             Self::FilmSpectralRange => {
-                f.write_str("Portra Film v1 exceeds the scanner and enlarger transmission range")
+                f.write_str("Film v1 exceeds the scanner and enlarger transmission range")
             }
             Self::ZeroIdentity => f.write_str("film density bounds identity is zero"),
         }
@@ -92,14 +92,14 @@ impl Bounds {
         let maximum_cmy = Self::film_v1_clean_maximum(development).map(|d| (d + upper).next_up());
         Self::checked_film_v1(development, [lower; 3], maximum_cmy)
     }
-    pub(crate) fn portra_film_v1(
+    pub(crate) fn for_film_grain(
         development: &Development,
-        bank: &crate::assets::PortraGrainBank,
-        table: &crate::assets::PortraGrainTable,
+        bank: &crate::assets::FilmGrainBank,
+        table: &crate::assets::FilmGrainTable,
         gain: f32,
         chroma_fraction: f32,
     ) -> Result<Self, Error> {
-        let allowances = portra::allowances(bank, table, gain).ok_or(Error::FilmNormalization)?;
+        let allowances = film_v1::allowances(bank, table, gain).ok_or(Error::FilmNormalization)?;
         // Preserve the admitted Film v1 box. Where that
         // enclosure exceeds a safeguard, test the more precise certificate.
         let original = Self::film_v1(development, allowances);
@@ -107,7 +107,7 @@ impl Bounds {
             original,
             Err(Error::FilmProjectionSpan | Error::FilmSpectralRange)
         ) {
-            if let Some([lo, hi]) = portra::density_range(
+            if let Some([lo, hi]) = film_v1::density_range(
                 bank,
                 table,
                 gain,
@@ -116,7 +116,7 @@ impl Bounds {
             ) {
                 return Self::checked_film_v1(development, lo, hi);
             }
-            if let Some(allowances) = portra::periodic_allowances(table, gain) {
+            if let Some(allowances) = film_v1::periodic_allowances(bank.stock(), table, gain) {
                 return Self::film_v1(development, allowances);
             }
         }

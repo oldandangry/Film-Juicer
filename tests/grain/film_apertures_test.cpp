@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -88,9 +89,9 @@ namespace {
         return -std::log10(light / ((bottom - top) * (right - left)));
     }
 
-    FjFilmGrain wire(const Aperture& row, const GrainPrototype::FilmBank& bank) {
+    FjFilmGrain wire(const Aperture& row, const GrainPrototype::FilmBank& bank, std::uint64_t bankHash) {
         FjFilmGrain input{};
-        input.bank_hash = 1;
+        input.bank_hash = bankHash;
         input.sums = {bank.sums.data(), bank.sums.size()};
         input.seed = kSeed;
         input.next_seed = kNextSeed;
@@ -144,7 +145,7 @@ namespace {
             FjPreparedHostData value{};
             value.route = row.print ? FJ_ROUTE_NEGATIVE_PRINT : FJ_ROUTE_NEGATIVE_DIRECT;
             value.capture_polarity = FJ_POLARITY_NEGATIVE;
-            value.film_profile_key = {"portra-400-density-oracle", 25};
+            value.film_profile_key = {"film-v1-density-oracle", 22};
             value.film_profile_asset_version = 1;
             value.recipe_hash = 2 + value.route;
             value.film_exposure.input_color_space = FJ_INPUT_SRGB_REC709;
@@ -191,7 +192,7 @@ namespace {
         }
     };
 
-    TEST(FilmApertures, ProductionBindingAndSignedDensity) {
+    void check_production_apertures(const char* bankDir, const char* tableDir, std::uint64_t bankHash) {
         ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
         const auto destroyOwner = [](FjCuda* cuda) {
             EXPECT_EQ(fj_cuda_destroy(cuda, nullptr).category, FJ_STATUS_SUCCESS);
@@ -206,8 +207,8 @@ namespace {
         };
         const std::unique_ptr<std::remove_pointer_t<cudaStream_t>, decltype(destroyStream)> stream(rawStream, destroyStream);
 
-        const auto calibrated = GrainPrototype::read_film_bank(JUICER_GRAIN_TEST_BANK, 37.5F, JUICER_GRAIN_TEST_TABLES);
-        const auto full = GrainPrototype::read_film_bank(JUICER_GRAIN_TEST_BANK, 9.375F, JUICER_GRAIN_TEST_TABLES);
+        const auto calibrated = GrainPrototype::read_film_bank(bankDir, 37.5F, tableDir);
+        const auto full = GrainPrototype::read_film_bank(bankDir, 9.375F, tableDir);
         std::ifstream input(JUICER_GRAIN_APERTURE_WIRE);
         std::string schema;
         ASSERT_TRUE(static_cast<bool>(input >> schema));
@@ -238,7 +239,7 @@ namespace {
             const auto pitch = static_cast<std::size_t>(width) * 4 + 5;
             const auto words = pitch * height;
             const auto& bank = row.integrated ? full : calibrated;
-            const auto descriptor = wire(row, bank);
+            const auto descriptor = wire(row, bank, bankHash);
             constexpr float sourceWord = 0.18F;
             const std::vector<float> source(words, sourceWord);
             std::vector<float> host(words + 2, kCanary);
@@ -316,5 +317,37 @@ namespace {
             }
         }
         EXPECT_EQ(cases, 8U);
+    }
+
+    TEST(FilmApertures, ProductionBindingAndSignedDensity) {
+        check_production_apertures(JUICER_GRAIN_TEST_BANK, JUICER_GRAIN_TEST_TABLES, 1);
+    }
+
+    TEST(FilmApertures, GoldProductionBindingAndSignedDensity) {
+        check_production_apertures(JUICER_GRAIN_GOLD_BANK, JUICER_GRAIN_GOLD_REFERENCE, 2);
+    }
+
+    TEST(FilmApertures, GoldIndependentSampler) {
+        auto bank = GrainPrototype::read_film_bank(JUICER_GRAIN_GOLD_BANK, 1.F, JUICER_GRAIN_GOLD_REFERENCE);
+        const auto directory = std::filesystem::path(JUICER_GRAIN_GOLD_REFERENCE);
+        std::ifstream input(directory / "reference.tsv");
+        std::array<std::size_t, 3> counts{};
+        float footprint = 0.F;
+        double expected = 0.;
+        GrainPrototype::FilmProbe probe{};
+        while (input >> probe.pitch >> footprint >> probe.x >> probe.y >> probe.seed >> probe.record >> probe.net >> expected) {
+            ASSERT_TRUE(footprint == 1.F || footprint == 9.375F || footprint == 32.F);
+            if (bank.tables.footprint != footprint)
+                bank.tables = GrainPrototype::read_film_tables(JUICER_GRAIN_GOLD_BANK, footprint, JUICER_GRAIN_GOLD_REFERENCE);
+            ASSERT_GE(probe.record, 0);
+            ASSERT_LT(probe.record, Film::kRecords);
+            ++counts[footprint == 1.F ? 0U : footprint == 9.375F ? 1U
+                                                                 : 2U];
+            const auto result = GrainPrototype::evaluate_sample(bank, probe);
+            EXPECT_NEAR(result.delta, expected, result.roundingBound)
+                << probe.pitch << ' ' << probe.x << ' ' << probe.y << ' ' << probe.seed << ' ' << probe.record;
+        }
+        EXPECT_TRUE(input.eof());
+        EXPECT_EQ(counts, (std::array<std::size_t, 3>{840, 840, 1680}));
     }
 } // namespace

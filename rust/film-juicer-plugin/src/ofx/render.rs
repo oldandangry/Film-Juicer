@@ -473,12 +473,13 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
 
 fn failure_category(error: &film_juicer_core::recipe::PrepareError) -> u32 {
     use crate::cuda::sys::*;
-    use film_juicer_core::assets::{AssetError, PortraGrainError};
+    use film_juicer_core::assets::{AssetError, FilmGrainError};
     use film_juicer_core::recipe::{self, PrepareError as E};
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
-        E::Asset(AssetError::PortraGrain(
-            PortraGrainError::Allocation(_) | PortraGrainError::OwnerAllocation,
+        E::Asset(AssetError::FilmGrain(
+            _,
+            FilmGrainError::Allocation(_) | FilmGrainError::OwnerAllocation,
         )) => FJ_STATUS_ALLOCATION_FAILURE,
         E::Control(recipe::ControlError::FilmGrain) | E::FilmGrainFootprint { .. } => {
             FJ_STATUS_UNSUPPORTED_INPUT
@@ -522,25 +523,25 @@ mod tests {
     fn portra_allocation_status() {
         use super::{Status, allocation_status, state};
         use crate::ofx::sys::kOfxStatErrMemory;
-        use film_juicer_core::assets::{AssetError, PortraGrainError};
+        use film_juicer_core::assets::{AssetError, FilmGrainError, FilmGrainStock};
         use film_juicer_core::recipe::PrepareError;
 
         let status = |error| {
             allocation_status(&state::Error::Preparation(PrepareError::Asset(
-                AssetError::PortraGrain(error),
+                AssetError::FilmGrain(FilmGrainStock::Portra400, error),
             )))
             .map(Status::code)
         };
         let reserve = Vec::<u8>::new().try_reserve_exact(usize::MAX).unwrap_err();
         assert_eq!(
-            status(PortraGrainError::Allocation(reserve)),
+            status(FilmGrainError::Allocation(reserve)),
             Some(kOfxStatErrMemory)
         );
         assert_eq!(
-            status(PortraGrainError::OwnerAllocation),
+            status(FilmGrainError::OwnerAllocation),
             Some(kOfxStatErrMemory)
         );
-        assert!(status(PortraGrainError::Invalid("word count")).is_none());
+        assert!(status(FilmGrainError::Invalid("word count")).is_none());
     }
 
     #[test]

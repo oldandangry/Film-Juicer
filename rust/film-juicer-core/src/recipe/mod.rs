@@ -47,7 +47,7 @@ impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::FilmGrain => {
-                "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls"
+                "Film v1 requires Kodak Portra 400 or Kodak Gold 200, a supported camera film format, a negative route and valid Film grain controls"
             }
             Self::DirectScanner => "ResourceDescriptorMismatch phase=8 field=scanner_output",
             Self::PrintGamma => {
