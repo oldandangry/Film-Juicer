@@ -2,8 +2,8 @@
 
 The certificate covers the immutable Portra 400 bank and the two negative
 routes. [`Raster::sampling`](../../rust/film-juicer-core/src/film/grain/film_v1.rs)
-selects the table pitch. For calibrated sampling it uses `1000 Ã— format / (rendered
-long edge Ã— Size)`, with the realized calibrated raster where applicable. For
+selects the table pitch. For calibrated sampling it uses `1000 × format / (rendered
+long edge × Size)`, with the realized calibrated raster where applicable. For
 integrated sampling the denominator uses the canonical Full extent. The sampling
 pitch is rounded once to Float32. The proof domain includes every positive
 Float32 word from `0.244140625` through `240000` (166,748,161 words), the full
@@ -24,19 +24,19 @@ integer cells and includes the Float32 aperture and light arithmetic allowances.
 Large apertures in the original enclosure are divided into equal squares. Their
 positive, normalized areas keep the light within the subrectangle bounds. The
 periodic enclosure uses the exact zero whole-period totals. Each square is
-`n Ã— 256 Â± remainder`, with signed residual strips and a shared residual corner.
+`n × 256 ± remainder`, with signed residual strips and a shared residual corner.
 The [periodic bank test](../../rust/film-juicer-core/src/film/density/portra/periodic_extrema.rs)
-recomputes all 16 Ã— 51 stored strip and corner entries. At widths at least 1536,
-the relative residual is bounded by `1476 / (256 Ã— width) + 4720 / widthÂ²`.
+recomputes all 16 × 51 stored strip and corner entries. At widths at least 1536,
+the relative residual is bounded by `1476 / (256 × width) + 4720 / width²`.
 
 The [CUDA sampler](../../src/Cuda/JuicerCudaFilmGrain.cuh) scales a weighted
 placement sum by its Euclidean normalization. Within an axis at most one of
 the staggered layings straddles a seam. The maximum sum of the two layings'
-normalized weight sums is 3, from 2 + 1 in the same laying, or âˆš2 + âˆš2 across
+normalized weight sums is 3, from 2 + 1 in the same laying, or √2 + √2 across
 different layings. The bound uses 3.012 to cover arithmetic rounding. The
 adjacent-level normalization uses the represented correlation `rho` and the
-quadratic `(1 âˆ’ t)Â² + tÂ² + 2 Ã— rho Ã— t Ã— (1 âˆ’ t)`, where `t` is the level
-fraction. Fractional time adds at most âˆš2, cancelling the âˆš2 in the laying
+quadratic `(1 − t)² + t² + 2 × rho × t × (1 − t)`, where `t` is the level
+fraction. Fractional time adds at most √2, cancelling the √2 in the laying
 normalization. These bounds are independent of the PCG placement and time seeds.
 Both extrema are carried through the exposure-level cuts, signed grain and
 Colour projection. The tight enclosure treats each light endpoint as affine in
@@ -60,7 +60,7 @@ bounds. Centering is an orthogonal projection and can only reduce the error
 radius. An interval field with midpoint norm `n` and error radius `e < n`
 deviates by at most `asin(e / n)` from its midpoint direction. The angle between
 each pair of adjacent levels, plus both angular errors, gives the conservative
-correlation bound. At `e â‰¥ n` the interval carries no useful correlation bound
+correlation bound. At `e ≥ n` the interval carries no useful correlation bound
 and can be split or rechecked from the production constructor.
 
 [`Bounds::portra_film_v1`](../../rust/film-juicer-core/src/film/density.rs)
@@ -70,7 +70,7 @@ The tighter placement certificate covers the bands through 10. For widths
 above 255 the periodic allowance supplies a second enclosure. After a retained
 box passes, its original represented words remain authoritative. The proof checks
 for a passing signed box throughout each interval, applying the 64 D span and
-âˆ’30 D spectral floor. Inconclusive intervals split at a Float32 word boundary.
+−30 D spectral floor. Inconclusive intervals split at a Float32 word boundary.
 Their singleton rechecks use the represented table from the production owner.
 Periodic widths can also be rechecked exactly, including quantized constant
 fields whose adjacent correlation follows the table's zero-variance branch.

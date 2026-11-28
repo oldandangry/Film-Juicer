@@ -1,7 +1,7 @@
 # Scatter and halation tests
 
 The core optics suite checks authored inputs, frame descriptors and Gaussian
-coefficients. Its [frame words](frame-fixtures/README.md) cover the original
+coefficients. Its [frame words](../../rust/film-juicer-core/tests/fixtures/optics/halation-frame/README.md) cover the original
 schedule and completed Direct and Print route products. The same unit test
 checks typed frame failures against the frozen expectations.
 

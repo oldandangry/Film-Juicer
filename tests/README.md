@@ -1,7 +1,7 @@
 # Film-Juicer public tests
 
-Native tests use the CMake product toolchains. Install Python 3.13 and the
-pinned requirements for the host fixture and tooling checks.
+Native tests use the CMake product toolchains. Install Python 3.13 for the
+host fixture and tooling checks.
 Install Rust 1.98.1 and prebuilt cargo-nextest 0.9.143 for the workspace tests.
 See the [build prerequisites](../docs/building.md).
 
@@ -18,7 +18,6 @@ registered binaries, generated headers, runtime resources and the staged
 module used by the production render probe.
 
 ```sh
-python3.13 -m pip install -r tests/requirements.txt
 cmake --preset linux-debug -DBUILD_TESTING=ON
 cmake --build --preset linux-debug
 ctest --preset linux-debug -L '^host$' --no-tests=error --output-on-failure
@@ -77,8 +76,13 @@ shell with `dumpbin` available.
 | OFX host callbacks, production renders and recovery | [OFX host fixtures](ofx/README.md), [production staged probe](ffi/production-ofx-render.cpp), and the staged frame and Print edit cases. |
 | Film v1 Full and proxy sampling | [Optical aperture cases](grain/film_apertures_test.cpp), [frozen bank](../Resources/grain/portra-400/NOTICE.md), and [independent table fixtures](grain/portra-table-fixtures). |
 | Scanner spectra, binding and schedules | [Scanner cases](scanner). |
-| Device resources, exact-context lifetimes and failure ordering | [Resource cases](resource) and [native CUDA ABI cases](ffi). |
+| Device resources, exact-context lifetimes and failure ordering | [Resource cases](resource), [native CUDA ABI cases](ffi) and the epoch admission and retirement [route cases](scanner/routes_test.cpp). |
 | Explicit performance work | [Benchmark guide](benchmarks/README.md). |
+
+`Scanner.Gpu.Routes` links the [scanner route cases](scanner/routes_test.cpp)
+with the [OFX cancellation and stale-selection cases](ofx/cancellation_test.cpp)
+because they share its observed native entry. Select it for epoch admission,
+retirement or OFX cancellation changes; an `Ofx` name filter does not run them.
 
 Core-only fixtures live with the Rust crate. Native and cross-language fixtures
 live here, including the [DIR boundary capture](dir/boundary-fixtures),

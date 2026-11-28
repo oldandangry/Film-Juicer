@@ -25,7 +25,6 @@
 /CMakeUserPresets.json
 # Product CMake inputs remain visible even with a local *.txt exclusion.
 !CMakeLists.txt
-!/tests/requirements.txt
 !/third_party/**/*.txt
 [Bb]in/
 [Oo]bj/

@@ -47,44 +47,6 @@
         "windows-clang-debug": "df7b7ce2091d2628087cbf4335f5930d3483ec77a766a5b64b6a867dc347e242",
         "windows-clang-release": "3bf7787fba0af606d5eb031adf44909c92887bb98b6f7e8e2b0e6aaf90e2c508"
       }
-    },
-    "capture-identity.json": {
-      "sha256": "5207b524748655b57c7ebc4ed575858157c3ae0f39bb10e03b62a4ac89f60dc6",
-      "size": 1498,
-      "source_sha256": {
-        "linux-debug": "f84dc4f2e9d526823af0e56e2c5040f2f92f44a3c922cfe3de40f041ecc6e88a",
-        "linux-release": "5baca0e78d205fd256404a0aa646c147e466c2efb0508b5600be2433fb7aaa7d",
-        "windows-clang-debug": "7387c203705759f882f79857d5692eb541575628762efdeb0777c944b366ddd6",
-        "windows-clang-release": "9786031542bf0551462de15de69fff1cf07054cf63959e53973a7d392c1eb02d"
-      }
-    },
-    "render-gpu-linux-debug.json": {
-      "sha256": "14b5398129004056a16a9123507e32ae73be34e118616409bebe6032abdaf723",
-      "size": 6427,
-      "source_sha256": {
-        "linux-debug": "e5fb5bb14241d2d8c78caf2b6c9e8ddb7e2eddfe8b9f0f6d1485ff6b8917260a"
-      }
-    },
-    "render-gpu-linux-release.json": {
-      "sha256": "30653b93c4a08830c4cf3d95cbe00b8996242e4bdb21e08adfb0c8797bde1249",
-      "size": 6429,
-      "source_sha256": {
-        "linux-release": "7b77864ab15698da28ffe1ec9f8e5f6a6c515facc3d96d64d23091fb4fc4871c"
-      }
-    },
-    "render-gpu-windows-clang-debug.json": {
-      "sha256": "176f5f80b8411ab7aeeb6174c8af2f0001d19d852e2578414a08a983d38eda4d",
-      "size": 6435,
-      "source_sha256": {
-        "windows-clang-debug": "e3fcec512f10dee5d812cf7bd2f6033eb14fc5b19ba98def9b9d955d9da747e1"
-      }
-    },
-    "render-gpu-windows-clang-release.json": {
-      "sha256": "59151eb1468298d9cded18cf9c6042e1ca3a2b936eb04921ad86a734f05e03a1",
-      "size": 6437,
-      "source_sha256": {
-        "windows-clang-release": "cdd7a5892519257000f05f8fef93a8d4fc3c179bd365027668f78a2ca336830d"
-      }
     }
   }
 }
