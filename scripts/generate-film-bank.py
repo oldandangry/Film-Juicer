@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -142,8 +143,13 @@ def read_calibration(path):
             raise ValueError(f"{key} must have {length} entries")
         if any(not number(value, minimum) or value == 0 for value in vector):
             raise ValueError(f"{key} must have finite positive entries")
-    if not math.isclose(sum(values["sublayer_shares"]), 1.0, abs_tol=1e-6):
+    shares = values["sublayer_shares"]
+    if not math.isclose(sum(shares), 1.0, abs_tol=1e-6):
         raise ValueError("sublayer_shares must sum to 1")
+    # Swift decodes the shares as Float before checking the constructor's bounds.
+    shares_f32 = struct.unpack("=4f", struct.pack("=4f", *shares))
+    if any(not 0 < share < 1 for share in shares_f32):
+        raise ValueError("sublayer_shares must each be strictly between 0 and 1 after Float32 conversion")
     if values["read_density"] not in ("net", "gross"):
         raise ValueError("read_density must be net or gross")
     provenance = values["provenance"]
