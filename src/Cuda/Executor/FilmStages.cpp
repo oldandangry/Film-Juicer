@@ -956,7 +956,7 @@ namespace JuicerCuda {
             }
             return;
         }
-        const auto status = juicer_cuda_apply_visual_grain(
+        const auto status = juicer_cuda_apply_legacy_grain(
             &grain.payload,
             &grain.kernels,
             width,

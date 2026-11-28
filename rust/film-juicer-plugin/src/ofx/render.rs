@@ -200,7 +200,7 @@ fn grain_v2_geometry_error(
     Status::FAILED
 }
 fn grain_v2_time_error(callback: &Callback<'_>, time: f64) -> Status {
-    let range = cuda::FILM_GRAIN_TIME_RANGE;
+    let range = cuda::GRAIN_V2_TIME_RANGE;
     let mut text = AdmissionText(String::new());
     if write!(
         text,
@@ -311,7 +311,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     let film_active = film.controls().is_some();
     let film_thumbnail = film_active && callback.thumbnail(&owner.handles);
     let film_mapping = if film_active && !film_thumbnail {
-        if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
+        if !cuda::GRAIN_V2_TIME_RANGE.contains(&args.time) {
             return Err(grain_v2_time_error(callback, args.time));
         }
         let canonical = callback.canonical_region(&owner.handles, args.time)?;

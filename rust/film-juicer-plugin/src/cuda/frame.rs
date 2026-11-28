@@ -73,7 +73,7 @@ fn grain_v2_seed_pair(
     session: u64,
     clip: u64,
 ) -> Result<(u32, u32, f32), edge::Failure> {
-    if !super::FILM_GRAIN_TIME_RANGE.contains(&time) {
+    if !super::GRAIN_V2_TIME_RANGE.contains(&time) {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
             "Grain v2 frame time must be finite and within the supported range",

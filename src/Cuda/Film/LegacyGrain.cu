@@ -1572,7 +1572,7 @@ __global__ void grain_debug_encode_avg3_kernel(GrainDebugAverageInput input) {
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters) The focused CUDA ABI and local schedule use fixed named bindings.
-extern "C" cudaError_t juicer_cuda_apply_visual_grain(
+extern "C" cudaError_t juicer_cuda_apply_legacy_grain(
     const JuicerCuda::GrainPayload* grain,
     const JuicerCuda::GrainKernelPayload* kernels,
     int width,
