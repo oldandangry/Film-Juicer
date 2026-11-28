@@ -6,7 +6,7 @@ use crate::hash;
 use crate::profile::Polarity;
 use crate::route::ScanRoute;
 use super::Development;
-pub(crate) mod portra;
+pub(crate) mod grain_v2;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Minimum {
@@ -38,13 +38,13 @@ impl fmt::Display for Error {
                 "film density span requires finite positive result channel={channel}"
             ),
             Self::FilmNormalization => {
-                f.write_str("Film v1 normalization falls outside the Portra density certificate")
+                f.write_str("Grain v2 normalization falls outside the bank density certificate")
             }
             Self::FilmProjectionSpan => {
-                f.write_str("Portra Film v1 projection requires a finite CMY span within 64 D")
+                f.write_str("Grain v2 projection requires a finite CMY span within 64 D")
             }
             Self::FilmSpectralRange => {
-                f.write_str("Portra Film v1 exceeds the scanner and enlarger transmission range")
+                f.write_str("Grain v2 exceeds the scanner and enlarger transmission range")
             }
             Self::ZeroIdentity => f.write_str("film density bounds identity is zero"),
         }
@@ -87,42 +87,42 @@ impl Bounds {
             *development.maximum_cmy(),
         )
     }
-    pub(crate) fn film_v1(development: &Development, allowances: [f32; 2]) -> Result<Self, Error> {
+    pub(crate) fn grain_v2(development: &Development, allowances: [f32; 2]) -> Result<Self, Error> {
         let [lower, upper] = allowances;
-        let maximum_cmy = Self::film_v1_clean_maximum(development).map(|d| (d + upper).next_up());
-        Self::checked_film_v1(development, [lower; 3], maximum_cmy)
+        let maximum_cmy = Self::grain_v2_clean_maximum(development).map(|d| (d + upper).next_up());
+        Self::checked_grain_v2(development, [lower; 3], maximum_cmy)
     }
-    pub(crate) fn portra_film_v1(
+    pub(crate) fn for_grain_v2(
         development: &Development,
-        bank: &crate::assets::PortraGrainBank,
-        table: &crate::assets::PortraGrainTable,
+        bank: &crate::assets::GrainV2Bank,
+        table: &crate::assets::GrainV2Table,
         gain: f32,
         chroma_fraction: f32,
     ) -> Result<Self, Error> {
-        let allowances = portra::allowances(bank, table, gain).ok_or(Error::FilmNormalization)?;
-        // Preserve the admitted Film v1 box. Where that
+        let allowances = grain_v2::allowances(bank, table, gain).ok_or(Error::FilmNormalization)?;
+        // Preserve the admitted Grain v2 box. Where that
         // enclosure exceeds a safeguard, test the more precise certificate.
-        let original = Self::film_v1(development, allowances);
+        let original = Self::grain_v2(development, allowances);
         if matches!(
             original,
             Err(Error::FilmProjectionSpan | Error::FilmSpectralRange)
         ) {
-            if let Some([lo, hi]) = portra::density_range(
+            if let Some([lo, hi]) = grain_v2::density_range(
                 bank,
                 table,
                 gain,
                 chroma_fraction,
-                Self::film_v1_clean_maximum(development),
+                Self::grain_v2_clean_maximum(development),
             ) {
-                return Self::checked_film_v1(development, lo, hi);
+                return Self::checked_grain_v2(development, lo, hi);
             }
-            if let Some(allowances) = portra::periodic_allowances(table, gain) {
-                return Self::film_v1(development, allowances);
+            if let Some(allowances) = grain_v2::periodic_allowances(bank.stock(), table, gain) {
+                return Self::grain_v2(development, allowances);
             }
         }
         original
     }
-    pub(crate) fn film_v1_clean_maximum(development: &Development) -> [f32; 3] {
+    pub(crate) fn grain_v2_clean_maximum(development: &Development) -> [f32; 3] {
         // Development samples its normalized knots with capped linear
         // interpolation. Thinning by a factor in [0, 1] stays inside this
         // interval because it contains zero.
@@ -132,7 +132,7 @@ impl Bounds {
             maximum.max(maximum - minimum)
         })
     }
-    fn checked_film_v1(
+    fn checked_grain_v2(
         development: &Development,
         minimum_cmy: [f32; 3],
         maximum_cmy: [f32; 3],

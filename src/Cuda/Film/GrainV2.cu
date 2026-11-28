@@ -1,9 +1,9 @@
-#include "Cuda/JuicerCudaFilmGrain.cuh"
+#include "Cuda/JuicerCudaGrainV2.cuh"
 
 #include <algorithm>
 #include <cmath>
 
-namespace JuicerCuda::FilmGrain {
+namespace JuicerCuda::GrainV2 {
     // The arrays are paired Full extents and action steps in axis order.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::uint64_t proxy_sample_bound(const double (&extent)[2], const double (&step)[2]) noexcept {
@@ -74,4 +74,4 @@ namespace JuicerCuda::FilmGrain {
         }
         return cudaSuccess;
     }
-} // namespace JuicerCuda::FilmGrain
+} // namespace JuicerCuda::GrainV2

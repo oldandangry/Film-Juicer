@@ -138,14 +138,14 @@ pub(super) fn correction_tables(tables: &spectral::Tables) -> scanner::Reference
 pub(super) struct CorrectionBounds<'a> {
     required: bool,
     pub(super) params: scanner::Params,
-    film_v1: Option<&'a density::Bounds>,
+    grain_v2: Option<&'a density::Bounds>,
     correction_film: Option<density::Bounds>,
     pub(super) print: Option<print::Bounds>,
 }
 
 impl CorrectionBounds<'_> {
     pub(super) fn film(&self) -> Option<&density::Bounds> {
-        self.film_v1.or(self.correction_film.as_ref())
+        self.grain_v2.or(self.correction_film.as_ref())
     }
 }
 
@@ -169,7 +169,7 @@ pub(super) fn correction_bounds<'a>(
         correction_params.direct_inputs_required()
     }
     .map_err(PrepareError::ScannerCorrection)?;
-    let correction_film_bounds = (correction_required && film.film_v1_bounds.is_none())
+    let correction_film_bounds = (correction_required && film.grain_v2_bounds.is_none())
         .then(|| density::Bounds::new(&acquired.development, &film.minimum))
         .transpose()
         .map_err(PrepareError::Bounds)?;
@@ -185,7 +185,7 @@ pub(super) fn correction_bounds<'a>(
     Ok(CorrectionBounds {
         required: correction_required,
         params: correction_params,
-        film_v1: film.film_v1_bounds.as_ref(),
+        grain_v2: film.grain_v2_bounds.as_ref(),
         correction_film: correction_film_bounds,
         print: print_bounds,
     })

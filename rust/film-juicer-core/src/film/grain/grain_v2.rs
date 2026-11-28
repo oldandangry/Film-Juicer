@@ -1,9 +1,9 @@
-//! Admitted Film v1 controls and their canonical Portra bank.
+//! Admitted Grain v2 controls and their selected frozen bank.
 
 use triomphe::Arc;
 
 use crate::assets::grain::CALIBRATED_MAX_FOOTPRINT;
-use crate::assets::{PortraGrainBank, PortraGrainTable};
+use crate::assets::{GrainV2Bank, GrainV2Table};
 use crate::{hash, route::ScanRoute};
 use super::super::{Development, density};
 
@@ -23,27 +23,27 @@ pub struct Controls {
 
 #[derive(Clone, Copy)]
 pub enum Selection {
-    Current,
-    FilmV1Disabled,
-    FilmV1(Controls),
+    Legacy,
+    GrainV2Disabled,
+    GrainV2(Controls),
 }
 
 impl Selection {
     pub fn selected(self) -> bool {
-        !matches!(self, Self::Current)
+        !matches!(self, Self::Legacy)
     }
 
     pub fn controls(self) -> Option<Controls> {
         match self {
-            Self::FilmV1(controls) => Some(controls),
-            Self::Current | Self::FilmV1Disabled => None,
+            Self::GrainV2(controls) => Some(controls),
+            Self::Legacy | Self::GrainV2Disabled => None,
         }
     }
 }
 
 pub struct Recipe {
-    bank: Arc<PortraGrainBank>,
-    table: Arc<PortraGrainTable>,
+    bank: Arc<GrainV2Bank>,
+    table: Arc<GrainV2Table>,
     raster: Raster,
     rendered_footprint_texels: f32,
     sampling: Sampling,
@@ -240,9 +240,8 @@ impl Raster {
 }
 
 impl Controls {
-    pub(crate) fn valid(self, stock: &str, long_edge_mm: f32, route: ScanRoute) -> bool {
-        stock == "kodak_portra_400"
-            && super::super::input::film_format_mm(f64::from(long_edge_mm)).is_ok()
+    pub(crate) fn valid(self, long_edge_mm: f32, route: ScanRoute) -> bool {
+        super::super::input::film_format_mm(f64::from(long_edge_mm)).is_ok()
             && matches!(route, ScanRoute::NegativeDirect | ScanRoute::NegativePrint)
             && AMOUNT_EV_RANGE.contains(&self.amount_ev)
             && TEXEL_PITCH_UM_RANGE.contains(&self.texel_pitch_um)
@@ -256,8 +255,8 @@ impl Controls {
 
 impl Recipe {
     pub(crate) fn new(
-        bank: Arc<PortraGrainBank>,
-        table: Arc<PortraGrainTable>,
+        bank: Arc<GrainV2Bank>,
+        table: Arc<GrainV2Table>,
         controls: Controls,
         raster: Raster,
         rendered_footprint_texels: f32,
@@ -299,11 +298,11 @@ impl Recipe {
         }
     }
 
-    pub fn bank(&self) -> &PortraGrainBank {
+    pub fn bank(&self) -> &GrainV2Bank {
         &self.bank
     }
 
-    pub fn table(&self) -> &PortraGrainTable {
+    pub fn table(&self) -> &GrainV2Table {
         &self.table
     }
 
@@ -332,7 +331,7 @@ impl Recipe {
         development: &Development,
     ) -> Result<density::Bounds, density::Error> {
         // Transmission averaging preserves the density enclosure of its samples.
-        density::Bounds::portra_film_v1(
+        density::Bounds::for_grain_v2(
             development,
             &self.bank,
             &self.table,
@@ -360,9 +359,7 @@ mod tests {
             texel_pitch_um: DEFAULT_TEXEL_PITCH_UM,
             chroma_fraction: DEFAULT_CHROMA_FRACTION,
         };
-        let valid = |controls: Controls| {
-            controls.valid("kodak_portra_400", 36.0, ScanRoute::NegativeDirect)
-        };
+        let valid = |controls: Controls| controls.valid(36.0, ScanRoute::NegativeDirect);
         assert!(valid(defaults));
         type SetControl = fn(Controls, f32) -> Controls;
         let controls: [(SetControl, f32, f32); 3] = [
@@ -592,7 +589,7 @@ mod tests {
 
     #[test]
     fn paused_supported_extent_alias_keeps_table_and_bounds() {
-        use crate::recipe::{self, FilmGrainFrame, test_support};
+        use crate::recipe::{self, GrainV2Frame, test_support};
         use crate::route::ScanRoute;
         use crate::state::{CaptureMode, CaptureStart, Publication, SnapshotStart};
         use std::sync::Arc;
@@ -628,7 +625,7 @@ mod tests {
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let mut params = test_support::params(route, 1);
             params.camera_film_format_long_edge_mm = 36.0;
-            params.film_grain = Selection::FilmV1(Controls {
+            params.grain_v2 = Selection::GrainV2(Controls {
                 amount_ev: 0.0,
                 texel_pitch_um: 1.0,
                 chroma_fraction: 1.0,
@@ -648,12 +645,12 @@ mod tests {
                 .install(capture, write_revision, params, 1)
                 .unwrap();
             let admit = |candidate_full_grid| {
-                let frame = FilmGrainFrame::Raster(Raster {
+                let frame = GrainV2Frame::Raster(Raster {
                     rendered_long_edge_px: 1208,
                     candidate_full_grid,
                 });
                 publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap()
@@ -665,9 +662,9 @@ mod tests {
             assert!(!Arc::ptr_eq(&initial, &switched));
             assert!(!Arc::ptr_eq(&switched, &returned));
             assert!(Arc::ptr_eq(&returned, &admit(Some(start))));
-            let expected = oracle.film_grain().unwrap();
+            let expected = oracle.grain_v2().unwrap();
             for (state, grid) in [(&initial, start), (&returned, start), (&switched, alias)] {
-                let grain = state.film_grain().unwrap();
+                let grain = state.grain_v2().unwrap();
                 assert!(grain.raster().candidate_full_grid == Some(grid));
                 assert!(
                     grain.sampling() == Sampling::Calibrated([0; 4]),
@@ -683,8 +680,8 @@ mod tests {
                 assert_eq!(table.mean_density, expected.table().mean_density);
                 assert_eq!(table.correlation, expected.table().correlation);
                 assert_eq!(
-                    state.film_v1_bounds().unwrap().hash(),
-                    oracle.film_v1_bounds().unwrap().hash()
+                    state.grain_v2_bounds().unwrap().hash(),
+                    oracle.grain_v2_bounds().unwrap().hash()
                 );
             }
         }

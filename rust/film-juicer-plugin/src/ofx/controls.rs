@@ -290,17 +290,17 @@ pub(super) fn capture(controls: &Controls<'_>) -> Result<capture::Captured, Capt
     p.camera_exposure_compensation_ev = exposure::authored_ev(controls.double(ParamId::Exposure)?);
     p.camera_auto_exposure_enabled = i32::from(controls.integer(ParamId::CameraAutoExposure)? != 0);
     p.camera_metering_method = controls.integer(ParamId::CameraMeteringMethod)?;
-    p.grain = capture_grain(controls)?;
+    p.grain = capture_legacy_grain(controls)?;
     {
-        use grain::film_v1::{Controls as FilmControls, Selection};
+        use grain::grain_v2::{Controls as V2Controls, Selection};
         let model = controls.string_bytes(ParamId::GrainModel)?;
-        p.film_grain = match model.as_slice() {
-            b"current" => Selection::Current,
-            b"film_v1" if !p.grain.active => Selection::FilmV1Disabled,
-            b"film_v1" => Selection::FilmV1(FilmControls {
-                amount_ev: controls.double(ParamId::FilmGrainAmountEv)? as f32,
-                texel_pitch_um: controls.double(ParamId::FilmGrainTexelPitchUm)? as f32,
-                chroma_fraction: controls.double(ParamId::FilmGrainChromaFraction)? as f32,
+        p.grain_v2 = match model.as_slice() {
+            b"current" => Selection::Legacy,
+            b"film_v1" if !p.grain.active => Selection::GrainV2Disabled,
+            b"film_v1" => Selection::GrainV2(V2Controls {
+                amount_ev: controls.double(ParamId::GrainV2AmountEv)? as f32,
+                texel_pitch_um: controls.double(ParamId::GrainV2TexelPitchUm)? as f32,
+                chroma_fraction: controls.double(ParamId::GrainV2ChromaFraction)? as f32,
             }),
             _ => return Err(invalid_diagnostic("unsupported grain model")),
         };
@@ -401,17 +401,17 @@ fn update_highlight_boost(controls: &Controls<'_>) -> Result<(), Status> {
 }
 fn update_grain_model(controls: &Controls<'_>) -> Result<(), Status> {
     let model = controls.string_bytes(ParamId::GrainModel)?;
-    let film = match model.as_slice() {
+    let grain_v2_selected = match model.as_slice() {
         b"current" => false,
         b"film_v1" => true,
         _ => return Err(Status::FAILED),
     };
     for name in [
-        ParamId::FilmGrainAmountEv,
-        ParamId::FilmGrainTexelPitchUm,
-        ParamId::FilmGrainChromaFraction,
+        ParamId::GrainV2AmountEv,
+        ParamId::GrainV2TexelPitchUm,
+        ParamId::GrainV2ChromaFraction,
     ] {
-        controls.set_secret(name, !film)?;
+        controls.set_secret(name, !grain_v2_selected)?;
     }
     for name in [
         ParamId::GrainSublayersActive,
@@ -436,7 +436,7 @@ fn update_grain_model(controls: &Controls<'_>) -> Result<(), Status> {
         ParamId::GrainClumpTemporalMix,
         ParamId::GrainClumpMorphPeriodSec,
     ] {
-        controls.set_secret(name, film)?;
+        controls.set_secret(name, grain_v2_selected)?;
     }
     Ok(())
 }
@@ -787,7 +787,7 @@ fn reset_grain_advanced(controls: &Controls<'_>) -> Result<(), Status> {
     write_grain_advanced(controls, preset, advanced, grain::GrainDefaultsEdit::Reset)
 }
 
-fn capture_grain(controls: &Controls<'_>) -> Result<grain::Params, Status> {
+fn capture_legacy_grain(controls: &Controls<'_>) -> Result<grain::Params, Status> {
     let authored = grain::CaptureControls {
         active: controls.integer(ParamId::GrainActive)? != 0,
         preset: controls.integer(ParamId::GrainPreset)?,

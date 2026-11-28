@@ -374,7 +374,7 @@ namespace {
                invalid_descriptor(diagnostic, "spatial_dir.hash");
     }
 
-    Spektrafilm::VisualGrainGaussian decode_grain_gaussian(const FjGrainGaussian& source) {
+    Spektrafilm::LegacyGrainGaussian decode_grain_gaussian(const FjGrainGaussian& source) {
         return {source.sigma_px, source.radius, source.hash};
     }
 
@@ -404,7 +404,7 @@ namespace {
             source.pitch_px != source.full_frame_extent.height) {
             return invalid_descriptor(diagnostic, "grain.identity");
         }
-        JuicerCuda::VisualGrainPayloadInput& payload = out.grainPayload;
+        JuicerCuda::LegacyGrainPayloadInput& payload = out.grainPayload;
         payload.recipeHash = source.recipe_hash;
         payload.densityLayersHash = source.density_layers_hash;
         FjGrainCoefficients& coefficients = payload.coefficients;
@@ -425,11 +425,11 @@ namespace {
         for (std::size_t channel = 0; channel < std::size(kAxisFlags); ++channel) {
             std::copy_n(source.layer_axis_block_prefix_max[channel], 16, coefficients.layer_axis_block_prefix_max[channel]);
         }
-        Spektrafilm::VisualGrainFrameDescriptor descriptor{};
+        Spektrafilm::LegacyGrainFrameDescriptor descriptor{};
         descriptor.active = true;
         descriptor.capturePolarity = out.capturePolarity;
-        descriptor.renderExtent = decode_extent<Spektrafilm::VisualGrainFrameExtent>(source.render_extent);
-        descriptor.fullFrameExtent = decode_extent<Spektrafilm::VisualGrainFrameExtent>(source.full_frame_extent);
+        descriptor.renderExtent = decode_extent<Spektrafilm::LegacyGrainFrameExtent>(source.render_extent);
+        descriptor.fullFrameExtent = decode_extent<Spektrafilm::LegacyGrainFrameExtent>(source.full_frame_extent);
         descriptor.pixelSizeUm = source.pixel_size_um;
         descriptor.frame0 = source.frame0;
         descriptor.frameAlpha = source.frame_alpha;
@@ -454,7 +454,7 @@ namespace {
         descriptor.requiresFullFrame = (source.flags & FJ_GRAIN_FULL_FRAME) != 0;
         descriptor.recipeHash = source.recipe_hash;
         descriptor.densityCurvesLayersHash = source.density_layers_hash;
-        descriptor.scratchShape = Spektrafilm::visual_grain_scratch_shape(coefficients);
+        descriptor.scratchShape = Spektrafilm::legacy_grain_scratch_shape(coefficients);
         std::copy_n(source.density_max_cmy, 3, descriptor.densityMaxCmy.begin());
         std::copy_n(source.n_particles_cmy, 3, descriptor.nParticlesCmy.begin());
         std::copy_n(source.od_particle_cmy, 3, descriptor.odParticleCmy.begin());
@@ -482,7 +482,7 @@ namespace {
             !std::ranges::all_of(source.dye_cloud, [&](const auto& layer) {
                 return std::ranges::all_of(layer, checkGaussian);
             }) ||
-            requiresFullFrame != descriptor.requiresFullFrame || (requiresFullFrame && (source.render_extent.x != source.full_frame_extent.x || source.render_extent.y != source.full_frame_extent.y || source.render_extent.width != source.full_frame_extent.width || source.render_extent.height != source.full_frame_extent.height)) || !Spektrafilm::finish_visual_grain_descriptor(descriptor)) {
+            requiresFullFrame != descriptor.requiresFullFrame || (requiresFullFrame && (source.render_extent.x != source.full_frame_extent.x || source.render_extent.y != source.full_frame_extent.y || source.render_extent.width != source.full_frame_extent.width || source.render_extent.height != source.full_frame_extent.height)) || !Spektrafilm::finish_legacy_grain_descriptor(descriptor)) {
             return invalid_descriptor(diagnostic, "grain.gaussian_or_domain");
         }
         out.grain = descriptor;

@@ -28,6 +28,8 @@ endforeach()
 install(FILES Resources/grain/portra-400/NOTICE.md third_party/fotufilm/LICENSE.Fotufilm
     third_party/fotufilm/ENGINE-NOTICE.md
     DESTINATION "${JUICER_CONTENTS}/Legal/fotufilm")
+install(FILES Resources/grain/gold-200/NOTICE.md
+    DESTINATION "${JUICER_CONTENTS}/Legal/fotufilm" RENAME GOLD-200-NOTICE.md)
 
 install(FILES LICENSE DESTINATION "${JUICER_CONTENTS}/Legal")
 install(FILES third_party/spektrafilm/SPEKTRAFILM_LICENSE.txt third_party/spektrafilm/README.md

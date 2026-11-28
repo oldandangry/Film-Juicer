@@ -32,7 +32,7 @@ namespace Scanner {
 namespace JuicerCuda {
     struct PendingContextLossRecovery;
 
-    namespace FilmGrain {
+    namespace GrainV2 {
         struct ProxyWorkspace;
     }
     namespace ResourceManager {
@@ -130,14 +130,14 @@ namespace JuicerProcess {
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
             const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
-            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor = std::nullopt;
+            std::optional<Spektrafilm::LegacyGrainFrameDescriptor> legacyGrainDescriptor = std::nullopt;
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor = std::nullopt;
             // Active grain requires a call-local noise view borrowed through frame preparation.
             const JuicerCuda::StaticNoiseInput* noise = nullptr;
             int requestedWidth = 0;
             int requestedHeight = 0;
             const JuicerCuda::HighlightBoostDescriptor* highlightBoostDescriptor = nullptr;
-            const FjFilmGrain* filmGrain = nullptr;
+            const FjFilmGrain* grainV2 = nullptr;
         };
 
         class PreparedCudaFrame final {
@@ -189,15 +189,15 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
-            struct VisualGrainWorkspaceView {
+            struct LegacyGrainWorkspaceView {
                 float* filterTemp = nullptr;
                 float* scaleWork = nullptr;
                 float* deltaAccum = nullptr;
                 float* layerWork = nullptr;
                 float* sharedDelta = nullptr;
                 JuicerCuda::GrainFrameUniforms* frameUniforms = nullptr;
-                Spektrafilm::VisualGrainScratchShape scratchShape =
-                    Spektrafilm::VisualGrainScratchShape::None;
+                Spektrafilm::LegacyGrainScratchShape scratchShape =
+                    Spektrafilm::LegacyGrainScratchShape::None;
                 bool active = false;
             };
 
@@ -301,12 +301,12 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             FocusedRgbWorkspaceView focused_rgb_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
-            JuicerCuda::PreparedVisualGrainView visual_grain_resources() const noexcept;
-            const JuicerCuda::FilmGrain::FilmQuad* film_grain_bank() const noexcept;
-            JuicerCuda::FilmGrain::ProxyWorkspace* film_proxy_workspace() const noexcept;
+            JuicerCuda::PreparedLegacyGrainView legacy_grain_resources() const noexcept;
+            const JuicerCuda::GrainV2::FilmQuad* grain_v2_bank() const noexcept;
+            JuicerCuda::GrainV2::ProxyWorkspace* grain_v2_proxy_workspace() const noexcept;
             const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
             film_juicer_effects_descriptor() const noexcept;
-            VisualGrainWorkspaceView visual_grain_workspace(
+            LegacyGrainWorkspaceView legacy_grain_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
             FocusedPreparedView focused_resources() const noexcept;
@@ -408,7 +408,7 @@ namespace JuicerProcess {
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
                 JuicerCuda::Failure& outError,
                 const FjHostPreparation* hostPreparation = nullptr);
-            bool prepare_visual_grain_resources(
+            bool prepare_legacy_grain_resources(
                 Root& root,
                 const JuicerCuda::StaticNoiseInput* noise,
                 const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,

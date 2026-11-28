@@ -16,7 +16,7 @@ extern "C" cudaError_t juicer_cuda_camera_film_linear_exposure(
     JuicerCuda::CameraFilmLinearExposurePlanes planes,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_apply_visual_grain(
+extern "C" cudaError_t juicer_cuda_apply_legacy_grain(
     const JuicerCuda::GrainPayload* grain,
     const JuicerCuda::GrainKernelPayload* kernels,
     int width,

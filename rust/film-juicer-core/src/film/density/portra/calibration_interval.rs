@@ -1,6 +1,6 @@
 //! Enclose represented calibration words between two footprint words.
 
-use crate::assets::PortraGrainBank;
+use crate::assets::GrainV2Bank;
 
 const SIDE: usize = 256;
 const STRIDE: usize = SIDE + 1;
@@ -155,7 +155,7 @@ fn residual_pad(first: f32, last: f32) -> f64 {
 /// Prove that each record/level has two disjoint rounded calibration
 /// light intervals for all widths in the requested low-band interval.
 /// This discharges the archived proof's constant-field shortcut premise.
-pub(super) fn nonconstant_light_gap(bank: &PortraGrainBank, first: u32, last: u32) -> Option<f64> {
+pub(super) fn nonconstant_light_gap(bank: &GrainV2Bank, first: u32, last: u32) -> Option<f64> {
     let pad = residual_pad(f32::from_bits(first), f32::from_bits(last));
     let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
     let mut minimum_gap = f64::INFINITY;
@@ -208,7 +208,7 @@ pub(super) struct Normalization {
     pub correlation: [[f32; LEVELS]; 3],
 }
 
-pub(super) fn normalize(bank: &PortraGrainBank, first: f32, last: f32) -> Normalization {
+pub(super) fn normalize(bank: &GrainV2Bank, first: f32, last: f32) -> Normalization {
     assert!(super::MIN_PROXY_SAMPLE_FOOTPRINT <= first && first <= last);
     assert!(last <= super::SINGLE_WRAP_MAX_FOOTPRINT);
     assert_eq!(

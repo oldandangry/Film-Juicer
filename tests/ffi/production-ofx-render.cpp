@@ -66,7 +66,7 @@ namespace {
         Case{"positive-print", "positive-print", "PositivePrintScan", 0, 4}};
     constexpr std::array<std::string_view, 8> kCaseIds{
         "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm", "positive-direct/cold", "positive-direct/warm", "positive-print/cold", "positive-print/warm"};
-    constexpr std::array kFilmV1Cases{
+    constexpr std::array kGrainV2Cases{
         Case{"negative-direct-quarter-size-half", "negative-direct", "NegativeDirectScan", 0, 4, 1208, 504},
         Case{"negative-print-proxy-sequence", "negative-print", "NegativePrintScan", 0, 4, 1208, 504},
         Case{"negative-direct-hd", "negative-direct", "NegativeDirectScan", 0, 4, 1920, 1080},
@@ -925,7 +925,7 @@ namespace {
                 edit("GrainModel", {std::string("film_v1")});
                 edit("GrainActive", {1});
                 host.set_clip_property(effect, "Source", kOfxImageClipPropThumbnail, {1});
-                require(render(&expected[route], true) == ordinary, "queued Film thumbnail differs from the Portra fixture");
+                require(render(&expected[route], true) == ordinary, "queued Grain v2 thumbnail differs from the Portra fixture");
 
                 unsigned queries = 0;
                 const auto sourceReleases = host.image_release_count(effect, "Source");
@@ -1081,13 +1081,95 @@ namespace {
         return 0;
     }
 
-    int film_v1_witness(const std::filesystem::path& path) {
+    struct GoldLook {
+        std::filesystem::path module, source, destination;
+        int width, height;
+    };
+
+    int gold_look(const GoldLook& request) {
+        const auto& [path, sourcePath, destination, width, height] = request;
+        require(width > 0 && height > 0 && width <= 16384 && height <= 16384, "invalid comparison raster");
+        require(std::filesystem::create_directory(destination), "comparison destination already exists");
+        const CudaDriver driver;
+        driver.check(driver.init(0), "initialize CUDA for the Gold comparison");
+        CUcontext original = nullptr;
+        driver.check(driver.get_current(&original), "read original CUDA context");
+        ContextRestore restore(driver, original);
+        require_cuda(cudaSetDevice(0), "select comparison CUDA device");
+        Module module(path);
+        const auto get = module.symbol<OfxPlugin* (*)(int)>("OfxGetPlugin");
+        InstanceHost host;
+        Lifecycle lifecycle(get(0), host);
+        require(lifecycle.load() == kOfxStatOK, "load Gold comparison module");
+        require(lifecycle.call(kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK,
+                "describe Gold comparison context");
+
+        const auto rowWords = static_cast<std::size_t>(width) * 4;
+        const auto rowBytes = static_cast<std::streamsize>(rowWords * sizeof(float));
+        const auto pitch = rowWords + kPitchPadding;
+        std::vector<float> source(pitch * height);
+        std::ifstream input(sourcePath, std::ios::binary);
+        for (int y = 0; y < height; ++y) {
+            require(static_cast<bool>(input.read(reinterpret_cast<char*>(source.data() + pitch * y), rowBytes)),
+                    "comparison source must contain a complete linear BT.2020 Float32 RGBA raster");
+        }
+        require(input.peek() == std::ifstream::traits_type::eof(), "comparison source has trailing bytes");
+
+        DeviceBuffers device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create comparison stream");
+        const auto bytes = source.size() * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, bytes), "allocate comparison source");
+        require_cuda(cudaMalloc(&device.destination, bytes), "allocate comparison destination");
+        for (const auto& [name, route] : std::array{
+                 std::pair{"direct", "NegativeDirectScan"}, std::pair{"print", "NegativePrintScan"}}) {
+            const Case test{name, name, route, 0, 4, width, height, 1, 37.0};
+            auto* effect = host.create_effect();
+            require(host.value(effect, "GrainModel") == std::vector<InstanceValue>{std::string("current")},
+                    "comparison requires the Legacy descriptor default");
+            host.set_value(effect, "CameraAutoExposure", {0});
+            host.set_value(effect, "CameraFilmFormatPreset", {2});
+            host.set_value(effect, "CameraFilmFormatMm", {36.0});
+            host.set_value(effect, "FilmProfileKey", {std::string("kodak_gold_200")});
+            host.set_value(effect, "ScanRoute", {std::string(route)});
+            host.set_value(effect, "InputColorSpace", {1});
+            host.set_value(effect, "ScannerUnsharpMask", {0.0, 0.0});
+            host.set_value(effect, "GrainActive", {1});
+            require(lifecycle.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "create Gold comparison effect");
+            lifecycle.created(effect);
+            configure(host, effect, test, device);
+            std::vector<std::uint32_t> legacy;
+            std::vector<std::uint32_t> film;
+            (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, legacy, true);
+            host.set_value(effect, "GrainModel", {std::string("film_v1")});
+            auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainModel"});
+            require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "select Grain v2");
+            (void)run_pass(driver, lifecycle, host, effect, test, "cold", {source, nullptr, {}}, device, film, true);
+            require(film != legacy, "comparison engines produced equal words");
+            for (const auto& [engine, words] : std::array{
+                     std::pair{"legacy", &legacy}, std::pair{"grain-v2", &film}}) {
+                std::ofstream stream(destination / (std::string(name) + "-" + engine + ".f32"), std::ios::binary);
+                stream.write(reinterpret_cast<const char*>(words->data()),
+                             static_cast<std::streamsize>(words->size() * sizeof(std::uint32_t)));
+                require(static_cast<bool>(stream), "write Gold comparison output");
+            }
+            require(lifecycle.destroy(effect) == kOfxStatOK, "destroy Gold comparison effect");
+        }
+        device.close();
+        require(lifecycle.unload() == kOfxStatOK && !host.callback_error(), "unload Gold comparison module");
+        module.close();
+        restore.restore();
+        return 0;
+    }
+
+    int grain_v2_witness(const std::filesystem::path& path) {
         require(path.filename() == "juicer.ofx", "expected standard module");
         const auto resources = path.parent_path().parent_path() / "Resources";
-        require(std::filesystem::is_regular_file(resources / "grain/portra-400/manifest.json") &&
-                    std::filesystem::is_regular_file(resources / "grain/portra-400/records.f32") &&
-                    std::filesystem::is_regular_file(resources / "grain/portra-400/sums.f32"),
-                "preview bundle grain bank missing");
+        for (const auto* stock : {"portra-400", "gold-200"}) {
+            for (const auto* file : {"manifest.json", "records.f32", "sums.f32"}) {
+                const auto bankPath = resources / "grain" / stock / file;
+                require(std::filesystem::is_regular_file(bankPath), "staged grain bank missing " + bankPath.string());
+            }
+        }
         const CudaDriver driver;
         driver.check(driver.init(0), "initialize CUDA driver");
         CUcontext original = nullptr;
@@ -1109,7 +1191,7 @@ namespace {
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create preview stream");
         Json routes = Json::array();
         bool allPassed = true;
-        for (const auto& test : kFilmV1Cases) {
+        for (const auto& test : kGrainV2Cases) {
             auto* effect = host.create_effect();
             const auto amountDefault = host.value(effect, "FilmGrainAmountEv");
             const auto sizeDefault = host.value(effect, "FilmGrainTexelPitchUm");
@@ -1147,6 +1229,11 @@ namespace {
                 auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, name});
                 require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault,
                         "preview control change");
+            };
+            auto change_stock = [&](const char* key) {
+                change("FilmProfileKey", {std::string(key)});
+                // The profile edit sets the stock's default scan route.
+                change("ScanRoute", {std::string(test.route)});
             };
             auto render = [&](double time) {
                 host.set_property(host.action_args(), kOfxPropTime, {time});
@@ -1219,18 +1306,27 @@ namespace {
                                 host.value(effect, "FilmGrainAmountEv") == std::vector<InstanceValue>{amount} &&
                                 host.value(effect, "FilmGrainTexelPitchUm") == std::vector<InstanceValue>{0.5} &&
                                 host.value(effect, "FilmGrainChromaFraction") == colourDefault,
-                            "effective Film settings differ from the high-gain request");
+                            "effective Grain v2 settings differ from the high-gain request");
                     const auto off = render(time);
                     change("GrainActive", {1});
                     const auto sampleWidth = static_cast<float>(static_cast<double>(static_cast<float>(mm)) * 2000.0 / width);
                     Json row{{"width", width}, {"height", height}, {"mm", mm}, {"amount_ev", amount}, {"size_um", 0.5}, {"colour", 1.0}, {"sample_width", sampleWidth}, {"grain_changes_output", false}};
                     try {
-                        require(render(time) != off, "Film did not change matched grain-off pixels");
+                        require(render(time) != off, "Grain v2 did not change matched grain-off pixels");
                         row["grain_changes_output"] = true;
                         row["ofx_status"] = kOfxStatOK;
                         row["finite_rgb"] = true;
                         row["alpha_padding_source_preserved"] = true;
                         row["released_both_images_once"] = true;
+                        if (height == 96 && width == 4832 && amount == 3.0 && mm == 8.0) {
+                            change_stock("kodak_gold_200");
+                            change("GrainActive", {0});
+                            const auto goldOff = render(37.375);
+                            change("GrainActive", {1});
+                            require(render(37.375) != goldOff, "Gold high-gain Grain v2 did not change delivered pixels");
+                            change_stock("kodak_portra_400");
+                            row["gold_high_gain_fractional"] = true;
+                        }
                         if (mm != 36.0 && width != 1920 && amount == 3.0)
                             require(highGain.emplace(width, height, mm).second, "repeated high-gain Full combination");
                     } catch (const std::exception& error) {
@@ -1243,7 +1339,7 @@ namespace {
                 change("CameraFilmFormatMm", {36.0});
                 change("FilmGrainAmountEv", amountDefault);
                 change("FilmGrainTexelPitchUm", sizeDefault);
-                require(render(time) == reference, "restored 36 mm Film frame changed");
+                require(render(time) == reference, "restored 36 mm Grain v2 frame changed");
                 const std::set expected{
                     std::tuple{3840, 96, 8.0},
                     std::tuple{3840, 96, 11.66},
@@ -1268,14 +1364,14 @@ namespace {
                 change("GrainModel", {std::string("film_v1")});
                 change("GrainActive", {1});
                 const auto frame29 = render(below29);
-                require(render(29.0) == frame29, "Film words differ just below and at frame 29");
-                require(frame29 != clean, "Film at frame 29 did not change grain-off pixels");
+                require(render(29.0) == frame29, "Grain v2 words differ just below and at frame 29");
+                require(frame29 != clean, "Grain v2 at frame 29 did not change grain-off pixels");
                 const auto frame38 = render(37.99999999);
-                require(render(38.0) == frame38, "Film words differ just below and at frame 38");
+                require(render(38.0) == frame38, "Grain v2 words differ just below and at frame 38");
                 const auto frame0 = render(-1e-8);
-                require(render(0.0) == frame0, "Film words differ across the negative-to-zero endpoint");
-                require(frame29 != frame38 && frame29 != frame0 && frame38 != frame0, "distinct Film frame seeds did not change pixels");
-                require(render(below29) == frame29, "Film did not return bit-exactly to the earlier paused frame");
+                require(render(0.0) == frame0, "Grain v2 words differ across the negative-to-zero endpoint");
+                require(frame29 != frame38 && frame29 != frame0 && frame38 != frame0, "distinct Grain v2 frame seeds did not change pixels");
+                require(render(below29) == frame29, "Grain v2 did not return bit-exactly to the earlier paused frame");
 
                 struct Diagnostic {
                     std::string_view id;
@@ -1287,10 +1383,10 @@ namespace {
                     const auto outputBefore = host.image_release_count(effect, "Output");
                     host.clear_calls();
                     require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatFailed && !host.callback_error(),
-                            "Film admission did not return kOfxStatFailed");
+                            "Grain v2 admission did not return kOfxStatFailed");
                     require(host.image_release_count(effect, "Source") == sourceBefore + 1 &&
                                 host.image_release_count(effect, "Output") == outputBefore + 1,
-                            "Film admission failure did not release both images exactly once");
+                            "Grain v2 admission failure did not release both images exactly once");
                     int messages = 0;
                     for (const auto& call : host.calls()) {
                         if (call.operation != "message")
@@ -1299,23 +1395,23 @@ namespace {
                         require(call.property == kOfxMessageError && call.values.size() == 2 &&
                                     std::get<std::string>(call.values[0]) == expected.id &&
                                     std::get<std::string>(call.values[1]).starts_with(expected.text),
-                                "Film admission reported the wrong diagnostic");
+                                "Grain v2 admission reported the wrong diagnostic");
                     }
-                    require(messages == 1, "expected exactly one Film admission diagnostic");
+                    require(messages == 1, "expected exactly one Grain v2 admission diagnostic");
                 };
                 for (const double limit : {-1'000'000.0, 1'000'000.0}) {
                     (void)render(limit);
                     reject(std::nextafter(limit, limit * 2.0),
-                           {"FilmJuicerFilmGrainTime", "Film v1 frame time must be finite and within -1000000 to 1000000 frames, inclusive."});
-                    require(render(29.0) == frame29, "Film did not recover after time rejection");
+                           {"FilmJuicerFilmGrainTime", "Grain v2 frame time must be finite and within -1000000 to 1000000 frames, inclusive."});
+                    require(render(29.0) == frame29, "Grain v2 did not recover after time rejection");
                 }
                 const OfxRectD canonical{0.0, 0.0, static_cast<double>(test.width), static_cast<double>(test.height)};
                 auto mismatch = canonical;
                 ++mismatch.x2;
                 host.set_clip_region(effect, "Source", mismatch);
-                reject(29.0, {"FilmJuicerFilmGrainGeometry", "Film v1 requires complete square-pixel source and output images"});
+                reject(29.0, {"FilmJuicerFilmGrainGeometry", "Grain v2 requires complete square-pixel source and output images"});
                 host.set_clip_region(effect, "Source", canonical);
-                require(render(29.0) == frame29, "Film did not recover after geometry rejection");
+                require(render(29.0) == frame29, "Grain v2 did not recover after geometry rejection");
                 routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"equal_endpoint_words_at", {29, 38, 0}}, {"film_changes_output", true}, {"distinct_seeds_change_output", true}, {"paused_repeat", true}, {"accepted_time_limits", {-1'000'000, 1'000'000}}, {"time_and_geometry_recovered", true}});
                 require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                 device.release_images();
@@ -1340,7 +1436,7 @@ namespace {
                 require(paused != clean && render(0.0) == paused, "expected active grain and an exact paused repeat");
                 if (eightMmProxy) {
                     set_grain_geometry(host, effect, kBelowMinimumSample);
-                    reject_footprint("Film v1 unsupported sample footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.1220703125, supported_texels=0.244140625..=240000) (rendered=32x16, action_scale=");
+                    reject_footprint("Grain v2 unsupported sample footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.1220703125, supported_texels=0.244140625..=240000) (rendered=32x16, action_scale=");
                     set_grain_geometry(host, effect, kEightMmProxy);
                     require(render(0.0) == paused, "minimum-width proxy did not recover bit-exactly");
                 }
@@ -1363,17 +1459,17 @@ namespace {
                     change("GrainActive", {0});
                     const auto shiftedClean = render(0.0);
                     change("GrainActive", {1});
-                    const auto shiftedFilm = render(0.0);
+                    const auto shiftedV2 = render(0.0);
                     // This pixel straddles the first 128-texel placement seam.
-                    require(!std::equal(shiftedFilm.begin() + 12, shiftedFilm.begin() + 15, shiftedClean.begin() + 12),
-                            "shifted seam interior did not receive Film grain");
+                    require(!std::equal(shiftedV2.begin() + 12, shiftedV2.begin() + 15, shiftedClean.begin() + 12),
+                            "shifted seam interior did not receive Grain v2");
                     set_grain_geometry(host, effect, kShiftedClipped);
-                    require(render(0.0) == shiftedFilm, "equivalent shifted Film delivered words differ");
+                    require(render(0.0) == shiftedV2, "equivalent shifted Grain v2 delivered words differ");
                     change("GrainActive", {0});
                     require(render(0.0) == shiftedClean, "equivalent shifted clean delivered words differ");
                     set_grain_geometry(host, effect, kShiftedQuarter);
                     change("GrainActive", {1});
-                    require(render(0.0) == shiftedFilm, "Film did not return to the first shifted encoding");
+                    require(render(0.0) == shiftedV2, "Grain v2 did not return to the first shifted encoding");
                     std::cout << test.id << " equivalent shifted delivered words; active seam interior\n";
                 }
                 Json row{{"case_id", test.id}, {"route", test.routeName}, {"paused_repeat", true}};
@@ -1456,7 +1552,7 @@ namespace {
                         const auto clean = render(time);
                         change("FilmDustAmount", {10.0});
                         change("FilmScratchAmount", {10.0});
-                        // Use Current at the physical image scale as the processed reference.
+                        // Use Legacy at the physical image scale as the processed reference.
                         change("GrainModel", {std::string("current")});
                         for (const auto* clip : {"Source", "Output"})
                             host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, scale);
@@ -1468,7 +1564,7 @@ namespace {
                         require(render(time) == artifacts, "unit image scales changed grain-off artifact geometry");
                         change("GrainActive", {1});
                         const auto grained = render(time);
-                        require(grained != artifacts, "absent thumbnail flag suppressed Film");
+                        require(grained != artifacts, "absent thumbnail flag suppressed Grain v2");
                         if (width == 92) {
                             struct FlagCase {
                                 const char* id;
@@ -1477,7 +1573,7 @@ namespace {
                                 bool thumbnail = false;
                             };
                             // Empty storage erases the property. Only one or two
-                            // scalar ones without any explicit veto suppress Film.
+                            // scalar ones without any explicit veto suppress Grain v2.
                             const std::array flagCases{
                                 FlagCase{"absent-absent", {}, {}},
                                 FlagCase{"source-one", {1}, {}, true},
@@ -1529,7 +1625,7 @@ namespace {
                                                call.operation == operation && call.status == status;
                                     });
                                     require(hits == 1, "thumbnail property fault did not reach its intended clip and operation");
-                                    require(words == grained, "thumbnail property fault suppressed Film");
+                                    require(words == grained, "thumbnail property fault suppressed Grain v2");
                                     flags.push_back(Json::array({clip, operation, status, "timeline-film"}));
                                 };
                                 host.fail_next(property, status);
@@ -1539,25 +1635,25 @@ namespace {
                             }
                             require(render(time) == artifacts, "valid flags did not recover after the property faults");
 
-                            // Invalid but still captured as enabled Film; geometry
+                            // Invalid but still captured as enabled Grain v2; geometry
                             // and stock are unchanged so they cannot mask rejection.
                             change("FilmGrainAmountEv", {4.0});
                             const auto reject_film_controls = [&] {
-                                reject(kOfxStatErrFatal, "FilmJuicerRenderAdmission", "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls");
+                                reject(kOfxStatErrFatal, "FilmJuicerRenderAdmission", "Grain v2 requires Kodak Portra 400 or Kodak Gold 200, a supported camera film format, a negative route and valid grain controls");
                             };
                             reject_film_controls();
                             source_flag({});
                             output_flag({});
                             reject_film_controls();
                             change("FilmGrainAmountEv", amountDefault);
-                            require(render(time) == grained, "restored Film controls did not recover timeline words");
+                            require(render(time) == grained, "restored Grain v2 controls did not recover timeline words");
                             source_flag({1});
-                            require(render(time) == artifacts, "restored Film controls did not recover thumbnail words");
+                            require(render(time) == artifacts, "restored Grain v2 controls did not recover thumbnail words");
                             source_flag({});
                             change("FilmGrainAmountEv", {1.0});
-                            require(render(time) != grained, "valid Film amount edit did not change delivered pixels");
+                            require(render(time) != grained, "valid Grain v2 amount edit did not change delivered pixels");
                             change("FilmGrainAmountEv", amountDefault);
-                            require(render(time) == grained, "timeline did not return to the original Film amount words");
+                            require(render(time) == grained, "timeline did not return to the original Grain v2 amount words");
                         }
                         source_flag({1});
                         output_flag({});
@@ -1570,7 +1666,7 @@ namespace {
                         require(render(time) == artifacts, "Output thumbnail did not match grain-off effects");
                         geometry(8);
                         output_flag({});
-                        require(render(time) == timeline, "timeline Film changed after a flagged thumbnail");
+                        require(render(time) == timeline, "timeline Grain v2 changed after a flagged thumbnail");
                         rows.push_back({{"width", width}, {"height", height}, {"artifacts_change_pixels", true}, {"film_differs_from_artifacts", true}, {"processed_thumbnail_matches", true}, {"timeline_returned", true}});
                     }
                     for (const auto& [rasterWidth, mappedWidth] : std::array{std::pair{100, 101}, std::pair{101, 100}}) {
@@ -1578,7 +1674,7 @@ namespace {
                         for (const auto* clip : {"Source", "Output"})
                             host.set_clip_region(effect, clip, OfxRectD{0.0, 0.0, 4832.0, 2016.0});
                         host.set_property(host.action_args(), kOfxImageEffectPropRenderScale, {mappedWidth / 4832.0, 50.0 / 2016.0});
-                        reject(kOfxStatFailed, "FilmJuicerFilmGrainGeometry", "Film v1 requires complete square-pixel source and output images");
+                        reject(kOfxStatFailed, "FilmJuicerFilmGrainGeometry", "Grain v2 requires complete square-pixel source and output images");
                         mismatches.push_back(Json::array({rasterWidth, mappedWidth, kOfxStatFailed}));
                     }
                     geometry(8);
@@ -1586,17 +1682,17 @@ namespace {
                     const auto off = render(time);
                     change("GrainModel", {std::string("current")});
                     change("GrainActive", {1});
-                    const auto current = render(time);
-                    require(current != off, "Current grain did not change grain-off effects pixels");
+                    const auto legacy = render(time);
+                    require(legacy != off, "Legacy grain did not change grain-off effects pixels");
                     for (const auto* clip : {"Source", "Output"})
                         host.set_image_property(effect, clip, kOfxImageEffectPropRenderScale, {1.0, 1.0});
-                    const auto currentUnit = render(time);
-                    require(currentUnit != current, "Current did not use its source image scale");
+                    const auto legacyUnit = render(time);
+                    require(legacyUnit != legacy, "Legacy did not use its source image scale");
                     source_flag({1});
                     output_flag({1});
-                    require(render(time) == currentUnit, "thumbnail flags changed pre-resized Current grain or effects");
+                    require(render(time) == legacyUnit, "thumbnail flags changed pre-resized Legacy grain or effects");
                     geometry(8);
-                    require(render(time) == current, "Current did not recover when the source image scale returned");
+                    require(render(time) == legacy, "Legacy did not recover when the source image scale returned");
                     routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"renders", std::move(rows)}, {"flag_raster", {92, 46}}, {"flag_checks", std::move(flags)}, {"property_faults_recovered", true}, {"film_controls_rejected", {{"thumbnail", kOfxStatErrFatal}, {"timeline", kOfxStatErrFatal}, {"diagnostic", "FilmJuicerRenderAdmission"}, {"recovered", true}}}, {"film_amount_edit_changed_words_and_returned", true}, {"one_pixel_mismatches", std::move(mismatches)}, {"current_image_scale_preserved", true}, {"images_released_once", true}});
                     require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
                     device.release_images();
@@ -1686,16 +1782,16 @@ namespace {
                     const auto smaller = film_frame(8.0, 4.0);
                     change("GrainActive", {0});
                     const auto off = render(37.0);
-                    require(smaller != off, "8 mm Film v1 did not change delivered pixels");
+                    require(smaller != off, "8 mm Grain v2 did not change delivered pixels");
                     change("GrainModel", {std::string("current")});
                     change("GrainActive", {1});
-                    require(render(37.0) != off, "8 mm Current did not change delivered pixels");
+                    require(render(37.0) != off, "8 mm Legacy did not change delivered pixels");
 
                     resize(8192, 16);
                     change("GrainModel", {std::string("film_v1")});
                     select_format(0, 8.0);
                     change("FilmGrainTexelPitchUm", {4.0});
-                    reject_footprint("Film v1 unsupported rendered footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.244140625, supported_texels=0.25..=240000) (rendered=8192x16, action_scale=");
+                    reject_footprint("Grain v2 unsupported rendered footprint (film_long_edge_mm=8, grain_size_um=4, footprint_texels=0.244140625, supported_texels=0.25..=240000) (rendered=8192x16, action_scale=");
 
                     geometry(2);
                     select_format(6, 11.66);
@@ -1712,7 +1808,7 @@ namespace {
                     change("GrainActive", {1});
                     for (double size : {0.5, 1.0, 4.0}) {
                         change("FilmGrainTexelPitchUm", {size});
-                        require(render(37.0) != off, "proxy Film v1 did not change delivered pixels");
+                        require(render(37.0) != off, "proxy Grain v2 did not change delivered pixels");
                     }
                 }
                 change("FilmGrainTexelPitchUm", {0.5});
@@ -1746,7 +1842,7 @@ namespace {
             if (test.height > test.width) {
                 change("GrainModel", {std::string("film_v1")});
                 const auto film = render(37.0);
-                require(film != off, "portrait Film v1 did not change delivered pixels");
+                require(film != off, "portrait Grain v2 did not change delivered pixels");
                 change("FilmGrainTexelPitchUm", {4.0});
                 const auto maxSize = render(37.0);
                 require(maxSize != film && maxSize != off, "portrait maximum Size did not change delivered pixels");
@@ -1755,16 +1851,16 @@ namespace {
                 device.release_images();
                 continue;
             }
-            const auto current = render(37.0);
-            require(current != off, "Current grain did not change delivered pixels");
+            const auto legacy = render(37.0);
+            require(legacy != off, "Legacy grain did not change delivered pixels");
             change("GrainDebugView", {1});
             const auto diagnostic = render(37.0);
-            require(diagnostic != current, "Current debug view did not change delivered pixels");
+            require(diagnostic != legacy, "Legacy debug view did not change delivered pixels");
             change("GrainModel", {std::string("film_v1")});
             const auto film = render(37.0);
-            require(film != off, "Film v1 did not change delivered pixels");
+            require(film != off, "Grain v2 did not change delivered pixels");
             change("FilmGrainChromaFraction", {1.0});
-            require(render(37.0) == film, "explicit Colour 1 changed default Film output");
+            require(render(37.0) == film, "explicit Colour 1 changed default Grain v2 output");
             for (const auto& [name, values, reset] : std::array{
                      std::tuple{"FilmGrainAmountEv", std::array{-3.0, 1.25, 3.0}, amountDefault},
                      std::tuple{"FilmGrainTexelPitchUm", std::array{0.5, 1.5, 4.0}, sizeDefault},
@@ -1774,35 +1870,80 @@ namespace {
                     change(name, {value});
                     lastEdit += "=" + std::to_string(value);
                     const auto edited = render(37.0);
-                    require(edited != off && edited != film, "Film slider did not change the delivered image");
+                    require(edited != off && edited != film, "Grain v2 slider did not change the delivered image");
                 }
                 change(name, reset);
-                require(render(37.0) == film, "descriptor-default reset did not restore Film output");
+                require(render(37.0) == film, "descriptor-default reset did not restore Grain v2 output");
             }
             change("FilmGrainAmountEv", {3.0});
             for (double size : {0.5, 4.0}) {
                 change("FilmGrainTexelPitchUm", {size});
                 for (double colour : {0.0, 1.0}) {
                     change("FilmGrainChromaFraction", {colour});
-                    require(render(37.5) != off, "combined Film slider extrema produced grain-off output");
+                    require(render(37.5) != off, "combined Grain v2 slider extrema produced grain-off output");
                 }
             }
             change("FilmGrainAmountEv", amountDefault);
             change("FilmGrainTexelPitchUm", sizeDefault);
             change("FilmGrainChromaFraction", colourDefault);
-            require(render(37.0) == film, "paused Film frame changed");
+            require(render(37.0) == film, "paused Grain v2 frame changed");
             const auto later = render(38.0);
-            require(later != film, "Film frame seed did not change");
-            require(render(37.0) == film, "out-of-order Film frame changed");
+            require(later != film, "Grain v2 frame seed did not change");
+            require(render(37.0) == film, "out-of-order Grain v2 frame changed");
             const auto fractional = render(37.5);
-            require(fractional != film && fractional != later, "fractional Film frame did not change");
+            require(fractional != film && fractional != later, "fractional Grain v2 frame did not change");
             change("GrainModel", {std::string("current")});
-            require(render(37.0) == diagnostic, "saved Current debug view changed after Film");
+            require(render(37.0) == diagnostic, "saved Legacy debug view changed after Grain v2");
             change("GrainDebugView", {0});
-            require(render(37.0) == current, "Current output changed after Film");
+            require(render(37.0) == legacy, "Legacy output changed after Grain v2");
             change("GrainActive", {0});
             require(render(37.0) == off, "grain-off output changed after model edits");
-            routes.push_back({{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}});
+            Json row{{"case_id", test.id}, {"route", test.routeName}, {"width", test.width}, {"height", test.height}, {"film_changes_output", true}, {"paused_repeat", true}, {"out_of_order_repeat", true}, {"fractional_distinct", true}, {"current_changes_output", true}, {"off_restored", true}};
+            if (std::string_view(test.id).ends_with("-hd")) {
+                constexpr double time = 37.375;
+                change("GrainActive", {1});
+                change("GrainModel", {std::string("film_v1")});
+                const auto portra = render(time);
+                change_stock("kodak_gold_200");
+                const auto gold = render(time);
+                require(gold != portra && render(time) == gold, "Gold did not select distinct, repeatable Grain v2 words");
+                require(render(time + 0.25) != gold, "Gold fractional time did not change Grain v2 output");
+                change("GrainActive", {0});
+                const auto goldOff = render(time);
+                require(goldOff != gold, "Gold Grain v2 did not change delivered pixels");
+                change("GrainModel", {std::string("current")});
+                change("GrainActive", {1});
+                const auto goldLegacy = render(time);
+                require(goldLegacy != goldOff && goldLegacy != gold, "Gold Legacy did not select a distinct grain path");
+                change("GrainModel", {std::string("film_v1")});
+                host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, {1});
+                require(render(time) == goldOff, "Gold flagged thumbnail did not match grain-off pixels");
+                change_stock("kodak_ektar_100");
+                host.clear_calls();
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                        "unsupported stock was admitted with Grain v2 enabled on a thumbnail");
+                host.set_clip_property(effect, "Output", kOfxImageClipPropThumbnail, {});
+                require(lifecycle.call(kOfxImageEffectActionRender, effect, host.action_args()) == kOfxStatErrFatal,
+                        "unsupported stock was admitted with Grain v2 enabled on the timeline");
+                change_stock("kodak_gold_200");
+                require(render(time) == gold, "Gold did not recover its fixed-time words after model and thumbnail edits");
+                // At 40 mm and Size 0.5, the rendered pitch is over the
+                // 37.5-texel cutoff while Full cells use half that pitch.
+                change("CameraFilmFormatMm", {40.0});
+                change("FilmGrainTexelPitchUm", {0.5});
+                const auto wideGold = render(time);
+                set_grain_geometry(host, effect, {{0, 0, 3840, 2160}, {0, 0, 1920, 1080}, {0.5, 0.5}});
+                const auto proxyGold = render(time);
+                require(proxyGold != wideGold && proxyGold == render(time), "Gold integrated proxy was not distinct and repeatable");
+                set_grain_geometry(host, effect, {{0, 0, 1920, 1080}, {0, 0, 1920, 1080}});
+                change("CameraFilmFormatPreset", {2});
+                change("FilmGrainTexelPitchUm", sizeDefault);
+                require(render(time) == gold, "Gold did not return to the original Full output");
+                change_stock("kodak_portra_400");
+                require(render(time) == portra, "Portra did not return bit-exactly after Gold");
+                row["gold"] = {{"current_and_film", true}, {"thumbnail_and_off", true}, {"unsupported_stock_rejected", true}, {"integrated_proxy", true}, {"portra_gold_portra", true}};
+            }
+            routes.push_back(std::move(row));
             require(lifecycle.destroy(effect) == kOfxStatOK, "preview destroy");
             device.release_images();
         }
@@ -1812,8 +1953,8 @@ namespace {
         restore.restore();
         std::set<std::string> compared;
         for (const auto& row : routes)
-            require(compared.insert(row.at("case_id").get<std::string>()).second, "duplicate Film v1 witness case");
-        require(compared.size() == 23, "expected 23 completed Film v1 witness cases");
+            require(compared.insert(row.at("case_id").get<std::string>()).second, "duplicate Grain v2 witness case");
+        require(compared.size() == 23, "expected 23 completed Grain v2 witness cases");
         std::cout << "CTEST_FULL_OUTPUT\n";
         std::cout << Json{{"schema", "film-v1-witness-v1"}, {"routes", routes}, {"context_restored", true}}.dump() << '\n';
         return allPassed && std::cout ? 0 : 1;
@@ -1824,12 +1965,15 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 7 && std::string_view(argv[1]) == "--gold-look") {
+            return gold_look({.module = argv[2], .source = argv[3], .destination = argv[4], .width = std::stoi(argv[5]), .height = std::stoi(argv[6])});
+        }
         if (argc == 7 && std::string_view(argv[1]) == "--frame-and-print-edits") {
             return frame_and_print_edits({argv[2], argv[3], argv[4], argv[5], argv[6]});
         }
-        if (argc >= 3 && std::string_view(argv[1]) == "--film-v1-witness") {
+        if (argc >= 3 && std::string_view(argv[1]) == "--grain-v2-witness") {
             require(argc == 3, "preview witness arguments");
-            return film_v1_witness(argv[2]);
+            return grain_v2_witness(argv[2]);
         }
         const bool summary = argc == 6 && std::string_view(argv[5]) == "--summary";
         require(argc == 5 || summary, "usage: JuicerProductionPreparedRenderProbe module Resources ordinary-${preset}.json preset [--summary]");
@@ -1883,15 +2027,15 @@ int main(int argc, char** argv) {
                 require(host.value(effect, "FilmGrainAmountEv") == std::vector<InstanceValue>{0.0} &&
                             host.value(effect, "FilmGrainTexelPitchUm") == std::vector<InstanceValue>{1.0} &&
                             host.value(effect, "FilmGrainChromaFraction") == std::vector<InstanceValue>{1.0},
-                        "Film v1 control defaults");
+                        "Grain v2 control defaults");
                 host.set_value(effect, "GrainDebugView", {3});
                 host.set_value(effect, "GrainModel", {std::string("film_v1")});
                 auto* args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainModel"});
-                require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "switch to Film v1");
+                require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "switch to Grain v2");
                 host.set_value(effect, "GrainModel", {std::string("current")});
                 args = host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "GrainModel"});
-                require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "switch to Current");
-                require(host.value(effect, "GrainDebugView") == std::vector<InstanceValue>{3}, "Current debug view retained");
+                require(lifecycle.call(kOfxActionInstanceChanged, effect, args) == kOfxStatReplyDefault, "switch to Legacy");
+                require(host.value(effect, "GrainDebugView") == std::vector<InstanceValue>{3}, "Legacy debug view retained");
                 host.set_value(effect, "GrainDebugView", {0});
             }
             const auto source = initial_source(test);

@@ -205,10 +205,10 @@ pub(super) fn describe(callback: &Callback<'_>, parameters: &Parameters<'_>) -> 
     }
     halation::describe_advanced(parameters)?;
     define(parameters, grain::GRAIN, catalog)?;
-    define(parameters, grain::FILM_MODEL, catalog)?;
-    grain::describe_film(parameters)?;
+    define(parameters, grain::GRAIN_MODEL, catalog)?;
+    grain::describe_grain_v2(parameters)?;
     for group in [
-        grain::GRAIN_CONTROLS,
+        grain::LEGACY_GRAIN_CONTROLS,
         spatial::EFFECTS,
         spatial::DIFFUSION,
         color::GLARE,

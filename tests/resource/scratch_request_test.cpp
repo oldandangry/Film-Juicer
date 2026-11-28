@@ -20,7 +20,7 @@ namespace {
     using JuicerCuda::ResourceManager::ScratchRequestExtent;
     using JuicerCuda::ResourceManager::WorkspaceLayout;
     using Spektrafilm::DirScratchTier;
-    using Spektrafilm::VisualGrainScratchShape;
+    using Spektrafilm::LegacyGrainScratchShape;
 
     constexpr ScratchRequestExtent kExtent{1920, 1080};
     constexpr std::uint64_t kDescriptorHash = 0x12345678;
@@ -236,7 +236,7 @@ namespace {
         attachments.needOptics = true;
         attachments.needSharedTmp = true;
         attachments.aliasScannerRgbFromSpatialDirFiltered = true;
-        const std::array shapes{VisualGrainScratchShape::Streamed, VisualGrainScratchShape::StreamedShared, VisualGrainScratchShape::StreamedLayers, VisualGrainScratchShape::StreamedLayersShared};
+        const std::array shapes{LegacyGrainScratchShape::Streamed, LegacyGrainScratchShape::StreamedShared, LegacyGrainScratchShape::StreamedLayers, LegacyGrainScratchShape::StreamedLayersShared};
         for (std::size_t index = 0; index < shapes.size(); ++index) {
             const auto layout = WorkspaceLayout::create(kExtent, *dir, attachments, shapes[index]);
             ASSERT_TRUE(layout);
@@ -264,22 +264,22 @@ namespace {
     }
 
     TEST(ScratchRequest, LayoutConstructionRejectsContradictionsAndKeepsInactiveExplicit) {
-        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, {}, VisualGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, {}, LegacyGrainScratchShape::None));
         ScratchRequestAttachments attachments;
         attachments.needOptics = true;
-        EXPECT_FALSE(WorkspaceLayout::create({0, 1080}, std::monostate{}, attachments, VisualGrainScratchShape::None));
-        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, static_cast<VisualGrainScratchShape>(255)));
+        EXPECT_FALSE(WorkspaceLayout::create({0, 1080}, std::monostate{}, attachments, LegacyGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, static_cast<LegacyGrainScratchShape>(255)));
         attachments.aliasScannerRgbFromSpatialDirFiltered = true;
-        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, VisualGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, LegacyGrainScratchShape::None));
         const auto dir = ActiveDirScratch::create(kDescriptorHash, kFir, {});
         ASSERT_TRUE(dir);
         attachments.needSharedTmp = true;
-        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, LegacyGrainScratchShape::None));
         attachments.aliasScannerRgbFromSpatialDirFiltered = false;
         attachments.needAux = true;
-        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, LegacyGrainScratchShape::None));
         attachments.needAux = false;
-        const auto dedicated = WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::StreamedLayersShared);
+        const auto dedicated = WorkspaceLayout::create(kExtent, *dir, attachments, LegacyGrainScratchShape::StreamedLayersShared);
         ASSERT_TRUE(dedicated);
         EXPECT_EQ(dedicated->scanner_storage(), ScannerStorage::Dedicated);
         EXPECT_EQ(dedicated->grain_storage(), GrainStorage::Dedicated);
@@ -294,7 +294,7 @@ namespace {
         ASSERT_TRUE(dir);
         ScratchRequestAttachments attachments;
         attachments.needSharedTmp = true;
-        const auto build = WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None);
+        const auto build = WorkspaceLayout::create(kExtent, *dir, attachments, LegacyGrainScratchShape::None);
         ASSERT_TRUE(build);
         EXPECT_EQ(build->scanner_storage(), ScannerStorage::Absent);
         EXPECT_EQ(build->grain_storage(), GrainStorage::Absent);
@@ -332,7 +332,7 @@ namespace {
         EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
         ScratchRequestAttachments attachments;
         attachments.needOptics = true;
-        const auto layout = WorkspaceLayout::create(kExtent, std::monostate{}, attachments, VisualGrainScratchShape::None);
+        const auto layout = WorkspaceLayout::create(kExtent, std::monostate{}, attachments, LegacyGrainScratchShape::None);
         ASSERT_TRUE(layout);
         invalid = layout->allocation();
         ++invalid.generation;

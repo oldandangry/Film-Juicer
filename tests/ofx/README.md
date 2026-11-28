@@ -4,8 +4,8 @@ The linked host cases call the production discovery shim, Rust action dispatcher
 and native CUDA owner. The [production render probe](../ffi/production-ofx-render.cpp)
 loads the staged module and its resources. It compares guarded Direct and Print
 output against the selected `fixtures/spectral-v1/ordinary-${preset}.json` and
-exercises edited Print and Film v1 thumbnail returns, post-enqueue cancellation,
-and exactly-once release of both acquired images. The Film v1 staged cases use
+exercises edited Print and Grain v2 thumbnail returns, post-enqueue cancellation,
+and exactly-once release of both acquired images. The Grain v2 staged cases use
 the natural OFX instance seed.
 
 Use the [test guide](../README.md) for the host and serialized GPU selections.

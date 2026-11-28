@@ -40,7 +40,7 @@ namespace {
             throw std::runtime_error("render reference encoding");
         return result;
     }
-    void expect_film_grain_capture() {
+    void expect_grain_v2_capture() {
         std::size_t captures = 0;
         for (auto& row : reference_rows) {
             auto expected = decode(row[1]);
@@ -54,7 +54,7 @@ namespace {
             ++captures;
         }
         if (captures != 12)
-            throw std::runtime_error("Film v1 render capture membership");
+            throw std::runtime_error("Grain v2 render capture membership");
     }
     struct Fault {
         std::string_view operation;
@@ -192,17 +192,17 @@ namespace {
         require(reference.source_releases == candidate.source_releases, std::string(id) + ": Source release count differs");
         require(reference.output_releases == candidate.output_releases, std::string(id) + ": Output release count differs");
         if (id == "source_reply_yes") {
-            const auto film_model_call = std::find_if(reference.calls.begin(), reference.calls.end(), [](const auto& call) {
+            const auto grain_model_call = std::find_if(reference.calls.begin(), reference.calls.end(), [](const auto& call) {
                 return call.operation == "param_get" && call.target == "GrainModel";
             });
-            if (film_model_call != reference.calls.end()) {
-                const auto index = film_model_call - reference.calls.begin();
+            if (grain_model_call != reference.calls.end()) {
+                const auto index = grain_model_call - reference.calls.begin();
                 auto altered = legacy_calls;
                 altered.erase(altered.begin() + index);
-                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a missing Film v1 model getter");
+                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a missing Grain v2 model getter");
                 altered = legacy_calls;
                 std::iter_swap(altered.begin() + index, altered.begin() + index - 1);
-                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a misplaced Film v1 model getter");
+                require(expected_calls != ofx_test::reference::calls(altered), "render accepted a misplaced Grain v2 model getter");
                 altered = legacy_calls;
                 altered.front().operation = "altered";
                 require(expected_calls != ofx_test::reference::calls(altered), "render accepted a changed ordinary call");
@@ -560,7 +560,7 @@ int main(int argc, char** argv) try {
         }
         require(archived_grid_getters == 12, "archived render scanner grid getter membership");
     }
-    expect_film_grain_capture();
+    expect_grain_v2_capture();
     {
         reference_group = "non_cuda";
         non_cuda(reference_plugin, candidate_plugin);

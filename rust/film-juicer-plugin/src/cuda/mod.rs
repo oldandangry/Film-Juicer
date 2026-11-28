@@ -37,14 +37,14 @@ mod abi_tests;
 
 mod frame;
 #[cfg(test)]
-pub(crate) fn projected_film_grain(
+pub(crate) fn projected_grain_v2(
     state: &film_juicer_core::recipe::RenderState,
     raw: &sys::FjFrame,
 ) -> Option<sys::FjFilmGrain> {
-    frame::film_grain(state, raw).unwrap_or_else(|_| panic!("Film ABI projection failed"))
+    frame::grain_v2(state, raw).unwrap_or_else(|_| panic!("Film ABI projection failed"))
 }
 mod frame_policy;
-pub(crate) const FILM_GRAIN_TIME_RANGE: std::ops::RangeInclusive<f64> = -1_000_000.0..=1_000_000.0;
+pub(crate) const GRAIN_V2_TIME_RANGE: std::ops::RangeInclusive<f64> = -1_000_000.0..=1_000_000.0;
 #[allow(
     unsafe_code,
     reason = "call-local scanner and Gaussian candidates back the synchronous native preparation callbacks"

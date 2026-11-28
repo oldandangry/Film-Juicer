@@ -8,6 +8,9 @@ set(JUICER_RUNTIME_RESOURCES
     filters/heat_absorbing/schott/KG3.csv
     filters/lens_transmission/canon/canon_24_f28_is.csv
     filters/neutral_print_filters.json
+    grain/gold-200/manifest.json
+    grain/gold-200/records.f32
+    grain/gold-200/sums.f32
     grain/portra-400/manifest.json
     grain/portra-400/records.f32
     grain/portra-400/sums.f32

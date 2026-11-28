@@ -1,7 +1,7 @@
-# Portra Film v1 density certificate
+# Portra Grain v2 density certificate
 
 The certificate covers the immutable Portra 400 bank and the two negative
-routes. [`Raster::sampling`](../../rust/film-juicer-core/src/film/grain/film_v1.rs)
+routes. [`Raster::sampling`](../../rust/film-juicer-core/src/film/grain/grain_v2.rs)
 selects the table pitch. For calibrated sampling it uses `1000 × format / (rendered
 long edge × Size)`, with the realized calibrated raster where applicable. For
 integrated sampling the denominator uses the canonical Full extent. The sampling
@@ -16,7 +16,7 @@ brightest box corner, selecting the upper density wherever its dye is negative.
 
 ## Placement and projection
 
-[`continuous_footprint_certificate`](../../rust/film-juicer-core/src/film/density/portra.rs)
+[`continuous_footprint_certificate`](../../rust/film-juicer-core/src/film/density/grain_v2.rs)
 recomputes the signed extrema and paired bright deficits from the frozen SAT
 words. For subtexel placement, the Float64 weighted texels form a convex light
 combination. For rectangles, the proof checks fractional translations between
@@ -29,7 +29,7 @@ The [periodic bank test](../../rust/film-juicer-core/src/film/density/portra/per
 recomputes all 16 × 51 stored strip and corner entries. At widths at least 1536,
 the relative residual is bounded by `1476 / (256 × width) + 4720 / width²`.
 
-The [CUDA sampler](../../src/Cuda/JuicerCudaFilmGrain.cuh) scales a weighted
+The [CUDA sampler](../../src/Cuda/JuicerCudaGrainV2.cuh) scales a weighted
 placement sum by its Euclidean normalization. Within an axis at most one of
 the staggered layings straddles a seam. The maximum sum of the two layings'
 normalized weight sums is 3, from 2 + 1 in the same laying, or √2 + √2 across
@@ -63,7 +63,7 @@ each pair of adjacent levels, plus both angular errors, gives the conservative
 correlation bound. At `e ≥ n` the interval carries no useful correlation bound
 and can be split or rechecked from the production constructor.
 
-[`Bounds::portra_film_v1`](../../rust/film-juicer-core/src/film/density.rs)
+[`Bounds::for_grain_v2`](../../rust/film-juicer-core/src/film/density.rs)
 tries the original signed enclosure first. A calibrated table from 1 through
 37.5 must also meet the production scaled mean and adjacent-correlation limits.
 The tighter placement certificate covers the bands through 10. For widths

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "stock": "kodak_gold_200",
+  "records": "records.f32",
+  "sums": "sums.f32",
+  "records_sha256": "1fc0a39ab8d0e46f8350c2a2b66934cc922f42e348ac3a6e0d4814b1329fa54d",
+  "sums_sha256": "0dabacd1b8759604cfc4ad824c932c1650c1ec9dc75e8909781fcd43a13acf8f",
+  "provenance": {
+    "polarity": "negative",
+    "profile_sha256": "e1fb1fb3b728c67be42524cfca77e03ebded2d53d81ca89f5f8d58bf5ab3291e",
+    "response_sha256": "dfd7745d006a8a51bd791c3de03bdbf4cb6a5a62236dfb7e7f2f4abf5dfb8cc8",
+    "calibration": {
+      "strength": 0.0105,
+      "size_mm": 0.005,
+      "layer_weights": [
+        0.7,
+        1.0,
+        1.35
+      ],
+      "base_density_offset": 0.1,
+      "fog_density": 0.03,
+      "read_density": "net",
+      "radius_span": 6,
+      "sublayer_shares": [
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "coating_density_scale": 1,
+      "provenance": {
+        "basis": "authored",
+        "source": "Film-Juicer G2 Kodak Gold 200 research assumptions. The 0.0105 strength at the pinned 48 \u00b5m aperture is an authored estimate. Size, layer weights, base, fog and crystal population are synthetic inputs from the same experiment."
+      }
+    },
+    "generator": {
+      "fotufilm_revision": "87a3f46af093a9e6bf76acf21aca83d3b9e2c600",
+      "swift_version": "Swift version 6.1.2 (swift-6.1.2-RELEASE)",
+      "capture_sha256": "c6784da75f898b16c4b01229643883c46a131b34b7ae3c004a8a0c8be3aff19c",
+      "reference_adapter_sha256": "a82e45ae5b41b5e287a5f9f17f777a26c3d89c0f8e90943026840c60a68e6ef3",
+      "probe_adapter_sha256": "d7ae2f8de5652fa091ca915e89a539536e57a41478fb6eca9c70a03cb88bdc81",
+      "coating_seed": "0xA11C40575EED0001",
+      "measurement_seed": "0x5A3F1E1D",
+      "halide_enabled": false
+    }
+  }
+}

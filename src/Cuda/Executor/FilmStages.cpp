@@ -376,9 +376,9 @@ namespace JuicerCuda {
 
     GrainModel grain_model(const ScheduleInput& input) {
         // The raw boundary has already rejected simultaneous descriptors.
-        if (input.preparation.filmGrain)
-            return GrainModel::Film;
-        return input.descriptors.grain ? GrainModel::Current : GrainModel::Disabled;
+        if (input.preparation.grainV2)
+            return GrainModel::GrainV2;
+        return input.descriptors.grain ? GrainModel::Legacy : GrainModel::Disabled;
     }
 
     void meter_camera_exposure(
@@ -737,35 +737,35 @@ namespace JuicerCuda {
         return optical;
     }
 
-    void bind_film_grain(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
-                         const FjFilmGrain& input,
-                         const JuicerCuda::FrameRect& window,
-                         CaptureRoute route,
-                         GrainBinding& grain,
-                         const ExecutionErrors& errors) {
-        grain.filmBank = preparedFrame.film_grain_bank();
+    void bind_grain_v2(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+                       const FjFilmGrain& input,
+                       const JuicerCuda::FrameRect& window,
+                       CaptureRoute route,
+                       GrainBinding& grain,
+                       const ExecutionErrors& errors) {
+        grain.grainV2Bank = preparedFrame.grain_v2_bank();
         const bool direct = route == CaptureRoute::Direct;
-        const char* stage = direct ? (route == CaptureRoute::Print ? "print_film_grain_binding" : "direct_film_grain_binding") : "print_film_grain_binding";
-        if (!grain.filmBank) {
-            errors.fail_grain_stage({stage, direct ? (route == CaptureRoute::Print ? "print Film grain binding failed: missing frame bank" : "direct Film grain binding failed: missing frame bank") : "print Film grain binding failed: missing frame bank"}, cudaErrorInvalidValue);
+        const char* stage = direct ? (route == CaptureRoute::Print ? "print_grain_v2_binding" : "direct_grain_v2_binding") : "print_grain_v2_binding";
+        if (!grain.grainV2Bank) {
+            errors.fail_grain_stage({stage, direct ? (route == CaptureRoute::Print ? "print Grain v2 binding failed: missing frame bank" : "direct Grain v2 binding failed: missing frame bank") : "print Grain v2 binding failed: missing frame bank"}, cudaErrorInvalidValue);
         }
-        JuicerCuda::FilmGrain::bind_film_grain(
-            input, {window.x1, window.y1, window.x2 - window.x1, window.y2 - window.y1}, input.sample_step[0] > 0.0 ? preparedFrame.film_proxy_workspace() : nullptr, grain.filmTables, grain.filmFrame);
+        JuicerCuda::GrainV2::bind_grain_v2(
+            input, {window.x1, window.y1, window.x2 - window.x1, window.y2 - window.y1}, input.sample_step[0] > 0.0 ? preparedFrame.grain_v2_proxy_workspace() : nullptr, grain.grainV2Tables, grain.grainV2Frame);
     }
 
-    void bind_grain(
+    void bind_legacy_grain(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
-        const JuicerCuda::VisualGrainPayloadInput& input,
+        const JuicerCuda::LegacyGrainPayloadInput& input,
         GrainBinding& grain,
         const ExecutionErrors& errors) {
-        const auto resources = preparedFrame.visual_grain_resources();
-        grain.workspace = preparedFrame.visual_grain_workspace(
+        const auto resources = preparedFrame.legacy_grain_resources();
+        grain.workspace = preparedFrame.legacy_grain_workspace(
             focusedWorkspace);
         std::string grainPayloadDiagnostic;
         if (!resources.active ||
             !grain.workspace.active ||
-            !JuicerCuda::pack_visual_grain_payload(
+            !JuicerCuda::pack_legacy_grain_payload(
                 input,
                 resources,
                 grain.payload,
@@ -943,20 +943,20 @@ namespace JuicerCuda {
         if (model == GrainModel::Disabled)
             return;
 
-        JuicerCuda::FilmGrain::FilmPlanes planes{density.c, density.m, density.y};
+        JuicerCuda::GrainV2::FilmPlanes planes{density.c, density.m, density.y};
         const bool direct = route == CaptureRoute::Direct;
-        if (model == GrainModel::Film) {
-            const auto result = JuicerCuda::FilmGrain::launch_developed(
-                grain.filmBank, grain.filmTables, grain.filmFrame, planes, static_cast<cudaStream_t>(stream));
+        if (model == GrainModel::GrainV2) {
+            const auto result = JuicerCuda::GrainV2::launch_developed(
+                grain.grainV2Bank, grain.grainV2Tables, grain.grainV2Frame, planes, static_cast<cudaStream_t>(stream));
             if (result.status != cudaSuccess) {
                 const JuicerCuda::GrainFailureSite launch{
-                    direct ? (route == CaptureRoute::Print ? "print_film_grain_launch" : "direct_film_grain_launch") : "print_film_grain_launch",
-                    direct ? (route == CaptureRoute::Print ? "print Film grain launch failed" : "direct Film grain launch failed") : "print Film grain launch failed"};
+                    direct ? (route == CaptureRoute::Print ? "print_grain_v2_launch" : "direct_grain_v2_launch") : "print_grain_v2_launch",
+                    direct ? (route == CaptureRoute::Print ? "print Grain v2 launch failed" : "direct Grain v2 launch failed") : "print Grain v2 launch failed"};
                 errors.fail_grain_stage(result.failure ? *result.failure : launch, result.status);
             }
             return;
         }
-        const auto status = juicer_cuda_apply_visual_grain(
+        const auto status = juicer_cuda_apply_legacy_grain(
             &grain.payload,
             &grain.kernels,
             width,
@@ -972,8 +972,8 @@ namespace JuicerCuda {
             stream);
         if (status != cudaSuccess) {
             errors.fail_grain_stage(
-                {direct ? (route == CaptureRoute::Print ? "print_visual_grain_launch" : "direct_visual_grain_launch") : "print_visual_grain_launch",
-                 direct ? (route == CaptureRoute::Print ? "print visual grain launch failed" : "direct visual grain launch failed") : "print visual grain launch failed"},
+                {direct ? (route == CaptureRoute::Print ? "print_legacy_grain_launch" : "direct_legacy_grain_launch") : "print_legacy_grain_launch",
+                 direct ? (route == CaptureRoute::Print ? "print Legacy grain launch failed" : "direct Legacy grain launch failed") : "print Legacy grain launch failed"},
                 status);
         }
     }

@@ -17,7 +17,7 @@
 #include "Cuda/JuicerCudaPayloads.h"
 #include <set>
 
-extern "C" cudaError_t juicer_cuda_apply_visual_grain(
+extern "C" cudaError_t juicer_cuda_apply_legacy_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
 __global__ void grain_prepare_frame_uniforms_kernel(JuicerCuda::GrainPayload);
 __global__ void grain_layer_triplet_kernel(JuicerCuda::GrainPayload, int, int, const float*, float*, int);
@@ -192,7 +192,7 @@ namespace {
             require_cuda(cudaMemcpy(storage.data + channel * count, source.data(), bytes, cudaMemcpyHostToDevice));
         }
         require_cuda(cudaMemset(storage.data + 3 * count, 0xff, 6 * bytes));
-        require_cuda(juicer_cuda_apply_visual_grain(&grain, &prepared, width, height, storage.data, storage.data + count, storage.data + 2 * count, storage.data + 3 * count, storage.data + 4 * count, storage.data + 5 * count, grain.sublayersActive != 0 ? storage.data + 6 * count : nullptr, nullptr, nullptr));
+        require_cuda(juicer_cuda_apply_legacy_grain(&grain, &prepared, width, height, storage.data, storage.data + count, storage.data + 2 * count, storage.data + 3 * count, storage.data + 4 * count, storage.data + 5 * count, grain.sublayersActive != 0 ? storage.data + 6 * count : nullptr, nullptr, nullptr));
 
         // Generate identical particles, then evaluate the original separate
         // blur/accumulate/bias/subtract sequence on the host, one channel at a time.

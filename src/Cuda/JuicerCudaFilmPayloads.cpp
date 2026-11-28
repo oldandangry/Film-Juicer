@@ -236,8 +236,8 @@ namespace {
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
     bool gaussian_binding_ready(
-        const Spektrafilm::VisualGrainGaussian& descriptor,
-        const JuicerCuda::VisualGrainPreparedGaussianView& prepared) {
+        const Spektrafilm::LegacyGrainGaussian& descriptor,
+        const JuicerCuda::LegacyGrainPreparedGaussianView& prepared) {
         if (descriptor.radius <= 0) {
             return descriptor.hash == 0 && !prepared.active &&
                    !prepared.weights && prepared.radius == 0 &&
@@ -260,9 +260,9 @@ namespace {
 
 namespace JuicerCuda {
 
-    bool pack_visual_grain_payload(
-        const VisualGrainPayloadInput& input,
-        const PreparedVisualGrainView& prepared,
+    bool pack_legacy_grain_payload(
+        const LegacyGrainPayloadInput& input,
+        const PreparedLegacyGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
         std::string& diagnostic) {
@@ -287,7 +287,7 @@ namespace JuicerCuda {
             return false;
         }
 
-        const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
+        const Spektrafilm::LegacyGrainFrameDescriptor& descriptor =
             *prepared.descriptor;
         if (!descriptor.active || descriptor.hash == 0 ||
             descriptor.recipeHash != input.recipeHash ||

@@ -1,14 +1,21 @@
-//! Film v1 allowance for the version-1 frozen Portra summed-area bank.
+//! Signed density allowances for the frozen Grain v2 banks.
 
-use crate::assets::{PortraGrainBank, PortraGrainTable};
+use crate::assets::{GrainV2Bank, GrainV2Stock, GrainV2Table};
 use crate::assets::grain::{CALIBRATED_MAX_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT};
 use crate::assets::grain::{MAX_FOOTPRINT, MIN_PROXY_SAMPLE_FOOTPRINT};
 #[cfg(test)]
 use crate::assets::grain::MIN_RENDERED_FOOTPRINT;
 
+use placement_extrema::Extrema;
+
+#[path = "gold.rs"]
+mod gold;
+#[path = "portra/placement_extrema.rs"]
 mod placement_extrema;
+#[path = "portra/periodic_extrema.rs"]
 mod periodic_extrema;
 #[cfg(test)]
+#[path = "portra/calibration_interval.rs"]
 mod calibration_interval;
 // Outward-rounded extrema of footprint times the single-placement OD delta
 // from -log10(mean light), paired with each band's upper footprint.
@@ -33,39 +40,93 @@ const SUBTEXEL_DELTAS: [f64; 2] = [-0.424, 0.752];
 const PERIODIC_ALLOWANCE_MIN_FOOTPRINT: f64 = 1536.0;
 const PERIODIC_STRIP_LIMIT: f64 = 1476.0;
 const PERIODIC_CORNER_LIMIT: f64 = 4720.0;
+const LUMINANCE_WEIGHTS: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+struct Certificate {
+    placement: &'static [(f32, Extrema); 9],
+    bright_deficits: &'static [[[u16; 16]; 3]; 9],
+    scaled: &'static [(f32, [f64; 2]); 10],
+    subtexel: [f64; 2],
+    periodic: &'static [[[i16; 4]; 51]; 16],
+    strip_limit: f64,
+    corner_limit: f64,
+}
+
+fn certificate(stock: GrainV2Stock) -> Certificate {
+    match stock {
+        GrainV2Stock::Portra400 => Certificate {
+            placement: &placement_extrema::BANDS,
+            bright_deficits: &placement_extrema::BRIGHT_PAIR_DEFICITS,
+            scaled: &SCALED_DELTAS,
+            subtexel: SUBTEXEL_DELTAS,
+            periodic: &periodic_extrema::BANDS,
+            strip_limit: PERIODIC_STRIP_LIMIT,
+            corner_limit: PERIODIC_CORNER_LIMIT,
+        },
+        GrainV2Stock::Gold200 => Certificate {
+            placement: &gold::PLACEMENT,
+            bright_deficits: &gold::BRIGHT_PAIR_DEFICITS,
+            scaled: &gold::SCALED_DELTAS,
+            subtexel: gold::SUBTEXEL_DELTAS,
+            periodic: &gold::PERIODIC,
+            strip_limit: gold::PERIODIC_STRIP_LIMIT,
+            corner_limit: gold::PERIODIC_CORNER_LIMIT,
+        },
+    }
+}
 
 pub(super) fn density_range(
-    bank: &PortraGrainBank,
-    table: &PortraGrainTable,
+    bank: &GrainV2Bank,
+    table: &GrainV2Table,
     gain: f32,
     chroma_fraction: f32,
     clean_maximum: [f32; 3],
 ) -> Option<[[f32; 3]; 2]> {
+    projection_range(bank, table, gain, clean_maximum, chroma_fraction < 1.0)
+        .map(|range| range.densities(chroma_fraction))
+}
+
+fn projection_range(
+    bank: &GrainV2Bank,
+    table: &GrainV2Table,
+    gain: f32,
+    clean_maximum: [f32; 3],
+    reduced_colour: bool,
+) -> Option<ProjectionRange> {
+    let certificate = certificate(bank.stock());
     let band = if table.footprint < 1.0 {
         0
     } else {
-        placement_extrema::BANDS[1..]
+        certificate.placement[1..]
             .iter()
             .position(|&(end, _)| table.footprint <= end)?
             + 1
     };
-    let (_, extrema) = placement_extrema::BANDS[band];
-    let bright_deficits = placement_extrema::BRIGHT_PAIR_DEFICITS[band];
+    let (_, extrema) = certificate.placement[band];
     let clean_light = clean_maximum.map(|density| 10.0_f64.powf(-f64::from(density)));
     let mut minimum = [0.0_f64; 3];
     let mut maximum = clean_maximum.map(f64::from);
-    // A placement weight sum of at most 3, rounded up for Float32.
-    // The sqrt(2) maximum temporal gain cancels the sqrt(2) from the layings.
-    let gain = 3.012 * f64::from(gain);
+    let gold = bank.stock() == GrainV2Stock::Gold200;
+    let mut brackets = (gold && reduced_colour).then_some([[None; PROJECTION_BRACKETS]; 3]);
+    // The represented positive weights obey sum(w)/sqrt(sum(w*w)) <= sqrt(n).
+    // The staggered seam support gives a combined limit of 3. The coordinate
+    // guard bounds Float32 spacing to at most 1/32 texel, well within the
+    // separation between the two seam bands. A factor of 1.0001 covers the
+    // up-to-four products and accumulation steps, square root, division, and
+    // temporal normalization. The sqrt(2) temporal gain cancels the laying
+    // factor. Keep the original Portra multiplier for its existing bounds.
+    let placement_gain = if gold { 3.0003 } else { 3.012 };
+    let gain = placement_gain * f64::from(gain);
     for (channel, record) in bank.records().iter().enumerate() {
         let range = f64::from(record.maximum_gross) - f64::from(record.minimum_gross);
         let offset = f64::from(record.minimum_gross) - f64::from(record.offset);
-        let level_density = |level: usize| offset + range * (level as f64 / 16.0);
+        let level_density = |level: f64| offset + range * (level / 16.0);
         let shift: [f64; 17] = std::array::from_fn(|level| {
             f64::from(table.mean_density[channel][level])
                 + f64::from(record.mean_light[level]).log10()
         });
-        for (level, &bright_deficit) in bright_deficits[channel].iter().enumerate() {
+        for level in 0..16 {
+            let bright_deficit = certificate.bright_deficits[band][channel][level];
             // Enclose rounding of the Float32 level normalization.
             let rho = f64::from(table.correlation[channel][level]) - 8.0 * f64::from(f32::EPSILON);
             let [lower, upper] = extrema[channel];
@@ -77,67 +138,161 @@ pub(super) fn density_range(
             // bounds the sum of the two deficits from the separate bright
             // extremes. At least min(t, 1-t) of that loss survives the blend.
             let loss = f64::from(bright_deficit) / 1000.0;
-            let brighter = gain
-                * adjacent_extreme(a, b - loss, rho, [0.0, 0.5]).max(adjacent_extreme(
-                    a - loss,
-                    b,
-                    rho,
-                    [0.5, 1.0],
-                ));
-            let darker = gain * adjacent_extreme(dark(level), dark(level + 1), rho, [0.0, 1.0]);
+            let bright_parts = [
+                adjacent_extreme(a, b - loss, rho, [0.0, 0.5]),
+                adjacent_extreme(a - loss, b, rho, [0.5, 1.0]),
+            ];
             // Saturation includes the tails of the first and last bracket.
             // Widen the interior cuts for Float32 gross and level arithmetic.
             let low = if level == 0 {
                 0.0
             } else {
-                (level_density(level) - 0.0001).max(0.0)
+                (level_density(level as f64) - 0.0001).max(0.0)
             };
             let high = if level == 15 {
                 f64::from(clean_maximum[channel])
             } else {
-                (level_density(level + 1) + 0.0001).min(f64::from(clean_maximum[channel]))
+                (level_density((level + 1) as f64) + 0.0001).min(f64::from(clean_maximum[channel]))
             };
-            if low <= high {
+            if gold {
+                // Couple the clean density with the fraction that produces
+                // its grain. The two halves share the paired bright deficit
+                // boundary at t=1/2, with outward clean endpoints.
+                let middle = level_density(level as f64 + 0.5);
+                let clean_parts = [
+                    [low, high.min(middle + 0.0001)],
+                    [low.max(middle - 0.0001), high],
+                ];
+                for (part, [lo, hi]) in clean_parts.into_iter().enumerate() {
+                    if lo <= hi {
+                        let brighter = gain * bright_parts[part];
+                        let darker = gain
+                            * adjacent_extreme(
+                                dark(level),
+                                dark(level + 1),
+                                rho,
+                                [[0.0, 0.5], [0.5, 1.0]][part],
+                            );
+                        minimum[channel] = minimum[channel].min(lo - brighter);
+                        maximum[channel] = maximum[channel].max(hi + darker);
+                        if let Some(brackets) = &mut brackets {
+                            brackets[channel][2 * level + part] = Some(ProjectionBracket {
+                                clean: [hi, lo].map(|d| 10.0_f64.powf(-d)),
+                                multiplier: [-darker, brighter].map(|delta| 10.0_f64.powf(delta)),
+                            });
+                        }
+                    }
+                }
+            } else if low <= high {
+                let brighter = gain * bright_parts[0].max(bright_parts[1]);
+                let darker = gain * adjacent_extreme(dark(level), dark(level + 1), rho, [0.0, 1.0]);
                 minimum[channel] = minimum[channel].min(low - brighter);
                 maximum[channel] = maximum[channel].max(high + darker);
             }
         }
     }
 
-    // Output light is a convex Colour blend of its grained component and
-    // the grained luminance times T_i / sum_j(w_j T_j), where T is clean
-    // transmission. The ratio increases with T_i and decreases with each
-    // other T_j. Use the extreme clean corner for this ratio, independently
-    // of the extreme grained luminance.
-    const WEIGHTS: [f64; 3] = [0.2126, 0.7152, 0.0722];
-    let lightest = minimum.map(|density| 10.0_f64.powf(-density));
-    let darkest = maximum.map(|density| 10.0_f64.powf(-density));
-    let luminance = |light: [f64; 3]| {
-        light
-            .into_iter()
-            .zip(WEIGHTS)
-            .map(|(t, w)| t * w)
-            .sum::<f64>()
-    };
-    let fraction = f64::from(chroma_fraction);
-    let output: [[f32; 2]; 3] = std::array::from_fn(|i| {
-        let clean_bright = luminance(std::array::from_fn(|j| {
-            if i == j { 1.0 } else { clean_light[j] }
-        }));
-        let clean_dark = luminance(std::array::from_fn(|j| {
-            if i == j { clean_light[i] } else { 1.0 }
-        }));
-        let bright = fraction * lightest[i] + (1.0 - fraction) * luminance(lightest) / clean_bright;
-        let dark = fraction * darkest[i]
-            + (1.0 - fraction) * luminance(darkest) * clean_light[i] / clean_dark;
-        // Cover Float32 density addition, both projection paths and the
-        // Float64 positive-weight proxy average and density reconstruction.
-        [
-            ((-bright.log10() - 0.002) as f32).next_down(),
-            ((-dark.log10() + 0.002) as f32).next_up(),
-        ]
-    });
-    Some([output.map(|range| range[0]), output.map(|range| range[1])])
+    Some(ProjectionRange {
+        clean_light,
+        lightest: minimum.map(|density| 10.0_f64.powf(-density)),
+        darkest: maximum.map(|density| 10.0_f64.powf(-density)),
+        reduced_colour: brackets.as_ref().map(reduced_colour_light),
+    })
+}
+
+struct ProjectionRange {
+    clean_light: [f64; 3],
+    lightest: [f64; 3],
+    darkest: [f64; 3],
+    reduced_colour: Option<[[f64; 2]; 3]>,
+}
+
+impl ProjectionRange {
+    fn densities(&self, chroma_fraction: f32) -> [[f32; 3]; 2] {
+        let fraction = f64::from(chroma_fraction);
+        let output: [[f32; 2]; 3] = std::array::from_fn(|i| {
+            let [bright, dark] = if let Some(reduced) = &self.reduced_colour {
+                [
+                    fraction * self.lightest[i] + (1.0 - fraction) * reduced[i][1],
+                    fraction * self.darkest[i] + (1.0 - fraction) * reduced[i][0],
+                ]
+            } else {
+                // The Portra enclosure uses the extreme clean corner for
+                // the ratio independently of extreme grained luminance.
+                let clean_bright = luminance(std::array::from_fn(|j| {
+                    if i == j { 1.0 } else { self.clean_light[j] }
+                }));
+                let clean_dark = luminance(std::array::from_fn(|j| {
+                    if i == j { self.clean_light[i] } else { 1.0 }
+                }));
+                [
+                    fraction * self.lightest[i]
+                        + (1.0 - fraction) * luminance(self.lightest) / clean_bright,
+                    fraction * self.darkest[i]
+                        + (1.0 - fraction) * luminance(self.darkest) * self.clean_light[i]
+                            / clean_dark,
+                ]
+            };
+            // Cover Float32 density addition and projection and the Float64
+            // positive-weight proxy average and density reconstruction.
+            [
+                ((-bright.log10() - 0.002) as f32).next_down(),
+                ((-dark.log10() + 0.002) as f32).next_up(),
+            ]
+        });
+        [output.map(|range| range[0]), output.map(|range| range[1])]
+    }
+}
+
+fn luminance(light: [f64; 3]) -> f64 {
+    light
+        .into_iter()
+        .zip(LUMINANCE_WEIGHTS)
+        .map(|(t, w)| t * w)
+        .sum()
+}
+
+const PROJECTION_BRACKETS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct ProjectionBracket {
+    clean: [f64; 2],
+    multiplier: [f64; 2],
+}
+
+fn reduced_colour_light(
+    brackets: &[[Option<ProjectionBracket>; PROJECTION_BRACKETS]; 3],
+) -> [[f64; 2]; 3] {
+    let mut limits = [[f64::INFINITY, 0.0_f64]; 3];
+    for &c in brackets[0].iter().flatten() {
+        for &m in brackets[1].iter().flatten() {
+            for &y in brackets[2].iter().flatten() {
+                let corner_brackets = [c, m, y];
+                // Output transmission at zero Colour is T_i times
+                // sum(w_k*T_k*q_k)/sum(w_k*T_k). It is monotone in each
+                // grain multiplier q_k. At fixed multipliers it increases
+                // in T_i (the numerator has degree two in T_i) and is
+                // fractional linear in each other T_k. Thus each clean
+                // box reaches its extrema at corners. Keep the same clean
+                // words for numerator, denominator and the target.
+                for corner in 0..8 {
+                    let clean =
+                        std::array::from_fn(|k| corner_brackets[k].clean[(corner >> k) & 1]);
+                    let inverse = 1.0 / luminance(clean);
+                    let ratios: [f64; 2] = std::array::from_fn(|side| {
+                        luminance(std::array::from_fn(|k| {
+                            clean[k] * corner_brackets[k].multiplier[side]
+                        })) * inverse
+                    });
+                    for (limit, light) in limits.iter_mut().zip(clean) {
+                        limit[0] = limit[0].min(light * ratios[0]);
+                        limit[1] = limit[1].max(light * ratios[1]);
+                    }
+                }
+            }
+        }
+    }
+    limits
 }
 
 fn adjacent_extreme(a: f64, b: f64, rho: f64, [low, high]: [f64; 2]) -> f64 {
@@ -162,7 +317,12 @@ fn adjacent_extreme(a: f64, b: f64, rho: f64, [low, high]: [f64; 2]) -> f64 {
     (s * a + t * b) / (s * s + t * t + 2.0 * rho * s * t).sqrt()
 }
 
-pub(super) fn periodic_allowances(table: &PortraGrainTable, gain: f32) -> Option<[f32; 2]> {
+pub(super) fn periodic_allowances(
+    stock: GrainV2Stock,
+    table: &GrainV2Table,
+    gain: f32,
+) -> Option<[f32; 2]> {
+    let certificate = certificate(stock);
     let width = f64::from(table.footprint);
     if table.footprint <= SINGLE_WRAP_MAX_FOOTPRINT {
         return None;
@@ -175,9 +335,9 @@ pub(super) fn periodic_allowances(table: &PortraGrainTable, gain: f32) -> Option
     let allowance = if width < PERIODIC_ALLOWANCE_MIN_FOOTPRINT {
         let periods = (width / 256.0).round();
         let remainder = width - periods * 256.0;
-        let band = ((remainder.abs() / 8.0) as usize).min(periodic_extrema::BANDS.len() - 1);
+        let band = ((remainder.abs() / 8.0) as usize).min(certificate.periodic.len() - 1);
         let area = width * width;
-        let entries = &periodic_extrema::BANDS[band];
+        let entries = &certificate.periodic[band];
         let mut allowance = 0.0_f64;
         for (record, extrema) in table.correlation.iter().zip(entries.as_chunks::<17>().0) {
             let delta = extrema.map(|[strip_lo, strip_hi, corner_lo, corner_hi]| {
@@ -201,7 +361,7 @@ pub(super) fn periodic_allowances(table: &PortraGrainTable, gain: f32) -> Option
         // and one wrapped residual rectangle. These limits are relative to the
         // bank's mean light and apply equally to calibration and rendering.
         let error =
-            PERIODIC_STRIP_LIMIT / (256.0 * width) + PERIODIC_CORNER_LIMIT / (width * width);
+            certificate.strip_limit / (256.0 * width) + certificate.corner_limit / (width * width);
         // The measured OD mean lies between the signed placement extremes.
         // Charge their full separation, including the light and log roundings.
         let delta = ((1.0 + error) / (1.0 - error)).log10() + 0.0001;
@@ -217,11 +377,7 @@ pub(super) fn periodic_allowances(table: &PortraGrainTable, gain: f32) -> Option
     Some([-allowance, allowance])
 }
 
-pub(crate) fn allowances(
-    bank: &PortraGrainBank,
-    table: &PortraGrainTable,
-    gain: f32,
-) -> Option<[f32; 2]> {
+pub(crate) fn allowances(bank: &GrainV2Bank, table: &GrainV2Table, gain: f32) -> Option<[f32; 2]> {
     let width = f64::from(table.footprint);
     if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&table.footprint) {
         return None;
@@ -234,15 +390,17 @@ pub(crate) fn allowances(
     // their contributions and the residuals within that same error budget.
     let divisions = (width / f64::from(CALIBRATED_MAX_FOOTPRINT)).ceil();
     let certified_width = width / divisions;
+    let certificate = certificate(bank.stock());
     let [lower, upper] = if width < 1.0 {
-        SUBTEXEL_DELTAS.map(|delta| delta * width)
+        certificate.subtexel.map(|delta| delta * width)
     } else {
-        SCALED_DELTAS
+        certificate
+            .scaled
             .iter()
             .find(|&&(high, _)| certified_width <= f64::from(high))?
             .1
     };
-    let calibrated = width >= 1.0 && divisions == 1.0;
+    let calibrated = bank.stock() == GrainV2Stock::Portra400 && width >= 1.0 && divisions == 1.0;
     let mut mean_shift = [0.0_f64; 2];
     let mut min_correlation = 1.0_f32;
     for (r, record) in bank.records().iter().enumerate() {
@@ -337,7 +495,7 @@ mod tests {
             let current = at(colour);
             let lo = std::array::from_fn(|k| previous[0][k].min(current[0][k]).next_down());
             let hi = std::array::from_fn(|k| upper_pad(previous[1][k].max(current[1][k])));
-            Bounds::checked_film_v1(development, lo, hi).unwrap_or_else(|error| {
+            Bounds::checked_grain_v2(development, lo, hi).unwrap_or_else(|error| {
                 panic!("widths {widths:?}, interval ending at Colour {colour}, box {lo:?} to {hi:?}: {error}")
             });
             previous = current;
@@ -430,15 +588,21 @@ mod tests {
         limits
     }
 
-    fn certify_bright_pair(tiles: [&[f32]; 2], means: [f64; 2], record: usize, level: usize) {
+    fn certify_bright_pair(
+        tiles: [&[f32]; 2],
+        means: [f64; 2],
+        record: usize,
+        level: usize,
+        certificate: &Certificate,
+    ) {
         let unpacked = tiles.map(periodic_prefix);
         let sat_max = tiles.map(|tile| tile.iter().map(|v| f64::from(v.abs())).fold(0.0, f64::max));
         let max_deviation = unpacked
             .each_ref()
             .map(|(_, [lo, hi])| lo.abs().max(hi.abs()));
         let mut prefix = vec![0.0; PADDED_STRIDE * PADDED_STRIDE];
-        for (band, &(end, extrema)) in placement_extrema::BANDS.iter().enumerate() {
-            let loss = placement_extrema::BRIGHT_PAIR_DEFICITS[band][record][level];
+        for (band, &(end, extrema)) in certificate.placement.iter().enumerate() {
+            let loss = certificate.bright_deficits[band][record][level];
             if loss == 0 {
                 continue;
             }
@@ -459,7 +623,7 @@ mod tests {
                 });
                 (maximum, error)
             } else {
-                let a = f64::from(placement_extrema::BANDS[band - 1].0) - 1.0 / 64.0;
+                let a = f64::from(certificate.placement[band - 1].0) - 1.0 / 64.0;
                 let b = f64::from(end) + 1.0 / 64.0;
                 let error = [0, 1].map(|k| {
                     640.0 * 2.0_f64.powi(-24) * sat_max[k] / a.powi(2)
@@ -479,9 +643,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn continuous_footprint_certificate() {
-        let bank = assets().portra_grain_bank().unwrap();
+    fn check_placement_certificate(stock: GrainV2Stock) {
+        let bank = assets().grain_v2_bank(stock).unwrap();
+        let certificate = certificate(stock);
         let levels = bank.records().iter().flat_map(|record| record.mean_light);
         for (index, (tile, mean_light)) in bank
             .sums()
@@ -506,13 +670,13 @@ mod tests {
             let darkest = mean + texels[0] - subtexel_error;
             let lightest = mean + texels[1] + subtexel_error;
             assert!(darkest > 1e-9 && lightest.is_finite());
-            assert!(-(lightest / mean).log10() - 0.00005 >= SUBTEXEL_DELTAS[0]);
-            assert!(-(darkest / mean).log10() + 0.00005 <= SUBTEXEL_DELTAS[1]);
-            for (band, &(end, extrema)) in placement_extrema::BANDS.iter().enumerate() {
+            assert!(-(lightest / mean).log10() - 0.00005 >= certificate.subtexel[0]);
+            assert!(-(darkest / mean).log10() + 0.00005 <= certificate.subtexel[1]);
+            for (band, &(end, extrema)) in certificate.placement.iter().enumerate() {
                 let [darkest, lightest] = if band == 0 {
                     [darkest, lightest]
                 } else {
-                    let a = f64::from(placement_extrema::BANDS[band - 1].0) - 1.0 / 64.0;
+                    let a = f64::from(certificate.placement[band - 1].0) - 1.0 / 64.0;
                     let b = f64::from(end) + 1.0 / 64.0;
                     let [lo, hi] = band_extrema(&prefix, a, b);
                     let error = 640.0 * 2.0_f64.powi(-24) * sat_max / a.powi(2)
@@ -554,7 +718,8 @@ mod tests {
                 );
                 let lower = (-((lightest / mean).log10()) - 0.00005) * high;
                 let upper = (-((darkest / mean).log10()) + 0.00005) * high;
-                let &(_, [certified_lower, certified_upper]) = SCALED_DELTAS
+                let &(_, [certified_lower, certified_upper]) = certificate
+                    .scaled
                     .iter()
                     .find(|&&(end, _)| high <= f64::from(end))
                     .unwrap();
@@ -575,9 +740,20 @@ mod tests {
                     ],
                     r,
                     k,
+                    &certificate,
                 );
             }
         }
+    }
+
+    #[test]
+    fn continuous_footprint_certificate() {
+        check_placement_certificate(GrainV2Stock::Portra400);
+    }
+
+    #[test]
+    fn gold_continuous_footprint_certificate() {
+        check_placement_certificate(GrainV2Stock::Gold200);
     }
 
     #[test]
@@ -602,9 +778,9 @@ mod tests {
     #[test]
     fn high_gain_boxes_cover_footprint_band_edges() {
         let assets = assets();
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         let review = 1.953_125_f32;
         let bright_probe = 1.117_187_5_f32;
         let widths =
@@ -639,10 +815,10 @@ mod tests {
                     .flat_map(|&(end, _)| [end.next_down(), end, end.next_up()]),
             );
         for width in widths {
-            let table = assets.portra_grain_table(&bank, width).unwrap();
+            let table = assets.grain_v2_table(&bank, width).unwrap();
             let [lower, upper] = allowances(&bank, &table, 16.0).unwrap();
             let original_hi = maximum.map(|d| upper_pad((d + upper).next_up()));
-            if Bounds::checked_film_v1(&development, [lower; 3], original_hi).is_ok() {
+            if Bounds::checked_grain_v2(&development, [lower; 3], original_hi).is_ok() {
                 continue;
             }
             check_colour(&development, [width; 2], |colour| {
@@ -654,9 +830,9 @@ mod tests {
     #[test]
     fn calibration_intervals_enclose_executed_words_and_signed_guards() {
         let assets = assets();
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
         for (first, steps) in [
             (MIN_PROXY_SAMPLE_FOOTPRINT, 512),
@@ -687,7 +863,7 @@ mod tests {
             assert_eq!(band(first), band(last));
             let bounds = calibration_interval::normalize(&bank, first, last);
             for width in [first, f32::from_bits(first.to_bits() + steps / 2), last] {
-                let actual = assets.portra_grain_table(&bank, width).unwrap();
+                let actual = assets.grain_v2_table(&bank, width).unwrap();
                 for (r, record) in bank.records().iter().enumerate() {
                     for k in 0..17 {
                         let [lo, hi] = bounds.mean.map(|side| side[r][k]);
@@ -707,7 +883,7 @@ mod tests {
                 }
             }
 
-            let mut table = (*assets.portra_grain_table(&bank, first).unwrap()).clone();
+            let mut table = (*assets.grain_v2_table(&bank, first).unwrap()).clone();
             table.correlation = bounds.correlation;
             let [mut dark, mut bright] = [table.clone(), table];
             dark.mean_density = bounds.mean[0];
@@ -729,13 +905,13 @@ mod tests {
     fn retained_calibrated_guards_follow_from_the_normalization_limits() {
         let assets = assets();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         let mut start = 10.0;
         for &(end, [lower, upper]) in &SCALED_DELTAS[5..] {
             let scale = 16.0 * 3.012 * (2.0 / (1.0 + f64::from(MIN_CORRELATION))).sqrt() / start;
             let lo = (((lower - MAX_SCALED_MEAN_SHIFT) * scale - 0.002) as f32).next_down();
             let hi = (((upper + MAX_SCALED_MEAN_SHIFT) * scale + 0.002) as f32).next_up();
-            Bounds::checked_film_v1(
+            Bounds::checked_grain_v2(
                 &development,
                 [lo; 3],
                 maximum.map(|d| upper_pad((d + hi).next_up())),
@@ -748,20 +924,20 @@ mod tests {
     #[test]
     fn whole_period_tables_clear_the_retained_guards() {
         let assets = assets();
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let mut table = (*assets.portra_grain_table(&bank, TILE as f32).unwrap()).clone();
+        let mut table = (*assets.grain_v2_table(&bank, TILE as f32).unwrap()).clone();
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
         assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
         for (r, record) in bank.records().iter().enumerate() {
             for (k, &mean) in record.mean_light.iter().enumerate() {
                 let complete = f64::from(tiles[17 * r + k][STRIDE * STRIDE - 1]);
                 let light = f64::from(mean) + complete / (TILE * TILE) as f64;
-                // A square of n whole periods has integral n² times the
+                // A square of n whole periods has integral nÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² times the
                 // last SAT word for every placement. Each of the four
-                // prefixes is bounded by 400*(n+1)² and uses exact integer
+                // prefixes is bounded by 400*(n+1)ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² and uses exact integer
                 // coordinates here. With n>=1 the Float64 arithmetic
-                // error divided by n²*256², plus the light addition, is
+                // error divided by nÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â²*256ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â², plus the light addition, is
                 // below 1e-12. Both ends round to the same light word.
                 let [lo, hi] = [(light - 1e-12) as f32, (light + 1e-12) as f32];
                 assert_eq!(lo.to_bits(), hi.to_bits());
@@ -774,7 +950,7 @@ mod tests {
         for width in (TILE..=MAX_FOOTPRINT as usize).step_by(TILE) {
             table.footprint = width as f32;
             let allowance = allowances(&bank, &table, 16.0).unwrap();
-            Bounds::film_v1(&development, allowance)
+            Bounds::grain_v2(&development, allowance)
                 .unwrap_or_else(|error| panic!("whole period {width}: {error}"));
         }
     }
@@ -782,7 +958,7 @@ mod tests {
     #[test]
     fn periodic_allowance_covers_the_frozen_bank_and_normalization_floor() {
         let assets = assets();
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
         let mut stripe_limit = 0.0_f64;
@@ -815,56 +991,58 @@ mod tests {
         assert!(corner_limit <= PERIODIC_CORNER_LIMIT);
 
         let width = PERIODIC_ALLOWANCE_MIN_FOOTPRINT as f32;
-        let measured = assets.portra_grain_table(&bank, width).unwrap();
+        let measured = assets.grain_v2_table(&bank, width).unwrap();
         let retained =
-            Bounds::film_v1(&development, allowances(&bank, &measured, 16.0).unwrap()).unwrap();
-        let selected = Bounds::portra_film_v1(&development, &bank, &measured, 16.0, 1.0).unwrap();
+            Bounds::grain_v2(&development, allowances(&bank, &measured, 16.0).unwrap()).unwrap();
+        let selected = Bounds::for_grain_v2(&development, &bank, &measured, 16.0, 1.0).unwrap();
         assert_eq!(retained.hash(), selected.hash());
 
         let mut worst = (*measured).clone();
         // The production table accepts correlations strictly above this
         // floor. This synthetic table only exercises the enclosure limit.
         worst.correlation = [[(-0.9997_f32).next_up(); 17]; 3];
-        let original = Bounds::film_v1(&development, allowances(&bank, &worst, 16.0).unwrap());
+        let original = Bounds::grain_v2(&development, allowances(&bank, &worst, 16.0).unwrap());
         assert!(matches!(
             original,
             Err(film::density::Error::FilmProjectionSpan)
         ));
-        let expected =
-            Bounds::film_v1(&development, periodic_allowances(&worst, 16.0).unwrap()).unwrap();
+        let expected = Bounds::grain_v2(
+            &development,
+            periodic_allowances(GrainV2Stock::Portra400, &worst, 16.0).unwrap(),
+        )
+        .unwrap();
         for colour in [0.0, 0.5, 1.0] {
-            let fallback =
-                Bounds::portra_film_v1(&development, &bank, &worst, 16.0, colour).unwrap();
+            let fallback = Bounds::for_grain_v2(&development, &bank, &worst, 16.0, colour).unwrap();
             assert_eq!(fallback.hash(), expected.hash());
         }
         worst.footprint = SINGLE_WRAP_MAX_FOOTPRINT;
-        assert!(periodic_allowances(&worst, 16.0).is_none());
+        assert!(periodic_allowances(GrainV2Stock::Portra400, &worst, 16.0).is_none());
     }
 
     #[test]
     fn retained_periodic_guards_cover_the_bounded_table_statistics() {
         let assets = assets();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         // The ratio w / ceil(w / 37.5) exceeds 28 for w > 255,
         // so only the final scaled band can contribute.
         let piece = 1.0 / (1.0 / 37.5 + 1.0 / 255.0);
         let scale = 16.0 * 3.012 * (2.0 / (0.25 - 8.0 * f64::from(f32::EPSILON))).sqrt();
         let lower = (((-4.03 / piece - 0.005) * scale - 0.002) as f32).next_down();
         let upper = (((4.20 / piece + 0.005) * scale + 0.002) as f32).next_up();
-        Bounds::checked_film_v1(
+        Bounds::checked_grain_v2(
             &development,
             [lower; 3],
             maximum.map(|d| upper_pad((d + upper).next_up())),
         )
         .unwrap();
-        Bounds::film_v1(&development, [-20.5, 20.5]).unwrap();
+        Bounds::grain_v2(&development, [-20.5, 20.5]).unwrap();
     }
 
     #[test]
     fn computed_normalizers_cover_preview_footprints() {
         let assets = assets();
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let geometries = [302, 604, 1208, 1920, 2416, 3840, 4832, 7418];
         let sizes = [0.5, 1.0, 4.0];
         let widths = geometries.into_iter().flat_map(|long_edge| {
@@ -902,7 +1080,7 @@ mod tests {
             .chain(widths)
             .chain(film_formats)
         {
-            let table = assets.portra_grain_table(&bank, width).unwrap();
+            let table = assets.grain_v2_table(&bank, width).unwrap();
             let [lower, upper] =
                 allowances(&bank, &table, 16.0).unwrap_or_else(|| panic!("footprint {width}"));
             assert!(lower.is_finite() && upper.is_finite() && lower < 0.0 && upper > 0.0);

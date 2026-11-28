@@ -16,17 +16,17 @@ namespace {
         Hash::hash_bytes_update(hash, &value, sizeof(value));
     }
 
-    Spektrafilm::VisualGrainScratchShape select_scratch_shape(
+    Spektrafilm::LegacyGrainScratchShape select_scratch_shape(
         bool sublayers,
         bool sharedChroma) {
         if (sublayers) {
             return sharedChroma
-                       ? Spektrafilm::VisualGrainScratchShape::StreamedLayersShared
-                       : Spektrafilm::VisualGrainScratchShape::StreamedLayers;
+                       ? Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared
+                       : Spektrafilm::LegacyGrainScratchShape::StreamedLayers;
         }
         return sharedChroma
-                   ? Spektrafilm::VisualGrainScratchShape::StreamedShared
-                   : Spektrafilm::VisualGrainScratchShape::Streamed;
+                   ? Spektrafilm::LegacyGrainScratchShape::StreamedShared
+                   : Spektrafilm::LegacyGrainScratchShape::Streamed;
     }
 
     template <typename Extent>
@@ -38,7 +38,7 @@ namespace {
     }
 
     std::uint64_t hash_descriptor(
-        const Spektrafilm::VisualGrainFrameDescriptor& descriptor) {
+        const Spektrafilm::LegacyGrainFrameDescriptor& descriptor) {
         if (!descriptor.active) {
             return 0;
         }
@@ -115,14 +115,14 @@ namespace {
 
 namespace Spektrafilm {
 
-    bool finish_visual_grain_descriptor(VisualGrainFrameDescriptor& descriptor) {
+    bool finish_legacy_grain_descriptor(LegacyGrainFrameDescriptor& descriptor) {
         descriptor.hash = hash_descriptor(descriptor);
         return descriptor.hash != 0;
     }
 
-    VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept {
+    LegacyGrainScratchShape legacy_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept {
         if ((coefficients.flags & FJ_GRAIN_ACTIVE) == 0) {
-            return VisualGrainScratchShape::None;
+            return LegacyGrainScratchShape::None;
         }
         const bool sharedChroma =
             (coefficients.debug_view == FJ_GRAIN_DEBUG_OFF || coefficients.debug_view == FJ_GRAIN_DEBUG_DELTA_MIX) &&

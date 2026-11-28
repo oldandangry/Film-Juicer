@@ -422,7 +422,7 @@ impl Callback<'_> {
                     let fatal = completion.fatal() || access.failed.get();
                     if fatal {
                         completion.trace_failure();
-                        if state.film_grain().is_some()
+                        if state.grain_v2().is_some()
                             && !completion.deferred_dir_error()
                             && !completion.context_loss_pending()
                             && !completion.diagnostic().is_empty()

@@ -265,18 +265,18 @@ namespace JuicerCuda {
         resources.wangColors = 0;
     }
 
-    bool ensure_film_grain_uploaded(Resources& resources, const FjFilmGrain& input, const FilmGrain::FilmQuad*& out, Failure& error) {
+    bool ensure_grain_v2_uploaded(Resources& resources, const FjFilmGrain& input, const GrainV2::FilmQuad*& out, Failure& error) {
         out = nullptr;
         error = {};
-        if (!input.bank_hash || !input.sums.data || input.sums.count != FilmGrain::kBankEntries) {
-            error.diagnostic = "MissingRequiredResource phase=film_grain field=bank";
+        if (!input.bank_hash || !input.sums.data || input.sums.count != GrainV2::kBankEntries) {
+            error.diagnostic = "MissingRequiredResource phase=grain_v2 field=bank";
             return false;
         }
-        std::shared_ptr<Resources::FilmGrainSlot> slot;
+        std::shared_ptr<Resources::GrainV2Slot> slot;
         {
             std::unique_lock<std::mutex> lock(resources.m);
-            auto found = resources.filmGrainBanks.find(input.bank_hash);
-            if (found != resources.filmGrainBanks.end()) {
+            auto found = resources.grainV2Banks.find(input.bank_hash);
+            if (found != resources.grainV2Banks.end()) {
                 slot = found->second;
                 slot->ready.wait(lock, [&] {
                     return !slot->loading;
@@ -285,41 +285,41 @@ namespace JuicerCuda {
                     out = slot->bank;
                     return true;
                 }
-                set_failure(error, slot->failure, "Film grain bank acquisition failed");
+                set_failure(error, slot->failure, "Grain v2 bank acquisition failed");
                 return false;
             }
-            slot = std::make_shared<Resources::FilmGrainSlot>();
-            resources.filmGrainBanks.emplace(input.bank_hash, slot);
+            slot = std::make_shared<Resources::GrainV2Slot>();
+            resources.grainV2Banks.emplace(input.bank_hash, slot);
         }
-        const auto publish = [&](FilmGrain::FilmQuad* bank) {
+        const auto publish = [&](GrainV2::FilmQuad* bank) {
             std::lock_guard<std::mutex> lock(resources.m);
             slot->bank = bank;
             slot->failure = error.status;
             slot->loading = false;
             if (!bank) {
-                auto found = resources.filmGrainBanks.find(input.bank_hash);
-                if (found != resources.filmGrainBanks.end() && found->second == slot)
-                    resources.filmGrainBanks.erase(found);
+                auto found = resources.grainV2Banks.find(input.bank_hash);
+                if (found != resources.grainV2Banks.end() && found->second == slot)
+                    resources.grainV2Banks.erase(found);
             }
             slot->ready.notify_all();
         };
         void* device = nullptr;
-        constexpr std::size_t bytes = FilmGrain::kQuadEntries * sizeof(FilmGrain::FilmQuad);
+        constexpr std::size_t bytes = GrainV2::kQuadEntries * sizeof(GrainV2::FilmQuad);
         try {
-            if (!allocate_owned_device(resources, &device, bytes, "film grain bank", error)) {
+            if (!allocate_owned_device(resources, &device, bytes, "Grain v2 bank", error)) {
                 publish(nullptr);
                 return false;
             }
-            std::vector<FilmGrain::FilmQuad> packed(FilmGrain::kQuadEntries);
-            for (int record = 0; record < FilmGrain::kRecords; ++record) {
-                for (int level = 0; level < FilmGrain::kLevels; ++level) {
-                    const auto index = static_cast<std::size_t>(record) * FilmGrain::kLevels + level;
-                    const float* source = input.sums.data + index * FilmGrain::kTileEntries;
-                    auto* target = packed.data() + index * FilmGrain::kTileSide * FilmGrain::kTileSide;
-                    for (int y = 0; y < FilmGrain::kTileSide; ++y) {
-                        for (int x = 0; x < FilmGrain::kTileSide; ++x) {
-                            const auto at = static_cast<std::size_t>(y) * FilmGrain::kTileStride + x;
-                            target[y * FilmGrain::kTileSide + x] = {source[at], source[at + 1], source[at + FilmGrain::kTileStride], source[at + FilmGrain::kTileStride + 1]};
+            std::vector<GrainV2::FilmQuad> packed(GrainV2::kQuadEntries);
+            for (int record = 0; record < GrainV2::kRecords; ++record) {
+                for (int level = 0; level < GrainV2::kLevels; ++level) {
+                    const auto index = static_cast<std::size_t>(record) * GrainV2::kLevels + level;
+                    const float* source = input.sums.data + index * GrainV2::kTileEntries;
+                    auto* target = packed.data() + index * GrainV2::kTileSide * GrainV2::kTileSide;
+                    for (int y = 0; y < GrainV2::kTileSide; ++y) {
+                        for (int x = 0; x < GrainV2::kTileSide; ++x) {
+                            const auto at = static_cast<std::size_t>(y) * GrainV2::kTileStride + x;
+                            target[y * GrainV2::kTileSide + x] = {source[at], source[at + 1], source[at + GrainV2::kTileStride], source[at + GrainV2::kTileStride + 1]};
                         }
                     }
                 }
@@ -330,23 +330,23 @@ namespace JuicerCuda {
                 status = cudaStreamSynchronize(nullptr);
             }
             if (status != cudaSuccess) {
-                set_failure(error, runtime_failure_status(status), "CUDA Film grain bank upload failed");
+                set_failure(error, runtime_failure_status(status), "CUDA Grain v2 bank upload failed");
                 free_owned_device_noexcept(resources, device);
                 publish(nullptr);
                 return false;
             }
-            auto* quads = static_cast<FilmGrain::FilmQuad*>(device);
+            auto* quads = static_cast<GrainV2::FilmQuad*>(device);
             publish(quads);
             out = quads;
             return true;
         } catch (const std::bad_alloc&) {
             free_owned_device_noexcept(resources, device);
-            set_failure(error, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "Film grain bank packing allocation failed");
+            set_failure(error, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "Grain v2 bank packing allocation failed");
             publish(nullptr);
             return false;
         } catch (...) {
             free_owned_device_noexcept(resources, device);
-            set_failure(error, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "Film grain bank packing failed");
+            set_failure(error, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "Grain v2 bank packing failed");
             publish(nullptr);
             return false;
         }

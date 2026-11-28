@@ -1,7 +1,7 @@
-//! Film-Juicer visual grain from captured resolved controls, borrowing completed development.
+//! Film-Juicer Legacy grain from captured resolved controls, borrowing completed development.
 
 pub mod frame;
-pub mod film_v1;
+pub mod grain_v2;
 
 use crate::hash;
 use crate::profile::Polarity;
@@ -42,9 +42,9 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Controls => "invalid Current grain controls",
-            Self::MissingLayers => "missing density layers for Current grain",
-            Self::ZeroIdentity => "Current grain recipe has a zero identity",
+            Self::Controls => "invalid Legacy grain controls",
+            Self::MissingLayers => "missing density layers for Legacy grain",
+            Self::ZeroIdentity => "Legacy grain recipe has a zero identity",
         })
     }
 }

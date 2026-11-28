@@ -23,8 +23,8 @@ namespace JuicerCuda {
         std::optional<ScatterHalationFrameDescriptor> halation;
         std::optional<HighlightBoostDescriptor> highlightBoost;
         Spektrafilm::SpatialDirDescriptor spatialDir{};
-        VisualGrainPayloadInput grainPayload{};
-        std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
+        LegacyGrainPayloadInput grainPayload{};
+        std::optional<Spektrafilm::LegacyGrainFrameDescriptor> grain;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
     };
 

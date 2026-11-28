@@ -314,7 +314,7 @@ namespace {
         check_scalar("HalationHighlightProtectionEv", 4.0, 20.0, 10.0, 0.5);
         check_scalar("HalationHighlightBoostRange", 0.3, 1.0, 1.0, 0.05);
 
-        constexpr std::array<std::pair<std::string_view, std::string_view>, 4> film_grain{{
+        constexpr std::array<std::pair<std::string_view, std::string_view>, 4> grain_v2{{
             {"GrainModel", kOfxParamTypeStrChoice},
             {"FilmGrainAmountEv", kOfxParamTypeDouble},
             {"FilmGrainTexelPitchUm", kOfxParamTypeDouble},
@@ -323,27 +323,30 @@ namespace {
         const auto grain_first = std::find_if(after, actual.definitions.end(), [](const auto& d) {
             return d.name == "GrainActive";
         });
-        require(actual.definitions.end() - grain_first > static_cast<std::ptrdiff_t>(film_grain.size()),
-                "Film v1 declaration position");
+        require(actual.definitions.end() - grain_first > static_cast<std::ptrdiff_t>(grain_v2.size()),
+                "Grain v2 declaration position");
         const auto grain = grain_first + 1;
-        const auto grain_after = grain + static_cast<std::ptrdiff_t>(film_grain.size());
-        for (std::size_t i = 0; i < film_grain.size(); ++i) {
+        const auto grain_after = grain + static_cast<std::ptrdiff_t>(grain_v2.size());
+        for (std::size_t i = 0; i < grain_v2.size(); ++i) {
             const auto& d = grain[static_cast<std::ptrdiff_t>(i)];
-            require(d.name == film_grain[i].first && d.type == film_grain[i].second &&
+            require(d.name == grain_v2[i].first && d.type == grain_v2[i].second &&
                         d.properties.at(kOfxParamPropParent) == std::vector<Value>{std::string("GrainGroup")} &&
                         d.properties.at(kOfxParamPropEvaluateOnChange) == std::vector<Value>{1},
-                    "Film v1 declaration");
+                    "Grain v2 declaration");
         }
         require(grain->properties.at(kOfxParamPropDefault) == std::vector<Value>{std::string("current")} &&
                     grain->properties.at(kOfxParamPropChoiceEnum) ==
                         std::vector<Value>{std::string("current"), std::string("film_v1")},
-                "grain model values");
+                "saved grain model choice IDs and default");
+        require(grain->properties.at(kOfxParamPropChoiceOption) ==
+                    std::vector<Value>{std::string("Legacy"), std::string("Grain v2 (beta)")},
+                "grain model display labels");
         const auto check_grain = [](const auto& p, double initial, double min, double max) {
             require(p.at(kOfxParamPropDefault) == std::vector<Value>{initial} &&
                         p.at(kOfxParamPropMin) == std::vector<Value>{min} &&
                         p.at(kOfxParamPropMax) == std::vector<Value>{max} &&
                         p.at(kOfxParamPropSecret) == std::vector<Value>{1},
-                    "Film v1 control defaults and bounds");
+                    "Grain v2 control defaults and bounds");
         };
         check_grain(grain[1].properties, 0.0, -3.0, 3.0);
         check_grain(grain[2].properties, 1.0, 0.5, 4.0);
@@ -365,7 +368,7 @@ namespace {
         const auto after_token = first_token + static_cast<int>(advanced.size());
         const auto active_token = static_cast<int>(active_index) + first_definition_token;
         const auto grain_token = static_cast<int>(grain - actual.definitions.begin()) + first_definition_token;
-        const auto grain_after_token = grain_token + static_cast<int>(film_grain.size());
+        const auto grain_after_token = grain_token + static_cast<int>(grain_v2.size());
         for (auto call : actual.calls) {
             const auto defines = [&](const auto& d) {
                 return d.first == call.property;
@@ -374,12 +377,12 @@ namespace {
                 (call.target >= grain_token && call.target < grain_after_token) ||
                 (call.operation == "param_define" &&
                  (std::any_of(advanced.begin(), advanced.end(), defines) ||
-                  std::any_of(film_grain.begin(), film_grain.end(), defines))))
+                  std::any_of(grain_v2.begin(), grain_v2.end(), defines))))
                 continue;
             if (call.target == active_token && call.property == kOfxParamPropHint)
                 call.value = std::string(previous_hint);
             if (call.target >= grain_after_token)
-                call.target -= static_cast<int>(film_grain.size());
+                call.target -= static_cast<int>(grain_v2.size());
             if (call.target >= after_token)
                 call.target -= static_cast<int>(advanced.size());
             legacy.calls.push_back(std::move(call));

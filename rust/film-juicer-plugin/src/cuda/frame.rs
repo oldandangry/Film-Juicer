@@ -14,23 +14,23 @@ use film_juicer_core::{
 };
 
 use super::{edge, sys};
-use film_juicer_core::film::grain::film_v1::Sampling;
-pub(super) fn film_grain(
+use film_juicer_core::film::grain::grain_v2::Sampling;
+pub(super) fn grain_v2(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
 ) -> Result<Option<sys::FjFilmGrain>, edge::Failure> {
-    let Some(recipe) = state.film_grain() else {
+    let Some(recipe) = state.grain_v2() else {
         return Ok(None);
     };
     let rendered_extent = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
     if recipe.raster().rendered_long_edge_px != rendered_extent.width.max(rendered_extent.height) {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
-            "Film v1 frame geometry does not match its prepared density bounds",
+            "Grain v2 frame geometry does not match its prepared density bounds",
         ));
     }
     let (seed, next_seed, fraction) =
-        film_seed_pair(frame.time_frames, frame.session_seed, frame.clip_token)?;
+        grain_v2_seed_pair(frame.time_frames, frame.session_seed, frame.clip_token)?;
     let table = recipe.table();
     let records = std::array::from_fn(|index| {
         let source = &recipe.bank().records()[index];
@@ -68,11 +68,15 @@ pub(super) fn film_grain(
         sample_origin: aperture_grid.map_or([0.0; 2], |grid| grid.origin),
     }))
 }
-fn film_seed_pair(time: f64, session: u64, clip: u64) -> Result<(u32, u32, f32), edge::Failure> {
-    if !super::FILM_GRAIN_TIME_RANGE.contains(&time) {
+fn grain_v2_seed_pair(
+    time: f64,
+    session: u64,
+    clip: u64,
+) -> Result<(u32, u32, f32), edge::Failure> {
+    if !super::GRAIN_V2_TIME_RANGE.contains(&time) {
         return Err(fail(
             sys::FJ_STATUS_UNSUPPORTED_INPUT,
-            "Film v1 frame time must be finite and within the supported range",
+            "Grain v2 frame time must be finite and within the supported range",
         ));
     }
     let time_floor = time.floor();
@@ -83,15 +87,15 @@ fn film_seed_pair(time: f64, session: u64, clip: u64) -> Result<(u32, u32, f32),
         index += 1;
         fraction = 0.0;
     }
-    let seed = film_seed(session, clip, index);
+    let seed = grain_v2_seed(session, clip, index);
     let next_seed = if fraction == 0.0 {
         seed
     } else {
-        film_seed(session, clip, index + 1)
+        grain_v2_seed(session, clip, index + 1)
     };
     Ok((seed, next_seed, fraction))
 }
-fn film_seed(session: u64, clip: u64, index: i64) -> u32 {
+fn grain_v2_seed(session: u64, clip: u64, index: i64) -> u32 {
     let mut word = (session ^ clip.rotate_left(17)).wrapping_add(
         (index as u64)
             .wrapping_add(1)
@@ -179,13 +183,13 @@ fn dir_math(
     }
 }
 
-fn grain_math(
+fn legacy_grain_math(
     state: &recipe::RenderState,
     frame: &sys::FjFrame,
     render: Domain,
     full: Domain,
 ) -> Result<sys::FjVisualGrain, edge::Failure> {
-    let source = state.grain();
+    let source = state.legacy_grain();
     if !source.active() {
         // Match the caller's inactive optional-descriptor omission.
         return Ok(crate::cuda::grain_frame::empty());
@@ -232,7 +236,7 @@ fn grain_math(
     .map_err(|_| {
         fail(
             sys::FJ_STATUS_INTERNAL_FAILURE,
-            "visual grain frame preparation panicked",
+            "Legacy grain frame preparation panicked",
         )
     })?;
     match result {
@@ -241,7 +245,7 @@ fn grain_math(
         Err(error) => {
             let raw = error.layer_access();
             let message = if raw {
-                "visual grain frame arguments are invalid"
+                "Legacy grain frame arguments are invalid"
             } else {
                 crate::cuda::grain_frame::failure_diagnostic(error.field())
             };
@@ -320,18 +324,18 @@ pub(super) fn prepare(
     let full = checked_extent(frame.full_frame_extent, "full_frame_extent")?;
     Ok(edge::FrameDescriptors {
         spatial_dir: dir_math(state, frame, render, full)?,
-        grain: grain_math(state, frame, render, full)?,
+        grain: legacy_grain_math(state, frame, render, full)?,
         effects: effects_math(state, frame, render)?,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{film_seed_pair, sys};
+    use super::{grain_v2_seed_pair, sys};
 
-    fn assert_film_seed_pair(time: f64, expected: (u32, u32, u32)) {
+    fn assert_grain_v2_seed_pair(time: f64, expected: (u32, u32, u32)) {
         let (seed, next_seed, fraction) =
-            film_seed_pair(time, 17, 23).unwrap_or_else(|error| panic!("{}", error.diagnostic));
+            grain_v2_seed_pair(time, 17, 23).unwrap_or_else(|error| panic!("{}", error.diagnostic));
         assert_eq!(
             (seed, next_seed, fraction.to_bits()),
             expected,
@@ -340,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn film_seed_pair_carries_rounded_endpoints() {
+    fn grain_v2_seed_pair_carries_rounded_endpoints() {
         // Independent words from the C++ reference integer mapping.
         for (time, seed) in [
             (0.29 * 100.0, 2_010_141_349),
@@ -349,12 +353,12 @@ mod tests {
             (-1.000_000_01, 1_701_653_862),
             (1.0 - 2.0_f64.powi(-25), 1_854_463_680),
         ] {
-            assert_film_seed_pair(time, (seed, seed, 0));
+            assert_grain_v2_seed_pair(time, (seed, seed, 0));
         }
     }
 
     #[test]
-    fn film_seed_pair_preserves_integral_and_fractional_words() {
+    fn grain_v2_seed_pair_preserves_integral_and_fractional_words() {
         let below_tie = (1.0_f64 - 2.0_f64.powi(-25)).next_down();
         for (time, seed, next_seed, fraction) in [
             (-1.0, 1_701_653_862, 1_701_653_862, 0),
@@ -369,16 +373,16 @@ mod tests {
             (37.375, 2_044_520_963, 857_065_782, 0x3ec0_0000),
             (38.0, 857_065_782, 857_065_782, 0),
         ] {
-            assert_film_seed_pair(time, (seed, next_seed, fraction));
+            assert_grain_v2_seed_pair(time, (seed, next_seed, fraction));
         }
     }
 
     #[test]
-    fn film_seed_pair_checks_original_time_at_both_limits() {
+    fn grain_v2_seed_pair_checks_original_time_at_both_limits() {
         let lower = -1_000_000.0_f64;
         let upper = 1_000_000.0_f64;
-        assert_film_seed_pair(lower, (1_360_295_736, 1_360_295_736, 0));
-        assert_film_seed_pair(upper, (134_912_488, 134_912_488, 0));
+        assert_grain_v2_seed_pair(lower, (1_360_295_736, 1_360_295_736, 0));
+        assert_grain_v2_seed_pair(upper, (134_912_488, 134_912_488, 0));
         for time in [
             lower.next_down(),
             upper.next_up(),
@@ -386,10 +390,10 @@ mod tests {
             f64::NEG_INFINITY,
             f64::INFINITY,
         ] {
-            let error = film_seed_pair(time, 17, 23).unwrap_err();
+            let error = grain_v2_seed_pair(time, 17, 23).unwrap_err();
             assert_eq!(error.status.category, sys::FJ_STATUS_UNSUPPORTED_INPUT);
             assert!(
-                error.diagnostic.starts_with("Film v1 frame time"),
+                error.diagnostic.starts_with("Grain v2 frame time"),
                 "time={time}: {}",
                 error.diagnostic,
             );

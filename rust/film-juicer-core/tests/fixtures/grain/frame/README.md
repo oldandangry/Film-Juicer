@@ -1,4 +1,4 @@
-# Visual-grain frame fixtures
+# Legacy grain frame fixtures
 
 These are unchanged native Film-Juicer characterization, captured independently
 in four native Debug/Release contexts before replacement. Every defined published

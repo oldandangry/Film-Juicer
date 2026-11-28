@@ -975,7 +975,7 @@ namespace JuicerCuda {
             outError = std::move(scanError);
             return false;
         }
-        for (auto& [key, slot] : resources.filmGrainBanks) {
+        for (auto& [key, slot] : resources.grainV2Banks) {
             (void)key;
             Failure bankError;
             if (slot->bank && !free_owned_device(resources, slot->bank, bankError)) {
@@ -984,7 +984,7 @@ namespace JuicerCuda {
             }
             slot->bank = nullptr;
         }
-        resources.filmGrainBanks.clear();
+        resources.grainV2Banks.clear();
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
             if (const auto status = entry.event.destroy(); status != cudaSuccess) {
@@ -1122,7 +1122,7 @@ namespace JuicerCuda {
                 boundary = Resources::DeviceSpatialDirBoundary{};
             }
             resources.gaussianKernelCache.clear();
-            resources.filmGrainBanks.clear();
+            resources.grainV2Banks.clear();
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
             for (std::size_t index = 0; index < resources.retireQueue.size();) {

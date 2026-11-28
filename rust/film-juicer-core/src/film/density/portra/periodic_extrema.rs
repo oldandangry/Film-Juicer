@@ -854,8 +854,8 @@ pub(super) const BANDS: [[[i16; 4]; 51]; 16] = [
 ];
 #[cfg(test)]
 mod tests {
-    use super::BANDS;
-    use crate::assets::Assets;
+    use super::super::certificate;
+    use crate::assets::{Assets, GrainV2Stock};
     use std::path::Path;
 
     const SIDE: usize = 256;
@@ -867,7 +867,12 @@ mod tests {
         })
     }
 
-    fn verify_tile(words: &[f32; STRIDE * STRIDE], mean: f32, level: usize) {
+    fn verify_tile(
+        words: &[f32; STRIDE * STRIDE],
+        mean: f32,
+        level: usize,
+        bounds: &[[[i16; 4]; 51]; 16],
+    ) {
         let tile: Vec<f64> = words.iter().copied().map(f64::from).collect();
         assert_eq!(tile[STRIDE * STRIDE - 1], 0.0);
         let prefix = |x, y| tile[y * STRIDE + x];
@@ -914,7 +919,7 @@ mod tests {
                 }
             }
             let check = |band: usize, strip_error: f64, corner_error: f64| {
-                let [a, b, c, d] = BANDS[band][level].map(f64::from);
+                let [a, b, c, d] = bounds[band][level].map(f64::from);
                 assert!(
                     a <= (strip[0] - strip_error) / mean
                         && b >= (strip[1] + strip_error) / mean
@@ -935,20 +940,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn periodic_bands_enclose_the_frozen_sat_words() {
+    fn check_periodic_bands(stock: GrainV2Stock) {
         let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
-        let bank = assets.portra_grain_bank().unwrap();
+        let bank = assets.grain_v2_bank(stock).unwrap();
+        let certificate = certificate(stock);
+        let certificate = &certificate;
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
         std::thread::scope(|scope| {
             for (record, data) in bank.records().iter().enumerate() {
                 scope.spawn(move || {
                     for (level, mean) in data.mean_light.into_iter().enumerate() {
                         let index = 17 * record + level;
-                        verify_tile(&tiles[index], mean, index);
+                        let tile = &tiles[index];
+                        verify_tile(tile, mean, index, certificate.periodic);
+                        let rows = &tile[SIDE * STRIDE..];
+                        let [row_lo, row_hi] = extrema(rows.iter().copied().map(f64::from));
+                        let [col_lo, col_hi] = extrema(
+                            tile.iter()
+                                .skip(SIDE)
+                                .step_by(STRIDE)
+                                .copied()
+                                .map(f64::from),
+                        );
+                        let strips = row_hi - row_lo + col_hi - col_lo;
+                        let peak = tile.iter().map(|v| f64::from(v.abs())).fold(0.0, f64::max);
+                        assert!(strips / f64::from(mean) <= certificate.strip_limit);
+                        assert!(
+                            (4.0 * peak + strips) / f64::from(mean) <= certificate.corner_limit
+                        );
                     }
                 });
             }
         });
+    }
+
+    #[test]
+    fn periodic_bands_enclose_the_frozen_sat_words() {
+        check_periodic_bands(GrainV2Stock::Portra400);
+    }
+
+    #[test]
+    fn gold_periodic_bands_enclose_the_frozen_sat_words() {
+        check_periodic_bands(GrainV2Stock::Gold200);
     }
 }

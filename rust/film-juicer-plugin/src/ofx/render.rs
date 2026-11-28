@@ -11,7 +11,7 @@ use film_juicer_core::{
 use super::param_id::ParamId;
 use super::host::{Callback, Status};
 use crate::cuda;
-use film_juicer_core::film::grain::film_v1::{ProxyGrid, Raster, Selection};
+use film_juicer_core::film::grain::grain_v2::{ProxyGrid, Raster, Selection};
 
 // Admission delivery is best-effort. Formatting must not introduce an
 // infallible allocation before the fallible host-message copy.
@@ -170,7 +170,7 @@ fn complete_frame_mapping_for_bounds(
         }),
     })
 }
-fn film_geometry_error(
+fn grain_v2_geometry_error(
     callback: &Callback<'_>,
     args: &super::host::RenderArgs,
     source: &super::host::Image<'_>,
@@ -181,7 +181,7 @@ fn film_geometry_error(
     let mut text = AdmissionText(String::new());
     if write!(
         text,
-        "Film v1 requires complete square-pixel source and output images that agree with the action's canonical mapping. canonical={canonical:?} action_scale={:?} source_scale={:?} output_scale={:?} source_definition={:?} output_definition={:?} source_bounds={:?} output_bounds={:?} window={window:?} source_par={} output_par={} time={}",
+        "Grain v2 requires complete square-pixel source and output images that agree with the action's canonical mapping. canonical={canonical:?} action_scale={:?} source_scale={:?} output_scale={:?} source_definition={:?} output_definition={:?} source_bounds={:?} output_bounds={:?} window={window:?} source_par={} output_par={} time={}",
         args.scale,
         source.scale,
         destination.scale,
@@ -199,12 +199,12 @@ fn film_geometry_error(
     }
     Status::FAILED
 }
-fn film_time_error(callback: &Callback<'_>, time: f64) -> Status {
-    let range = cuda::FILM_GRAIN_TIME_RANGE;
+fn grain_v2_time_error(callback: &Callback<'_>, time: f64) -> Status {
+    let range = cuda::GRAIN_V2_TIME_RANGE;
     let mut text = AdmissionText(String::new());
     if write!(
         text,
-        "Film v1 frame time must be finite and within {} to {} frames, inclusive. time={time}",
+        "Grain v2 frame time must be finite and within {} to {} frames, inclusive. time={time}",
         range.start(),
         range.end(),
     )
@@ -307,17 +307,17 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     }
     let film = input
         .as_ref()
-        .map_or(Selection::Current, state::FrameInput::film_grain);
+        .map_or(Selection::Legacy, state::FrameInput::grain_v2);
     let film_active = film.controls().is_some();
     let film_thumbnail = film_active && callback.thumbnail(&owner.handles);
     let film_mapping = if film_active && !film_thumbnail {
-        if !cuda::FILM_GRAIN_TIME_RANGE.contains(&args.time) {
-            return Err(film_time_error(callback, args.time));
+        if !cuda::GRAIN_V2_TIME_RANGE.contains(&args.time) {
+            return Err(grain_v2_time_error(callback, args.time));
         }
         let canonical = callback.canonical_region(&owner.handles, args.time)?;
         let Some(mapping) = complete_frame_mapping(&args, source, destination, window, canonical)
         else {
-            return Err(film_geometry_error(
+            return Err(grain_v2_geometry_error(
                 callback,
                 &args,
                 source,
@@ -332,9 +332,9 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
     };
 
     let film_frame = if film_thumbnail {
-        film_juicer_core::recipe::FilmGrainFrame::Thumbnail
+        film_juicer_core::recipe::GrainV2Frame::Thumbnail
     } else {
-        film_juicer_core::recipe::FilmGrainFrame::Raster(Raster {
+        film_juicer_core::recipe::GrainV2Frame::Raster(Raster {
             rendered_long_edge_px: rendered_extent.width.max(rendered_extent.height),
             candidate_full_grid: film_mapping
                 .as_ref()
@@ -361,7 +361,7 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
                 if matches!(
                     error,
                     state::Error::Preparation(
-                        film_juicer_core::recipe::PrepareError::FilmGrainFootprint { .. }
+                        film_juicer_core::recipe::PrepareError::GrainV2Footprint { .. }
                     )
                 ) {
                     write!(
@@ -473,14 +473,15 @@ pub(super) fn run(callback: &Callback<'_>) -> Result<(), Status> {
 
 fn failure_category(error: &film_juicer_core::recipe::PrepareError) -> u32 {
     use crate::cuda::sys::*;
-    use film_juicer_core::assets::{AssetError, PortraGrainError};
+    use film_juicer_core::assets::{AssetError, GrainV2Error};
     use film_juicer_core::recipe::{self, PrepareError as E};
     match error {
         E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
-        E::Asset(AssetError::PortraGrain(
-            PortraGrainError::Allocation(_) | PortraGrainError::OwnerAllocation,
+        E::Asset(AssetError::GrainV2(
+            _,
+            GrainV2Error::Allocation(_) | GrainV2Error::OwnerAllocation,
         )) => FJ_STATUS_ALLOCATION_FAILURE,
-        E::Control(recipe::ControlError::FilmGrain) | E::FilmGrainFootprint { .. } => {
+        E::Control(recipe::ControlError::GrainV2) | E::GrainV2Footprint { .. } => {
             FJ_STATUS_UNSUPPORTED_INPUT
         }
         E::Control(
@@ -522,34 +523,34 @@ mod tests {
     fn portra_allocation_status() {
         use super::{Status, allocation_status, state};
         use crate::ofx::sys::kOfxStatErrMemory;
-        use film_juicer_core::assets::{AssetError, PortraGrainError};
+        use film_juicer_core::assets::{AssetError, GrainV2Error, GrainV2Stock};
         use film_juicer_core::recipe::PrepareError;
 
         let status = |error| {
             allocation_status(&state::Error::Preparation(PrepareError::Asset(
-                AssetError::PortraGrain(error),
+                AssetError::GrainV2(GrainV2Stock::Portra400, error),
             )))
             .map(Status::code)
         };
         let reserve = Vec::<u8>::new().try_reserve_exact(usize::MAX).unwrap_err();
         assert_eq!(
-            status(PortraGrainError::Allocation(reserve)),
+            status(GrainV2Error::Allocation(reserve)),
             Some(kOfxStatErrMemory)
         );
         assert_eq!(
-            status(PortraGrainError::OwnerAllocation),
+            status(GrainV2Error::OwnerAllocation),
             Some(kOfxStatErrMemory)
         );
-        assert!(status(PortraGrainError::Invalid("word count")).is_none());
+        assert!(status(GrainV2Error::Invalid("word count")).is_none());
     }
 
     #[test]
-    fn film_aperture_geometry_matches_native_wire_vectors() {
+    fn grain_v2_aperture_geometry_matches_native_wire_vectors() {
         use film_juicer_core::{
             assets::Assets,
             capture,
-            film::grain::film_v1::{Controls, ProxyGrid, Raster, Selection},
-            recipe::{self, FilmGrainFrame},
+            film::grain::grain_v2::{Controls, ProxyGrid, Raster, Selection},
+            recipe::{self, GrainV2Frame},
             route::ScanRoute,
         };
         use std::path::Path;
@@ -606,12 +607,12 @@ mod tests {
                 ScanRoute::NegativeDirect
             };
             params.camera_film_format_long_edge_mm = 36.0;
-            params.film_grain = Selection::FilmV1(Controls {
+            params.grain_v2 = Selection::GrainV2(Controls {
                 amount_ev: 0.0,
                 texel_pitch_um: 1.0,
                 chroma_fraction: 1.0,
             });
-            let state = recipe::prepare_for_frame(&assets, &params, FilmGrainFrame::Raster(raster))
+            let state = recipe::prepare_for_frame(&assets, &params, GrainV2Frame::Raster(raster))
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             use crate::cuda::{self, sys};
             let [x1, y1, x2, y2] = bounds;
@@ -651,7 +652,7 @@ mod tests {
                     pixel_aspect_ratio: 1.,
                 },
             };
-            let film = cuda::projected_film_grain(&state, &raw)
+            let film = cuda::projected_grain_v2(&state, &raw)
                 .unwrap_or_else(|| panic!("Film ABI projection inactive for {name}"));
             assert_eq!(
                 (film.seed, film.next_seed),

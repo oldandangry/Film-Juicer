@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{ControlError, PrepareError};
 use crate::assets::{AssetError, Assets, Illuminants, InputHull, SpectraLut};
-use crate::capture::{Params, current_grain};
+use crate::capture::{Params, legacy_grain};
 use crate::profile::{FilmProfile, IlluminantKind};
 use crate::{film, illuminant, reconstruction, spectral};
 
@@ -126,7 +126,7 @@ pub(super) fn acquire_foundation(
         profile,
         film::Params {
             gamma_factor: params.film_gamma_factor,
-            layers_required: current_grain(params).active && params.grain.sublayers_active,
+            layers_required: legacy_grain(params).active && params.grain.sublayers_active,
             requested_route: params.scan_route,
         },
     )

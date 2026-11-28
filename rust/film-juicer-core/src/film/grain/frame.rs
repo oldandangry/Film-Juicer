@@ -1,4 +1,4 @@
-//! Callback-local visual-grain mathematics. Static recipe policy, CUDA scratch
+//! Callback-local Legacy grain mathematics. Static recipe policy, CUDA scratch
 //! selection and the final descriptor identity have separate existing owners.
 
 #[cfg(test)]

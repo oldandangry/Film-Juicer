@@ -81,20 +81,20 @@ namespace JuicerProcess {
         WorkspaceDerivation requestedWorkspace;
         ScanErrorFrameStage scanErrorStage{};
         HighlightBoostFrameStage highlightBoostStage{};
-        std::array<JuicerCuda::VisualGrainPreparedGaussianView, 3>
+        std::array<JuicerCuda::LegacyGrainPreparedGaussianView, 3>
             preparedGrainCorrelation{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         FrameScratchWorkspace scratchWorkspace{};
-        JuicerCuda::VisualGrainPreparedDensityLayersView
+        JuicerCuda::LegacyGrainPreparedDensityLayersView
             preparedGrainDensityLayers{};
         JuicerCuda::PrintResourceDescriptors printDescriptors{};
         std::array<float, 3> printPreflashRawCmy{};
         float printNormalizer = 1.0F;
         Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
-        JuicerCuda::VisualGrainPreparedGaussianView
+        JuicerCuda::LegacyGrainPreparedGaussianView
             preparedGrainDyeCloud[3][3] = {};
-        std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+        std::optional<Spektrafilm::LegacyGrainFrameDescriptor> legacyGrainDescriptor;
         Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
         JuicerCuda::Diffusion::PreparedDiffusionLease diffusionLease;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
@@ -105,9 +105,9 @@ namespace JuicerProcess {
             Spektrafilm::ProfilePolarity::Unsupported;
         Spektrafilm::ScanRoute scanRoute =
             Spektrafilm::kDefaultScanRoute;
-        bool visualGrainPrepared = false;
-        const JuicerCuda::FilmGrain::FilmQuad* filmGrainBank = nullptr;
-        void* filmProxyWorkspace = nullptr;
+        bool legacyGrainPrepared = false;
+        const JuicerCuda::GrainV2::FilmQuad* grainV2Bank = nullptr;
+        void* grainV2ProxyWorkspace = nullptr;
         bool frameUseEventSubmitted = false;
         bool frameResourcesFenced = false;
         bool grainStaticResourcesFenced = false;

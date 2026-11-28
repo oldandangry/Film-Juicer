@@ -1,0 +1,15 @@
+{
+  "strength": 0.0105,
+  "size_mm": 0.005,
+  "layer_weights": [0.7, 1.0, 1.35],
+  "base_density_offset": 0.1,
+  "fog_density": 0.03,
+  "read_density": "net",
+  "radius_span": 6,
+  "sublayer_shares": [0.25, 0.25, 0.25, 0.25],
+  "coating_density_scale": 1,
+  "provenance": {
+    "basis": "authored",
+    "source": "Film-Juicer G2 Kodak Gold 200 research assumptions. The 0.0105 strength at the pinned 48 µm aperture is an authored estimate. Size, layer weights, base, fog and crystal population are synthetic inputs from the same experiment."
+  }
+}

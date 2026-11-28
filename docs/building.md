@@ -119,13 +119,16 @@ statically and localizes those implementation symbols at the OFX C boundary so
 host libraries cannot interpose an incompatible libstdc++ implementation. See
 [Linux installation](linux.md) for host requirements.
 
-## Portra 400 Film v1
+## Grain v2 banks
 
-The standard Film-Juicer bundle includes the spectral scanner, the Portra 400
-Film v1 grain model, and the grain bank and notices. It uses the established
-OFX identifier, `com.juicer.Juicer`. The grain model defaults to **Current**.
+See [Grain v2 bank authoring](grain-v2-bank-authoring.md) to generate and compare a
+stock bank with the pinned Swift tool in scratch.
+
+The standard Film-Juicer bundle includes the spectral scanner, Grain v2 banks
+for Kodak Portra 400 and Kodak Gold 200, and their notices. It uses the established
+OFX identifier, `com.juicer.Juicer`. The grain model defaults to **Legacy**.
 Use the Release preset and `bundle-archive`. See the
-[Film v1 settings and limits](../README.md#portra-400-film-v1).
+[Grain v2 settings and limits](../README.md#portra-400-and-gold-200-grain-v2).
 
 Archived Grain Preview projects use `com.juicer.Juicer.GrainPreview`. On a
 project copy, open the project with its archived plug-in available and record
@@ -133,8 +136,8 @@ the preview node's settings, keyframes and connections. Add the regular Juicer
 effect, reproduce those settings and animations, and compare at proxy and Full
 resolution before removing the preview node from the copy. Keep the source
 project export and its corresponding bundle for recovery. Standard Juicer nodes
-keep their existing identifier and start with **Current** when they have no
-saved grain-model value.
+keep their existing identifier and saved grain-model selection. Nodes without
+a saved selection default to **Legacy**.
 
 ## Public test suite
 

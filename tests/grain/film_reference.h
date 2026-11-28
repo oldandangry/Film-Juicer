@@ -149,7 +149,7 @@ namespace GrainPrototype {
 
     cudaError_t apply_film_variant(const DeviceFilmBank& bank, const FilmTables& tables, FilmFrame frame, FilmPlanes planes, cudaStream_t stream, FilmVariant variant, FilmBlock block);
 
-    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint);
+    FilmTables read_film_tables(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory = {});
 
     // Fixed little-endian research capture. Throws on I/O or representation failure.
     FilmBank read_film_bank(const std::filesystem::path& directory, float footprint, const std::filesystem::path& tableDirectory = {});

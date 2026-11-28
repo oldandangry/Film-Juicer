@@ -83,7 +83,7 @@ pub struct Params {
     pub output_cctf_encoding: i32,
     pub output_gamut_compression_enabled: i32,
     pub grain: grain::Params,
-    pub film_grain: grain::film_v1::Selection,
+    pub grain_v2: grain::grain_v2::Selection,
     pub film_dust_amount: f32,
     pub film_scratch_amount: f32,
     pub gate_dust_amount: f32,
@@ -151,8 +151,8 @@ impl HalationReflectionSource {
     }
 }
 
-pub(crate) fn current_grain(params: &Params) -> grain::Params {
-    if params.film_grain.controls().is_some() {
+pub(crate) fn legacy_grain(params: &Params) -> grain::Params {
+    if params.grain_v2.controls().is_some() {
         return grain::Params {
             active: false,
             ..params.grain
@@ -318,13 +318,18 @@ fn capture_identity(
     ));
     // With grain disabled the prepared photographic state is shared. OFX
     // resolves per-frame dust and scratch geometry from the captured selection.
-    if let Some(film) = p.film_grain.controls() {
+    if let Some(controls) = p.grain_v2.controls() {
+        // Preserve the capture identity across the model rename.
         h.add(hash::bytes(b"film-v1-grain"));
-        for value in [film.amount_ev, film.texel_pitch_um, film.chroma_fraction] {
+        for value in [
+            controls.amount_ev,
+            controls.texel_pitch_um,
+            controls.chroma_fraction,
+        ] {
             h.add(u64::from(value.to_bits()));
         }
     }
-    let g = current_grain(p);
+    let g = legacy_grain(p);
     if g.active {
         h.add(1);
         h.add(g.sublayers_active as u64);
@@ -513,7 +518,7 @@ pub fn defaults() -> Params {
             clump_morph_period_sec: 8.0,
             debug_view: 0,
         },
-        film_grain: crate::film::grain::film_v1::Selection::Current,
+        grain_v2: crate::film::grain::grain_v2::Selection::Legacy,
         film_dust_amount: 0.0,
         film_scratch_amount: 0.0,
         gate_dust_amount: 0.0,

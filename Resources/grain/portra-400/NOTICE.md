@@ -1,4 +1,4 @@
-# Portra 400 Film v1 grain bank
+# Portra 400 Grain v2 bank
 
 This is the frozen Film-Juicer G1 CDF3 grain bank for Kodak Portra 400.
 Film-Juicer generated the record and summed-area-table payloads from its

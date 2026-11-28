@@ -1,31 +1,31 @@
-//! Current and Film v1 grain descriptors.
+//! Legacy and Grain v2 controls.
 
 use super::*;
 use super::Property::*;
 
-use film_juicer_core::film::grain::film_v1;
+use film_juicer_core::film::grain::grain_v2;
 
-pub(super) fn describe_film(parameters: &Parameters<'_>) -> Result<(), Status> {
+pub(super) fn describe_grain_v2(parameters: &Parameters<'_>) -> Result<(), Status> {
     for (name, label, default, range, increment) in [
         (
-            ParamId::FilmGrainAmountEv,
+            ParamId::GrainV2AmountEv,
             c"Amount (EV)",
-            film_v1::DEFAULT_AMOUNT_EV,
-            film_v1::AMOUNT_EV_RANGE,
+            grain_v2::DEFAULT_AMOUNT_EV,
+            grain_v2::AMOUNT_EV_RANGE,
             0.1,
         ),
         (
-            ParamId::FilmGrainTexelPitchUm,
+            ParamId::GrainV2TexelPitchUm,
             c"Size (µm)",
-            film_v1::DEFAULT_TEXEL_PITCH_UM,
-            film_v1::TEXEL_PITCH_UM_RANGE,
+            grain_v2::DEFAULT_TEXEL_PITCH_UM,
+            grain_v2::TEXEL_PITCH_UM_RANGE,
             0.01,
         ),
         (
-            ParamId::FilmGrainChromaFraction,
+            ParamId::GrainV2ChromaFraction,
             c"Colour",
-            film_v1::DEFAULT_CHROMA_FRACTION,
-            film_v1::CHROMA_FRACTION_RANGE,
+            grain_v2::DEFAULT_CHROMA_FRACTION,
+            grain_v2::CHROMA_FRACTION_RANGE,
             0.01,
         ),
     ] {
@@ -60,18 +60,19 @@ pub(super) const GRAIN: &[Descriptor] = &[
     ),
 ];
 
-pub(super) const FILM_MODEL: &[Descriptor] = &[Descriptor::parameter(
+pub(super) const GRAIN_MODEL: &[Descriptor] = &[Descriptor::parameter(
     ParamId::GrainModel,
     c"Model",
     &[
-        StringChoices(&[(c"current", c"Current"), (c"film_v1", c"Film v1")]),
+        // The choice IDs are stored in projects.
+        StringChoices(&[(c"current", c"Legacy"), (c"film_v1", c"Grain v2 (beta)")]),
         Text(DEFAULT, &[c"current"]),
         Parent(c"GrainGroup"),
         Int(EVALUATE_ON_CHANGE, 1),
     ],
 )];
 
-pub(super) const GRAIN_CONTROLS: &[Descriptor] = &[
+pub(super) const LEGACY_GRAIN_CONTROLS: &[Descriptor] = &[
     Descriptor::parameter(
         ParamId::GrainSublayersActive,
         c"Use sublayers",

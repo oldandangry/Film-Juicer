@@ -534,8 +534,8 @@ typedef struct FjGrainGaussian {
     uint64_t hash;
 } FjGrainGaussian;
 
-/* VisualGrainFrameDescriptor and consumed VisualGrainRecipe coefficients ->
- * pack_visual_grain_payload. Layer arrays keep [layer][CMY]; no BGR conversion.
+/* Legacy grain frame descriptor and recipe coefficients for pack_legacy_grain_payload.
+ * Layer arrays keep [layer][CMY].
  * Scratch shape is native-derived, never a foreign allocation instruction. */
 typedef struct FjVisualGrain {
     uint32_t flags;      /* FJ_GRAIN_* except DEBUG tags. */
@@ -795,7 +795,7 @@ typedef struct FjPreparedHostData {
     FjVisualGrain grain;
     FjFilmEffects effects;
     FjStaticNoise noise;
-    const FjFilmGrain* film_grain; /* Selected instead of visual grain; null otherwise. */
+    const FjFilmGrain* film_grain; /* Grain v2 inputs when selected. */
 } FjPreparedHostData;
 
 /* Calls serialize on one owner gate. inspect through render stays on the same

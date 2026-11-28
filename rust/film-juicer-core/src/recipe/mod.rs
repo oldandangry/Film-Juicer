@@ -27,7 +27,7 @@ use scanner_stage::OUTPUT_KNEE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlError {
-    FilmGrain,
+    GrainV2,
     DirectScanner,
     PrintGamma,
     PrintStage,
@@ -46,8 +46,8 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::FilmGrain => {
-                "Film v1 requires Kodak Portra 400, a supported camera film format, a negative route and valid Film grain controls"
+            Self::GrainV2 => {
+                "Grain v2 requires Kodak Portra 400 or Kodak Gold 200, a supported camera film format, a negative route and valid grain controls"
             }
             Self::DirectScanner => "ResourceDescriptorMismatch phase=8 field=scanner_output",
             Self::PrintGamma => {
@@ -84,7 +84,7 @@ impl fmt::Display for ControlError {
 impl StdError for ControlError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FilmGrainFootprintKind {
+pub enum GrainV2FootprintKind {
     Rendered,
     Sample,
 }
@@ -132,9 +132,9 @@ pub enum PrepareError {
     Asset(AssetError),
     Development(film::Error),
     Control(ControlError),
-    FilmGrainGeometry,
-    FilmGrainFootprint {
-        kind: FilmGrainFootprintKind,
+    GrainV2Geometry,
+    GrainV2Footprint {
+        kind: GrainV2FootprintKind,
         long_edge_mm: f32,
         texel_pitch_um: f32,
         width_texels: f32,
@@ -190,8 +190,8 @@ impl fmt::Display for PrepareError {
             Self::Asset(error) => error.fmt(f),
             Self::Development(error) => error.fmt(f),
             Self::Control(error) => error.fmt(f),
-            Self::FilmGrainGeometry => f.write_str("Film v1 requires rendered frame geometry"),
-            Self::FilmGrainFootprint {
+            Self::GrainV2Geometry => f.write_str("Grain v2 requires rendered frame geometry"),
+            Self::GrainV2Footprint {
                 kind,
                 long_edge_mm,
                 texel_pitch_um,
@@ -199,12 +199,12 @@ impl fmt::Display for PrepareError {
                 supported_texels,
             } => {
                 let kind = match kind {
-                    FilmGrainFootprintKind::Rendered => "rendered",
-                    FilmGrainFootprintKind::Sample => "sample",
+                    GrainV2FootprintKind::Rendered => "rendered",
+                    GrainV2FootprintKind::Sample => "sample",
                 };
                 write!(
                     f,
-                    "Film v1 unsupported {kind} footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={texel_pitch_um}, footprint_texels={}, supported_texels={}..={})",
+                    "Grain v2 unsupported {kind} footprint (film_long_edge_mm={long_edge_mm}, grain_size_um={texel_pitch_um}, footprint_texels={}, supported_texels={}..={})",
                     f64::from(*width_texels),
                     f64::from(*supported_texels.start()),
                     f64::from(*supported_texels.end()),
@@ -217,7 +217,7 @@ impl fmt::Display for PrepareError {
                 f.write_str("MalformedRequiredProfileData phase=9A field=grain_contract")
             }
             Self::Grain(_) => {
-                f.write_str("MalformedRequiredProfileData phase=9A field=visual_grain")
+                f.write_str("MalformedRequiredProfileData phase=9A field=legacy_grain")
             }
             Self::Effects(_) => {
                 f.write_str("ResourceDescriptorMismatch phase=effects_recipe field=physical_policy")
@@ -366,11 +366,11 @@ struct Contents {
     optics: optics::Recipe,
     minimum: density::Minimum,
     grain: grain::Recipe,
-    film_grain: Option<grain::film_v1::Recipe>,
+    grain_v2: Option<grain::grain_v2::Recipe>,
     effects: effects::Recipe,
     dir: dir::Recipe,
     #[cfg(test)]
-    film_v1_bounds: Option<density::Bounds>,
+    grain_v2_bounds: Option<density::Bounds>,
     exposure_tables: spectral::Tables,
     s_inverse: [f32; 9],
     reconstruction: FilmReconstruction,
@@ -491,11 +491,11 @@ impl RenderState {
     pub fn minimum(&self) -> &density::Minimum {
         &self.contents[0].minimum
     }
-    pub fn grain(&self) -> &grain::Recipe {
+    pub fn legacy_grain(&self) -> &grain::Recipe {
         &self.contents[0].grain
     }
-    pub fn film_grain(&self) -> Option<&grain::film_v1::Recipe> {
-        self.contents[0].film_grain.as_ref()
+    pub fn grain_v2(&self) -> Option<&grain::grain_v2::Recipe> {
+        self.contents[0].grain_v2.as_ref()
     }
     pub fn effects(&self) -> &effects::Recipe {
         &self.contents[0].effects
@@ -504,8 +504,8 @@ impl RenderState {
         &self.contents[0].dir
     }
     #[cfg(test)]
-    pub(crate) fn film_v1_bounds(&self) -> Option<&density::Bounds> {
-        self.contents[0].film_v1_bounds.as_ref()
+    pub(crate) fn grain_v2_bounds(&self) -> Option<&density::Bounds> {
+        self.contents[0].grain_v2_bounds.as_ref()
     }
     pub fn exposure_tables(&self) -> &spectral::Tables {
         &self.contents[0].exposure_tables
@@ -782,16 +782,16 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     prepare_state(assets, params, None)
 }
 
-/// Sampling requested for this Film v1 render.
+/// Sampling requested for this Grain v2 render.
 #[derive(Clone, Copy)]
-pub enum FilmGrainFrame {
-    Raster(grain::film_v1::Raster),
+pub enum GrainV2Frame {
+    Raster(grain::grain_v2::Raster),
     Thumbnail,
 }
 pub fn prepare_for_frame(
     assets: &Assets,
     params: &Params,
-    frame: FilmGrainFrame,
+    frame: GrainV2Frame,
 ) -> Result<RenderState, PrepareError> {
     prepare_state(assets, params, Some(frame))
 }
@@ -799,10 +799,10 @@ pub fn prepare_for_frame(
 fn prepare_state(
     assets: &Assets,
     params: &Params,
-    frame: Option<FilmGrainFrame>,
+    frame: Option<GrainV2Frame>,
 ) -> Result<RenderState, PrepareError> {
     let profile = assets.film(&params.film_profile_key)?;
-    let film_grain = film_stage::prepare_grain(assets, params, frame)?;
+    let grain_v2 = film_stage::prepare_grain_v2(assets, params, frame)?;
     let selected_print = if print_route(params.scan_route) {
         Some(assets.print(&params.print_profile_key)?)
     } else {
@@ -826,7 +826,7 @@ fn prepare_state(
         &acquired,
         params,
         selected_print.is_some(),
-        film_grain.as_ref(),
+        grain_v2.as_ref(),
     )?;
     let profile_route_hash = profile_route_hash(params, film, selected_print.as_deref());
 
@@ -900,7 +900,7 @@ fn prepare_state(
         effects,
         dir,
         #[cfg(test)]
-        film_v1_bounds,
+        grain_v2_bounds,
         ..
     } = film_stage;
     let film_stage::ExposureStage {
@@ -943,8 +943,8 @@ fn prepare_state(
             hash = hash::u64s(&[hash, optional]);
         }
     }
-    if let Some(film_grain) = &film_grain {
-        hash = hash::u64s(&[hash, film_grain.hash()]);
+    if let Some(grain_v2) = &grain_v2 {
+        hash = hash::u64s(&[hash, grain_v2.hash()]);
     }
     if hash == 0 || scanner_hash == 0 || scanner_recipe_hash == 0 || scanner.color.hash() == 0 {
         return Err(ControlError::Identity(params.scan_route).into());
@@ -956,11 +956,11 @@ fn prepare_state(
         optics,
         minimum,
         grain,
-        film_grain,
+        grain_v2,
         effects,
         dir,
         #[cfg(test)]
-        film_v1_bounds,
+        grain_v2_bounds,
         exposure_tables,
         s_inverse,
         reconstruction,
@@ -1103,7 +1103,7 @@ pub(crate) mod test_support {
                 clump_morph_period_sec: 8.0,
                 debug_view: 0,
             },
-            film_grain: grain::film_v1::Selection::Current,
+            grain_v2: grain::grain_v2::Selection::Legacy,
             film_dust_amount: 0.0,
             film_scratch_amount: 0.0,
             gate_dust_amount: 0.0,
@@ -1220,7 +1220,7 @@ mod tests {
                 controls.camera_exposure_compensation_ev = exposure;
                 let state = prepare(&stock, &controls).unwrap();
                 assert_eq!(state.dir().active(), dir_enabled);
-                assert_eq!(state.grain().hash() != 0, dir_enabled);
+                assert_eq!(state.legacy_grain().hash() != 0, dir_enabled);
                 let mut base = Vec::new();
                 base.extend(state.profile_route_hash().to_le_bytes());
                 base.extend(state.input().hash().to_le_bytes());
@@ -1235,7 +1235,7 @@ mod tests {
                 let fold = |bytes: &[u8]| {
                     let optional = [
                         state.optics().hash(),
-                        state.grain().hash(),
+                        state.legacy_grain().hash(),
                         state.effects().hash(),
                     ];
                     let result = optional.into_iter().filter(|&word| word != 0).fold(
@@ -1246,9 +1246,9 @@ mod tests {
                             hash::bytes(&continuation)
                         },
                     );
-                    if let Some(film_grain) = state.film_grain() {
+                    if let Some(grain_v2) = state.grain_v2() {
                         return hash::bytes(
-                            &[result.to_le_bytes(), film_grain.hash().to_le_bytes()].concat(),
+                            &[result.to_le_bytes(), grain_v2.hash().to_le_bytes()].concat(),
                         );
                     }
                     result
@@ -1303,7 +1303,7 @@ mod tests {
                 assert_eq!(
                     (
                         state.optics().hash(),
-                        state.grain().hash(),
+                        state.legacy_grain().hash(),
                         state.effects().hash()
                     ),
                     (0, 0, 0)

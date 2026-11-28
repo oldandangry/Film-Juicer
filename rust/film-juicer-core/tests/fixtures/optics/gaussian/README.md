@@ -2,7 +2,7 @@
 
 These are Film-Juicer native characterizations, not external-reference pixel
 fixtures. Each logical preset retains its own immutable payload and context.
-The cohort includes 28 literal cases and actual four-route scanner, visual-grain
+The cohort includes 28 literal cases and actual four-route scanner, Legacy grain
 and FIR-DIR descriptor products at 2, 6 and 12 micrometers per pixel: 188 arrays,
 22,895 final f32 words. Empty native-helper cases characterize inactive inputs;
 the active Rust API rejects radius zero/nonpositive sigma.

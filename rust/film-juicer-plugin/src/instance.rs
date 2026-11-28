@@ -118,14 +118,13 @@ impl Instance {
         &self,
         input: state::FrameInput<'_>,
         assets: &Assets,
-        frame: recipe::FilmGrainFrame,
+        frame: recipe::GrainV2Frame,
     ) -> Result<Arc<recipe::RenderState>, state::Error> {
         let prepare = |params: &film_juicer_core::capture::Params| {
             recipe::prepare_for_frame(assets, params, frame)
         };
 
-        self.publication
-            .admit_film_grain_frame(input, frame, prepare)
+        self.publication.admit_grain_v2_frame(input, frame, prepare)
     }
     pub(crate) fn block(&self) {
         self.publication.block();

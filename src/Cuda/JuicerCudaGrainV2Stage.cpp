@@ -1,11 +1,11 @@
 // Copyright 2026 MUAStudio Inc. SPDX-License-Identifier: Apache-2.0
-#include "Cuda/JuicerCudaFilmGrainStage.h"
+#include "Cuda/JuicerCudaGrainV2Stage.h"
 
 #include <algorithm>
 #include <type_traits>
 
-namespace JuicerCuda::FilmGrain {
-    void bind_film_grain(
+namespace JuicerCuda::GrainV2 {
+    void bind_grain_v2(
         const FjFilmGrain& input, FjExtent extent, ProxyWorkspace* workspace, FilmTables& tables, FilmFrame& frame) {
         static_assert(std::extent_v<decltype(FjFilmGrain::records)> == kRecords);
         static_assert(std::extent_v<decltype(FjFilmGrainRecord::mean_light)> == kLevels);
@@ -45,4 +45,4 @@ namespace JuicerCuda::FilmGrain {
     LaunchResult launch_developed(const FilmQuad* bank, const FilmTables& tables, const FilmFrame& frame, FilmPlanes planes, cudaStream_t stream) {
         return {apply(bank, tables, frame, planes, stream)};
     }
-} // namespace JuicerCuda::FilmGrain
+} // namespace JuicerCuda::GrainV2
