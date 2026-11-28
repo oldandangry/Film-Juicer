@@ -1,4 +1,4 @@
-//! Explicit Film v1 bank authoring input from the product capture catalog.
+//! Explicit Grain v2 bank authoring input from the product capture catalog.
 
 use std::{env, error::Error, io, path::PathBuf};
 

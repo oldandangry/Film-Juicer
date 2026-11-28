@@ -1,7 +1,7 @@
 //! Maintenance proof for the selected Portra table and the shipping density guards.
 
 use super::*;
-use crate::film::grain::film_v1::{AMOUNT_EV_RANGE, TEXEL_PITCH_UM_RANGE};
+use crate::film::grain::grain_v2::{AMOUNT_EV_RANGE, TEXEL_PITCH_UM_RANGE};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -79,15 +79,15 @@ fn colour_guard(development: &film::Development, at: impl Fn(f32) -> [[f32; 3]; 
 }
 
 fn allowance_guard(development: &film::Development, [lo, hi]: [f32; 2]) -> Guard {
-    let maximum = Bounds::film_v1_clean_maximum(development);
+    let maximum = Bounds::grain_v2_clean_maximum(development);
     guard(development, [[lo; 3], maximum.map(|d| (d + hi).next_up())])
 }
 
 struct Proof<'a> {
     assets: &'a Assets,
-    bank: &'a FilmGrainBank,
+    bank: &'a GrainV2Bank,
     development: &'a film::Development,
-    template: FilmGrainTable,
+    template: GrainV2Table,
     gain: f32,
 }
 
@@ -96,7 +96,7 @@ impl Proof<'_> {
         let width = f32::from_bits(word);
         let table = self
             .assets
-            .film_grain_table(self.bank, width)
+            .grain_v2_table(self.bank, width)
             .unwrap_or_else(|error| {
                 panic!(
                     "selected table width {width} (0x{word:08x}), gain {}: {error}",
@@ -125,7 +125,7 @@ impl Proof<'_> {
             );
             return tested;
         }
-        let maximum = Bounds::film_v1_clean_maximum(self.development);
+        let maximum = Bounds::grain_v2_clean_maximum(self.development);
         let projection = projection_range(self.bank, &table, self.gain, maximum, true)
             .unwrap_or_else(|| panic!("no tighter enclosure at {width} (0x{word:08x})"));
         let tested = colour_guard(self.development, |colour| projection.densities(colour));
@@ -208,7 +208,7 @@ impl Proof<'_> {
         if last > placement_extrema::BANDS.last().unwrap().0 {
             return None;
         }
-        let maximum = Bounds::film_v1_clean_maximum(self.development);
+        let maximum = Bounds::grain_v2_clean_maximum(self.development);
         let table = |side: usize| {
             let mut table = self.template.clone();
             table.footprint = first;
@@ -232,9 +232,9 @@ impl Proof<'_> {
 #[test]
 fn gold_density_guards_cover_supported_footprints() {
     let assets = assets();
-    let bank = assets.film_grain_bank(FilmGrainStock::Gold200).unwrap();
+    let bank = assets.grain_v2_bank(GrainV2Stock::Gold200).unwrap();
     let development = film::Development::new(
-        assets.film(FilmGrainStock::Gold200.key()).unwrap(),
+        assets.film(GrainV2Stock::Gold200.key()).unwrap(),
         film::Params {
             gamma_factor: 1.0,
             layers_required: false,
@@ -248,7 +248,7 @@ fn gold_density_guards_cover_supported_footprints() {
         development: &development,
         gain: 16.0,
         template: (*assets
-            .film_grain_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT)
+            .grain_v2_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT)
             .unwrap())
         .clone(),
     };
@@ -256,7 +256,7 @@ fn gold_density_guards_cover_supported_footprints() {
         .map(|quarter| quarter as f32 / 4.0)
         .chain((100..500).step_by(5).map(|word| word as f32 / 100.0))
         .chain(
-            certificate(FilmGrainStock::Gold200)
+            certificate(GrainV2Stock::Gold200)
                 .placement
                 .iter()
                 .flat_map(|&(width, _)| [width.next_down(), width.next_up()]),
@@ -401,7 +401,7 @@ struct LightCoverage {
     limiting: [u32; 2],
 }
 
-fn certify_nonconstant(bank: &FilmGrainBank, first: u32, last: u32, result: &mut LightCoverage) {
+fn certify_nonconstant(bank: &GrainV2Bank, first: u32, last: u32, result: &mut LightCoverage) {
     if let Some(gap) = calibration_interval::nonconstant_light_gap(bank, first, last) {
         result.words += last - first + 1;
         result.intervals += 1;
@@ -420,7 +420,7 @@ fn certify_nonconstant(bank: &FilmGrainBank, first: u32, last: u32, result: &mut
     }
 }
 
-fn nonconstant_report(bank: &FilmGrainBank, parent: &Parent) -> serde_json::Value {
+fn nonconstant_report(bank: &GrainV2Bank, parent: &Parent) -> serde_json::Value {
     let Parent { first, last, .. } = *parent;
     assert!(last <= 10.0_f32.to_bits());
     let mut result = LightCoverage {
@@ -522,7 +522,7 @@ fn guard_report(proof: &Proof<'_>, parent: &Parent, words: Option<&[u32]>) -> se
     })
 }
 
-pub(super) fn run(assets: &Assets, bank: &FilmGrainBank, development: &film::Development) {
+pub(super) fn run(assets: &Assets, bank: &GrainV2Bank, development: &film::Development) {
     let Some(bundle) = std::env::var_os("FJ_PORTRA_CERTIFICATE") else {
         return;
     };
@@ -546,7 +546,7 @@ pub(super) fn run(assets: &Assets, bank: &FilmGrainBank, development: &film::Dev
         development,
         gain,
         template: (*assets
-            .film_grain_table(bank, MIN_PROXY_SAMPLE_FOOTPRINT)
+            .grain_v2_table(bank, MIN_PROXY_SAMPLE_FOOTPRINT)
             .unwrap())
         .clone(),
     };

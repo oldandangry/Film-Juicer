@@ -212,8 +212,8 @@ namespace JuicerProcess {
         const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects,
         const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSet,
         const ScatterHalationFrameDescriptor* scatterHalationDescriptor,
-        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
-        bool filmGrain,
+        const std::optional<Spektrafilm::LegacyGrainFrameDescriptor>& legacyGrain,
+        bool grainV2,
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
         Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
@@ -224,7 +224,7 @@ namespace JuicerProcess {
         std::string& outError) {
         out = std::monostate{};
         JuicerCuda::ResourceManager::ScratchRequestAttachments attachments;
-        Spektrafilm::VisualGrainScratchShape grainShape = Spektrafilm::VisualGrainScratchShape::None;
+        Spektrafilm::LegacyGrainScratchShape grainShape = Spektrafilm::LegacyGrainScratchShape::None;
         JuicerCuda::ResourceManager::ActiveDirScratch::Layout source;
         JuicerCuda::ResourceManager::ActiveDirScratch::Layout target;
         std::uint64_t dirHash = 0;
@@ -345,32 +345,32 @@ namespace JuicerProcess {
             target = {spatialDir->targetScratchTier, spatialDir->targetPlaneRoles};
             attachments.needSharedTmp = spatialDir->planeRoles.filterTempPlanes > 0;
         }
-        if (filmGrain) {
+        if (grainV2) {
             attachments.needOptics = true;
         }
-        if (visualGrain.has_value()) {
-            if (visualGrain->renderExtent.width != requestedWidth ||
-                visualGrain->renderExtent.height != requestedHeight) {
+        if (legacyGrain.has_value()) {
+            if (legacyGrain->renderExtent.width != requestedWidth ||
+                legacyGrain->renderExtent.height != requestedHeight) {
                 outError =
                     "ResourceDescriptorMismatch phase=workspace field=grain_extent";
                 return false;
             }
-            if (!visualGrain->active || visualGrain->hash == 0 ||
-                visualGrain->scratchShape == Spektrafilm::VisualGrainScratchShape::None) {
+            if (!legacyGrain->active || legacyGrain->hash == 0 ||
+                legacyGrain->scratchShape == Spektrafilm::LegacyGrainScratchShape::None) {
                 outError = "ResourceDescriptorMismatch phase=grain_workspace field=descriptor";
                 return false;
             }
-            switch (visualGrain->scratchShape) {
-                case Spektrafilm::VisualGrainScratchShape::Streamed:
-                case Spektrafilm::VisualGrainScratchShape::StreamedShared:
-                case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
-                case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+            switch (legacyGrain->scratchShape) {
+                case Spektrafilm::LegacyGrainScratchShape::Streamed:
+                case Spektrafilm::LegacyGrainScratchShape::StreamedShared:
+                case Spektrafilm::LegacyGrainScratchShape::StreamedLayers:
+                case Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared:
                     break;
                 default:
                     outError = "ResourceDescriptorMismatch phase=grain_workspace field=scratch_shape";
                     return false;
             }
-            grainShape = visualGrain->scratchShape;
+            grainShape = legacyGrain->scratchShape;
             attachments.needOptics = true;
             attachments.needSharedTmp = true;
             attachments.needBlurred = true;

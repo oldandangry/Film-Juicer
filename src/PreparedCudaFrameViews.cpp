@@ -210,19 +210,19 @@ namespace JuicerProcess {
 
     } // namespace
 
-    JuicerCuda::PreparedVisualGrainView
-    Root::PreparedCudaFrame::visual_grain_resources() const noexcept {
-        JuicerCuda::PreparedVisualGrainView view{};
-        if (!_state || !_state->visualGrainPrepared ||
-            !_state->visualGrainDescriptor.has_value() ||
+    JuicerCuda::PreparedLegacyGrainView
+    Root::PreparedCudaFrame::legacy_grain_resources() const noexcept {
+        JuicerCuda::PreparedLegacyGrainView view{};
+        if (!_state || !_state->legacyGrainPrepared ||
+            !_state->legacyGrainDescriptor.has_value() ||
             !_state->grainStaticResources ||
             !_state->transaction.active ||
             _state->transaction.committed) {
             return view;
         }
 
-        const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
-            *_state->visualGrainDescriptor;
+        const Spektrafilm::LegacyGrainFrameDescriptor& descriptor =
+            *_state->legacyGrainDescriptor;
         const JuicerCuda::Resources& staticResources =
             *_state->grainStaticResources;
         view.staticNoise.stbn = staticResources.stbnData;
@@ -258,8 +258,8 @@ namespace JuicerProcess {
             view.staticNoise.wangCount > 0 &&
             view.staticNoise.wangColors > 0;
         auto gaussian_ready =
-            [](const Spektrafilm::VisualGrainGaussian& gaussian,
-               const JuicerCuda::VisualGrainPreparedGaussianView& prepared) {
+            [](const Spektrafilm::LegacyGrainGaussian& gaussian,
+               const JuicerCuda::LegacyGrainPreparedGaussianView& prepared) {
                 if (gaussian.radius <= 0) {
                     return gaussian.hash == 0 && !prepared.active &&
                            !prepared.weights &&
@@ -316,7 +316,7 @@ namespace JuicerProcess {
         view.active = ready;
         return view.active
                    ? view
-                   : JuicerCuda::PreparedVisualGrainView{};
+                   : JuicerCuda::PreparedLegacyGrainView{};
     }
 
     const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
@@ -327,12 +327,12 @@ namespace JuicerProcess {
         return &*_state->effectsDescriptor;
     }
 
-    Root::PreparedCudaFrame::VisualGrainWorkspaceView
-    Root::PreparedCudaFrame::visual_grain_workspace(
+    Root::PreparedCudaFrame::LegacyGrainWorkspaceView
+    Root::PreparedCudaFrame::legacy_grain_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
-        VisualGrainWorkspaceView view{};
-        if (!_state || !_state->visualGrainPrepared ||
-            !_state->visualGrainDescriptor.has_value() ||
+        LegacyGrainWorkspaceView view{};
+        if (!_state || !_state->legacyGrainPrepared ||
+            !_state->legacyGrainDescriptor.has_value() ||
             !workspace_marker_matches_current_frame(workspace) ||
             !_state->scratchWorkspace.retainedLeaseActive || !_state->scratchWorkspace.admittedLayout) {
             return view;
@@ -358,7 +358,7 @@ namespace JuicerProcess {
             const std::size_t requiredElements =
                 static_cast<std::size_t>(request.allocation().requestedWidth) * request.allocation().requestedHeight;
             if (dir.capacityElements < requiredElements) {
-                return VisualGrainWorkspaceView{};
+                return LegacyGrainWorkspaceView{};
             }
             const std::array<float*, 3> raw{
                 dir.rawCorrectionY, dir.rawCorrectionM, dir.rawCorrectionC};
@@ -370,7 +370,7 @@ namespace JuicerProcess {
                 if (!*current ||
                     std::find(raw.begin(), current, *current) != current ||
                     std::find(live.begin(), live.end(), *current) != live.end()) {
-                    return VisualGrainWorkspaceView{};
+                    return LegacyGrainWorkspaceView{};
                 }
             }
             view.deltaAccum = raw[0];
@@ -381,50 +381,50 @@ namespace JuicerProcess {
                                  ? scratch.grainFrameUniforms
                                  : nullptr;
         view.scratchShape =
-            _state->visualGrainDescriptor->scratchShape;
+            _state->legacyGrainDescriptor->scratchShape;
 
         bool ready = view.filterTemp && view.scaleWork &&
                      view.deltaAccum && view.frameUniforms;
         switch (view.scratchShape) {
-            case Spektrafilm::VisualGrainScratchShape::Streamed:
+            case Spektrafilm::LegacyGrainScratchShape::Streamed:
                 ready = ready && !view.layerWork &&
                         !view.sharedDelta &&
                         !request.grain_uses_layers() &&
                         !request.grain_uses_shared();
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedShared:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedShared:
                 ready = ready && !view.layerWork &&
                         view.sharedDelta &&
                         !request.grain_uses_layers() &&
                         request.grain_uses_shared();
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedLayers:
                 ready = ready && view.layerWork &&
                         !view.sharedDelta &&
                         request.grain_uses_layers() &&
                         !request.grain_uses_shared();
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared:
                 ready = ready && view.layerWork &&
                         view.sharedDelta &&
                         request.grain_uses_layers() &&
                         request.grain_uses_shared();
                 break;
-            case Spektrafilm::VisualGrainScratchShape::None:
+            case Spektrafilm::LegacyGrainScratchShape::None:
             default:
                 ready = false;
                 break;
         }
         view.active = ready;
-        return view.active ? view : VisualGrainWorkspaceView{};
+        return view.active ? view : LegacyGrainWorkspaceView{};
     }
 
-    const JuicerCuda::FilmGrain::FilmQuad* Root::PreparedCudaFrame::film_grain_bank() const noexcept {
-        return _state ? _state->filmGrainBank : nullptr;
+    const JuicerCuda::GrainV2::FilmQuad* Root::PreparedCudaFrame::grain_v2_bank() const noexcept {
+        return _state ? _state->grainV2Bank : nullptr;
     }
 
-    JuicerCuda::FilmGrain::ProxyWorkspace* Root::PreparedCudaFrame::film_proxy_workspace() const noexcept {
-        return _state ? static_cast<JuicerCuda::FilmGrain::ProxyWorkspace*>(_state->filmProxyWorkspace) : nullptr;
+    JuicerCuda::GrainV2::ProxyWorkspace* Root::PreparedCudaFrame::grain_v2_proxy_workspace() const noexcept {
+        return _state ? static_cast<JuicerCuda::GrainV2::ProxyWorkspace*>(_state->grainV2ProxyWorkspace) : nullptr;
     }
 
     Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView

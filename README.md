@@ -239,15 +239,15 @@ Film dust and scratches are attached to the virtual strip. Gate artifacts are at
 
 Dust and scratches remain under refinement. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
 
-#### Portra 400 and Gold 200 Film v1
+#### Portra 400 and Gold 200 Grain v2
 
-In the standard **Juicer** effect, choose **Kodak Portra 400** or **Kodak Gold 200** and select **Negative Direct** or **Negative Print**. In **Grain**, enable **Add grain** and switch **Model** from **Current** to **Film v1**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Film v1 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
+In the standard **Juicer** effect, choose **Kodak Portra 400** or **Kodak Gold 200** and select **Negative Direct** or **Negative Print**. In **Grain**, enable **Add grain** and switch **Model** from **Legacy** to **Grain v2 (beta)**. The starting values are **Amount 0 EV**, **Size 1 µm** and **Colour 1**. Grain v2 uses the selected 8–120 mm camera format on both routes and supports finite frame times from −1,000,000 through +1,000,000 frames, inclusive.
 
-The archived Grain Preview effect had Full-resolution failures at small film formats with Portra 400 Film v1 at Amount +3 EV, Size 0.5 µm and Colour 1. The standard Juicer effect passed those settings on Negative Direct and Negative Print at both 8 mm and 11.66 mm, using 3,840 × 96, 4,832 × 96 and 4,832 × 2,016 Full frames in native Windows and Linux CUDA tests. Current remains the default grain model.
+The archived Grain Preview effect had Full-resolution failures at small film formats with Portra 400 at Amount +3 EV, Size 0.5 µm and Colour 1. Grain v2 in the standard Juicer effect passed those settings on Negative Direct and Negative Print at both 8 mm and 11.66 mm, using 3,840 × 96, 4,832 × 96 and 4,832 × 2,016 Full frames in native Windows and Linux CUDA tests. Legacy remains the default grain model.
 
-Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Film grain suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions.
+Resolve thumbnails explicitly flagged by the host render the film look and any enabled dust and scratches with Grain v2 suppressed. Timeline and proxy frames retain the selected grain, including at the same small dimensions.
 
-On 19 November 2026, the owner tested and accepted the Windows flagged-thumbnail package at [`4e7f533`](https://github.com/oldandangry/Film-Juicer/commit/4e7f533d2bf649d629e8dd1ca1a2a70391f213d6) in DaVinci Resolve. The individual flag, thumbnail-size and timeline recovery cases come from staged OFX tests. Later wide-proxy behavior was checked with staged OFX and linked OFX/CUDA tests and awaits its own Resolve assessment. [Build and project migration instructions](docs/building.md#film-v1-grain-banks)
+On 19 November 2026, the owner tested and accepted the Windows flagged-thumbnail package at [`4e7f533`](https://github.com/oldandangry/Film-Juicer/commit/4e7f533d2bf649d629e8dd1ca1a2a70391f213d6) in DaVinci Resolve. The individual flag, thumbnail-size and timeline recovery cases come from staged OFX tests. Later wide-proxy behavior was checked with staged OFX and linked OFX/CUDA tests and awaits its own Resolve assessment. [Build and project migration instructions](docs/building.md#grain-v2-banks)
 
 ### The enlarger and print medium
 

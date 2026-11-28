@@ -1,6 +1,6 @@
-//! Signed density allowances for the frozen Film v1 banks.
+//! Signed density allowances for the frozen Grain v2 banks.
 
-use crate::assets::{FilmGrainBank, FilmGrainStock, FilmGrainTable};
+use crate::assets::{GrainV2Bank, GrainV2Stock, GrainV2Table};
 use crate::assets::grain::{CALIBRATED_MAX_FOOTPRINT, SINGLE_WRAP_MAX_FOOTPRINT};
 use crate::assets::grain::{MAX_FOOTPRINT, MIN_PROXY_SAMPLE_FOOTPRINT};
 #[cfg(test)]
@@ -52,9 +52,9 @@ struct Certificate {
     corner_limit: f64,
 }
 
-fn certificate(stock: FilmGrainStock) -> Certificate {
+fn certificate(stock: GrainV2Stock) -> Certificate {
     match stock {
-        FilmGrainStock::Portra400 => Certificate {
+        GrainV2Stock::Portra400 => Certificate {
             placement: &placement_extrema::BANDS,
             bright_deficits: &placement_extrema::BRIGHT_PAIR_DEFICITS,
             scaled: &SCALED_DELTAS,
@@ -63,7 +63,7 @@ fn certificate(stock: FilmGrainStock) -> Certificate {
             strip_limit: PERIODIC_STRIP_LIMIT,
             corner_limit: PERIODIC_CORNER_LIMIT,
         },
-        FilmGrainStock::Gold200 => Certificate {
+        GrainV2Stock::Gold200 => Certificate {
             placement: &gold::PLACEMENT,
             bright_deficits: &gold::BRIGHT_PAIR_DEFICITS,
             scaled: &gold::SCALED_DELTAS,
@@ -76,8 +76,8 @@ fn certificate(stock: FilmGrainStock) -> Certificate {
 }
 
 pub(super) fn density_range(
-    bank: &FilmGrainBank,
-    table: &FilmGrainTable,
+    bank: &GrainV2Bank,
+    table: &GrainV2Table,
     gain: f32,
     chroma_fraction: f32,
     clean_maximum: [f32; 3],
@@ -87,8 +87,8 @@ pub(super) fn density_range(
 }
 
 fn projection_range(
-    bank: &FilmGrainBank,
-    table: &FilmGrainTable,
+    bank: &GrainV2Bank,
+    table: &GrainV2Table,
     gain: f32,
     clean_maximum: [f32; 3],
     reduced_colour: bool,
@@ -106,7 +106,7 @@ fn projection_range(
     let clean_light = clean_maximum.map(|density| 10.0_f64.powf(-f64::from(density)));
     let mut minimum = [0.0_f64; 3];
     let mut maximum = clean_maximum.map(f64::from);
-    let gold = bank.stock() == FilmGrainStock::Gold200;
+    let gold = bank.stock() == GrainV2Stock::Gold200;
     let mut brackets = (gold && reduced_colour).then_some([[None; PROJECTION_BRACKETS]; 3]);
     // The represented positive weights obey sum(w)/sqrt(sum(w*w)) <= sqrt(n).
     // The staggered seam support gives a combined limit of 3. The coordinate
@@ -318,8 +318,8 @@ fn adjacent_extreme(a: f64, b: f64, rho: f64, [low, high]: [f64; 2]) -> f64 {
 }
 
 pub(super) fn periodic_allowances(
-    stock: FilmGrainStock,
-    table: &FilmGrainTable,
+    stock: GrainV2Stock,
+    table: &GrainV2Table,
     gain: f32,
 ) -> Option<[f32; 2]> {
     let certificate = certificate(stock);
@@ -377,11 +377,7 @@ pub(super) fn periodic_allowances(
     Some([-allowance, allowance])
 }
 
-pub(crate) fn allowances(
-    bank: &FilmGrainBank,
-    table: &FilmGrainTable,
-    gain: f32,
-) -> Option<[f32; 2]> {
+pub(crate) fn allowances(bank: &GrainV2Bank, table: &GrainV2Table, gain: f32) -> Option<[f32; 2]> {
     let width = f64::from(table.footprint);
     if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&table.footprint) {
         return None;
@@ -404,7 +400,7 @@ pub(crate) fn allowances(
             .find(|&&(high, _)| certified_width <= f64::from(high))?
             .1
     };
-    let calibrated = bank.stock() == FilmGrainStock::Portra400 && width >= 1.0 && divisions == 1.0;
+    let calibrated = bank.stock() == GrainV2Stock::Portra400 && width >= 1.0 && divisions == 1.0;
     let mut mean_shift = [0.0_f64; 2];
     let mut min_correlation = 1.0_f32;
     for (r, record) in bank.records().iter().enumerate() {
@@ -499,7 +495,7 @@ mod tests {
             let current = at(colour);
             let lo = std::array::from_fn(|k| previous[0][k].min(current[0][k]).next_down());
             let hi = std::array::from_fn(|k| upper_pad(previous[1][k].max(current[1][k])));
-            Bounds::checked_film_v1(development, lo, hi).unwrap_or_else(|error| {
+            Bounds::checked_grain_v2(development, lo, hi).unwrap_or_else(|error| {
                 panic!("widths {widths:?}, interval ending at Colour {colour}, box {lo:?} to {hi:?}: {error}")
             });
             previous = current;
@@ -647,8 +643,8 @@ mod tests {
         }
     }
 
-    fn check_placement_certificate(stock: FilmGrainStock) {
-        let bank = assets().film_grain_bank(stock).unwrap();
+    fn check_placement_certificate(stock: GrainV2Stock) {
+        let bank = assets().grain_v2_bank(stock).unwrap();
         let certificate = certificate(stock);
         let levels = bank.records().iter().flat_map(|record| record.mean_light);
         for (index, (tile, mean_light)) in bank
@@ -752,12 +748,12 @@ mod tests {
 
     #[test]
     fn continuous_footprint_certificate() {
-        check_placement_certificate(FilmGrainStock::Portra400);
+        check_placement_certificate(GrainV2Stock::Portra400);
     }
 
     #[test]
     fn gold_continuous_footprint_certificate() {
-        check_placement_certificate(FilmGrainStock::Gold200);
+        check_placement_certificate(GrainV2Stock::Gold200);
     }
 
     #[test]
@@ -782,9 +778,9 @@ mod tests {
     #[test]
     fn high_gain_boxes_cover_footprint_band_edges() {
         let assets = assets();
-        let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         let review = 1.953_125_f32;
         let bright_probe = 1.117_187_5_f32;
         let widths =
@@ -819,10 +815,10 @@ mod tests {
                     .flat_map(|&(end, _)| [end.next_down(), end, end.next_up()]),
             );
         for width in widths {
-            let table = assets.film_grain_table(&bank, width).unwrap();
+            let table = assets.grain_v2_table(&bank, width).unwrap();
             let [lower, upper] = allowances(&bank, &table, 16.0).unwrap();
             let original_hi = maximum.map(|d| upper_pad((d + upper).next_up()));
-            if Bounds::checked_film_v1(&development, [lower; 3], original_hi).is_ok() {
+            if Bounds::checked_grain_v2(&development, [lower; 3], original_hi).is_ok() {
                 continue;
             }
             check_colour(&development, [width; 2], |colour| {
@@ -834,9 +830,9 @@ mod tests {
     #[test]
     fn calibration_intervals_enclose_executed_words_and_signed_guards() {
         let assets = assets();
-        let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
         for (first, steps) in [
             (MIN_PROXY_SAMPLE_FOOTPRINT, 512),
@@ -867,7 +863,7 @@ mod tests {
             assert_eq!(band(first), band(last));
             let bounds = calibration_interval::normalize(&bank, first, last);
             for width in [first, f32::from_bits(first.to_bits() + steps / 2), last] {
-                let actual = assets.film_grain_table(&bank, width).unwrap();
+                let actual = assets.grain_v2_table(&bank, width).unwrap();
                 for (r, record) in bank.records().iter().enumerate() {
                     for k in 0..17 {
                         let [lo, hi] = bounds.mean.map(|side| side[r][k]);
@@ -887,7 +883,7 @@ mod tests {
                 }
             }
 
-            let mut table = (*assets.film_grain_table(&bank, first).unwrap()).clone();
+            let mut table = (*assets.grain_v2_table(&bank, first).unwrap()).clone();
             table.correlation = bounds.correlation;
             let [mut dark, mut bright] = [table.clone(), table];
             dark.mean_density = bounds.mean[0];
@@ -909,13 +905,13 @@ mod tests {
     fn retained_calibrated_guards_follow_from_the_normalization_limits() {
         let assets = assets();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         let mut start = 10.0;
         for &(end, [lower, upper]) in &SCALED_DELTAS[5..] {
             let scale = 16.0 * 3.012 * (2.0 / (1.0 + f64::from(MIN_CORRELATION))).sqrt() / start;
             let lo = (((lower - MAX_SCALED_MEAN_SHIFT) * scale - 0.002) as f32).next_down();
             let hi = (((upper + MAX_SCALED_MEAN_SHIFT) * scale + 0.002) as f32).next_up();
-            Bounds::checked_film_v1(
+            Bounds::checked_grain_v2(
                 &development,
                 [lo; 3],
                 maximum.map(|d| upper_pad((d + hi).next_up())),
@@ -928,9 +924,9 @@ mod tests {
     #[test]
     fn whole_period_tables_clear_the_retained_guards() {
         let assets = assets();
-        let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
-        let mut table = (*assets.film_grain_table(&bank, TILE as f32).unwrap()).clone();
+        let mut table = (*assets.grain_v2_table(&bank, TILE as f32).unwrap()).clone();
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
         assert!(bank.sums().iter().all(|s| s.abs() < 400.0));
         for (r, record) in bank.records().iter().enumerate() {
@@ -954,7 +950,7 @@ mod tests {
         for width in (TILE..=MAX_FOOTPRINT as usize).step_by(TILE) {
             table.footprint = width as f32;
             let allowance = allowances(&bank, &table, 16.0).unwrap();
-            Bounds::film_v1(&development, allowance)
+            Bounds::grain_v2(&development, allowance)
                 .unwrap_or_else(|error| panic!("whole period {width}: {error}"));
         }
     }
@@ -962,7 +958,7 @@ mod tests {
     #[test]
     fn periodic_allowance_covers_the_frozen_bank_and_normalization_floor() {
         let assets = assets();
-        let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let development = development(&assets);
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
         let mut stripe_limit = 0.0_f64;
@@ -995,59 +991,58 @@ mod tests {
         assert!(corner_limit <= PERIODIC_CORNER_LIMIT);
 
         let width = PERIODIC_ALLOWANCE_MIN_FOOTPRINT as f32;
-        let measured = assets.film_grain_table(&bank, width).unwrap();
+        let measured = assets.grain_v2_table(&bank, width).unwrap();
         let retained =
-            Bounds::film_v1(&development, allowances(&bank, &measured, 16.0).unwrap()).unwrap();
-        let selected = Bounds::for_film_grain(&development, &bank, &measured, 16.0, 1.0).unwrap();
+            Bounds::grain_v2(&development, allowances(&bank, &measured, 16.0).unwrap()).unwrap();
+        let selected = Bounds::for_grain_v2(&development, &bank, &measured, 16.0, 1.0).unwrap();
         assert_eq!(retained.hash(), selected.hash());
 
         let mut worst = (*measured).clone();
         // The production table accepts correlations strictly above this
         // floor. This synthetic table only exercises the enclosure limit.
         worst.correlation = [[(-0.9997_f32).next_up(); 17]; 3];
-        let original = Bounds::film_v1(&development, allowances(&bank, &worst, 16.0).unwrap());
+        let original = Bounds::grain_v2(&development, allowances(&bank, &worst, 16.0).unwrap());
         assert!(matches!(
             original,
             Err(film::density::Error::FilmProjectionSpan)
         ));
-        let expected = Bounds::film_v1(
+        let expected = Bounds::grain_v2(
             &development,
-            periodic_allowances(FilmGrainStock::Portra400, &worst, 16.0).unwrap(),
+            periodic_allowances(GrainV2Stock::Portra400, &worst, 16.0).unwrap(),
         )
         .unwrap();
         for colour in [0.0, 0.5, 1.0] {
-            let fallback =
-                Bounds::for_film_grain(&development, &bank, &worst, 16.0, colour).unwrap();
+            let fallback = Bounds::for_grain_v2(&development, &bank, &worst, 16.0, colour).unwrap();
             assert_eq!(fallback.hash(), expected.hash());
         }
         worst.footprint = SINGLE_WRAP_MAX_FOOTPRINT;
-        assert!(periodic_allowances(FilmGrainStock::Portra400, &worst, 16.0).is_none());
+        assert!(periodic_allowances(GrainV2Stock::Portra400, &worst, 16.0).is_none());
     }
 
     #[test]
     fn retained_periodic_guards_cover_the_bounded_table_statistics() {
         let assets = assets();
         let development = development(&assets);
-        let maximum = Bounds::film_v1_clean_maximum(&development);
+        let maximum = Bounds::grain_v2_clean_maximum(&development);
         // The ratio w / ceil(w / 37.5) exceeds 28 for w > 255,
         // so only the final scaled band can contribute.
         let piece = 1.0 / (1.0 / 37.5 + 1.0 / 255.0);
         let scale = 16.0 * 3.012 * (2.0 / (0.25 - 8.0 * f64::from(f32::EPSILON))).sqrt();
         let lower = (((-4.03 / piece - 0.005) * scale - 0.002) as f32).next_down();
         let upper = (((4.20 / piece + 0.005) * scale + 0.002) as f32).next_up();
-        Bounds::checked_film_v1(
+        Bounds::checked_grain_v2(
             &development,
             [lower; 3],
             maximum.map(|d| upper_pad((d + upper).next_up())),
         )
         .unwrap();
-        Bounds::film_v1(&development, [-20.5, 20.5]).unwrap();
+        Bounds::grain_v2(&development, [-20.5, 20.5]).unwrap();
     }
 
     #[test]
     fn computed_normalizers_cover_preview_footprints() {
         let assets = assets();
-        let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         let geometries = [302, 604, 1208, 1920, 2416, 3840, 4832, 7418];
         let sizes = [0.5, 1.0, 4.0];
         let widths = geometries.into_iter().flat_map(|long_edge| {
@@ -1085,7 +1080,7 @@ mod tests {
             .chain(widths)
             .chain(film_formats)
         {
-            let table = assets.film_grain_table(&bank, width).unwrap();
+            let table = assets.grain_v2_table(&bank, width).unwrap();
             let [lower, upper] =
                 allowances(&bank, &table, 16.0).unwrap_or_else(|| panic!("footprint {width}"));
             assert!(lower.is_finite() && upper.is_finite() && lower < 0.0 && upper > 0.0);

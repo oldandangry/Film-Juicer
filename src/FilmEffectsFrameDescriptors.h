@@ -10,7 +10,7 @@ struct FjGrainCoefficients;
 
 namespace Spektrafilm {
 
-    enum class VisualGrainScratchShape : std::uint8_t {
+    enum class LegacyGrainScratchShape : std::uint8_t {
         None,
         Streamed,
         StreamedShared,
@@ -18,24 +18,24 @@ namespace Spektrafilm {
         StreamedLayersShared
     };
 
-    struct VisualGrainFrameExtent {
+    struct LegacyGrainFrameExtent {
         int x = 0;
         int y = 0;
         int width = 0;
         int height = 0;
     };
 
-    struct VisualGrainGaussian {
+    struct LegacyGrainGaussian {
         float sigmaPx = 0.0f;
         int radius = 0;
         std::uint64_t hash = 0;
     };
 
-    struct VisualGrainFrameDescriptor {
+    struct LegacyGrainFrameDescriptor {
         bool active = false;
         ProfilePolarity capturePolarity = ProfilePolarity::Unsupported;
-        VisualGrainFrameExtent renderExtent{};
-        VisualGrainFrameExtent fullFrameExtent{};
+        LegacyGrainFrameExtent renderExtent{};
+        LegacyGrainFrameExtent fullFrameExtent{};
         float pixelSizeUm = 0.0f;
         std::int64_t frame0 = 0;
         float frameAlpha = 0.0f;
@@ -60,22 +60,22 @@ namespace Spektrafilm {
         std::array<std::array<float, 3>, 3> densityMaxLayers{};
         std::array<std::array<float, 3>, 3> nParticlesLayers{};
         std::array<std::array<float, 3>, 3> odParticleLayers{};
-        std::array<VisualGrainGaussian, 3> correlation{};
-        std::array<std::array<VisualGrainGaussian, 3>, 3> dyeCloud{};
+        std::array<LegacyGrainGaussian, 3> correlation{};
+        std::array<std::array<LegacyGrainGaussian, 3>, 3> dyeCloud{};
         float effectiveFineWeight = 1.0f;
         float effectiveMidWeight = 0.0f;
         float effectiveCoarseWeight = 0.0f;
         float sizeMixGain = 1.0f;
-        VisualGrainScratchShape scratchShape = VisualGrainScratchShape::None;
+        LegacyGrainScratchShape scratchShape = LegacyGrainScratchShape::None;
         bool requiresFullFrame = false;
         std::uint64_t recipeHash = 0;
         std::uint64_t densityCurvesLayersHash = 0;
         std::uint64_t hash = 0;
     };
 
-    VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept;
+    LegacyGrainScratchShape legacy_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept;
 
-    bool finish_visual_grain_descriptor(VisualGrainFrameDescriptor&);
+    bool finish_legacy_grain_descriptor(LegacyGrainFrameDescriptor&);
 
     struct FilmJuicerEffectsFrameExtent final {
         int x = 0;

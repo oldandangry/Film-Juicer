@@ -14,7 +14,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include "Cuda/JuicerCudaFilmGrainStage.h"
+#include "Cuda/JuicerCudaGrainV2Stage.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Hash.h"
 #include "film_oracle.h"
@@ -22,7 +22,7 @@
 #include "juicer_cuda_prepared.h"
 
 namespace {
-    namespace Film = JuicerCuda::FilmGrain;
+    namespace Film = JuicerCuda::GrainV2;
     constexpr std::uint32_t kSeed = 1764135136U;
     constexpr std::uint32_t kNextSeed = 195565897U;
     constexpr float kFraction = 0.375F;
@@ -145,7 +145,7 @@ namespace {
             FjPreparedHostData value{};
             value.route = row.print ? FJ_ROUTE_NEGATIVE_PRINT : FJ_ROUTE_NEGATIVE_DIRECT;
             value.capture_polarity = FJ_POLARITY_NEGATIVE;
-            value.film_profile_key = {"film-v1-density-oracle", 22};
+            value.film_profile_key = {"grain-v2-density-oracle", 23};
             value.film_profile_asset_version = 1;
             value.recipe_hash = 2 + value.route;
             value.film_exposure.input_color_space = FJ_INPUT_SRGB_REC709;
@@ -319,15 +319,15 @@ namespace {
         EXPECT_EQ(cases, 8U);
     }
 
-    TEST(FilmApertures, ProductionBindingAndSignedDensity) {
+    TEST(GrainV2Apertures, ProductionBindingAndSignedDensity) {
         check_production_apertures(JUICER_GRAIN_TEST_BANK, JUICER_GRAIN_TEST_TABLES, 1);
     }
 
-    TEST(FilmApertures, GoldProductionBindingAndSignedDensity) {
+    TEST(GrainV2Apertures, GoldProductionBindingAndSignedDensity) {
         check_production_apertures(JUICER_GRAIN_GOLD_BANK, JUICER_GRAIN_GOLD_REFERENCE, 2);
     }
 
-    TEST(FilmApertures, GoldIndependentSampler) {
+    TEST(GrainV2Apertures, GoldIndependentSampler) {
         auto bank = GrainPrototype::read_film_bank(JUICER_GRAIN_GOLD_BANK, 1.F, JUICER_GRAIN_GOLD_REFERENCE);
         const auto directory = std::filesystem::path(JUICER_GRAIN_GOLD_REFERENCE);
         std::ifstream input(directory / "reference.tsv");

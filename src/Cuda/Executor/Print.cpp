@@ -248,10 +248,10 @@ namespace JuicerCuda {
             optical = bind_optical_workspace(CaptureRoute::Print, preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
-        if (grainModel == GrainModel::Film) {
-            bind_film_grain(preparedFrame, *input.preparation.filmGrain, frame.renderWindow, CaptureRoute::Print, grain, errors);
-        } else if (grainModel == GrainModel::Current) {
-            bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
+        if (grainModel == GrainModel::GrainV2) {
+            bind_grain_v2(preparedFrame, *input.preparation.grainV2, frame.renderWindow, CaptureRoute::Print, grain, errors);
+        } else if (grainModel == GrainModel::Legacy) {
+            bind_legacy_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
         if (descriptors.dir.hash != 0) {
             dirBuild = build_spatial_dir(CaptureRoute::Print, run, preparedFrame, focusedWorkspace, descriptors.dir, printCameraFilmLinear, cameraFilmLinearActive, frame.stream, execution, errors);

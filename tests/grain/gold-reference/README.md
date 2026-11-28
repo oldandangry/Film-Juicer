@@ -1,11 +1,11 @@
-# Gold 200 Film v1 reference
+# Gold 200 Grain v2 reference
 
 These are independent Fotufilm Swift sampler statistics and probes for the
 frozen [Kodak Gold 200](../../../Resources/grain/gold-200/NOTICE.md) coating.
 The Film-Juicer CDF3 response, historical capture parameter values and pinned
 Swift 6.1.2 release produced the original G2 hashes below. The maintained
 generator reproduced all six G2 files and captured the extra 37.5-texel
-footprint used by the aperture tests. [Bank authoring](../../../docs/film-v1-bank-authoring.md)
+footprint used by the aperture tests. [Bank authoring](../../../docs/grain-v2-bank-authoring.md)
 
 | File | SHA-256 |
 | --- | --- |
@@ -30,5 +30,5 @@ The maintained certificate tests independently recompute the enclosures from
 the bank. Gold uses its measured table statistics for the selected footprint
 and its own CDF3 maxima, spectral dyes and baseline. The existing Portra
 certificate explains the shared enclosure mathematics.
-[Density code](../../../rust/film-juicer-core/src/film/density/film_v1.rs) ·
-[Portra certificate](../portra-film-v1-certificate.md)
+[Density code](../../../rust/film-juicer-core/src/film/density/grain_v2.rs) ·
+[Portra certificate](../portra-grain-v2-certificate.md)

@@ -1,11 +1,11 @@
-//! Signed Film v1 density and spectral transmission witnesses.
+//! Signed Grain v2 density and spectral transmission witnesses.
 
-use crate::assets::FilmGrainStock;
+use crate::assets::GrainV2Stock;
 use crate::{
     assets::Assets,
     film::{
         self,
-        density::{Bounds, film_v1},
+        density::{Bounds, grain_v2},
     },
     route::ScanRoute,
 };
@@ -15,7 +15,7 @@ fn portra_small_format_high_gain_bounds() {
     let assets =
         Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
     let film = assets.film("kodak_portra_400").unwrap();
-    let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+    let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
     for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
         let development = film::Development::new(
             film.clone(),
@@ -38,11 +38,11 @@ fn portra_small_format_high_gain_bounds() {
             (36.0, 4832.0, 3),
         ] {
             let footprint = (f64::from(mm) * 2000.0 / width) as f32;
-            let table = assets.film_grain_table(&bank, footprint).unwrap();
+            let table = assets.grain_v2_table(&bank, footprint).unwrap();
             let gain = 2.0_f32.powi(amount) / 0.5;
-            let original = Bounds::film_v1(
+            let original = Bounds::grain_v2(
                 &development,
-                film_v1::allowances(&bank, &table, gain).unwrap(),
+                grain_v2::allowances(&bank, &table, gain).unwrap(),
             );
             if width >= 3840.0 && amount == 3 && mm == 8.0 {
                 assert!(matches!(
@@ -58,7 +58,7 @@ fn portra_small_format_high_gain_bounds() {
                 assert!(original.is_ok());
             }
             for colour in [0.0, 0.37, 1.0] {
-                let bounds = Bounds::for_film_grain(&development, &bank, &table, gain, colour)
+                let bounds = Bounds::for_grain_v2(&development, &bank, &table, gain, colour)
                     .unwrap_or_else(|error| panic!("{route:?} {mm} mm {width} px {amount} EV, width {footprint}, Colour {colour}: {error}"));
                 println!(
                     "{route:?} {mm} mm {width} px {amount} EV Size 0.5 Colour {colour} width {footprint}"
@@ -154,15 +154,15 @@ fn gold_film_envelope_and_enlarger_transmission() {
         (240_000.0 / 92.0, 16.0, 1.0),
         (240_000.0, 16.0, 1.0),
     ] {
-        stock_spectral_witness(FilmGrainStock::Gold200, footprint, gain, colour);
+        stock_spectral_witness(GrainV2Stock::Gold200, footprint, gain, colour);
     }
 }
 
 fn spectral_witness(footprint: f32, gain: f32, colour: f32) {
-    stock_spectral_witness(FilmGrainStock::Portra400, footprint, gain, colour);
+    stock_spectral_witness(GrainV2Stock::Portra400, footprint, gain, colour);
 }
 
-fn stock_spectral_witness(stock: FilmGrainStock, footprint: f32, gain: f32, colour: f32) {
+fn stock_spectral_witness(stock: GrainV2Stock, footprint: f32, gain: f32, colour: f32) {
     const REL: f64 = 0.01;
     let assets =
         Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
@@ -186,10 +186,10 @@ fn stock_spectral_witness(stock: FilmGrainStock, footprint: f32, gain: f32, colo
         },
     )
     .unwrap();
-    let bank = assets.film_grain_bank(stock).unwrap();
-    let table = assets.film_grain_table(&bank, footprint).unwrap();
+    let bank = assets.grain_v2_bank(stock).unwrap();
+    let table = assets.grain_v2_table(&bank, footprint).unwrap();
     let bounds =
-        Bounds::for_film_grain(&development, &bank, &table, gain, colour).unwrap_or_else(|error| {
+        Bounds::for_grain_v2(&development, &bank, &table, gain, colour).unwrap_or_else(|error| {
             panic!("{stock:?}, footprint {footprint}, gain {gain}, Colour {colour}: {error}")
         });
     println!("spectral witness footprint {footprint}, gain {gain}, Colour {colour}");

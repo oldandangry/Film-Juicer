@@ -49,15 +49,15 @@ namespace JuicerCuda {
         JuicerLogging::discard_current_exception();
     }
 
-    bool visual_grain_full_frame_preflight(
-        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
+    bool legacy_grain_full_frame_preflight(
+        const std::optional<Spektrafilm::LegacyGrainFrameDescriptor>& descriptor,
         const JuicerCuda::FrameRect& renderWindow,
         const JuicerCuda::FrameRect& sourceBounds,
         const JuicerCuda::FrameRect& fullFrameBounds) {
         if (!descriptor.has_value() || !descriptor->requiresFullFrame) {
             return true;
         }
-        const Spektrafilm::VisualGrainFrameExtent& full =
+        const Spektrafilm::LegacyGrainFrameExtent& full =
             descriptor->fullFrameExtent;
         const auto matches = [&full](const JuicerCuda::FrameRect& rect) {
             return rect.x1 == full.x && rect.y1 == full.y &&
@@ -231,7 +231,7 @@ namespace JuicerCuda {
         if (!(input.frame.components == 3 || input.frame.components == 4)) {
             errors.fail_route(print ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C");
         }
-        if (!visual_grain_full_frame_preflight(input.descriptors.grain, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent) ||
+        if (!legacy_grain_full_frame_preflight(input.descriptors.grain, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent) ||
             !film_juicer_effects_full_frame_preflight(input.descriptors.effects, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent)) {
             errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
         }

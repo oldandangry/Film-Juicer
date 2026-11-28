@@ -48,24 +48,24 @@ namespace {
     }
     constexpr std::array<std::string_view, 4> kFilmParameters{
         "GrainModel", "FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"};
-    constexpr std::array<std::string_view, 21> kCurrentVisibility{
+    constexpr std::array<std::string_view, 21> kLegacyVisibility{
         "GrainSublayersActive", "GrainPreset", "GrainAmplitude", "GrainBlur", "GrainSharpness", "GrainChroma", "GrainTexture", "GrainResetAdvanced", "GrainParticleAreaUm2", "GrainParticleScaleMaster", "GrainParticleScaleLayersMaster", "GrainDensityMinMaster", "GrainUniformityMaster", "GrainBlurDyeCloudsUm", "GrainSizeMixWeight", "GrainSizeMixWeightMid", "GrainSizeMixScale", "GrainMicroStructure", "GrainDebugView", "GrainClumpTemporalMix", "GrainClumpMorphPeriodSec"};
-    bool film_parameter(std::string_view name) {
+    bool grain_v2_parameter(std::string_view name) {
         return std::find(kFilmParameters.begin(), kFilmParameters.end(), name) != kFilmParameters.end();
     }
     void project_legacy_grain_calls(std::vector<InstanceCall>& calls) {
         std::erase_if(calls, [](const InstanceCall& c) {
             if (c.operation == "param_handle")
-                return film_parameter(c.property);
+                return grain_v2_parameter(c.property);
             if (c.operation == "param_get" || c.operation == "param_properties" ||
                 (c.operation == "get_string" && c.property == kOfxParamPropType))
-                return film_parameter(c.target);
+                return grain_v2_parameter(c.target);
             constexpr std::string_view presentation = ".presentation";
             if (c.operation != "set_int" || c.property != kOfxParamPropSecret || !c.target.ends_with(presentation))
                 return false;
             const auto name = std::string_view(c.target).substr(0, c.target.size() - presentation.size());
-            return film_parameter(name) ||
-                   std::find(kCurrentVisibility.begin(), kCurrentVisibility.end(), name) != kCurrentVisibility.end();
+            return grain_v2_parameter(name) ||
+                   std::find(kLegacyVisibility.begin(), kLegacyVisibility.end(), name) != kLegacyVisibility.end();
         });
     }
     bool constructor_census(const std::vector<InstanceCall>& calls, bool legacy = false) {
@@ -188,7 +188,7 @@ namespace {
                 }
                 auto legacy_params = value.params;
                 std::erase_if(legacy_params, [](const auto& name) {
-                    return advanced_halation_parameter(name) || film_parameter(name);
+                    return advanced_halation_parameter(name) || grain_v2_parameter(name);
                 });
                 require(value.name == r.name && value.injected == r.injected && value.status == r.status && legacy_params == r.params, "handle fault membership");
                 require(value.status == kOfxStatOK ? create_equivalent(value.calls, r.calls) : failed_create_equivalent(value.calls, r.calls), "handle fault full continuation");
@@ -1130,7 +1130,7 @@ namespace {
         require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "candidate unload");
     }
 
-    void film_constructor(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
+    void grain_v2_constructor(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
         constexpr std::array parameters{
             std::pair{"GrainModel", kOfxParamTypeStrChoice},
             std::pair{"FilmGrainAmountEv", kOfxParamTypeDouble},
@@ -1138,33 +1138,33 @@ namespace {
             std::pair{"FilmGrainChromaFraction", kOfxParamTypeDouble},
         };
         auto expected = reference.create;
-        require(!expected.empty() && expected.back().operation == "effect_properties", "Film v1 initialization boundary");
+        require(!expected.empty() && expected.back().operation == "effect_properties", "Grain v2 initialization boundary");
         const auto scope = expected.back().target;
         const auto next = std::find_if(expected.begin(), expected.end(), [](const auto& entry) {
             return entry.operation == "param_handle" && entry.property == "GrainSublayersActive";
         });
-        require(next != expected.end(), "Film v1 constructor insertion boundary");
+        require(next != expected.end(), "Grain v2 constructor insertion boundary");
         const auto param_set = next->target;
-        std::vector<InstanceCall> film_calls;
+        std::vector<InstanceCall> grain_v2_calls;
         for (const auto& parameter : parameters) {
             const auto* name = parameter.first;
-            film_calls.push_back({"param_handle", param_set, name, 0, {}, {}});
-            film_calls.push_back({"get_string", name, kOfxParamPropType, 0, {}, scope});
-            film_calls.push_back({"param_properties", name, {}, 0, {}, scope});
+            grain_v2_calls.push_back({"param_handle", param_set, name, 0, {}, {}});
+            grain_v2_calls.push_back({"get_string", name, kOfxParamPropType, 0, {}, scope});
+            grain_v2_calls.push_back({"param_properties", name, {}, 0, {}, scope});
         }
-        expected.insert(next, film_calls.begin(), film_calls.end());
-        // Initialize the Current model before the final instance check.
+        expected.insert(next, grain_v2_calls.begin(), grain_v2_calls.end());
+        // Initialize the Legacy model before the final instance check.
         std::vector<InstanceCall> visibility{{"param_get", "GrainModel", {}, 0, {std::string("current")}, scope}};
         for (const char* name : {"FilmGrainAmountEv", "FilmGrainTexelPitchUm", "FilmGrainChromaFraction"})
             visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {1}, scope});
-        for (const auto name : kCurrentVisibility)
+        for (const auto name : kLegacyVisibility)
             visibility.push_back({"set_int", std::string(name) + ".presentation", kOfxParamPropSecret, 0, {0}, scope});
         expected.insert(std::prev(expected.end()), visibility.begin(), visibility.end());
 
         plugin->setHost(host.binding());
-        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "Film v1 load");
+        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "Grain v2 load");
         host.clear_calls();
-        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "Film v1 context");
+        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "Grain v2 context");
         constexpr std::array controls{
             std::array{0.0, -3.0, 3.0, 0.1},
             std::array{1.0, 0.5, 4.0, 0.01},
@@ -1199,50 +1199,50 @@ namespace {
             host.set_parameter_presentation(effect, "GrainChroma", kOfxParamPropHint, {std::string("returned hint")});
             host.return_string_on_failure_next("get_string/OfxParamPropHint", kOfxStatFailed);
             host.clear_calls();
-            require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK && host.instance_data(effect), "Film v1 create and publish");
-            require(create_equivalent(host.calls(), expected, true), "Film v1 constructor continuation");
+            require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK && host.instance_data(effect), "Grain v2 create and publish");
+            require(create_equivalent(host.calls(), expected, true), "Grain v2 constructor continuation");
             auto altered = host.calls();
-            const auto first = std::find(altered.begin(), altered.end(), film_calls.front());
-            require(first != altered.end() && first != altered.begin(), "Film v1 constructor call boundary");
+            const auto first = std::find(altered.begin(), altered.end(), grain_v2_calls.front());
+            require(first != altered.end() && first != altered.begin(), "Grain v2 constructor call boundary");
             const auto index = first - altered.begin();
             altered.erase(first);
-            require(!create_equivalent(altered, expected, true), "constructor accepted a missing Film v1 call");
+            require(!create_equivalent(altered, expected, true), "constructor accepted a missing Grain v2 call");
             altered = host.calls();
             std::iter_swap(altered.begin() + index, altered.begin() + index - 1);
-            require(!create_equivalent(altered, expected, true), "constructor accepted a misplaced Film v1 call");
+            require(!create_equivalent(altered, expected, true), "constructor accepted a misplaced Grain v2 call");
             altered = host.calls();
             altered.front().operation = "altered";
             require(!create_equivalent(altered, expected, true), "constructor accepted a changed ordinary call");
         }
         {
             host.clear_calls();
-            require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK && !host.instance_data(effect), "Film v1 destroy and detach");
-            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "Film v1 destroy continuation");
+            require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK && !host.instance_data(effect), "Grain v2 destroy and detach");
+            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "Grain v2 destroy continuation");
         }
         {
             for (const auto& parameter : parameters) {
                 host.set_parameter_type(effect, parameter.first, kOfxParamTypeInteger);
                 host.clear_calls();
-                require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatFailed && !host.instance_data(effect), "Film v1 parameter type failure and rollback");
-                require(!host.calls().empty() && host.calls().back() == InstanceCall{"get_string", parameter.first, kOfxParamPropType, 0, {}, scope}, "Film v1 parameter type terminal");
+                require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatFailed && !host.instance_data(effect), "Grain v2 parameter type failure and rollback");
+                require(!host.calls().empty() && host.calls().back() == InstanceCall{"get_string", parameter.first, kOfxParamPropType, 0, {}, scope}, "Grain v2 parameter type terminal");
                 host.set_parameter_type(effect, parameter.first, parameter.second);
             }
         }
-        require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "Film v1 unload");
+        require(call(plugin, kOfxActionUnload) == kOfxStatOK && !host.callback_error(), "Grain v2 unload");
     }
 } // namespace
 
 int main(int argc, char** argv) try {
-    const bool film = argc > 1 && std::string_view(argv[1]) == "--film-v1";
-    require(argc == (film ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: instance fixture [--film-v1] --reference file");
+    const bool grain_v2 = argc > 1 && std::string_view(argv[1]) == "--grain-v2";
+    require(argc == (grain_v2 ? 4 : 3) && std::string_view(argv[argc - 2]) == "--reference", "usage: instance fixture [--grain-v2] --reference file");
     auto* candidate = OfxGetPlugin(0);
     require(candidate && candidate->pluginIdentifier &&
                 std::string_view(candidate->pluginIdentifier) == "com.juicer.Juicer",
             "instance descriptor variant");
     const auto expected = decode(ofx_test::reference::read(argv[argc - 1], "instance"));
     InstanceHost candidate_host;
-    if (film) {
-        film_constructor(candidate, candidate_host, expected);
+    if (grain_v2) {
+        grain_v2_constructor(candidate, candidate_host, expected);
     } else {
         reference_record_case(expected);
         candidate_cohort(candidate, candidate_host, expected);

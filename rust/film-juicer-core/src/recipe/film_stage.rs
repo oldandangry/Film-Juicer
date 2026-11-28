@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use super::foundation::{FoundationInput, build_tables, profile_illuminant};
 use super::{
-    ControlError, FilmGrainFootprintKind, FilmGrainFrame, FilmReconstruction, PrepareError,
+    ControlError, GrainV2FootprintKind, GrainV2Frame, FilmReconstruction, PrepareError,
     ReconstructionStorage,
 };
-use crate::assets::{Assets, FilmGrainStock, InputHull, SpectraLut};
-use crate::capture::{HalationReflectionSource, Params, current_grain};
+use crate::assets::{Assets, GrainV2Stock, InputHull, SpectraLut};
+use crate::capture::{HalationReflectionSource, Params, legacy_grain};
 use crate::film::{density, dir, grain, input, reference};
 use crate::{color, effects, exposure, gamut, optics, reconstruction, spectral};
 
@@ -113,43 +113,42 @@ fn complete_reconstruction(
     Ok(FilmReconstruction { storage })
 }
 
-pub(super) fn prepare_grain(
+pub(super) fn prepare_grain_v2(
     assets: &Assets,
     params: &Params,
-    frame: Option<FilmGrainFrame>,
-) -> Result<Option<grain::film_v1::Recipe>, PrepareError> {
-    let Some(controls) = params.film_grain.controls() else {
+    frame: Option<GrainV2Frame>,
+) -> Result<Option<grain::grain_v2::Recipe>, PrepareError> {
+    let Some(controls) = params.grain_v2.controls() else {
         return Ok(None);
     };
-    let stock =
-        FilmGrainStock::for_profile(&params.film_profile_key).ok_or(ControlError::FilmGrain)?;
+    let stock = GrainV2Stock::for_profile(&params.film_profile_key).ok_or(ControlError::GrainV2)?;
     let long_edge_mm = params.camera_film_format_long_edge_mm;
     if !controls.valid(long_edge_mm, params.scan_route) {
-        return Err(ControlError::FilmGrain.into());
+        return Err(ControlError::GrainV2.into());
     }
-    // Keep the authored selection for current_grain(), which disables
-    // Current while Film is selected, including on a grain-free thumbnail.
+    // Keep the authored selection for legacy_grain(), which disables
+    // Legacy while Grain v2 is selected, including on a grain-free thumbnail.
     let raster = match frame {
-        Some(FilmGrainFrame::Thumbnail) => return Ok(None),
-        Some(FilmGrainFrame::Raster(raster)) => raster,
-        None => return Err(PrepareError::FilmGrainGeometry),
+        Some(GrainV2Frame::Thumbnail) => return Ok(None),
+        Some(GrainV2Frame::Raster(raster)) => raster,
+        None => return Err(PrepareError::GrainV2Geometry),
     };
     let (rendered_texels, sample_texels, sampling) = raster.sampling(controls, long_edge_mm);
     for (kind, width_texels, minimum) in [
         (
-            FilmGrainFootprintKind::Rendered,
+            GrainV2FootprintKind::Rendered,
             rendered_texels,
             crate::assets::grain::MIN_RENDERED_FOOTPRINT,
         ),
         (
-            FilmGrainFootprintKind::Sample,
+            GrainV2FootprintKind::Sample,
             sample_texels,
             crate::assets::grain::MIN_PROXY_SAMPLE_FOOTPRINT,
         ),
     ] {
         let supported_texels = minimum..=crate::assets::grain::MAX_FOOTPRINT;
         if !supported_texels.contains(&width_texels) {
-            return Err(PrepareError::FilmGrainFootprint {
+            return Err(PrepareError::GrainV2Footprint {
                 kind,
                 long_edge_mm,
                 texel_pitch_um: controls.texel_pitch_um,
@@ -158,9 +157,9 @@ pub(super) fn prepare_grain(
             });
         }
     }
-    let bank = assets.film_grain_bank(stock)?;
-    let table = assets.film_grain_table(&bank, sample_texels)?;
-    Ok(Some(grain::film_v1::Recipe::new(
+    let bank = assets.grain_v2_bank(stock)?;
+    let table = assets.grain_v2_table(&bank, sample_texels)?;
+    Ok(Some(grain::grain_v2::Recipe::new(
         bank,
         table,
         controls,
@@ -177,14 +176,14 @@ pub(super) struct FilmStage {
     pub(super) grain: grain::Recipe,
     pub(super) effects: effects::Recipe,
     pub(super) dir: dir::Recipe,
-    pub(super) film_v1_bounds: Option<density::Bounds>,
+    pub(super) grain_v2_bounds: Option<density::Bounds>,
 }
 
 pub(super) fn prepare(
     acquired: &FoundationInput,
     params: &Params,
     print_domain: bool,
-    film_grain: Option<&grain::film_v1::Recipe>,
+    grain_v2: Option<&grain::grain_v2::Recipe>,
 ) -> Result<FilmStage, PrepareError> {
     let film = acquired.development.profile();
     let reference_samples = acquired
@@ -244,7 +243,7 @@ pub(super) fn prepare(
     })
     .map_err(PrepareError::Optics)?;
     let minimum = density::Minimum::new([0.07, 0.08, 0.12]).map_err(PrepareError::Minimum)?;
-    let grain = grain::Recipe::new(&acquired.development, current_grain(params))
+    let grain = grain::Recipe::new(&acquired.development, legacy_grain(params))
         .map_err(PrepareError::Grain)?;
     let effects = effects::Recipe::new(effects::Params {
         film_dust_amount: params.film_dust_amount,
@@ -263,7 +262,7 @@ pub(super) fn prepare(
             stock: film.info().stock().to_owned(),
         }
     })?;
-    let film_v1_bounds = film_grain
+    let grain_v2_bounds = grain_v2
         .map(|grain| grain.density_bounds(&acquired.development))
         .transpose()
         .map_err(PrepareError::Bounds)?;
@@ -275,7 +274,7 @@ pub(super) fn prepare(
         grain,
         effects,
         dir,
-        film_v1_bounds,
+        grain_v2_bounds,
     })
 }
 

@@ -2,7 +2,7 @@
 
 mod derived;
 pub(crate) mod grain;
-pub use grain::{FilmGrainBank, FilmGrainError, FilmGrainRecord, FilmGrainStock, FilmGrainTable};
+pub use grain::{GrainV2Bank, GrainV2Error, GrainV2Record, GrainV2Stock, GrainV2Table};
 pub use derived::{DerivedError, Illuminants, InputHull, OutputBoundary};
 
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ pub enum AssetError {
     Noise(Arc<noise::Error>),
     NoiseCachePoisoned,
     Derived(DerivedError),
-    FilmGrain(FilmGrainStock, FilmGrainError),
+    GrainV2(GrainV2Stock, GrainV2Error),
 }
 
 impl fmt::Display for AssetError {
@@ -58,8 +58,8 @@ impl fmt::Display for AssetError {
             Self::Noise(source) => write!(f, "{source}"),
             Self::NoiseCachePoisoned => write!(f, "noise cache poisoned"),
             Self::Derived(source) => write!(f, "{source}"),
-            Self::FilmGrain(stock, source) => {
-                write!(f, "Film v1 grain for {}: {source}", stock.key())
+            Self::GrainV2(stock, source) => {
+                write!(f, "Grain v2 for {}: {source}", stock.key())
             }
         }
     }
@@ -77,7 +77,7 @@ impl std::error::Error for AssetError {
             Self::Calibration(source) => Some(source.as_ref()),
             Self::Noise(source) => Some(source.as_ref()),
             Self::Derived(source) => Some(source),
-            Self::FilmGrain(_, source) => Some(source),
+            Self::GrainV2(_, source) => Some(source),
             Self::MissingProfile { .. }
             | Self::ProfileCachePoisoned { .. }
             | Self::CsvCachePoisoned { .. }
@@ -171,7 +171,7 @@ type NoiseSnapshot = Result<Arc<NoiseBundle>, Arc<noise::Error>>;
 
 pub struct Assets {
     resource_dir: PathBuf,
-    film_grain: [grain::Cache; 2],
+    grain_v2: [grain::Cache; 2],
     catalog: OnceLock<Result<CatalogSnapshot, Arc<CatalogError>>>,
     hanatos: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     arctic: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
@@ -190,7 +190,7 @@ impl Assets {
     pub fn new(resource_dir: PathBuf) -> Self {
         Self {
             resource_dir,
-            film_grain: Default::default(),
+            grain_v2: Default::default(),
             catalog: OnceLock::new(),
             hanatos: OnceLock::new(),
             arctic: OnceLock::new(),

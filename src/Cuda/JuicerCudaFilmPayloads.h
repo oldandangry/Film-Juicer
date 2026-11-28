@@ -28,7 +28,7 @@ struct FjGrainCoefficients {
 
 namespace JuicerCuda {
 
-    struct VisualGrainPayloadInput {
+    struct LegacyGrainPayloadInput {
         FjGrainCoefficients coefficients{};
         std::uint64_t recipeHash = 0;
         std::uint64_t densityLayersHash = 0;
@@ -95,7 +95,7 @@ namespace JuicerCuda {
         FilmPayloadPack& out,
         std::string& diagnostic);
 
-    struct VisualGrainStaticAssetsView {
+    struct LegacyGrainStaticAssetsView {
         const std::uint8_t* stbn = nullptr;
         int stbnWidth = 0;
         int stbnHeight = 0;
@@ -108,7 +108,7 @@ namespace JuicerCuda {
         int wangColors = 0;
     };
 
-    struct VisualGrainPreparedGaussianView {
+    struct LegacyGrainPreparedGaussianView {
         const float* weights = nullptr;
         int radius = 0;
         float sigma = 0.0f;
@@ -116,7 +116,7 @@ namespace JuicerCuda {
         bool active = false;
     };
 
-    struct VisualGrainPreparedDensityLayersView {
+    struct LegacyGrainPreparedDensityLayersView {
         DeviceCurveView baseCurvesCmy[3] = {};
         const float* curves[3][3] = {
             {nullptr, nullptr, nullptr},
@@ -126,18 +126,18 @@ namespace JuicerCuda {
         bool active = false;
     };
 
-    struct PreparedVisualGrainView {
-        VisualGrainStaticAssetsView staticNoise{};
-        std::array<VisualGrainPreparedGaussianView, 3> correlation{};
-        VisualGrainPreparedGaussianView dyeCloud[3][3] = {};
-        VisualGrainPreparedDensityLayersView densityLayers{};
-        const Spektrafilm::VisualGrainFrameDescriptor* descriptor = nullptr;
+    struct PreparedLegacyGrainView {
+        LegacyGrainStaticAssetsView staticNoise{};
+        std::array<LegacyGrainPreparedGaussianView, 3> correlation{};
+        LegacyGrainPreparedGaussianView dyeCloud[3][3] = {};
+        LegacyGrainPreparedDensityLayersView densityLayers{};
+        const Spektrafilm::LegacyGrainFrameDescriptor* descriptor = nullptr;
         bool active = false;
     };
 
-    bool pack_visual_grain_payload(
-        const VisualGrainPayloadInput& input,
-        const PreparedVisualGrainView& prepared,
+    bool pack_legacy_grain_payload(
+        const LegacyGrainPayloadInput& input,
+        const PreparedLegacyGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
         std::string& diagnostic);

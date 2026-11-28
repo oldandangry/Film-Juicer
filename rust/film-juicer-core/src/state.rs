@@ -200,8 +200,8 @@ pub struct FrameInput<'a> {
     identity: u64,
 }
 impl FrameInput<'_> {
-    pub fn film_grain(&self) -> crate::film::grain::film_v1::Selection {
-        self.params.film_grain
+    pub fn grain_v2(&self) -> crate::film::grain::grain_v2::Selection {
+        self.params.grain_v2
     }
 }
 
@@ -244,9 +244,9 @@ impl Published {
     fn matches(
         &self,
         identity: u64,
-        film_raster: Option<crate::film::grain::film_v1::Raster>,
+        grain_v2_raster: Option<crate::film::grain::grain_v2::Raster>,
     ) -> bool {
-        let same_geometry = self.state.film_grain().map(|grain| grain.raster()) == film_raster;
+        let same_geometry = self.state.grain_v2().map(|grain| grain.raster()) == grain_v2_raster;
         self.identity == identity && same_geometry
     }
 
@@ -271,11 +271,11 @@ impl State {
     fn published(
         &self,
         identity: u64,
-        film_raster: Option<crate::film::grain::film_v1::Raster>,
+        grain_v2_raster: Option<crate::film::grain::grain_v2::Raster>,
     ) -> Option<&Published> {
         self.published
             .as_ref()
-            .filter(|published| published.matches(identity, film_raster))
+            .filter(|published| published.matches(identity, grain_v2_raster))
     }
 
     fn current(&self, capture: u64) -> Result<bool, Error> {
@@ -616,10 +616,10 @@ impl Publication {
         self.admit_frame_with(input, prepare, None)
     }
 
-    pub fn admit_film_grain_frame(
+    pub fn admit_grain_v2_frame(
         &self,
         input: FrameInput<'_>,
-        frame: crate::recipe::FilmGrainFrame,
+        frame: crate::recipe::GrainV2Frame,
         prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
     ) -> Result<Arc<RenderState>, Error> {
         self.admit_frame_with(input, prepare, Some(frame))
@@ -629,7 +629,7 @@ impl Publication {
         &self,
         input: FrameInput<'_>,
         prepare: impl FnOnce(&Params) -> Result<RenderState, PrepareError>,
-        frame: Option<crate::recipe::FilmGrainFrame>,
+        frame: Option<crate::recipe::GrainV2Frame>,
     ) -> Result<Arc<RenderState>, Error> {
         if !std::ptr::eq(input.publication, self) {
             return Err(Error::InvalidCaptureOperation);
@@ -642,20 +642,20 @@ impl Publication {
                 Error::Preparation(error)
             })
         };
-        let film_raster = match frame.filter(|_| input.film_grain().controls().is_some()) {
+        let grain_v2_raster = match frame.filter(|_| input.grain_v2().controls().is_some()) {
             // This render owns the grain-free state. Leave the timeline
             // publication and the geometry it was prepared for in place.
-            Some(crate::recipe::FilmGrainFrame::Thumbnail) => return prepare(),
-            Some(crate::recipe::FilmGrainFrame::Raster(raster)) => Some(raster),
+            Some(crate::recipe::GrainV2Frame::Thumbnail) => return prepare(),
+            Some(crate::recipe::GrainV2Frame::Raster(raster)) => Some(raster),
             None => None,
         };
-        if let Some(published) = self.lock()?.published(input.identity, film_raster) {
+        if let Some(published) = self.lock()?.published(input.identity, grain_v2_raster) {
             return Ok(Arc::clone(&published.state));
         }
         #[cfg(test)]
         tests::observe_rebuild_contention(&self.rebuild);
         let _rebuild = self.rebuild.lock().map_err(|_| Error::Poisoned)?;
-        if let Some(published) = self.lock()?.published(input.identity, film_raster) {
+        if let Some(published) = self.lock()?.published(input.identity, grain_v2_raster) {
             return Ok(Arc::clone(&published.state));
         }
         let candidate = prepare()?;
@@ -946,11 +946,11 @@ mod tests {
         assert_eq!(first.hash(), changed.hash());
     }
     #[test]
-    fn film_stock_switch_retains_bank_and_table() {
-        use film::grain::film_v1::{Controls, Raster, Selection};
+    fn grain_v2_stock_switch_retains_bank_and_table() {
+        use film::grain::grain_v2::{Controls, Raster, Selection};
 
         let assets = assets();
-        let frame = recipe::FilmGrainFrame::Raster(Raster {
+        let frame = recipe::GrainV2Frame::Raster(Raster {
             rendered_long_edge_px: 3840,
             candidate_full_grid: None,
         });
@@ -960,24 +960,24 @@ mod tests {
                 let mut captured = params(route, 1);
                 captured.film_profile_key = stock.into();
                 captured.camera_film_format_long_edge_mm = 36.0;
-                captured.film_grain = Selection::FilmV1(Controls {
+                captured.grain_v2 = Selection::GrainV2(Controls {
                     amount_ev: 0.0,
                     texel_pitch_um: 1.0,
                     chroma_fraction: 1.0,
                 });
                 publication.stage(valid(identity, captured)).unwrap();
                 let state = publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap();
-                let grain = state.film_grain().unwrap();
+                let grain = state.grain_v2().unwrap();
                 assert_eq!(state.development().route(), route);
                 assert_eq!(state.development().profile().info().stock(), stock);
                 assert_eq!(grain.bank().identity(), bank_identity, "{route:?} {stock}");
                 assert_eq!(grain.table().footprint.to_bits(), 9.375_f32.to_bits());
                 let warm = publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |_| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |_| {
                         panic!("warm stock {stock} on {route:?} prepared again")
                     })
                     .unwrap();
@@ -986,34 +986,34 @@ mod tests {
             };
 
             let portra = publish(1, "kodak_portra_400", 0xcab2_fed8_8a39_8c2e);
-            let portra_grain = portra.film_grain().unwrap();
+            let portra_grain = portra.grain_v2().unwrap();
             let portra_bank = portra_grain.bank();
             let portra_table = portra_grain.table();
 
             let gold = publish(2, "kodak_gold_200", 0xe451_c307_18a5_e4b5);
-            let gold_grain = gold.film_grain().unwrap();
+            let gold_grain = gold.grain_v2().unwrap();
             let gold_bank = gold_grain.bank();
             let gold_table = gold_grain.table();
             assert_ne!(portra_table.mean_density, gold_table.mean_density);
             assert_ne!(portra_table.correlation, gold_table.correlation);
-            let held_portra = portra.film_grain().unwrap();
+            let held_portra = portra.grain_v2().unwrap();
             assert!(std::ptr::eq(held_portra.bank(), portra_bank));
             assert!(std::ptr::eq(held_portra.table(), portra_table));
 
             let restored = publish(3, "kodak_portra_400", 0xcab2_fed8_8a39_8c2e);
-            let restored_grain = restored.film_grain().unwrap();
+            let restored_grain = restored.grain_v2().unwrap();
             assert!(std::ptr::eq(restored_grain.bank(), portra_bank));
             assert!(std::ptr::eq(restored_grain.table(), portra_table));
-            let held_gold = gold.film_grain().unwrap();
+            let held_gold = gold.grain_v2().unwrap();
             assert!(std::ptr::eq(held_gold.bank(), gold_bank));
             assert!(std::ptr::eq(held_gold.table(), gold_table));
         }
     }
 
     #[test]
-    fn film_preview_geometry_retains_matching_tables_and_bounds() {
-        use film::grain::film_v1::ProxyGrid;
-        use recipe::FilmGrainFootprintKind::{Rendered, Sample};
+    fn grain_v2_preview_geometry_retains_matching_tables_and_bounds() {
+        use film::grain::grain_v2::ProxyGrid;
+        use recipe::GrainV2FootprintKind::{Rendered, Sample};
 
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
@@ -1021,8 +1021,8 @@ mod tests {
             let film_params = |mm| {
                 let mut captured = params(route, 1);
                 captured.camera_film_format_long_edge_mm = mm;
-                captured.film_grain =
-                    film::grain::film_v1::Selection::FilmV1(film::grain::film_v1::Controls {
+                captured.grain_v2 =
+                    film::grain::grain_v2::Selection::GrainV2(film::grain::grain_v2::Controls {
                         amount_ev: 3.0,
                         texel_pitch_um: 4.0,
                         chroma_fraction: 1.0,
@@ -1031,11 +1031,11 @@ mod tests {
             };
             publication.stage(valid(1, film_params(36.0))).unwrap();
             let admit_grid = |rendered_long_edge_px, candidate_full_grid| {
-                let frame = recipe::FilmGrainFrame::Raster(crate::film::grain::film_v1::Raster {
+                let frame = recipe::GrainV2Frame::Raster(crate::film::grain::grain_v2::Raster {
                     rendered_long_edge_px,
                     candidate_full_grid,
                 });
-                publication.admit_film_grain_frame(
+                publication.admit_grain_v2_frame(
                     publication.frame_input().unwrap(),
                     frame,
                     |params| recipe::prepare_for_frame(&assets, params, frame),
@@ -1043,17 +1043,17 @@ mod tests {
             };
             let admit = |long_edge| admit_grid(long_edge, None);
             let landscape = admit(4832).unwrap();
-            let thumbnail = recipe::FilmGrainFrame::Thumbnail;
+            let thumbnail = recipe::GrainV2Frame::Thumbnail;
             let clean = publication
-                .admit_film_grain_frame(publication.frame_input().unwrap(), thumbnail, |params| {
+                .admit_grain_v2_frame(publication.frame_input().unwrap(), thumbnail, |params| {
                     recipe::prepare_for_frame(&assets, params, thumbnail)
                 })
                 .unwrap();
-            assert!(clean.film_grain().is_none() && !clean.grain().active());
+            assert!(clean.grain_v2().is_none() && !clean.legacy_grain().active());
             assert!(Arc::ptr_eq(&landscape, &admit(4832).unwrap()));
             let portrait = admit(7418).unwrap();
-            let landscape_grain = landscape.film_grain().unwrap();
-            let portrait_grain = portrait.film_grain().unwrap();
+            let landscape_grain = landscape.grain_v2().unwrap();
+            let portrait_grain = portrait.grain_v2().unwrap();
             assert_eq!(
                 landscape_grain.table().footprint.to_bits(),
                 1.8625828_f32.to_bits()
@@ -1063,25 +1063,25 @@ mod tests {
                 1.2132651_f32.to_bits()
             );
             assert_ne!(
-                landscape.film_v1_bounds().unwrap().hash(),
-                portrait.film_v1_bounds().unwrap().hash()
+                landscape.grain_v2_bounds().unwrap().hash(),
+                portrait.grain_v2_bounds().unwrap().hash()
             );
             assert_eq!(landscape.scanner_hash(), portrait.scanner_hash());
             assert_ne!(landscape.hash(), portrait.hash());
             assert!(matches!(
                 admit(36001),
-                Err(Error::Preparation(PrepareError::FilmGrainFootprint { .. }))
+                Err(Error::Preparation(PrepareError::GrainV2Footprint { .. }))
             ));
             assert!(Arc::ptr_eq(&portrait, &admit(7418).unwrap()));
             publication.stage(valid(2, film_params(11.66))).unwrap();
             let current = admit(4832).unwrap();
             assert_eq!(
-                current.film_grain().unwrap().table().footprint,
+                current.grain_v2().unwrap().table().footprint,
                 (f64::from(11.66_f32) * 1000.0 / 4832.0 / 4.0) as f32
             );
             assert_ne!(
-                landscape.film_v1_bounds().unwrap().hash(),
-                current.film_v1_bounds().unwrap().hash()
+                landscape.grain_v2_bounds().unwrap().hash(),
+                current.grain_v2_bounds().unwrap().hash()
             );
             assert_eq!(landscape_grain.table().footprint, 1.8625828);
             assert_eq!(landscape_grain.raster().rendered_long_edge_px, 4832);
@@ -1107,7 +1107,7 @@ mod tests {
                     f32::from_bits(0x3e7a_0000),
                 ),
             ] {
-                let Err(Error::Preparation(PrepareError::FilmGrainFootprint {
+                let Err(Error::Preparation(PrepareError::GrainV2Footprint {
                     kind,
                     long_edge_mm,
                     texel_pitch_um,
@@ -1127,7 +1127,7 @@ mod tests {
             assert_eq!(
                 proxy(256.0)
                     .unwrap()
-                    .film_grain()
+                    .grain_v2()
                     .unwrap()
                     .table()
                     .footprint
@@ -1137,9 +1137,9 @@ mod tests {
         }
     }
     #[test]
-    fn film_thumbnail_validates_authored_selection_without_publishing() {
-        use film::grain::film_v1::{Controls, Raster, Selection};
-        use recipe::{ControlError, FilmGrainFrame};
+    fn grain_v2_thumbnail_validates_authored_selection_without_publishing() {
+        use film::grain::grain_v2::{Controls, Raster, Selection};
+        use recipe::{ControlError, GrainV2Frame};
 
         let assets = assets();
         let controls = Controls {
@@ -1151,8 +1151,8 @@ mod tests {
             rendered_long_edge_px: 4832,
             candidate_full_grid: None,
         };
-        let timeline = FilmGrainFrame::Raster(raster);
-        let thumbnail = FilmGrainFrame::Thumbnail;
+        let timeline = GrainV2Frame::Raster(raster);
+        let thumbnail = GrainV2Frame::Thumbnail;
         for (route, positive_route) in [
             (ScanRoute::NegativeDirect, ScanRoute::PositiveDirect),
             (ScanRoute::NegativePrint, ScanRoute::PositivePrint),
@@ -1161,11 +1161,11 @@ mod tests {
             let authored = || {
                 let mut captured = params(route, 1);
                 captured.grain.active = true;
-                captured.film_grain = film::grain::film_v1::Selection::FilmV1(controls);
+                captured.grain_v2 = film::grain::grain_v2::Selection::GrainV2(controls);
                 captured
             };
             let admit = |frame| {
-                publication.admit_film_grain_frame(
+                publication.admit_grain_v2_frame(
                     publication.frame_input().unwrap(),
                     frame,
                     |params| recipe::prepare_for_frame(&assets, params, frame),
@@ -1173,24 +1173,24 @@ mod tests {
             };
             publication.stage(valid(1, authored())).unwrap();
             let held = admit(timeline).unwrap();
-            assert!(held.film_grain().unwrap().raster() == raster);
-            assert!(!held.grain().active());
+            assert!(held.grain_v2().unwrap().raster() == raster);
+            assert!(!held.legacy_grain().active());
             let words = backing_words(&held);
             let assert_timeline_published = || {
                 let state = publication.state.lock().unwrap();
                 let published = state.published.as_ref().unwrap();
                 assert_eq!((published.identity, published.build), (1, 1));
                 assert!(Arc::ptr_eq(&published.state, &held));
-                assert!(held.film_grain().unwrap().raster() == raster);
+                assert!(held.grain_v2().unwrap().raster() == raster);
                 assert_eq!(backing_words(&held), words);
             };
 
             let clean = admit(thumbnail).unwrap();
             let off = recipe::prepare(&assets, &params(route, 1)).unwrap();
             assert_eq!(clean.development().route(), route);
-            assert!(clean.film_grain().is_none() && !clean.grain().active());
-            assert!(clean.film_v1_bounds().is_none() && off.film_v1_bounds().is_none());
-            assert!(held.film_v1_bounds().is_some());
+            assert!(clean.grain_v2().is_none() && !clean.legacy_grain().active());
+            assert!(clean.grain_v2_bounds().is_none() && off.grain_v2_bounds().is_none());
+            assert!(held.grain_v2_bounds().is_some());
             let source = Arc::downgrade(&clean);
             drop(clean);
             assert!(source.upgrade().is_none());
@@ -1208,7 +1208,7 @@ mod tests {
                 (
                     "amount",
                     Params {
-                        film_grain: Selection::FilmV1(Controls {
+                        grain_v2: Selection::GrainV2(Controls {
                             amount_ev: 4.0,
                             ..controls
                         }),
@@ -1218,7 +1218,7 @@ mod tests {
                 (
                     "pitch",
                     Params {
-                        film_grain: Selection::FilmV1(Controls {
+                        grain_v2: Selection::GrainV2(Controls {
                             texel_pitch_um: 0.25,
                             ..controls
                         }),
@@ -1228,7 +1228,7 @@ mod tests {
                 (
                     "chroma",
                     Params {
-                        film_grain: Selection::FilmV1(Controls {
+                        grain_v2: Selection::GrainV2(Controls {
                             chroma_fraction: -0.1,
                             ..controls
                         }),
@@ -1259,7 +1259,7 @@ mod tests {
                         matches!(
                             admit(frame),
                             Err(Error::Preparation(PrepareError::Control(
-                                ControlError::FilmGrain
+                                ControlError::GrainV2
                             )))
                         ),
                         "{route:?} {name}: expected Film control rejection for {field}"
@@ -1283,32 +1283,32 @@ mod tests {
             for frame in [timeline, thumbnail] {
                 let gold = admit(frame).unwrap();
                 assert_eq!(gold.development().route(), route);
-                assert!(gold.film_grain().is_none() && !gold.grain().active());
+                assert!(gold.grain_v2().is_none() && !gold.legacy_grain().active());
             }
         }
     }
     #[test]
-    fn film_proxy_publication_uses_full_grid_and_encloses_its_densities() {
-        use crate::film::grain::film_v1::{ProxyGrid, Raster, Sampling};
+    fn grain_v2_proxy_publication_uses_full_grid_and_encloses_its_densities() {
+        use crate::film::grain::grain_v2::{ProxyGrid, Raster, Sampling};
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let publication = Publication::new();
             let mut captured = params(route, 1);
             captured.camera_film_format_long_edge_mm = 36.0;
-            captured.film_grain =
-                film::grain::film_v1::Selection::FilmV1(film::grain::film_v1::Controls {
+            captured.grain_v2 =
+                film::grain::grain_v2::Selection::GrainV2(film::grain::grain_v2::Controls {
                     amount_ev: 0.0,
                     texel_pitch_um: 0.5,
                     chroma_fraction: 0.24,
                 });
             publication.stage(valid(1, captured)).unwrap();
             let admit = |rendered_long_edge_px, candidate_full_grid| {
-                let frame = recipe::FilmGrainFrame::Raster(Raster {
+                let frame = recipe::GrainV2Frame::Raster(Raster {
                     rendered_long_edge_px,
                     candidate_full_grid,
                 });
                 publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap()
@@ -1322,12 +1322,12 @@ mod tests {
             };
             let eighth = admit(604, Some(grid));
             assert!(std::ptr::eq(
-                full.film_grain().unwrap().table(),
-                eighth.film_grain().unwrap().table(),
+                full.grain_v2().unwrap().table(),
+                eighth.grain_v2().unwrap().table(),
             ));
             assert_eq!(
-                full.film_v1_bounds().unwrap().hash(),
-                eighth.film_v1_bounds().unwrap().hash()
+                full.grain_v2_bounds().unwrap().hash(),
+                eighth.grain_v2_bounds().unwrap().hash()
             );
             assert_eq!(full.scanner_hash(), eighth.scanner_hash());
             assert!(Arc::ptr_eq(&eighth, &admit(604, Some(grid))));
@@ -1341,11 +1341,11 @@ mod tests {
             );
             assert!(!Arc::ptr_eq(&eighth, &other));
             assert_ne!(
-                eighth.film_grain().unwrap().table().footprint,
-                other.film_grain().unwrap().table().footprint,
+                eighth.grain_v2().unwrap().table().footprint,
+                other.grain_v2().unwrap().table().footprint,
             );
             assert_eq!(
-                eighth.film_grain().unwrap().rendered_footprint_texels(),
+                eighth.grain_v2().unwrap().rendered_footprint_texels(),
                 72000.0 / 604.0
             );
             assert_eq!(admit(4832, None).hash(), full.hash());
@@ -1355,8 +1355,8 @@ mod tests {
                     2,
                     Params {
                         camera_film_format_long_edge_mm: 120.0,
-                        film_grain: film::grain::film_v1::Selection::FilmV1(
-                            film::grain::film_v1::Controls {
+                        grain_v2: film::grain::grain_v2::Selection::GrainV2(
+                            film::grain::grain_v2::Controls {
                                 amount_ev: 0.0,
                                 texel_pitch_um: 0.5,
                                 chroma_fraction: 0.24,
@@ -1376,8 +1376,8 @@ mod tests {
                     size: [4832, 2016],
                 }),
             );
-            let native_grain = native.film_grain().unwrap();
-            let proxy_grain = same_pitch.film_grain().unwrap();
+            let native_grain = native.grain_v2().unwrap();
+            let proxy_grain = same_pitch.grain_v2().unwrap();
             assert_eq!(
                 native_grain.rendered_footprint_texels(),
                 proxy_grain.rendered_footprint_texels()
@@ -1392,8 +1392,8 @@ mod tests {
                 proxy_grain.table().footprint * 2.0
             );
             assert_ne!(
-                native.film_v1_bounds().unwrap().hash(),
-                same_pitch.film_v1_bounds().unwrap().hash()
+                native.grain_v2_bounds().unwrap().hash(),
+                same_pitch.grain_v2_bounds().unwrap().hash()
             );
             assert_eq!(admit(4832, None).hash(), native.hash());
         }
@@ -1862,18 +1862,18 @@ mod tests {
     #[test]
     fn saved_capture_controls_invalidate_without_changing_prepared_film() {
         use crate::capture::{Captured, ShadowControls};
-        use film::grain::film_v1::{Controls, Raster, Selection};
+        use film::grain::grain_v2::{Controls, Raster, Selection};
 
         let assets = assets();
         for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
             let publication = Publication::new();
-            let frame = recipe::FilmGrainFrame::Raster(Raster {
+            let frame = recipe::GrainV2Frame::Raster(Raster {
                 rendered_long_edge_px: 4832,
                 candidate_full_grid: None,
             });
             let stage = |reference_illuminant, shadow| {
                 let mut params = params(route, 1);
-                params.film_grain = Selection::FilmV1(Controls {
+                params.grain_v2 = Selection::GrainV2(Controls {
                     amount_ev: 0.0,
                     texel_pitch_um: 1.0,
                     chroma_fraction: 1.0,
@@ -1892,7 +1892,7 @@ mod tests {
             };
             let admit = || {
                 publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |params| {
                         recipe::prepare_for_frame(&assets, params, frame)
                     })
                     .unwrap()
@@ -1928,7 +1928,7 @@ mod tests {
                 let first = admit();
                 assert_eq!(stage(0, ShadowControls::default()), unchanged);
                 let same = publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |_| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), frame, |_| {
                         panic!("unchanged saved controls rebuilt")
                     })
                     .unwrap();
@@ -1939,8 +1939,8 @@ mod tests {
                 assert!(!Arc::ptr_eq(&first, &changed));
                 assert_eq!(first.hash(), changed.hash());
                 assert_eq!(
-                    first.film_grain().unwrap().hash(),
-                    changed.film_grain().unwrap().hash()
+                    first.grain_v2().unwrap().hash(),
+                    changed.grain_v2().unwrap().hash()
                 );
                 assert_eq!(backing_words(&first), backing_words(&changed));
                 let state = publication.lock().unwrap();
@@ -2007,20 +2007,20 @@ mod tests {
         assert!(Arc::ptr_eq(&first.state, &published.state));
     }
     #[test]
-    fn warm_film_frame_reuses_matching_raster_during_another_raster_build() {
-        use film::grain::film_v1::{Controls, Raster, Selection};
+    fn warm_grain_v2_frame_reuses_matching_raster_during_another_raster_build() {
+        use film::grain::grain_v2::{Controls, Raster, Selection};
 
         let assets = assets();
         let publication = Publication::new();
         let mut params = direct();
-        params.film_grain = Selection::FilmV1(Controls {
+        params.grain_v2 = Selection::GrainV2(Controls {
             amount_ev: 0.0,
             texel_pitch_um: 1.0,
             chroma_fraction: 1.0,
         });
         publication.stage(valid(1, params)).unwrap();
         let frame = |rendered_long_edge_px| {
-            recipe::FilmGrainFrame::Raster(Raster {
+            recipe::GrainV2Frame::Raster(Raster {
                 rendered_long_edge_px,
                 candidate_full_grid: None,
             })
@@ -2028,7 +2028,7 @@ mod tests {
         let first = frame(4832);
         let second = frame(7418);
         let held = publication
-            .admit_film_grain_frame(publication.frame_input().unwrap(), first, |params| {
+            .admit_grain_v2_frame(publication.frame_input().unwrap(), first, |params| {
                 recipe::prepare_for_frame(&assets, params, first)
             })
             .unwrap();
@@ -2042,7 +2042,7 @@ mod tests {
             let assets = &assets;
             let builder = scope.spawn(move || {
                 publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), second, |params| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), second, |params| {
                         started_tx.send(()).unwrap();
                         release_rx.recv_timeout(RENDEZVOUS).unwrap();
                         recipe::prepare_for_frame(assets, params, second)
@@ -2052,7 +2052,7 @@ mod tests {
             started_rx.recv_timeout(RENDEZVOUS).unwrap();
             let warm = scope.spawn(move || {
                 warm_tx
-                    .send(publication.admit_film_grain_frame(
+                    .send(publication.admit_grain_v2_frame(
                         publication.frame_input().unwrap(),
                         first,
                         |_| panic!("matching Film raster rebuilt"),
@@ -2062,7 +2062,7 @@ mod tests {
             let waiter = scope.spawn(move || {
                 REBUILD_WAITER.set(Some(waiting_tx));
                 publication
-                    .admit_film_grain_frame(publication.frame_input().unwrap(), second, |_| {
+                    .admit_grain_v2_frame(publication.frame_input().unwrap(), second, |_| {
                         panic!("matching Film raster rebuilt after waiting")
                     })
                     .unwrap()

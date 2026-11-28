@@ -1,4 +1,4 @@
-# Visual grain native characterizations
+# Legacy grain native characterizations
 
 Frozen before grain translation at `09643ce`, using the accepted Rust
 profile/development sampler. The manifest shares fields and synthetic results

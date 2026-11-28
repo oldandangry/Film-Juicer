@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Film v1 bank calibration admission through the authoring CLI."""
+"""Check Grain v2 bank calibration admission through the authoring CLI."""
 
 import io
 import json
@@ -72,7 +72,7 @@ class FilmBankCalibrationTests(unittest.TestCase):
                     runpy.run_path(str(GENERATOR), run_name="__main__")
 
                 self.assertEqual(result.exception.code, 1)
-                self.assertEqual(stderr.getvalue(), f"Film v1 bank: {diagnostic}\n")
+                self.assertEqual(stderr.getvalue(), f"Grain v2 bank: {diagnostic}\n")
                 self.assertEqual({path.name for path in scratch.iterdir()}, {"calibration.json"})
 
 

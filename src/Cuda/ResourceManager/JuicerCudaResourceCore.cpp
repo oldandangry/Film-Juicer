@@ -184,12 +184,12 @@ namespace JuicerCuda::ResourceManager {
         return descriptor;
     }
 
-    WorkspaceLayout::WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::VisualGrainScratchShape shape) noexcept
+    WorkspaceLayout::WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::LegacyGrainScratchShape shape) noexcept
         : _allocation(allocation), _scanner(scanner), _grain(grain), _grainShape(shape) {
     }
 
     std::optional<WorkspaceLayout> WorkspaceLayout::create(
-        const ScratchRequestExtent& extent, const DirScratchRequest& spatialDir, const ScratchRequestAttachments& attachments, Spektrafilm::VisualGrainScratchShape grainShape) noexcept {
+        const ScratchRequestExtent& extent, const DirScratchRequest& spatialDir, const ScratchRequestAttachments& attachments, Spektrafilm::LegacyGrainScratchShape grainShape) noexcept {
         if (attachments.needAux || attachments.needGrainFrameUniforms ||
             attachments.needGrainLayerWork || attachments.needGrainShared) {
             return std::nullopt;
@@ -197,16 +197,16 @@ namespace JuicerCuda::ResourceManager {
         bool layers = false;
         bool shared = false;
         switch (grainShape) {
-            case Spektrafilm::VisualGrainScratchShape::None:
-            case Spektrafilm::VisualGrainScratchShape::Streamed:
+            case Spektrafilm::LegacyGrainScratchShape::None:
+            case Spektrafilm::LegacyGrainScratchShape::Streamed:
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedShared:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedShared:
                 shared = true;
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedLayers:
                 layers = true;
                 break;
-            case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+            case Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared:
                 layers = true;
                 shared = true;
                 break;
@@ -218,7 +218,7 @@ namespace JuicerCuda::ResourceManager {
             (!dir || dir->_target.roles.filteredCorrectionPlanes != 3)) {
             return std::nullopt;
         }
-        const bool grainActive = grainShape != Spektrafilm::VisualGrainScratchShape::None;
+        const bool grainActive = grainShape != Spektrafilm::LegacyGrainScratchShape::None;
         const bool reuseRaw = grainActive && attachments.aliasScannerRgbFromSpatialDirFiltered && dir &&
                               dir->_source.roles.rawCorrectionPlanes == 3 && dir->_target.roles.rawCorrectionPlanes == 3;
         auto physical = attachments;
@@ -255,18 +255,18 @@ namespace JuicerCuda::ResourceManager {
         return _grain;
     }
 
-    Spektrafilm::VisualGrainScratchShape WorkspaceLayout::grain_shape() const noexcept {
+    Spektrafilm::LegacyGrainScratchShape WorkspaceLayout::grain_shape() const noexcept {
         return _grainShape;
     }
 
     bool WorkspaceLayout::grain_uses_layers() const noexcept {
-        return _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayers ||
-               _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayersShared;
+        return _grainShape == Spektrafilm::LegacyGrainScratchShape::StreamedLayers ||
+               _grainShape == Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared;
     }
 
     bool WorkspaceLayout::grain_uses_shared() const noexcept {
-        return _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedShared ||
-               _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayersShared;
+        return _grainShape == Spektrafilm::LegacyGrainScratchShape::StreamedShared ||
+               _grainShape == Spektrafilm::LegacyGrainScratchShape::StreamedLayersShared;
     }
 
     std::optional<WorkspaceLayout> WorkspaceLayout::with_dir_layout(

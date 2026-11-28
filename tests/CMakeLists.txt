@@ -148,8 +148,8 @@ set_target_properties(JuicerOfxInstanceTests PROPERTIES LINKER_LANGUAGE CXX RUNT
 add_dependencies(JuicerOfxInstanceTests juicer_test_resources)
 juicer_add_host_test(Ofx.Host.Instance JuicerOfxInstanceTests
     --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/instance.json")
-juicer_add_host_test(Ofx.Host.FilmV1Instance JuicerOfxInstanceTests
-    --film-v1 --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/instance.json")
+juicer_add_host_test(Ofx.Host.GrainV2Instance JuicerOfxInstanceTests
+    --grain-v2 --reference "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/s6-d/instance.json")
 
 add_executable(JuicerOfxActionTests ofx/action_test.cpp ofx/instance_host.cpp ../native/ofx_exports.cpp)
 target_compile_features(JuicerOfxActionTests PRIVATE cxx_std_20)
@@ -213,10 +213,10 @@ add_test(NAME Ofx.Gpu.FrameAndPrintEdits
         "${JUICER_TEST_ARTIFACT_ROOT}"
         "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.FrameAndPrintEdits PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
-add_test(NAME Ffi.Gpu.FilmV1Staged
-    COMMAND JuicerProductionPreparedRenderProbe --film-v1-witness
+add_test(NAME Ffi.Gpu.GrainV2Staged
+    COMMAND JuicerProductionPreparedRenderProbe --grain-v2-witness
         "${JUICER_STAGE_PREFIX}/${JUICER_BUNDLE}/Contents/${JUICER_ARCH_DIR}/$<TARGET_FILE_NAME:juicer>")
-set_tests_properties(Ffi.Gpu.FilmV1Staged PROPERTIES
+set_tests_properties(Ffi.Gpu.GrainV2Staged PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME Ofx.SyntheticHostLifecycle
@@ -326,8 +326,8 @@ target_link_libraries(JuicerGrainOfxApertureTests PRIVATE
     juicer_core film_juicer_rust juicer_cuda_resource_operations juicer_dependencies
     CUDA::cuda_driver GTest::gtest juicer_host_gtest_main)
 set_property(TARGET JuicerGrainOfxApertureTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-add_test(NAME Grain.Gpu.FilmOfxApertures COMMAND JuicerGrainOfxApertureTests --gtest_fail_if_no_test_selected)
-set_tests_properties(Grain.Gpu.FilmOfxApertures PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+add_test(NAME Grain.Gpu.V2OfxApertures COMMAND JuicerGrainOfxApertureTests --gtest_fail_if_no_test_selected)
+set_tests_properties(Grain.Gpu.V2OfxApertures PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
 foreach(target IN ITEMS JuicerScannerBindingTests JuicerCudaInspectTests JuicerCudaInspectGpuTests
         JuicerOfxModuleTests JuicerOfxContextTests JuicerOfxInstanceTests JuicerOfxActionTests JuicerOfxRenderTests)

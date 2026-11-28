@@ -3,9 +3,9 @@
 // See tests/grain/fotufilm-notice.md for source identity and license.
 #pragma once
 
-#include "Cuda/JuicerCudaFilmGrain.h"
+#include "Cuda/JuicerCudaGrainV2.h"
 
-namespace JuicerCuda::FilmGrain {
+namespace JuicerCuda::GrainV2 {
     namespace {
         struct FilmBox {
             float left;
@@ -466,4 +466,4 @@ namespace JuicerCuda::FilmGrain {
         }
 
     } // namespace
-} // namespace JuicerCuda::FilmGrain
+} // namespace JuicerCuda::GrainV2

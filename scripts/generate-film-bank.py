@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Author frozen Film v1 banks with the product profile evaluator and pinned Fotufilm."""
+"""Author frozen Grain v2 banks with the product profile evaluator and pinned Fotufilm."""
 
 import argparse
 import hashlib
@@ -252,7 +252,7 @@ def main():
     try:
         args.run(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        print(f"Film v1 bank: {error}", file=sys.stderr)
+        print(f"Grain v2 bank: {error}", file=sys.stderr)
         return 1
     return 0
 

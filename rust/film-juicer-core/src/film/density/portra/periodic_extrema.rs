@@ -855,7 +855,7 @@ pub(super) const BANDS: [[[i16; 4]; 51]; 16] = [
 #[cfg(test)]
 mod tests {
     use super::super::certificate;
-    use crate::assets::{Assets, FilmGrainStock};
+    use crate::assets::{Assets, GrainV2Stock};
     use std::path::Path;
 
     const SIDE: usize = 256;
@@ -940,9 +940,9 @@ mod tests {
         }
     }
 
-    fn check_periodic_bands(stock: FilmGrainStock) {
+    fn check_periodic_bands(stock: GrainV2Stock) {
         let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
-        let bank = assets.film_grain_bank(stock).unwrap();
+        let bank = assets.grain_v2_bank(stock).unwrap();
         let certificate = certificate(stock);
         let certificate = &certificate;
         let tiles = bank.sums().as_chunks::<{ STRIDE * STRIDE }>().0;
@@ -976,11 +976,11 @@ mod tests {
 
     #[test]
     fn periodic_bands_enclose_the_frozen_sat_words() {
-        check_periodic_bands(FilmGrainStock::Portra400);
+        check_periodic_bands(GrainV2Stock::Portra400);
     }
 
     #[test]
     fn gold_periodic_bands_enclose_the_frozen_sat_words() {
-        check_periodic_bands(FilmGrainStock::Gold200);
+        check_periodic_bands(GrainV2Stock::Gold200);
     }
 }

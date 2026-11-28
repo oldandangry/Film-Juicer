@@ -14,7 +14,7 @@ set(JUICER_NATIVE_SOURCES
     src/Cuda/Executor/ScanStages.cpp
     src/Cuda/Executor/Direct.cpp
     src/Cuda/Executor/Print.cpp
-    src/Cuda/JuicerCudaFilmGrainStage.cpp
+    src/Cuda/JuicerCudaGrainV2Stage.cpp
     src/Cuda/JuicerCudaFailure.cpp
     src/Cuda/JuicerCudaDriver.cpp
     src/Cuda/Resources/Lifecycle.cpp
@@ -38,8 +38,8 @@ set(JUICER_NATIVE_SOURCES
     src/Cuda/JuicerCudaBlur.cu
     src/Cuda/Film/FilmDevelop.cu
     src/Cuda/Film/SpatialDir.cu
-    src/Cuda/Film/VisualGrain.cu
-    src/Cuda/Film/FilmV1Grain.cu
+    src/Cuda/Film/LegacyGrain.cu
+    src/Cuda/Film/GrainV2.cu
     src/Cuda/JuicerCudaAutoExposure.cu
     src/Cuda/Scan/PrintDevelop.cu
     src/Cuda/Scan/SpectralScan.cu

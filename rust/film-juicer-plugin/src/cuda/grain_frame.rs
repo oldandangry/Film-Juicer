@@ -1,4 +1,4 @@
-//! Projection of the resolved visual grain plan and its recipe.
+//! Projection of the resolved Legacy grain plan and its recipe.
 
 use film_juicer_core::{
     film::grain::{

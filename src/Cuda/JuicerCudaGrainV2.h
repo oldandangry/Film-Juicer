@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cuda_runtime_api.h>
 
-namespace JuicerCuda::FilmGrain {
+namespace JuicerCuda::GrainV2 {
     constexpr int kTileSide = 256;
     constexpr int kTileStride = kTileSide + 1;
     constexpr int kTileEntries = kTileStride * kTileStride;
@@ -109,4 +109,4 @@ namespace JuicerCuda::FilmGrain {
     };
 
     cudaError_t apply(const FilmQuad* sums, FilmTables tables, FilmFrame frame, FilmPlanes planes, void* stream);
-} // namespace JuicerCuda::FilmGrain
+} // namespace JuicerCuda::GrainV2

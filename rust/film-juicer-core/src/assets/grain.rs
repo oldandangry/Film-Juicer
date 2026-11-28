@@ -1,5 +1,5 @@
-//! Frozen Film v1 banks and exact-footprint tables. Adapted from Fotufilm's
-//! FilmGrainTiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
+//! Frozen Grain v2 banks and exact-footprint tables. Adapted from Fotufilm's
+//! GrainV2Tiles.swift, revision 87a3f46af093a9e6bf76acf21aca83d3b9e2c600.
 use super::{AssetError, Assets};
 use crate::hash;
 use serde::Deserialize;
@@ -41,7 +41,7 @@ const TABLE_VERSION: u64 = 1;
 const MANIFEST_LIMIT: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilmGrainStock {
+pub enum GrainV2Stock {
     Portra400,
     Gold200,
 }
@@ -54,7 +54,7 @@ struct BankSource {
     sums_hash: u64,
 }
 
-impl FilmGrainStock {
+impl GrainV2Stock {
     pub(crate) fn for_profile(key: &str) -> Option<Self> {
         [Self::Portra400, Self::Gold200]
             .into_iter()
@@ -90,13 +90,13 @@ impl FilmGrainStock {
 
 #[derive(Default)]
 pub(super) struct Cache {
-    bank: OnceLock<Result<Arc<FilmGrainBank>, FilmGrainError>>,
-    table: Mutex<Option<Arc<FilmGrainTable>>>,
+    bank: OnceLock<Result<Arc<GrainV2Bank>, GrainV2Error>>,
+    table: Mutex<Option<Arc<GrainV2Table>>>,
     table_request: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
-pub enum FilmGrainError {
+pub enum GrainV2Error {
     Io(Arc<io::Error>),
     Manifest(Arc<serde_json::Error>),
     Allocation(TryReserveError),
@@ -104,7 +104,7 @@ pub enum FilmGrainError {
     Invalid(&'static str),
     CachePoisoned,
 }
-impl FilmGrainError {
+impl GrainV2Error {
     fn io(error: io::Error) -> Self {
         match Arc::try_new(error) {
             Ok(error) => Self::Io(error),
@@ -119,7 +119,7 @@ impl FilmGrainError {
         }
     }
 }
-impl fmt::Display for FilmGrainError {
+impl fmt::Display for GrainV2Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "resource: {e}"),
@@ -131,7 +131,7 @@ impl fmt::Display for FilmGrainError {
         }
     }
 }
-impl std::error::Error for FilmGrainError {
+impl std::error::Error for GrainV2Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error.as_ref()),
@@ -143,24 +143,24 @@ impl std::error::Error for FilmGrainError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct FilmGrainRecord {
+pub struct GrainV2Record {
     pub minimum_gross: f32,
     pub maximum_gross: f32,
     pub offset: f32,
     pub mean_light: [f32; LEVELS],
 }
 #[derive(Debug)]
-pub struct FilmGrainBank {
-    stock: FilmGrainStock,
-    records: [FilmGrainRecord; RECORDS],
+pub struct GrainV2Bank {
+    stock: GrainV2Stock,
+    records: [GrainV2Record; RECORDS],
     sums: Vec<f32>,
     identity: u64,
 }
-impl FilmGrainBank {
-    pub(crate) fn stock(&self) -> FilmGrainStock {
+impl GrainV2Bank {
+    pub(crate) fn stock(&self) -> GrainV2Stock {
         self.stock
     }
-    pub fn records(&self) -> &[FilmGrainRecord; RECORDS] {
+    pub fn records(&self) -> &[GrainV2Record; RECORDS] {
         &self.records
     }
     pub fn sums(&self) -> &[f32] {
@@ -172,7 +172,7 @@ impl FilmGrainBank {
 }
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
-pub struct FilmGrainTable {
+pub struct GrainV2Table {
     pub footprint: f32,
     pub mean_density: [[f32; LEVELS]; RECORDS],
     pub correlation: [[f32; LEVELS]; RECORDS],
@@ -202,28 +202,28 @@ fn read_retrying_interrupt(reader: &mut impl Read, bytes: &mut [u8]) -> io::Resu
     }
 }
 
-fn words(path: &Path, count: usize) -> Result<Vec<f32>, FilmGrainError> {
-    let file = File::open(path).map_err(FilmGrainError::io)?;
-    if file.metadata().map_err(FilmGrainError::io)?.len() != (count * size_of::<f32>()) as u64 {
-        return Err(FilmGrainError::Invalid("word count"));
+fn words(path: &Path, count: usize) -> Result<Vec<f32>, GrainV2Error> {
+    let file = File::open(path).map_err(GrainV2Error::io)?;
+    if file.metadata().map_err(GrainV2Error::io)?.len() != (count * size_of::<f32>()) as u64 {
+        return Err(GrainV2Error::Invalid("word count"));
     }
     read_words(file, count)
 }
 
-fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, FilmGrainError> {
+fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, GrainV2Error> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
-        .map_err(FilmGrainError::Allocation)?;
+        .map_err(GrainV2Error::Allocation)?;
     let mut bytes = [0; 8192];
     let mut remaining = count * size_of::<f32>();
     while remaining > 0 {
         let chunk = &mut bytes[..remaining.min(8192)];
         reader.read_exact(chunk).map_err(|error| {
             if error.kind() == ErrorKind::UnexpectedEof {
-                FilmGrainError::Invalid("word count")
+                GrainV2Error::Invalid("word count")
             } else {
-                FilmGrainError::io(error)
+                GrainV2Error::io(error)
             }
         })?;
         values.extend(
@@ -236,33 +236,33 @@ fn read_words(mut reader: impl Read, count: usize) -> Result<Vec<f32>, FilmGrain
         );
         remaining -= chunk.len();
     }
-    if read_retrying_interrupt(&mut reader, &mut bytes[..1]).map_err(FilmGrainError::io)? != 0 {
-        return Err(FilmGrainError::Invalid("word count"));
+    if read_retrying_interrupt(&mut reader, &mut bytes[..1]).map_err(GrainV2Error::io)? != 0 {
+        return Err(GrainV2Error::Invalid("word count"));
     }
     if values.iter().any(|v| !v.is_finite()) {
-        return Err(FilmGrainError::Invalid("nonfinite word"));
+        return Err(GrainV2Error::Invalid("nonfinite word"));
     }
     Ok(values)
 }
-fn load_bank(root: &Path, stock: FilmGrainStock) -> Result<FilmGrainBank, FilmGrainError> {
+fn load_bank(root: &Path, stock: GrainV2Stock) -> Result<GrainV2Bank, GrainV2Error> {
     let source = stock.source();
     let dir = root.join(source.directory);
-    let mut file = File::open(dir.join("manifest.json")).map_err(FilmGrainError::io)?;
+    let mut file = File::open(dir.join("manifest.json")).map_err(GrainV2Error::io)?;
     let mut bytes = [0; MANIFEST_LIMIT + 1];
     let mut len = 0;
     while len < bytes.len() {
         let read =
-            read_retrying_interrupt(&mut file, &mut bytes[len..]).map_err(FilmGrainError::io)?;
+            read_retrying_interrupt(&mut file, &mut bytes[len..]).map_err(GrainV2Error::io)?;
         if read == 0 {
             break;
         }
         len += read;
     }
     if len > MANIFEST_LIMIT {
-        return Err(FilmGrainError::Invalid("manifest size"));
+        return Err(GrainV2Error::Invalid("manifest size"));
     }
     let manifest: Manifest<'_> =
-        serde_json::from_slice(&bytes[..len]).map_err(FilmGrainError::manifest)?;
+        serde_json::from_slice(&bytes[..len]).map_err(GrainV2Error::manifest)?;
     if manifest.version != 1
         || manifest.stock != stock.key()
         || manifest.records != "records.f32"
@@ -270,24 +270,24 @@ fn load_bank(root: &Path, stock: FilmGrainStock) -> Result<FilmGrainBank, FilmGr
         || manifest.records_sha256 != source.records_sha256
         || manifest.sums_sha256 != source.sums_sha256
     {
-        return Err(FilmGrainError::Invalid("manifest association or version"));
+        return Err(GrainV2Error::Invalid("manifest association or version"));
     }
     let raw = words(&dir.join("records.f32"), RECORDS * RECORD_WORDS)?;
     let sums = words(&dir.join("sums.f32"), RECORDS * LEVELS * TILE)?;
     let rh = hash::resource_f32s(&raw);
     let sh = hash::resource_f32s(&sums);
     if rh != source.records_hash || sh != source.sums_hash {
-        return Err(FilmGrainError::Invalid("bank identity"));
+        return Err(GrainV2Error::Invalid("bank identity"));
     }
     for tile in sums.as_chunks::<TILE>().0 {
         if tile[..STRIDE].iter().any(|&v| v != 0.0) || (0..STRIDE).any(|y| tile[y * STRIDE] != 0.0)
         {
-            return Err(FilmGrainError::Invalid("SAT border"));
+            return Err(GrainV2Error::Invalid("SAT border"));
         }
     }
     let records = std::array::from_fn(|r| {
         let start = r * RECORD_WORDS;
-        FilmGrainRecord {
+        GrainV2Record {
             minimum_gross: raw[start],
             maximum_gross: raw[start + 1],
             offset: raw[start + 2],
@@ -298,10 +298,10 @@ fn load_bank(root: &Path, stock: FilmGrainStock) -> Result<FilmGrainBank, FilmGr
         .iter()
         .any(|r| r.maximum_gross - r.minimum_gross < 1e-6)
     {
-        return Err(FilmGrainError::Invalid("density range"));
+        return Err(GrainV2Error::Invalid("density range"));
     }
     let identity = hash::u64s(&[rh, sh]);
-    Ok(FilmGrainBank {
+    Ok(GrainV2Bank {
         stock,
         records,
         sums,
@@ -309,31 +309,31 @@ fn load_bank(root: &Path, stock: FilmGrainStock) -> Result<FilmGrainBank, FilmGr
     })
 }
 impl Assets {
-    pub fn film_grain_bank(&self, stock: FilmGrainStock) -> Result<Arc<FilmGrainBank>, AssetError> {
-        self.film_grain[stock as usize]
+    pub fn grain_v2_bank(&self, stock: GrainV2Stock) -> Result<Arc<GrainV2Bank>, AssetError> {
+        self.grain_v2[stock as usize]
             .bank
             .get_or_init(|| {
                 Arc::try_new(load_bank(&self.resource_dir, stock)?)
-                    .map_err(|_| FilmGrainError::OwnerAllocation)
+                    .map_err(|_| GrainV2Error::OwnerAllocation)
             })
             .clone()
-            .map_err(|error| AssetError::FilmGrain(stock, error))
+            .map_err(|error| AssetError::GrainV2(stock, error))
     }
-    pub fn film_grain_table(
+    pub fn grain_v2_table(
         &self,
-        bank: &FilmGrainBank,
+        bank: &GrainV2Bank,
         footprint: f32,
-    ) -> Result<Arc<FilmGrainTable>, AssetError> {
-        let owner = &self.film_grain[bank.stock as usize];
-        let fail = |error| AssetError::FilmGrain(bank.stock, error);
+    ) -> Result<Arc<GrainV2Table>, AssetError> {
+        let owner = &self.grain_v2[bank.stock as usize];
+        let fail = |error| AssetError::GrainV2(bank.stock, error);
         if !(MIN_PROXY_SAMPLE_FOOTPRINT..=MAX_FOOTPRINT).contains(&footprint) {
-            return Err(fail(FilmGrainError::Invalid("unsupported footprint")));
+            return Err(fail(GrainV2Error::Invalid("unsupported footprint")));
         }
         let request = {
             let cache = owner
                 .table
                 .lock()
-                .map_err(|_| fail(FilmGrainError::CachePoisoned))?;
+                .map_err(|_| fail(GrainV2Error::CachePoisoned))?;
             if let Some(t) = cache.as_ref().filter(|t| {
                 t.bank_identity == bank.identity
                     && t.footprint.to_bits() == footprint.to_bits()
@@ -347,11 +347,11 @@ impl Assets {
                 .wrapping_add(1)
         };
         let result = Arc::try_new(measure(bank, footprint).map_err(fail)?)
-            .map_err(|_| fail(FilmGrainError::OwnerAllocation))?;
+            .map_err(|_| fail(GrainV2Error::OwnerAllocation))?;
         let mut cache = owner
             .table
             .lock()
-            .map_err(|_| fail(FilmGrainError::CachePoisoned))?;
+            .map_err(|_| fail(GrainV2Error::CachePoisoned))?;
         if let Some(t) = cache.as_ref().filter(|t| {
             t.bank_identity == bank.identity
                 && t.footprint.to_bits() == footprint.to_bits()
@@ -411,9 +411,9 @@ fn periodic_prefix(s: &[f32], x: f64, y: f64) -> f64 {
         + nx * ny * f64::from(s[TILE - 1])
 }
 
-fn measure(bank: &FilmGrainBank, footprint: f32) -> Result<FilmGrainTable, FilmGrainError> {
+fn measure(bank: &GrainV2Bank, footprint: f32) -> Result<GrainV2Table, GrainV2Error> {
     let pitch = f64::from(footprint);
-    let mut table = FilmGrainTable {
+    let mut table = GrainV2Table {
         footprint,
         mean_density: [[0.0; LEVELS]; RECORDS],
         correlation: [[1.0; LEVELS]; RECORDS],
@@ -424,7 +424,7 @@ fn measure(bank: &FilmGrainBank, footprint: f32) -> Result<FilmGrainTable, FilmG
     let mut fields = Vec::new();
     fields
         .try_reserve_exact(LEVELS * SAMPLES)
-        .map_err(FilmGrainError::Allocation)?;
+        .map_err(GrainV2Error::Allocation)?;
     fields.resize(LEVELS * SAMPLES, 0.0_f64);
     let (fields, []) = fields.as_chunks_mut::<SAMPLES>() else {
         unreachable!()
@@ -524,7 +524,7 @@ fn measure(bank: &FilmGrainBank, footprint: f32) -> Result<FilmGrainTable, FilmG
             .any(|v| !v.is_finite())
             || table.correlation[r].iter().any(|&v| v <= -0.9997)
         {
-            return Err(FilmGrainError::Invalid("computed normalization"));
+            return Err(GrainV2Error::Invalid("computed normalization"));
         }
     }
     Ok(table)
@@ -575,7 +575,7 @@ mod tests {
         reader.interruptions = 0;
         assert!(matches!(
             read_words(&mut reader, 1),
-            Err(FilmGrainError::Invalid("word count"))
+            Err(GrainV2Error::Invalid("word count"))
         ));
         assert_eq!(reader.interruptions, 1);
 
@@ -593,7 +593,7 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
         let assets = Assets::new(root);
         let bank = assets
-            .film_grain_bank(FilmGrainStock::Portra400)
+            .grain_v2_bank(GrainV2Stock::Portra400)
             .expect("packaged Portra bank");
         let fixtures: [(f32, &[u8]); 5] = [
             (
@@ -618,15 +618,15 @@ mod tests {
             ),
         ];
         compare_tables(&assets, &bank, &fixtures);
-        assert!(assets.film_grain_table(&bank, f32::NAN).is_err());
+        assert!(assets.grain_v2_table(&bank, f32::NAN).is_err());
         assert!(
             assets
-                .film_grain_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT.next_down())
+                .grain_v2_table(&bank, MIN_PROXY_SAMPLE_FOOTPRINT.next_down())
                 .is_err()
         );
         assert!(
             assets
-                .film_grain_table(&bank, MAX_FOOTPRINT.next_up())
+                .grain_v2_table(&bank, MAX_FOOTPRINT.next_up())
                 .is_err()
         );
     }
@@ -635,9 +635,9 @@ mod tests {
     fn gold_tables_and_stock_switch() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
         let assets = Assets::new(root);
-        let portra = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
-        let portra_table = assets.film_grain_table(&portra, 9.375).unwrap();
-        let gold = assets.film_grain_bank(FilmGrainStock::Gold200).unwrap();
+        let portra = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
+        let portra_table = assets.grain_v2_table(&portra, 9.375).unwrap();
+        let gold = assets.grain_v2_bank(GrainV2Stock::Gold200).unwrap();
         let fixtures: [(f32, &[u8]); 4] = [
             (
                 1.0,
@@ -657,19 +657,19 @@ mod tests {
             ),
         ];
         compare_tables(&assets, &gold, &fixtures);
-        let gold_table = assets.film_grain_table(&gold, 9.375).unwrap();
+        let gold_table = assets.grain_v2_table(&gold, 9.375).unwrap();
         assert_ne!(portra.identity(), gold.identity());
         assert_ne!(portra_table.mean_density, gold_table.mean_density);
         assert_ne!(portra_table.correlation, gold_table.correlation);
-        let restored = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
+        let restored = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
         assert!(Arc::ptr_eq(&portra, &restored));
         assert!(Arc::ptr_eq(
             &portra_table,
-            &assets.film_grain_table(&restored, 9.375).unwrap()
+            &assets.grain_v2_table(&restored, 9.375).unwrap()
         ));
         assert!(Arc::ptr_eq(
             &gold_table,
-            &assets.film_grain_table(&gold, 9.375).unwrap()
+            &assets.grain_v2_table(&gold, 9.375).unwrap()
         ));
     }
 
@@ -706,23 +706,21 @@ mod tests {
         let gold = scratch.0.join("grain/gold-200");
         let check = || {
             let assets = Assets::new(scratch.0.clone());
-            let Err(AssetError::FilmGrain(FilmGrainStock::Gold200, error)) =
-                assets.film_grain_bank(FilmGrainStock::Gold200)
+            let Err(AssetError::GrainV2(GrainV2Stock::Gold200, error)) =
+                assets.grain_v2_bank(GrainV2Stock::Gold200)
             else {
                 panic!("Gold asset failure lost its stock or kind");
             };
-            let bank = assets.film_grain_bank(FilmGrainStock::Portra400).unwrap();
-            assets.film_grain_table(&bank, 9.375).unwrap();
+            let bank = assets.grain_v2_bank(GrainV2Stock::Portra400).unwrap();
+            assets.grain_v2_table(&bank, 9.375).unwrap();
             error
         };
-        assert!(
-            matches!(check(), FilmGrainError::Io(error) if error.kind() == ErrorKind::NotFound)
-        );
+        assert!(matches!(check(), GrainV2Error::Io(error) if error.kind() == ErrorKind::NotFound));
         fs::create_dir(&gold).unwrap();
         fs::copy(portra.join("manifest.json"), gold.join("manifest.json")).unwrap();
         assert!(matches!(
             check(),
-            FilmGrainError::Invalid("manifest association or version")
+            GrainV2Error::Invalid("manifest association or version")
         ));
         fs::copy(
             resources.join("grain/gold-200/manifest.json"),
@@ -735,12 +733,12 @@ mod tests {
             gold.join("sums.f32"),
         )
         .unwrap();
-        assert!(matches!(check(), FilmGrainError::Invalid("bank identity")));
+        assert!(matches!(check(), GrainV2Error::Invalid("bank identity")));
     }
 
-    fn compare_tables(assets: &Assets, bank: &FilmGrainBank, fixtures: &[(f32, &[u8])]) {
+    fn compare_tables(assets: &Assets, bank: &GrainV2Bank, fixtures: &[(f32, &[u8])]) {
         for &(footprint, bytes) in fixtures {
-            let table = assets.film_grain_table(bank, footprint).expect("footprint");
+            let table = assets.grain_v2_table(bank, footprint).expect("footprint");
             let expected: Vec<f32> = bytes
                 .as_chunks::<4>()
                 .0
@@ -765,7 +763,7 @@ mod tests {
             }
             assert!(Arc::ptr_eq(
                 &table,
-                &assets.film_grain_table(bank, footprint).unwrap()
+                &assets.grain_v2_table(bank, footprint).unwrap()
             ));
         }
     }

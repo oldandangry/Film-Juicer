@@ -399,7 +399,7 @@ namespace JuicerCuda {
         JuicerProcess::Root::PreparedFrameInput preparation{
             identity, focused, descriptors.color, descriptors.outputGamut, {}, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, frame.renderWindow.x2 - frame.renderWindow.x1, frame.renderWindow.y2 - frame.renderWindow.y1};
         preparation.highlightBoostDescriptor = descriptors.highlightBoost ? &*descriptors.highlightBoost : nullptr;
-        preparation.filmGrain = source.film_grain;
+        preparation.grainV2 = source.film_grain;
         if (source.film_grain && descriptors.grain) {
             diagnostic = "conflicting grain models";
             return false;

@@ -145,12 +145,12 @@ namespace JuicerCuda {
                 const ScratchRequestExtent& extent,
                 const DirScratchRequest& spatialDir,
                 const ScratchRequestAttachments& attachments,
-                Spektrafilm::VisualGrainScratchShape grainShape) noexcept;
+                Spektrafilm::LegacyGrainScratchShape grainShape) noexcept;
 
             const ScratchRequestDescriptor& allocation() const noexcept;
             ScannerStorage scanner_storage() const noexcept;
             GrainStorage grain_storage() const noexcept;
-            Spektrafilm::VisualGrainScratchShape grain_shape() const noexcept;
+            Spektrafilm::LegacyGrainScratchShape grain_shape() const noexcept;
             bool grain_uses_layers() const noexcept;
             bool grain_uses_shared() const noexcept;
             bool operator==(const WorkspaceLayout& other) const noexcept;
@@ -160,12 +160,12 @@ namespace JuicerCuda {
                 const ActiveDirScratch::Layout& target) const noexcept;
 
         private:
-            WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::VisualGrainScratchShape shape) noexcept;
+            WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::LegacyGrainScratchShape shape) noexcept;
 
             ScratchRequestDescriptor _allocation;
             ScannerStorage _scanner;
             GrainStorage _grain;
-            Spektrafilm::VisualGrainScratchShape _grainShape;
+            Spektrafilm::LegacyGrainScratchShape _grainShape;
         };
 
         std::optional<ScratchRequestDescriptor> make_scratch_request_descriptor(

@@ -99,7 +99,7 @@ pub(super) fn render(
     instance: &Instance,
     abort: &Abort<'_>,
 ) -> Result<(sys::FjRenderOutcome, String, bool), Failure> {
-    let film_grain = super::frame::film_grain(state, frame.raw())?;
+    let grain_v2 = super::frame::grain_v2(state, frame.raw())?;
     let preview = edge::metering(frame, meter(state.input().meter()))?;
     let context = owner.inspect(frame)?;
     if abort.query()? {
@@ -136,7 +136,7 @@ pub(super) fn render(
     };
     let descriptors = super::frame::prepare(state, frame.raw())?;
     let noise = state
-        .grain()
+        .legacy_grain()
         .active()
         .then(|| assets.noise())
         .transpose()
@@ -152,7 +152,7 @@ pub(super) fn render(
     )
     .map_err(|diagnostic| Failure::new(sys::FJ_STATUS_PREPARATION_FAILURE, diagnostic))?;
     let prepared = sys::FjPreparedHostData {
-        film_grain: film_grain
+        film_grain: grain_v2
             .as_ref()
             .map_or(std::ptr::null(), std::ptr::from_ref),
         ..prepared

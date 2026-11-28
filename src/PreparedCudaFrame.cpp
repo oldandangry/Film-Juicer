@@ -236,8 +236,8 @@ namespace JuicerProcess {
 
     } // namespace
 
-    static bool valid_film_grain_frame(const FjFilmGrain& input, int width, int height) {
-        using namespace JuicerCuda::FilmGrain;
+    static bool valid_grain_v2_frame(const FjFilmGrain& input, int width, int height) {
+        using namespace JuicerCuda::GrainV2;
         const auto axis_supported = [renderedTexels = static_cast<double>(input.pitch)](int size) {
             return (size - 0.5) * renderedTexels < kPlacementCenterLimit;
         };
@@ -298,9 +298,9 @@ namespace JuicerProcess {
         return sample_axis_supported(Axis::X) && sample_axis_supported(Axis::Y);
     }
 
-    bool validate_visual_grain_descriptor(
+    bool validate_legacy_grain_descriptor(
         const Root::PreparationIdentity& identity,
-        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
+        const std::optional<Spektrafilm::LegacyGrainFrameDescriptor>& descriptor,
         std::string& outError) {
         if (!identity.grainActive) {
             if (descriptor.has_value()) {
@@ -315,7 +315,7 @@ namespace JuicerProcess {
                 "MissingRequiredResource phase=grain_descriptor field=active_descriptor";
             return false;
         }
-        const Spektrafilm::VisualGrainFrameDescriptor& frame = *descriptor;
+        const Spektrafilm::LegacyGrainFrameDescriptor& frame = *descriptor;
         if (!frame.active ||
             frame.hash == 0 ||
             frame.recipeHash != identity.grainHash ||
@@ -323,7 +323,7 @@ namespace JuicerProcess {
             frame.densityCurvesLayersHash !=
                 identity.grainDensityLayersHash ||
             frame.scratchShape ==
-                Spektrafilm::VisualGrainScratchShape::None) {
+                Spektrafilm::LegacyGrainScratchShape::None) {
             outError =
                 "ResourceDescriptorMismatch phase=grain_descriptor field=identity";
             return false;
@@ -1121,7 +1121,7 @@ namespace JuicerProcess {
         };
 
         fence(*resources, "frame use", frameResourcesFenced);
-        if (grainStaticResources && visualGrainPrepared) {
+        if (grainStaticResources && legacyGrainPrepared) {
             fence(*grainStaticResources, "grain-static use", grainStaticResourcesFenced);
         }
         if (outError.status.category != FJ_STATUS_SUCCESS) {
@@ -1129,7 +1129,7 @@ namespace JuicerProcess {
         }
         frameUseEventSubmitted = true;
 #if JUICER_DIAGNOSTICS_COMPILED
-        if (grainStaticResources && visualGrainPrepared &&
+        if (grainStaticResources && legacyGrainPrepared &&
             JTRACE_ENABLED(1)) {
             JTRACE(
                 "GRAINLIFE",
@@ -2229,7 +2229,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_visual_grain_resources(
+    bool Root::PreparedCudaFrame::prepare_legacy_grain_resources(
         Root& root,
         const JuicerCuda::StaticNoiseInput* noise,
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
@@ -2243,7 +2243,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        const bool active = _state->visualGrainDescriptor.has_value();
+        const bool active = _state->legacyGrainDescriptor.has_value();
         if (active && !noise) {
             outError.diagnostic = "MissingRequiredResource phase=grain_static field=noise";
             return false;
@@ -2282,8 +2282,8 @@ namespace JuicerProcess {
             return false;
         };
 
-        const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
-            *_state->visualGrainDescriptor;
+        const Spektrafilm::LegacyGrainFrameDescriptor& descriptor =
+            *_state->legacyGrainDescriptor;
         const bool uploaded = JuicerCuda::ensure_grain_static_assets_uploaded(*_state->grainStaticResources, *noise, cudaStreamOpaque, outError);
         if (!uploaded) {
             return fail_preparation(
@@ -2309,16 +2309,16 @@ namespace JuicerProcess {
                 "CUDA grain-static identity validation failed");
         }
 
-        std::array<JuicerCuda::VisualGrainPreparedGaussianView, 12>
+        std::array<JuicerCuda::LegacyGrainPreparedGaussianView, 12>
             preparedByIdentity{};
         std::array<std::uint64_t, 12> preparedIdentityHashes{};
         std::size_t preparedIdentityCount = 0;
         auto prepare_gaussian =
-            [&](const Spektrafilm::VisualGrainGaussian& gaussian,
+            [&](const Spektrafilm::LegacyGrainGaussian& gaussian,
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
-                JuicerCuda::VisualGrainPreparedGaussianView& outView) {
+                JuicerCuda::LegacyGrainPreparedGaussianView& outView) {
                 outView =
-                    JuicerCuda::VisualGrainPreparedGaussianView{};
+                    JuicerCuda::LegacyGrainPreparedGaussianView{};
                 if (gaussian.radius <= 0) {
                     return gaussian.hash == 0;
                 }
@@ -2374,7 +2374,7 @@ namespace JuicerProcess {
                     *correlationSlots[index],
                     _state->preparedGrainCorrelation[index])) {
                 return fail_preparation(
-                    "prepare_visual_grain_correlation",
+                    "prepare_legacy_grain_correlation",
                     "CUDA grain correlation Gaussian preparation failed");
             }
         }
@@ -2386,14 +2386,14 @@ namespace JuicerProcess {
                         _state->resources->grainDyeKernel[layer][channel],
                         _state->preparedGrainDyeCloud[layer][channel])) {
                     return fail_preparation(
-                        "prepare_visual_grain_dye_cloud",
+                        "prepare_legacy_grain_dye_cloud",
                         "CUDA grain dye-cloud Gaussian preparation failed");
                 }
             }
         }
 
         _state->preparedGrainDensityLayers =
-            JuicerCuda::VisualGrainPreparedDensityLayersView{};
+            JuicerCuda::LegacyGrainPreparedDensityLayersView{};
         if (descriptor.densityCurvesLayersHash != 0) {
             JuicerCuda::Resources& resources = *_state->resources;
             if (!resources.hasDensityCurvesLayers ||
@@ -2402,7 +2402,7 @@ namespace JuicerProcess {
                 outError.diagnostic =
                     "MissingRequiredResource phase=grain_density_layers field=prepared_identity";
                 return fail_preparation(
-                    "prepare_visual_grain_density_layers",
+                    "prepare_legacy_grain_density_layers",
                     "CUDA grain density-layer preparation failed");
             }
             const JuicerCuda::DeviceCurve* baseCurvesCmy[3] = {
@@ -2421,7 +2421,7 @@ namespace JuicerProcess {
                     outError.diagnostic =
                         "ResourceDescriptorMismatch phase=grain_density_layers field=base_curve";
                     return fail_preparation(
-                        "prepare_visual_grain_density_layers",
+                        "prepare_legacy_grain_density_layers",
                         "CUDA grain density-layer preparation failed");
                 }
                 _state->preparedGrainDensityLayers
@@ -2440,7 +2440,7 @@ namespace JuicerProcess {
                         outError.diagnostic =
                             "MissingRequiredResource phase=grain_density_layers field=curve";
                         return fail_preparation(
-                            "prepare_visual_grain_density_layers",
+                            "prepare_legacy_grain_density_layers",
                             "CUDA grain density-layer preparation failed");
                     }
                     _state->preparedGrainDensityLayers
@@ -2451,7 +2451,7 @@ namespace JuicerProcess {
                 descriptor.densityCurvesLayersHash;
             _state->preparedGrainDensityLayers.active = true;
         }
-        _state->visualGrainPrepared = true;
+        _state->legacyGrainPrepared = true;
         return true;
     }
     void Root::PreparedCudaFrame::mark_diffusion_work_enqueued() noexcept {
@@ -2722,13 +2722,13 @@ namespace JuicerProcess {
                 "CUDA frame preparation request validation failed");
             return frame;
         }
-        if (!validate_visual_grain_descriptor(
+        if (!validate_legacy_grain_descriptor(
                 request.identity,
-                request.visualGrainDescriptor,
+                request.legacyGrainDescriptor,
                 outError.diagnostic)) {
             recordFailure(
-                "validate_visual_grain_descriptor",
-                "CUDA visual grain descriptor validation failed");
+                "validate_legacy_grain_descriptor",
+                "CUDA Legacy grain descriptor validation failed");
             return frame;
         }
         if (!validate_film_juicer_effects_descriptor(
@@ -2740,8 +2740,8 @@ namespace JuicerProcess {
                 "CUDA effects descriptor validation failed");
             return frame;
         }
-        frame._state->visualGrainDescriptor =
-            request.visualGrainDescriptor;
+        frame._state->legacyGrainDescriptor =
+            request.legacyGrainDescriptor;
         frame._state->effectsDescriptor = request.effectsDescriptor;
         if (printRoute) {
             if (!request.print) {
@@ -2761,14 +2761,14 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-        if (request.filmGrain && !valid_film_grain_frame(*request.filmGrain, request.requestedWidth, request.requestedHeight)) {
-            const char* prefix = printRoute ? "print Film grain binding failed: invalid frame" : "direct Film grain binding failed: invalid frame";
+        if (request.grainV2 && !valid_grain_v2_frame(*request.grainV2, request.requestedWidth, request.requestedHeight)) {
+            const char* prefix = printRoute ? "print Grain v2 binding failed: invalid frame" : "direct Grain v2 binding failed: invalid frame";
             const char* detail = cudaGetErrorString(cudaErrorInvalidValue);
             std::array<char, 128> diagnostic{};
             const auto length = std::snprintf(diagnostic.data(), diagnostic.size(), "%s: %s", prefix, detail ? detail : "(unknown)");
             JuicerCuda::set_failure(outError, JuicerCuda::runtime_failure_status(cudaErrorInvalidValue), length < 0 ? prefix : diagnostic.data());
             frame._state->set_failure(
-                PreparedCudaFailureStage{printRoute ? "print_film_grain_binding" : "direct_film_grain_binding"},
+                PreparedCudaFailureStage{printRoute ? "print_grain_v2_binding" : "direct_grain_v2_binding"},
                 prefix);
             return frame;
         }
@@ -2790,8 +2790,8 @@ namespace JuicerProcess {
                 request.scannerPostEffects,
                 request.diffusionFrameSetDescriptor,
                 request.scatterHalationDescriptor,
-                request.visualGrainDescriptor,
-                request.filmGrain != nullptr,
+                request.legacyGrainDescriptor,
+                request.grainV2 != nullptr,
                 request.effectsDescriptor,
                 request.identity.capturePolarity,
                 request.requestedWidth,
@@ -2820,17 +2820,17 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-        if (request.filmGrain && !JuicerCuda::ensure_film_grain_uploaded(
-                                     *frame._state->resources, *request.filmGrain, frame._state->filmGrainBank, outError)) {
-            recordFailure("prepare_film_grain", "CUDA Film grain bank preparation failed");
+        if (request.grainV2 && !JuicerCuda::ensure_grain_v2_uploaded(
+                                   *frame._state->resources, *request.grainV2, frame._state->grainV2Bank, outError)) {
+            recordFailure("prepare_grain_v2", "CUDA Grain v2 bank preparation failed");
             frame.abort();
             return frame;
         }
-        if (request.filmGrain &&
-            JuicerCuda::FilmGrain::proxy_sample_bound(request.filmGrain->sample_extent, request.filmGrain->sample_step) >
-                JuicerCuda::FilmGrain::kProxySerialSamples) {
-            if (!frame._state->allocate_device_bytes(&frame._state->filmProxyWorkspace,
-                                                     sizeof(JuicerCuda::FilmGrain::ProxyWorkspace),
+        if (request.grainV2 &&
+            JuicerCuda::GrainV2::proxy_sample_bound(request.grainV2->sample_extent, request.grainV2->sample_step) >
+                JuicerCuda::GrainV2::kProxySerialSamples) {
+            if (!frame._state->allocate_device_bytes(&frame._state->grainV2ProxyWorkspace,
+                                                     sizeof(JuicerCuda::GrainV2::ProxyWorkspace),
                                                      "Film proxy transmission reduction",
                                                      outError)) {
                 recordFailure("prepare_film_proxy", "CUDA Film proxy workspace preparation failed");
@@ -2949,7 +2949,7 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-        if (!frame.prepare_visual_grain_resources(
+        if (!frame.prepare_legacy_grain_resources(
                 *this,
                 request.noise,
                 deviceContextKey,

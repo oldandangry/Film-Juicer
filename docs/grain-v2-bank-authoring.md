@@ -1,4 +1,4 @@
-# Author a Film v1 grain bank
+# Author a Grain v2 bank
 
 The maintenance command lists capture stocks through the same catalog as the
 effect. It evaluates the selected profile's CDF3 curves at its Float32 exposure
@@ -68,4 +68,4 @@ verification use the frozen independent tables and probes.
 Shipping any additional stock also requires its own density and spectral
 qualification, resource attribution, package entry and explicit product
 admission. See the [Gold notice](../Resources/grain/gold-200/NOTICE.md) and
-[Portra certificate](../tests/grain/portra-film-v1-certificate.md).
+[Portra certificate](../tests/grain/portra-grain-v2-certificate.md).

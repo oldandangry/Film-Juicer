@@ -74,7 +74,7 @@ shell with `dumpbin` available.
 | Rust model, publication and assets | [Core tests](../rust/film-juicer-core/tests), [core fixtures](../rust/film-juicer-core/tests/fixtures) and unit tests beside their source owners. |
 | ABI, value preparation and owner lifetime | [ABI and bindings](../docs/ffi.md) and [native FFI cases](ffi). |
 | OFX host callbacks, production renders and recovery | [OFX host fixtures](ofx/README.md), [production staged probe](ffi/production-ofx-render.cpp), and the staged frame and Print edit cases. |
-| Film v1 Full and proxy sampling | [Optical aperture cases](grain/film_apertures_test.cpp), [Portra tables](grain/portra-table-fixtures), and [Gold tables and sampler probes](grain/gold-reference). |
+| Grain v2 Full and proxy sampling | [Optical aperture cases](grain/film_apertures_test.cpp), [Portra tables](grain/portra-table-fixtures), and [Gold tables and sampler probes](grain/gold-reference). |
 | Scanner spectra, binding and schedules | [Scanner cases](scanner). |
 | Device resources, exact-context lifetimes and failure ordering | [Resource cases](resource), [native CUDA ABI cases](ffi) and the epoch admission and retirement [route cases](scanner/routes_test.cpp). |
 | Explicit performance work | [Benchmark guide](benchmarks/README.md). |
@@ -96,8 +96,8 @@ For a matched Gold 200 comparison, the testing-enabled render probe accepts
 `--gold-look MODULE SOURCE_RGBA_F32 OUTPUT_DIRECTORY WIDTH HEIGHT`.
 Use a packed linear BT.2020 Float32 RGBA raster and an unused output directory.
 The probe renders sRGB Float32 RGBA through the staged standard effect at
-36 mm and frame 37 on both negative routes. It runs Current with the saved
-descriptor defaults and Film v1 at 0 EV, 1 µm and Colour 1. The four outputs
+36 mm and frame 37 on both negative routes. It runs Legacy with the saved
+descriptor defaults and Grain v2 at 0 EV, 1 µm and Colour 1. The four outputs
 have identical framing within each source. Use the Release bundle under
 review as the module argument.
 

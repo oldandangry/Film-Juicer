@@ -1,4 +1,4 @@
-# Kodak Gold 200 Film v1 grain bank
+# Kodak Gold 200 Grain v2 bank
 
 Film-Juicer generated the record and summed-area-table payloads from its
 [spektrafilm](https://github.com/andreavolpato/spektrafilm)-derived Kodak Gold

@@ -26,7 +26,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "Cuda/JuicerCudaFilmGrainStage.h"
+#include "Cuda/JuicerCudaGrainV2Stage.h"
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Logging.h"
@@ -52,7 +52,7 @@ namespace JuicerCuda {
     struct RouteDescriptors {
         Scanner::ScannerPostEffectsDescriptor post{};
         Spektrafilm::SpatialDirDescriptor dir{};
-        std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
+        std::optional<Spektrafilm::LegacyGrainFrameDescriptor> grain;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
     };
 
@@ -63,7 +63,7 @@ namespace JuicerCuda {
         const RouteDescriptors& descriptors;
         JuicerCuda::FilmPayloadInput film;
         float filmRouteCorrectionScale{};
-        const JuicerCuda::VisualGrainPayloadInput& grain;
+        const JuicerCuda::LegacyGrainPayloadInput& grain;
         const OutputGamutRecipe& outputGamut;
         std::uint64_t glareHash{};
         bool cameraAutoEnabled{};
@@ -82,18 +82,18 @@ namespace JuicerCuda {
     };
 
     struct GrainBinding {
-        JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView workspace{};
+        JuicerProcess::Root::PreparedCudaFrame::LegacyGrainWorkspaceView workspace{};
         JuicerCuda::GrainPayload payload{};
         JuicerCuda::GrainKernelPayload kernels{};
-        const JuicerCuda::FilmGrain::FilmQuad* filmBank = nullptr;
-        JuicerCuda::FilmGrain::FilmTables filmTables{};
-        JuicerCuda::FilmGrain::FilmFrame filmFrame{};
+        const JuicerCuda::GrainV2::FilmQuad* grainV2Bank = nullptr;
+        JuicerCuda::GrainV2::FilmTables grainV2Tables{};
+        JuicerCuda::GrainV2::FilmFrame grainV2Frame{};
     };
 
     enum class GrainModel : std::uint8_t {
         Disabled,
-        Current,
-        Film
+        Legacy,
+        GrainV2
     };
     enum class CaptureRoute : std::uint8_t {
         Direct,
@@ -220,17 +220,17 @@ namespace JuicerCuda {
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
         const ExecutionErrors& errors);
 
-    void bind_film_grain(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
-                         const FjFilmGrain& input,
-                         const JuicerCuda::FrameRect& window,
-                         CaptureRoute route,
-                         GrainBinding& grain,
-                         const ExecutionErrors& errors);
+    void bind_grain_v2(JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+                       const FjFilmGrain& input,
+                       const JuicerCuda::FrameRect& window,
+                       CaptureRoute route,
+                       GrainBinding& grain,
+                       const ExecutionErrors& errors);
 
-    void bind_grain(
+    void bind_legacy_grain(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
-        const JuicerCuda::VisualGrainPayloadInput& input,
+        const JuicerCuda::LegacyGrainPayloadInput& input,
         GrainBinding& grain,
         const ExecutionErrors& errors);
 
