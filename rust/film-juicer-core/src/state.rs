@@ -946,6 +946,71 @@ mod tests {
         assert_eq!(first.hash(), changed.hash());
     }
     #[test]
+    fn film_stock_switch_retains_bank_and_table() {
+        use film::grain::film_v1::{Controls, Raster, Selection};
+
+        let assets = assets();
+        let frame = recipe::FilmGrainFrame::Raster(Raster {
+            rendered_long_edge_px: 3840,
+            candidate_full_grid: None,
+        });
+        for route in [ScanRoute::NegativeDirect, ScanRoute::NegativePrint] {
+            let publication = Publication::new();
+            let publish = |identity, stock: &str, bank_identity| {
+                let mut captured = params(route, 1);
+                captured.film_profile_key = stock.into();
+                captured.camera_film_format_long_edge_mm = 36.0;
+                captured.film_grain = Selection::FilmV1(Controls {
+                    amount_ev: 0.0,
+                    texel_pitch_um: 1.0,
+                    chroma_fraction: 1.0,
+                });
+                publication.stage(valid(identity, captured)).unwrap();
+                let state = publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |params| {
+                        recipe::prepare_for_frame(&assets, params, frame)
+                    })
+                    .unwrap();
+                let grain = state.film_grain().unwrap();
+                assert_eq!(state.development().route(), route);
+                assert_eq!(state.development().profile().info().stock(), stock);
+                assert_eq!(grain.bank().identity(), bank_identity, "{route:?} {stock}");
+                assert_eq!(grain.table().footprint.to_bits(), 9.375_f32.to_bits());
+                let warm = publication
+                    .admit_film_grain_frame(publication.frame_input().unwrap(), frame, |_| {
+                        panic!("warm stock {stock} on {route:?} prepared again")
+                    })
+                    .unwrap();
+                assert!(Arc::ptr_eq(&state, &warm));
+                state
+            };
+
+            let portra = publish(1, "kodak_portra_400", 0xcab2_fed8_8a39_8c2e);
+            let portra_grain = portra.film_grain().unwrap();
+            let portra_bank = portra_grain.bank();
+            let portra_table = portra_grain.table();
+
+            let gold = publish(2, "kodak_gold_200", 0xe451_c307_18a5_e4b5);
+            let gold_grain = gold.film_grain().unwrap();
+            let gold_bank = gold_grain.bank();
+            let gold_table = gold_grain.table();
+            assert_ne!(portra_table.mean_density, gold_table.mean_density);
+            assert_ne!(portra_table.correlation, gold_table.correlation);
+            let held_portra = portra.film_grain().unwrap();
+            assert!(std::ptr::eq(held_portra.bank(), portra_bank));
+            assert!(std::ptr::eq(held_portra.table(), portra_table));
+
+            let restored = publish(3, "kodak_portra_400", 0xcab2_fed8_8a39_8c2e);
+            let restored_grain = restored.film_grain().unwrap();
+            assert!(std::ptr::eq(restored_grain.bank(), portra_bank));
+            assert!(std::ptr::eq(restored_grain.table(), portra_table));
+            let held_gold = gold.film_grain().unwrap();
+            assert!(std::ptr::eq(held_gold.bank(), gold_bank));
+            assert!(std::ptr::eq(held_gold.table(), gold_table));
+        }
+    }
+
+    #[test]
     fn film_preview_geometry_retains_matching_tables_and_bounds() {
         use film::grain::film_v1::ProxyGrid;
         use recipe::FilmGrainFootprintKind::{Rendered, Sample};

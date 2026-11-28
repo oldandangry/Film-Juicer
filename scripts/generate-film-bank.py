@@ -6,10 +6,12 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,9 +126,13 @@ def read_calibration(path):
     def number(value, minimum):
         return type(value) in (int, float) and math.isfinite(value) and value >= minimum
 
-    for key in ("strength", "size_mm", "radius_span", "coating_density_scale"):
+    for key in ("strength", "size_mm"):
         if not number(values[key], 0) or values[key] == 0:
             raise ValueError(f"{key} must be finite and positive")
+    for key, minimum, maximum in (("radius_span", 1, 20), ("coating_density_scale", 0.25, 4)):
+        value = values[key]
+        if type(value) not in (int, float) or not minimum <= value <= maximum:
+            raise ValueError(f"{key} must be from {minimum:g} to {maximum:g}, inclusive")
     for key in ("fog_density", "base_density_offset"):
         if not number(values[key], 0):
             raise ValueError(f"{key} must be finite and nonnegative")
@@ -151,10 +157,23 @@ def read_calibration(path):
     return values
 
 
+def validate_reference_footprint(label):
+    # Keep the spelling for Swift's output filename and check the exact request before it rounds to Float.
+    if re.fullmatch(r"[+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", label):
+        try:
+            if 1 <= Decimal(label) <= Decimal("37.5"):
+                return
+        except InvalidOperation:
+            pass
+    raise ValueError(f"invalid footprint {label!r}: expected a decimal width from 1 to 37.5 texels, inclusive")
+
+
 def generate(args):
     if args.output.exists() or args.output.is_symlink():
         raise FileExistsError(f"output already exists: {args.output}")
     output = args.output.absolute()
+    for footprint in args.footprint:
+        validate_reference_footprint(footprint)
     calibration = read_calibration(args.calibration)
     evaluated = response(args.resources, args.stock)
     capture = evaluated["capture"]
@@ -215,7 +234,9 @@ def main():
     bank.add_argument("--stock", required=True)
     bank.add_argument("--calibration", type=Path, required=True)
     bank.add_argument("--output", type=Path, required=True)
-    bank.add_argument("--footprint", action="append", default=[], help="add a reference footprint in texels")
+    bank.add_argument(
+        "--footprint", action="append", default=[], help="add a reference footprint from 1 to 37.5 texels"
+    )
     bank.set_defaults(run=generate)
     catalog = commands.add_parser("list", help="list the capture catalog")
     catalog.add_argument("--resources", type=Path, default=ROOT / "Resources")

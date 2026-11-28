@@ -41,7 +41,9 @@ the Gold example is required. The destination must be a new directory.
 | `base_density_offset` | Offset added to net CDF3 for the gross density used to index the coating. The loader removes this offset when interpreting net density. |
 | `fog_density` | Separate grain-forming fog for the coating model. |
 | `read_density` | `net` or `gross` for the RMS target, matching its source convention. |
-| `radius_span`, `sublayer_shares`, `coating_density_scale` | Fotufilm crystal population parameters. Four positive shares sum to 1. |
+| `radius_span` | Fotufilm crystal radius span, from 1 to 20 inclusive. |
+| `sublayer_shares` | Four positive Fotufilm sublayer shares that sum to 1. |
+| `coating_density_scale` | Fotufilm coating density scale, from 0.25 to 4 inclusive. |
 | `provenance` | A `basis` of `measured`, `fitted`, `authored` or `trial` and a `source` that identifies what was measured or assumed. |
 
 Reuse a source calibration when stock, process and density conventions match.
@@ -55,8 +57,10 @@ It records the calibration, polarity, adapter hashes, Swift version, Fotufilm
 revision, coating seed and footprint measurement seed. The directory also
 contains the evaluated response, independent footprint statistics at 1, 9.375
 and 32 texels, and 3,360 reference samples from the pinned Swift sampler. Add
-more tables with repeatable `--footprint` arguments. For ordinary verification
-use the frozen independent tables and probes.
+more tables with repeatable `--footprint` arguments. The qualified range is
+1 to 37.5 texels, inclusive. At large widths, Fotufilm's centre-placement
+measurement can clip the square at the placement margin. For ordinary
+verification use the frozen independent tables and probes.
 
 Shipping any additional stock also requires its own density and spectral
 qualification, resource attribution, package entry and explicit product
