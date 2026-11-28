@@ -42,12 +42,12 @@ the Gold example is required. The destination must be a new directory.
 | `fog_density` | Separate grain-forming fog for the coating model. |
 | `read_density` | `net` or `gross` for the RMS target, matching its source convention. |
 | `radius_span` | Fotufilm crystal radius span, from 1 to 20 inclusive. |
-| `sublayer_shares` | Four Fotufilm sublayer shares that sum to 1, each strictly between 0 and 1 after Float32 conversion. |
+| `sublayer_shares` | Four Fotufilm sublayer shares that sum to 1. Each emitted JSON number must decode to a Float32 strictly between 0 and 1. |
 | `coating_density_scale` | Fotufilm coating density scale, from 0.25 to 4 inclusive. |
 | `provenance` | A `basis` of `measured`, `fitted`, `authored` or `trial` and a `source` that identifies what was measured or assumed. |
 
 Run `python3.13 tests/grain/test_generate_film_bank.py` from the repository
-root to check calibration rejection without starting Cargo or Swift.
+root to check calibration admission without starting Cargo or Swift.
 
 Reuse a source calibration when stock, process and density conventions match.
 Record which individual parameters came from a measurement and which remain
